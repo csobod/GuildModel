@@ -1,0 +1,27 @@
+# GuildCAM material presets
+# All feeds in mm/min, speeds in RPM, depths in mm.
+# These are conservative starting defaults — adjust per actual machine and stock.
+
+acetate:
+  display_name: "Acetate"
+  notes: "Standard cellulose acetate sheet. Cuts cleanly; watch for heat buildup."
+  spindle_rpm: 18000
+  feed_rate_mmpm: 800
+  plunge_rate_mmpm: 200
+  max_doc_mm: 1.5       # maximum depth-of-cut per pass
+  recommended_tools:
+    relief: ball_2mm
+    profile: flat_3mm
+    groove: ball_1mm
+
+horn:
+  display_name: "Horn"
+  notes: "Natural horn. Brittle and variable — use conservative settings. Inspect each blank."
+  spindle_rpm: 12000
+  feed_rate_mmpm: 400
+  plunge_rate_mmpm: 100
+  max_doc_mm: 0.8
+  recommended_tools:
+    relief: ball_2mm
+    profile: flat_3mm
+    groove: ball_1mm

@@ -1,0 +1,22 @@
+GuildCAM Third-Party Notices
+=============================
+
+This software includes the following third-party packages:
+
+PySide6          Qt for Python          LGPL v3
+PyVista          VTK wrapper            MIT
+NumPy            Numerical computing    BSD 3-Clause
+SciPy            Scientific computing   BSD 3-Clause
+Shapely          2D geometry            BSD 3-Clause
+pyclipper        Polygon clipping       MIT
+ezdxf            DXF read/write         MIT
+svgelements      SVG parsing            MIT
+trimesh          3D mesh / STL          MIT
+Pydantic         Data validation        MIT
+PyYAML           YAML parsing           MIT
+pytest           Testing framework      MIT
+PyInstaller      Application bundler    GPL-2.0+ with bootloader exception
+
+All dependencies are GPL-compatible. PySide6/Qt is used under LGPL v3,
+which permits linking from GPL software without requiring Qt to be covered
+by the GPL.

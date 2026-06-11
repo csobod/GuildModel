@@ -1,0 +1,260 @@
+"""2D DXF preview canvas with zoom, pan, and per-layer visibility."""
+from __future__ import annotations
+import math
+from typing import Optional
+
+from PySide6.QtWidgets import QWidget, QSizePolicy
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import (
+    QPainter, QPen, QColor, QWheelEvent, QMouseEvent,
+    QPaintEvent, QResizeEvent, QFont,
+)
+
+from guildcam.core.layers import LAYER_STYLES
+_PLACEHOLDER_TEXT = "Open a DXF file to begin"
+
+
+class DxfCanvas(QWidget):
+    """Render DXF layer data as 2D polylines with zoom/pan.
+
+    Feed data via :meth:`set_layers`.  Layer visibility is controlled by
+    :meth:`set_layer_visible`.  Call :meth:`fit_to_view` after loading.
+    """
+
+    zoom_changed = Signal(float)   # emits current scale (px / mm)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(400, 300)
+        self.setMouseTracking(True)
+
+        # layer-name → list of polylines (each polyline = list of (x, y) in mm)
+        self._layers: dict[str, list[list[tuple[float, float]]]] = {}
+        self._visible: dict[str, bool] = {k: True for k in LAYER_STYLES}
+
+        # view transform: world_to_screen = point * scale + offset
+        self._scale: float = 5.0       # px / mm
+        self._offset: QPointF = QPointF(0.0, 0.0)
+
+        # pan state
+        self._pan_active = False
+        self._pan_last: QPointF = QPointF()
+
+        self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
+
+    # ------------------------------------------------------------------ public API
+
+    def set_layers(self, layers: dict[str, list[list[tuple[float, float]]]]) -> None:
+        """Replace layer data and refresh."""
+        self._layers = layers
+        self._visible = {k: True for k in LAYER_STYLES}
+        self.fit_to_view()
+
+    def set_layer_visible(self, layer: str, visible: bool) -> None:
+        self._visible[layer] = visible
+        self.update()
+
+    def fit_to_view(self) -> None:
+        """Scale and centre so all geometry fills 90% of the widget."""
+        if not self._layers:
+            return
+        xs: list[float] = []
+        ys: list[float] = []
+        for curves in self._layers.values():
+            for curve in curves:
+                for x, y in curve:
+                    xs.append(x)
+                    ys.append(y)
+        if not xs:
+            return
+
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        span_x = max_x - min_x or 1.0
+        span_y = max_y - min_y or 1.0
+
+        w, h = self.width(), self.height()
+        scale_x = w * 0.9 / span_x
+        scale_y = h * 0.9 / span_y
+        self._scale = min(scale_x, scale_y)
+
+        # centre the content — DXF Y increases upward; screen Y increases downward
+        cx = (min_x + max_x) / 2.0
+        cy = (min_y + max_y) / 2.0
+        self._offset = QPointF(
+            w / 2.0 - cx * self._scale,
+            h / 2.0 + cy * self._scale,   # flip Y
+        )
+        self.zoom_changed.emit(self._scale)
+        self.update()
+
+    # ------------------------------------------------------------------ coordinate helpers
+
+    def _world_to_screen(self, x: float, y: float) -> QPointF:
+        return QPointF(
+            x * self._scale + self._offset.x(),
+            -y * self._scale + self._offset.y(),
+        )
+
+    def _screen_to_world(self, sx: float, sy: float) -> tuple[float, float]:
+        x = (sx - self._offset.x()) / self._scale
+        y = -(sy - self._offset.y()) / self._scale
+        return x, y
+
+    # ------------------------------------------------------------------ painting
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        painter.fillRect(self.rect(), QColor("#fafaf5"))
+
+        if not self._layers:
+            self._draw_placeholder(painter)
+            return
+
+        self._draw_grid(painter)
+        self._draw_layers(painter)
+        self._draw_scale_bar(painter)
+
+    def _draw_placeholder(self, painter: QPainter) -> None:
+        font = QFont("Arial", 14)
+        painter.setFont(font)
+        painter.setPen(QColor("#c8a040"))
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _PLACEHOLDER_TEXT)
+
+    def _draw_grid(self, painter: QPainter) -> None:
+        """Light 10-mm grid."""
+        grid_mm = 10.0
+        pen = QPen(QColor("#e8e0c0"), 0.5, Qt.PenStyle.DotLine)
+        painter.setPen(pen)
+
+        # find world bounds of the widget
+        x0, y0 = self._screen_to_world(0, 0)
+        x1, y1 = self._screen_to_world(self.width(), self.height())
+        xmin, xmax = sorted([x0, x1])
+        ymin, ymax = sorted([y0, y1])
+
+        # vertical lines
+        gx = math.floor(xmin / grid_mm) * grid_mm
+        while gx <= xmax:
+            sp = self._world_to_screen(gx, 0)
+            painter.drawLine(int(sp.x()), 0, int(sp.x()), self.height())
+            gx += grid_mm
+
+        # horizontal lines
+        gy = math.floor(ymin / grid_mm) * grid_mm
+        while gy <= ymax:
+            sp = self._world_to_screen(0, gy)
+            painter.drawLine(0, int(sp.y()), self.width(), int(sp.y()))
+            gy += grid_mm
+
+    def _draw_layers(self, painter: QPainter) -> None:
+        for layer, curves in self._layers.items():
+            if not self._visible.get(layer, True):
+                continue
+            color_hex, width = LAYER_STYLES.get(layer, ("#444444", 1.0))
+            pen = QPen(QColor(color_hex), width)
+            pen.setCosmetic(True)   # width in screen px regardless of zoom
+            painter.setPen(pen)
+
+            for curve in curves:
+                if len(curve) < 2:
+                    continue
+                pts = [self._world_to_screen(x, y) for x, y in curve]
+                for i in range(len(pts) - 1):
+                    painter.drawLine(pts[i], pts[i + 1])
+                # close if first ≈ last
+                if len(curve) > 2:
+                    first = pts[0]
+                    last = pts[-1]
+                    if abs(first.x() - last.x()) > 1 or abs(first.y() - last.y()) > 1:
+                        painter.drawLine(pts[-1], pts[0])
+
+            # draw HINGE markers as small crosses
+            if layer == "HINGE":
+                cross_pen = QPen(QColor(color_hex), 1.5)
+                cross_pen.setCosmetic(True)
+                painter.setPen(cross_pen)
+                for curve in curves:
+                    if curve:
+                        cx_mm = sum(p[0] for p in curve) / len(curve)
+                        cy_mm = sum(p[1] for p in curve) / len(curve)
+                        sc = self._world_to_screen(cx_mm, cy_mm)
+                        r = 5
+                        painter.drawLine(
+                            int(sc.x()) - r, int(sc.y()),
+                            int(sc.x()) + r, int(sc.y()),
+                        )
+                        painter.drawLine(
+                            int(sc.x()), int(sc.y()) - r,
+                            int(sc.x()), int(sc.y()) + r,
+                        )
+
+    def _draw_scale_bar(self, painter: QPainter) -> None:
+        """10 mm scale bar in the bottom-right corner."""
+        bar_mm = 10.0
+        bar_px = bar_mm * self._scale
+        margin = 16
+        x2 = self.width() - margin
+        x1 = x2 - bar_px
+        y = self.height() - margin
+
+        pen = QPen(QColor("#444444"), 1.5)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawLine(int(x1), int(y), int(x2), int(y))
+        painter.drawLine(int(x1), int(y) - 4, int(x1), int(y) + 4)
+        painter.drawLine(int(x2), int(y) - 4, int(x2), int(y) + 4)
+
+        font = QFont("Arial", 9)
+        painter.setFont(font)
+        painter.setPen(QColor("#444444"))
+        label_rect = QRectF(x1, y - 18, bar_px, 14)
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, "10 mm")
+
+    # ------------------------------------------------------------------ interaction
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        delta = event.angleDelta().y()
+        factor = 1.15 if delta > 0 else 1.0 / 1.15
+
+        mouse_pos = event.position()
+        wx, wy = self._screen_to_world(mouse_pos.x(), mouse_pos.y())
+
+        self._scale *= factor
+        # keep the point under the cursor fixed
+        self._offset = QPointF(
+            mouse_pos.x() - wx * self._scale,
+            mouse_pos.y() + wy * self._scale,
+        )
+        self.zoom_changed.emit(self._scale)
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            self._pan_active = True
+            self._pan_last = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._pan_active:
+            delta = event.position() - self._pan_last
+            self._offset += delta
+            self._pan_last = event.position()
+            self.update()
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._pan_active:
+            self._pan_active = False
+            self.unsetCursor()
+            event.accept()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._layers:
+            self.fit_to_view()

@@ -1,0 +1,126 @@
+# GuildCAM fixture — Guild CNC standard bed
+# Derived from cnc_bed.dxf / cnc_bed.svg (Fusion 360 sketch, 2026-06-03).
+#
+# Coordinate system
+#   Origin:  lower-left corner of the machine table
+#   X+:      right      Y+: up      Z+: above stock
+#   Z = 0:   top surface of the stock blank for the current side
+#   Z < 0:   into the material
+#
+# All dimensions in millimetres.
+
+display_name: "Guild CNC (standard fixture)"
+
+work_area_width_mm:  300.0
+work_area_height_mm: 200.0
+
+safe_z_mm: 5.0
+max_z_mm:  80.0
+
+# ── Blank zones ───────────────────────────────────────────────────────────────
+# x_mm, y_mm = lower-left corner of the blank in machine coordinates.
+# Widths and heights are exact (derived from Fusion model); x/y positions are
+# as-measured to three decimal places.
+#
+# The frame front is the only two-sided blank.  For the back-side program the
+# blank sits as-placed.  For the front-side program the blank is flipped about
+# flip_axis_x_mm and re-registered (mirror in X about that line).
+#
+# The nosepad sub-zone sits on top of the front blank — the bed carries a
+# 6 mm acetate sheet with a 4 mm nosepad block bonded in the centre area,
+# giving 10 mm total thickness there.
+
+blank_zones:
+
+  front:
+    label: "Frame front"
+    stock_thickness_mm: 6.0
+    x_mm: 116.146
+    y_mm: 101.772
+    width_mm:  170.0
+    height_mm:  85.0
+    flip_axis_x_mm: 201.146  # vertical centre-line; flip = mirror X about this
+    nosepad_sub_zone:
+      stock_thickness_mm: 10.0   # 6 mm sheet + 4 mm block = 10 mm total
+      x_mm: 178.646
+      y_mm: 121.772
+      width_mm: 45.0
+      height_mm: 45.0
+
+  temple_right:
+    label: "Right temple"
+    stock_thickness_mm: 4.0
+    x_mm: 111.226
+    y_mm:  56.781
+    width_mm:  170.0
+    height_mm:  30.0
+
+  temple_left:
+    label: "Left temple"
+    stock_thickness_mm: 4.0
+    x_mm: 111.226
+    y_mm:  22.780
+    width_mm:  170.0
+    height_mm:  30.0
+
+  bc_template_right:
+    label: "Base curve template (right)"
+    stock_thickness_mm: 4.0
+    x_mm:  19.767
+    y_mm: 112.329
+    width_mm:  70.0
+    height_mm:  70.0
+
+  bc_template_left:
+    label: "Base curve template (left)"
+    stock_thickness_mm: 4.0
+    x_mm:  19.767
+    y_mm:  22.329
+    width_mm:  70.0
+    height_mm:  70.0
+
+# ── Hold-down screw positions ─────────────────────────────────────────────────
+# The cutter path must not enter any of these circles.
+# Circles are placed in the wasteboard gaps between blank zones and also
+# within the interior of larger blanks (front, bc templates) where the
+# frame geometry does not reach.
+# Coordinates are tool-centre avoid positions (centre of screw head).
+
+hold_down_screw_radius_mm: 5.0   # 10 mm head diameter
+
+hold_down_screws:
+  # ── Frame front (6 perimeter + 2 interior) ──
+  - {x: 126.146, y: 180.273}   # front, top-left
+  - {x: 276.146, y: 180.273}   # front, top-right
+  - {x: 169.148, y: 144.274}   # front, centre-left  (at flip-axis Y level)
+  - {x: 233.148, y: 144.274}   # front, centre-right (at flip-axis Y level)
+  - {x: 126.146, y: 108.274}   # front, bottom-left
+  - {x: 276.146, y: 108.274}   # front, bottom-right
+
+  # ── BC template right (3 screws) ──
+  - {x:  44.767, y: 147.328}
+  - {x:  54.767, y: 147.328}
+  - {x:  64.767, y: 147.328}
+
+  # ── BC template left (3 screws) ──
+  - {x:  44.767, y:  57.327}
+  - {x:  54.767, y:  57.327}
+  - {x:  64.767, y:  57.327}
+
+  # ── Temple area — row above temple-right blank (in gap to front blank) ──
+  - {x: 145.144, y: 88.781}
+  - {x: 187.145, y: 88.781}
+  - {x: 229.145, y: 88.781}
+  - {x: 271.146, y: 88.781}
+
+  # ── Temple area — row between the two temple blanks (4 mm gap) ──
+  - {x: 145.144, y: 54.780}
+  - {x: 187.145, y: 54.780}
+  - {x: 229.145, y: 54.780}
+  - {x: 271.146, y: 54.780}
+
+  # ── Temple area — row below temple-left blank ──
+  - {x: 145.144, y: 20.782}
+  - {x: 187.145, y: 20.782}
+  - {x: 229.145, y: 20.782}
+  - {x: 271.146, y: 20.782}

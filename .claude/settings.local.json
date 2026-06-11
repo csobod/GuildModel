@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import framedraft.app; print\\('OK'\\)\")",
+      "PowerShell(Get-Process python -ErrorAction SilentlyContinue)"
+    ]
+  }
+}

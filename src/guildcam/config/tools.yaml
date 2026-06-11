@@ -1,0 +1,38 @@
+# GuildCAM tool table
+# Geometry used by the drop-cutter (scipy morphology) structuring element.
+# type: flat | ball | toroid
+# all dimensions in mm
+
+ball_1mm:
+  display_name: "1 mm Ball Nose"
+  type: ball
+  diameter_mm: 1.0
+  radius_mm: 0.5
+  flutes: 2
+  notes: "Lens groove and fine detail."
+
+ball_2mm:
+  display_name: "2 mm Ball Nose"
+  type: ball
+  diameter_mm: 2.0
+  radius_mm: 1.0
+  flutes: 2
+  notes: "Relief finishing (scallop, nosepad)."
+
+flat_3mm:
+  display_name: "3 mm Flat End Mill"
+  type: flat
+  diameter_mm: 3.0
+  radius_mm: 1.5
+  corner_radius_mm: 0.0
+  flutes: 2
+  notes: "Profile cut and hinge pockets."
+
+flat_6mm:
+  display_name: "6 mm Flat End Mill"
+  type: flat
+  diameter_mm: 6.0
+  radius_mm: 3.0
+  corner_radius_mm: 0.0
+  flutes: 2
+  notes: "Roughing / stock removal (optional)."
