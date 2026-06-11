@@ -79,21 +79,31 @@ class ZoneThicknesses(BaseModel):
 
 class FootingFillet(BaseModel):
     """Rolling-ball blend pair for one step edge: exterior = convex round-over
-    at the top of the step, interior = concave fillet at its base."""
+    at the top of the step, interior = concave fillet at its base.
+
+    `first` records which fillet is applied first — it changes the blend
+    geometry whenever the radii are larger than the step (the first fillet
+    rolls through the step corner, the second lands tangent to it). Verified
+    against the Demo Project STL: profiles match the Fusion timeline order to
+    < 0.01 mm rms (interior-first on endpiece/bridge edges, exterior-first on
+    nosepad edges).
+    """
     exterior_mm: float
     interior_mm: float
+    first: Literal["interior", "exterior"] = "interior"
 
 
 class FootingSchedule(BaseModel):
     """Per-edge footing fillets, keyed by ZoneEdge.canonical (OD/OS share).
 
-    Defaults are the Demo Project reference values (teardown §4).
+    Defaults are the Demo Project reference values (teardown §4) including
+    the Fusion application order (timeline features 7-16).
     """
-    endpiece_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=32.0, interior_mm=48.0))
-    endpiece_inferior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=16.0, interior_mm=32.0))
-    bridge_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=24.0, interior_mm=32.0))
-    nosepad_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=6.0, interior_mm=4.0))
-    nosepad_inferior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=9.0, interior_mm=10.0))
+    endpiece_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=32.0, interior_mm=48.0, first="interior"))
+    endpiece_inferior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=16.0, interior_mm=32.0, first="interior"))
+    bridge_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=24.0, interior_mm=32.0, first="interior"))
+    nosepad_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=6.0, interior_mm=4.0, first="exterior"))
+    nosepad_inferior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=9.0, interior_mm=10.0, first="exterior"))
 
     def for_edge(self, canonical: str) -> FootingFillet:
         return getattr(self, canonical)

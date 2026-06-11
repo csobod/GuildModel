@@ -1,7 +1,19 @@
-from .heightfield import Heightfield
-from .scallop import back_scallop
-from .nosepad import nosepad_buildup
+from .castle import (
+    CastleRelief,
+    build_castle_mesh,
+    build_castle_relief,
+    stock_top_heightfield,
+)
 from .groove import bevel_flank
+from .heightfield import Heightfield
 from .pocket import hinge_pocket
 
-__all__ = ["Heightfield", "back_scallop", "nosepad_buildup", "bevel_flank", "hinge_pocket"]
+__all__ = [
+    "CastleRelief",
+    "Heightfield",
+    "bevel_flank",
+    "build_castle_mesh",
+    "build_castle_relief",
+    "hinge_pocket",
+    "stock_top_heightfield",
+]

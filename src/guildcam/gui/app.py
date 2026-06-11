@@ -76,19 +76,34 @@ class MeshWorker(QObject):
     finished = Signal(object)   # trimesh.Trimesh
     error = Signal(str)
 
-    def __init__(self, outline, lens_od, lens_os, params) -> None:
+    def __init__(self, outline, lens_od, lens_os, params, partition=None, hinge_polys=()) -> None:
         super().__init__()
         self.outline = outline
         self.lens_od = lens_od
         self.lens_os = lens_os
         self.params = params
+        self.partition = partition
+        self.hinge_polys = list(hinge_polys)
 
     def run(self) -> None:
         try:
-            from guildcam.core.relief.builder import build_preview_mesh
-            mesh = build_preview_mesh(
-                self.outline, self.lens_od, self.lens_os, self.params
-            )
+            if self.partition is not None and self.partition.matched:
+                # Castle path: terraces + footing from SCULPT zones.
+                # Uses CastleParams defaults until the M4 parametric UI lands.
+                from guildcam.core.project.schema import CastleParams
+                from guildcam.core.relief.castle import (
+                    build_castle_mesh, build_castle_relief,
+                )
+                relief = build_castle_relief(
+                    self.partition, CastleParams(), self.hinge_polys,
+                    resolution=self.params.resolution,
+                )
+                mesh = build_castle_mesh(relief)
+            else:
+                from guildcam.core.relief.builder import build_preview_mesh
+                mesh = build_preview_mesh(
+                    self.outline, self.lens_od, self.lens_os, self.params
+                )
             self.finished.emit(mesh)
         except Exception:
             self.error.emit(traceback.format_exc())
@@ -103,12 +118,17 @@ class GCodeWorker(QObject):
     progress = Signal(str)    # log line
     error = Signal(str)       # traceback
 
-    def __init__(self, outline, scallop_enabled: bool, params: dict, out_dir: Path) -> None:
+    def __init__(
+        self, outline, scallop_enabled: bool, params: dict, out_dir: Path,
+        partition=None, hinge_polys=(),
+    ) -> None:
         super().__init__()
         self.outline = outline
         self.scallop_enabled = scallop_enabled
         self.params = params
         self.out_dir = out_dir
+        self.partition = partition
+        self.hinge_polys = list(hinge_polys)
 
     def run(self) -> None:
         try:
@@ -121,7 +141,6 @@ class GCodeWorker(QObject):
         import numpy as np
         from guildcam.core.cam.profile import profile_cut
         from guildcam.core.cam.dropcutter import drop_cutter_paths
-        from guildcam.core.relief.scallop import back_scallop
         from guildcam.core.relief.heightfield import Heightfield
         from guildcam.core.post.grbl import GRBLPost
 
@@ -145,21 +164,23 @@ class GCodeWorker(QObject):
         written: list[Path] = []
 
         # ---- back_relief.nc ----
-        if self.scallop_enabled:
-            self.progress.emit("[gcode] Building back-scallop heightfield…")
-            scallop_hf = back_scallop(
-                outline=self.outline,
-                stock_thickness_mm=p["stock_thickness"],
-                central_zone_mm=p["scallop_central"],
-                slope_extent_mm=p["scallop_slope"],
-                min_edge_thickness_mm=p["scallop_min"],
-                resolution=0.5,
+        # The relief surface comes from the castle builder (SCULPT zones).
+        # The full five-operation recipe (rough/fine, onion skin) lands in M3;
+        # this path still emits the spike's single relief program.
+        if self.scallop_enabled and self.partition is not None and self.partition.matched:
+            self.progress.emit("[gcode] Building castle relief heightfield…")
+            from guildcam.core.project.schema import CastleParams
+            from guildcam.core.relief.castle import build_castle_relief
+
+            relief = build_castle_relief(
+                self.partition, CastleParams(), self.hinge_polys, resolution=0.5
             )
-            # Convert remaining-thickness field to cut-depth field:
-            #   cut_z = scallop_z - stock_thickness  (negative = depth from back face)
-            cut_z = scallop_hf.z - p["stock_thickness"]
+            # Convert posterior-height field to cut-depth field:
+            #   cut_z = castle_z - stock_thickness  (negative = depth from back
+            #   face; clamped so the pad-block zone never reads above stock)
+            cut_z = np.minimum(relief.field.z - p["stock_thickness"], 0.0)
             cut_hf = Heightfield(
-                z=cut_z, origin=scallop_hf.origin, resolution=scallop_hf.resolution
+                z=cut_z, origin=relief.field.origin, resolution=relief.field.resolution
             )
 
             self.progress.emit("[gcode] Computing back-relief raster paths…")
@@ -191,8 +212,13 @@ class GCodeWorker(QObject):
             self.progress.emit(
                 f"[gcode] Wrote {back_file.name}  ({back_file.stat().st_size:,} bytes)"
             )
+        elif not self.scallop_enabled:
+            self.progress.emit("[gcode] Back relief disabled — skipping back_relief.nc")
         else:
-            self.progress.emit("[gcode] Back scallop disabled — skipping back_relief.nc")
+            self.progress.emit(
+                "[gcode] No matched SCULPT zones — skipping back_relief.nc "
+                "(draw section cuts on the SCULPT layer in GuildDraw)"
+            )
 
         # ---- front_profile.nc ----
         self.progress.emit("[gcode] Computing front profile passes…")
@@ -359,6 +385,8 @@ class MainWindow(QMainWindow):
         self._outline_poly = None
         self._lens_od = None
         self._lens_os = None
+        self._partition = None
+        self._hinge_polys = []
 
     # ------------------------------------------------------------------ style
 
@@ -568,6 +596,8 @@ class MainWindow(QMainWindow):
         self._outline_poly = None
         self._lens_od = None
         self._lens_os = None
+        self._partition = None
+        self._hinge_polys = []
 
         outline_curves = layers.get("OUTLINE", [])
         if outline_curves:
@@ -580,8 +610,28 @@ class MainWindow(QMainWindow):
         valid_lens = [p for p in lens_polys if p.is_valid and p.area > 1.0]
         if len(valid_lens) >= 2:
             sorted_lens = sorted(valid_lens, key=lambda p: p.centroid.x)
-            self._lens_od = sorted_lens[1]   # right in DXF = OD
-            self._lens_os = sorted_lens[0]   # left = OS
+            self._lens_od = sorted_lens[1]   # posterior coords: OD on +x
+            self._lens_os = sorted_lens[0]
+
+        self._hinge_polys = [
+            p for p in (points_to_polygon(c) for c in layers.get("HINGE", []) if len(c) >= 3)
+            if p.is_valid and p.area > 0.5
+        ]
+
+        # Castle zone partition from the SCULPT section cuts
+        sculpt_curves = layers.get("SCULPT", [])
+        if self._outline_poly is not None and len(valid_lens) >= 2 and sculpt_curves:
+            from guildcam.core.geometry.regions import partition_zones
+            self._partition = partition_zones(
+                self._outline_poly, valid_lens[:2] if len(valid_lens) == 2 else valid_lens,
+                sculpt_curves,
+            )
+            kind = ("standard castle layout" if self._partition.matched
+                    else "generic zones — castle relief needs the 5-cuts-per-side layout")
+            self.action_panel.append_log(
+                f"[castle] {len(self._partition.zones)} zones from "
+                f"{len(sculpt_curves)} SCULPT cuts ({kind})"
+            )
 
         # Boxing
         if boxing is not None:
@@ -648,7 +698,8 @@ class MainWindow(QMainWindow):
         self._switch_view(1)
 
         self._mesh_worker = MeshWorker(
-            self._outline_poly, self._lens_od, self._lens_os, params
+            self._outline_poly, self._lens_od, self._lens_os, params,
+            partition=self._partition, hinge_polys=self._hinge_polys,
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -709,6 +760,8 @@ class MainWindow(QMainWindow):
             scallop_enabled=params["scallop_enabled"],
             params=params,
             out_dir=Path(out_dir),
+            partition=self._partition,
+            hinge_polys=self._hinge_polys,
         )
         self._gcode_thread = QThread()
         self._gcode_worker.moveToThread(self._gcode_thread)

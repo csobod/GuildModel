@@ -16,18 +16,25 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-11, v0.1.0 — M1 complete: repo under git, posterior flip, castle zone partitioning + schema)*
+## Status snapshot *(2026-06-11, v0.2.0 — M2 complete: the castle stands and matches Fusion)*
 
-**M1 landed (same day as the replan):** repo initialized with the full spike
-as the baseline commit; `import_dxf(posterior=True)` is the single
-anterior→posterior flip point; `geometry/regions.py` partitions the demo DXF
-into the 9 auto-labeled castle zones with all 10 step edges canonically named
-(verified: `matched=True` on first run against the Demo Project DXF);
-`CastleParams` schema (zones / footing / stock / allowances, demo defaults)
-round-trips through `.guildcam` save/load. Suite: 26 tests green.
-*Snag fixed en route:* the venv's editable install pointed at a stale
-`C:\Users\Chad\Documents\...` path from before the repo moved under Google
-Drive — reinstalled from the G: location.
+**M2 landed:** `relief/castle.py` builds the full posterior — terraces from
+the zone partition, hinge pockets, and order-aware sequential rolling-ball
+footing blends — and **matches `Demo Project/Model.stl` with plateau error
+0.0000 mm and footing-band p95 0.045 mm** (gate was ≤ 0.1; worst corner-blend
+point 0.18 mm). Key discovery en route: Fusion's fillet pairs are sequential —
+the first fillet rolls *through* the step corner when the radius exceeds the
+wall, the second lands tangent to it — and the application order changes the
+surface, so `FootingFillet` gained a `first: interior|exterior` field
+(demo defaults follow the Fusion timeline). Two-level stock heightfield in;
+watertight masked-grid mesh (outline + lens-hole rims stitched) in; legacy
+`scallop.py`/`nosepad.py` deleted and the GUI's mesh + G-code workers now
+build from the castle when SCULPT zones match. Suite: 37 tests green.
+
+**M1 (same day):** git baseline; posterior flip in `import_dxf`;
+`geometry/regions.py` partition + auto-label (demo: 9 zones, 10 canonical
+edges, first try); `CastleParams` schema. *Snag:* stale editable install
+(pre-Google-Drive path) — reinstalled from G:.
 
 ---
 
@@ -225,26 +232,37 @@ later milestone builds on trusting the layer beneath it.
    generic fallback (3-cut synthetic, no-cut single zone with lens hole
    preserved); castle defaults + `.guildcam` round-trip.
 
-## M2 — Terraced relief: towers, walls, footing (v0.2.0) · *the castle stands*
+## M2 — Terraced relief: towers, walls, footing (v0.2.0) · *the castle stands* — ✅ DONE 2026-06-11
 
-1. **Two-level stock heightfield**: blank + centered pad block (defaults
-   170 × 85 × 6 + 45 × 45 × 4 mm), the heightfield analogue of the user's
-   complex Fusion stock model — both preview and CAM read it, so toolpaths
-   never cut air expecting the wrong stock height.
-2. **Terraced builder** replacing the distance-based scallop in
-   `relief/builder.py`: rasterize zones → assign per-zone Z (towers first,
-   then walls) → cut the hinge pockets (HINGE outline at depth).
-3. **Footing fillets**: rolling-ball blends along each step edge with the
-   per-edge exterior/interior radii (grey morphology, spherical element,
-   masked per edge).
-4. **Watertight mesh**: stitch the rim wall (closes the spike's open-mesh
-   issue); STL export of the preview mesh.
-5. **Validation harness (the M2 gate)**: pytest builds the relief from the
-   demo DXF + default castle params and diffs against
-   `Demo Project/Model.stl` — plateau levels exact (±0.02 mm), blended
-   regions within tolerance (define empirically, target ≤0.1 mm at 95th
-   percentile over machined surfaces). Legacy `relief/scallop.py` /
-   `relief/nosepad.py` deleted once the harness is green.
+1. ✅ **Two-level stock heightfield**: `stock_top_heightfield()` in
+   `relief/castle.py` — blank + pad block from `StockDefinition` (defaults
+   170 × 85 × 6 + 45 × 45 × 4 mm centered, offsettable), on any grid.
+2. ✅ **Terraced builder**: `build_castle_relief(partition, castle, hinges)`
+   — zone raster (orphan boundary pixels adopt the nearest zone via EDT),
+   per-zone terrace heights, sharp-walled hinge pockets at
+   `endpiece − depth`. Unmatched partitions require explicit `heights`.
+3. ✅ **Footing fillets — analytic, order-aware.** Not grey morphology:
+   profiles are exact per-edge cross-sections in signed distance to the cut.
+   STL probing (`_probe_profiles.py`) showed Fusion's pairs are
+   **sequential**: when the radius exceeds the step, the first fillet rolls
+   through the far corner and the second lands tangent to it — interior-first
+   (endpiece/bridge edges) and exterior-first (nosepad edges) produce
+   different surfaces. `FootingFillet.first` records the order; clean-probe
+   match < 0.01 mm rms. Composite rule: low-side fills, then high-side
+   carves win. Tall steps degrade to quarter-rounds + wall.
+4. ✅ **Watertight mesh**: `build_castle_mesh()` — masked-grid top + flat
+   anterior + rim stitched from the top surface's boundary edges, so outline
+   *and* lens-hole rims close (spike issue fixed). Demo: watertight,
+   7257 mm³, builds ~3 s at 0.3 mm.
+5. ✅ **Validation gate** (`test_demo_relief_matches_fusion_stl`): demo DXF +
+   default castle vs `Model.stl`, translation-only registration (the Fusion
+   model lives in the DXF's frame; its y-mirror cancels GuildDraw's export
+   negation): **plateaus 0.0000 mm (exact), footing band p95 0.045 mm
+   (gate ≤ 0.1), worst corner blend 0.18 mm (gate ≤ 0.3)**. Pocket-wall
+   sampling straddle excluded. Legacy `scallop.py`/`nosepad.py` deleted;
+   GUI mesh + G-code workers now use the castle when SCULPT zones match
+   (`relief/builder.py` remains as the no-SCULPT preview fallback until M4).
+   Suite 26 → 37.
 
 ## M3 — The five-operation CAM recipe (v0.3.0) · *cut the castle, not the air*
 
@@ -353,7 +371,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-11, M1 complete)
+## Module status (as of 2026-06-11, M2 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -366,21 +384,21 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
 | `geometry/symmetry.py` | 🔲 | Stub; needed at latest for the M5 asymmetry question |
-| `relief/builder.py` | 🔄 | Distance-scallop preview builder → M2 terraced castle builder |
-| `relief/scallop.py` `nosepad.py` | 🔄 | Legacy; deleted when the M2 harness is green |
+| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified |
+| `relief/builder.py` | ⚠️ | No-SCULPT preview fallback only; retire in M4 with the castle UI |
 | `relief/groove.py` | ✅ | OLGA `bevel_flank` — dormant until lens patterns (post-1.0) |
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
-| `relief/heightfield.py` | ✅ | M2 extends with two-level stock constructor |
+| `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; M3 re-parameterizes (skin + allowance) |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
 | `post/grbl.py` | ⚠️ | Straight plunge → M3 ramp entry |
-| `mesh/twosided.py` `stl_export.py` | ✅ | M2 stitches the builder rim for watertight preview/STL |
+| `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` retired in M2/M4 |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges; M3 adds the 1/8" tool + acetate feeds |
 | `gui/app.py` + widgets | ✅ | Shell, workers, live-rebuild pattern; M4 reworks the params panel into the castle UI |
-| `tests/` | ✅ | 26 green (`test_smoke.py` 16 + `test_castle_m1.py` 10); M2 adds the STL harness |
+| `tests/` | ✅ | 37 green (smoke 16 + M1 10 + M2 11, incl. the STL gate); M3 adds NC envelope checks |
 
 ## Dependency list (v1 — unchanged)
 
