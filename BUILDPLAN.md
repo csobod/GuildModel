@@ -16,7 +16,23 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-11, v0.2.0 — M2 complete: the castle stands and matches Fusion)*
+## Status snapshot *(2026-06-11, v0.3.0 — M3 complete: the five-operation program generates and matches the reference)*
+
+**M3 landed:** `cam/castle_ops.py` generates the full posterior program —
+Hinge Pockets (ramped lap entry, no plunge) → Rough Relief (stock-aware) →
+Fine Relief → Eyewires → Perimeter (0.4 mm onion skin, 0.1 mm hand-finishing
+allowance) — written as a single `posterior_cut.nc`. Envelopes match the
+reference NC: hinge floor 4.5 exact (XY to 0.02 mm), contour pass stack
+7.5/5.0/2.5/0.4 identical, fine relief 4.2–10.0 exact. Two deliberate
+improvements over the reference: raster relief pattern, and the rough pass
+skips everything without stock above target (the reference air-cut the whole
+blank at +2). Fixture screw-clearance check: clean. `flat_3175` tool +
+proven acetate feeds (S10000/F750/F333) in config; GUI G-code button now
+emits the castle program when SCULPT zones match. Suite: 49 tests green.
+
+---
+
+### Earlier same-day snapshot (v0.2.0 — M2)
 
 **M2 landed:** `relief/castle.py` builds the full posterior — terraces from
 the zone partition, hinge pockets, and order-aware sequential rolling-ball
@@ -264,23 +280,38 @@ later milestone builds on trusting the layer beneath it.
    (`relief/builder.py` remains as the no-SCULPT preview fallback until M4).
    Suite 26 → 37.
 
-## M3 — The five-operation CAM recipe (v0.3.0) · *cut the castle, not the air*
+## M3 — The five-operation CAM recipe (v0.3.0) · *cut the castle, not the air* — ✅ DONE 2026-06-11
 
-1. **Hinge Pockets**: pocket from the HINGE outline at the depth parameter,
-   **ramp entry** (closes the `post/grbl.py` straight-plunge issue), cut
-   first while the stock is rigid. Stepover 1.2 mm default.
-2. **Rough relief**: the fine pattern offset +2.0 mm axial / 0.1 mm radial,
-   0.8 mm stepover. **Fine relief**: zero stock to leave, same stepover.
-3. **Eyewire + Perimeter contours**: 2.5 mm max stepdown, **0.4 mm onion
-   skin** (axial stock above the anterior face — *tabs are retired for frame
-   fronts*; `cam/tabs.py` stays available but unused), **hand-finishing
-   allowance** 0.1 mm radial on both contour ops.
-4. **Tool/material config**: add the 3.175 mm single-flute flat end mill to
-   `tools.yaml`; S10000 / F750 cut / F333 ramp into `materials.yaml` acetate.
-5. **Fixture safety**: assert no toolpath enters a hold-down screw circle.
-6. **Validation (the M3 gate)**: per-op Z envelopes, pass counts, and XY
-   extents match `Demo Program.nc` (op-by-op assertions from the teardown
-   table); generated program runs through a GRBL syntax lint.
+All in `cam/castle_ops.py`; single-file `posterior_cut.nc` output (the
+demo's one-setup posterior workflow — the old two-file back/front split is
+not used for frame fronts).
+
+1. ✅ **Hinge Pockets**: pyclipper inward cascade per HINGE outline; entry
+   ramps by lapping the outer ring (0.6 mm/lap) from just above local stock
+   to the floor — the straight-plunge issue is closed for pockets. Floor =
+   `endpiece − depth` (4.5); XY matches the reference op to 0.02 mm.
+2. ✅ **Rough + Fine relief**: drop-cutter rasters (boustrophedon, 0.8 mm
+   stepover, RDP-simplified). Rough = fine + 2.0 mm axial, **stock-aware**:
+   emitted only where the two-level stock sits above the target, so it
+   confines itself to the pad-block zone (the reference air-cut the whole
+   blank at +2 — deliberate improvement; min Z 6.2 matches). Fine rides the
+   castle CLS, held at stock height beyond the body so the tool never dives
+   off the rim; envelope 4.2–10.0 exact vs reference. Gouge-check tested.
+3. ✅ **Eyewire + Perimeter contours**: rings offset by tool radius + the
+   0.1 mm hand-finishing allowance; depth passes from stock max (both
+   contours cross the pad zone) at 2.5 mm stepdown ending on the **0.4 mm
+   onion skin** — pass stack 7.5/5.0/2.5/0.4 identical to the reference.
+   Tabs retired for frame fronts (`cam/tabs.py` stays, unused).
+4. ✅ **Config**: `flat_3175` (1/8", single flute) in `tools.yaml`; acetate
+   feeds set to the proven program values S10000 / F750 / F333, max DOC 2.5.
+5. ✅ **Fixture safety**: `fixture_clearance_violations()` maps frame→machine
+   coords (blank-zone center) and tests every path point against the screw
+   keep-outs + tool radius. Demo program: clean.
+6. ✅ **Gate** (`test_against_reference_nc` + lint): modal-state parse of
+   `Demo Program.nc` — hinge floor, contour pass stack, rough min Z, fine
+   envelope all match; GRBL lint (G21/G90/M3/M30, only F750/F333, min cut
+   Z = skin, rapids above stock+5). GUI G-code button emits the castle
+   program with per-op log + clearance warnings. Suite 37 → 49.
 
 ## M4 — Parametric castle UI (v0.4.0) · *immediate parametric feedback*
 
@@ -371,7 +402,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-11, M2 complete)
+## Module status (as of 2026-06-11, M3 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -390,15 +421,16 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid |
-| `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; M3 re-parameterizes (skin + allowance) |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC |
+| `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
+| `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ⚠️ | Straight plunge → M3 ramp entry |
+| `post/grbl.py` | ✅ | `comment()` added; pockets enter via ramped laps (plunge issue closed); contour passes plunge ≤ one stepdown by design |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` retired in M2/M4 |
-| `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges; M3 adds the 1/8" tool + acetate feeds |
+| `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
 | `gui/app.py` + widgets | ✅ | Shell, workers, live-rebuild pattern; M4 reworks the params panel into the castle UI |
-| `tests/` | ✅ | 37 green (smoke 16 + M1 10 + M2 11, incl. the STL gate); M3 adds NC envelope checks |
+| `tests/` | ✅ | 49 green (smoke 16 + M1 10 + M2 11 + M3 12, incl. the STL and NC gates) |
 
 ## Dependency list (v1 — unchanged)
 

@@ -136,6 +136,62 @@ class GCodeWorker(QObject):
         except Exception:
             self.error.emit(traceback.format_exc())
 
+    def _generate_castle(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
+        """Five-op posterior program: hinge pockets -> rough -> fine ->
+        eyewires -> perimeter, single .nc, onion skin instead of tabs."""
+        import yaml
+        from guildcam.core.cam.castle_ops import (
+            fixture_clearance_violations, generate_castle_program,
+            write_castle_program,
+        )
+        from guildcam.core.post.grbl import GRBLPost
+        from guildcam.core.project.schema import CastleParams
+        from guildcam.core.relief.castle import build_castle_relief
+
+        p = self.params
+        castle = CastleParams()        # M4 wires the UI parameters in
+        tool = tools_cfg.get("flat_3175", next(iter(tools_cfg.values())))
+        mat_key = p["material_name"].split()[0].lower()
+        mat = mats_cfg.get(mat_key, mats_cfg["acetate"])
+
+        self.progress.emit("[gcode] Castle: building relief…")
+        relief = build_castle_relief(
+            self.partition, castle, self.hinge_polys, resolution=0.15
+        )
+        self.progress.emit("[gcode] Castle: generating five operations…")
+        ops = generate_castle_program(relief, castle, self.hinge_polys, tool)
+        for op in ops:
+            zmin, zmax = op.z_range()
+            self.progress.emit(
+                f"[gcode]   {op.name}: {len(op.paths)} paths, Z {zmin:.2f}..{zmax:.2f}"
+            )
+
+        with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
+            fixture = yaml.safe_load(fh)
+        violations = fixture_clearance_violations(ops, fixture, tool["radius_mm"])
+        for v in violations:
+            self.progress.emit(f"[gcode] WARNING: {v}")
+
+        post = GRBLPost(
+            job_name="posterior_cut",
+            material=p["material_name"],
+            tool_diameter_mm=tool["diameter_mm"],
+            spindle_rpm=mat["spindle_rpm"],
+            feed_rate_mmpm=mat["feed_rate_mmpm"],
+            plunge_rate_mmpm=mat["plunge_rate_mmpm"],
+            safe_z_mm=castle.stock.total_pad_height_mm + 5.0,
+        )
+        write_castle_program(ops, post)
+        out_file = self.out_dir / "posterior_cut.nc"
+        post.write(out_file)
+        self.progress.emit(
+            f"[gcode] Wrote {out_file.name}  ({out_file.stat().st_size:,} bytes)"
+        )
+        summary = f"Posterior program written:\n  {out_file}"
+        if violations:
+            summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
+        self.finished.emit(summary)
+
     def _generate(self) -> None:
         import yaml
         import numpy as np
@@ -151,6 +207,11 @@ class GCodeWorker(QObject):
             tools_cfg = yaml.safe_load(f)
         with open(config_dir / "materials.yaml", encoding="utf-8") as f:
             mats_cfg = yaml.safe_load(f)
+
+        # ---- Castle path: the five-operation posterior program (M3) ----
+        if self.partition is not None and self.partition.matched:
+            self._generate_castle(tools_cfg, mats_cfg, config_dir)
+            return
 
         relief_tool = tools_cfg.get(p["relief_tool_name"], tools_cfg["ball_2mm"])
         profile_tool = tools_cfg.get(p["profile_tool_name"], tools_cfg["flat_3mm"])

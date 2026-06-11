@@ -4,14 +4,14 @@
 
 acetate:
   display_name: "Acetate"
-  notes: "Standard cellulose acetate sheet. Cuts cleanly; watch for heat buildup."
-  spindle_rpm: 18000
-  feed_rate_mmpm: 800
-  plunge_rate_mmpm: 200
-  max_doc_mm: 1.5       # maximum depth-of-cut per pass
+  notes: "Standard cellulose acetate sheet. Demo Project reference feeds (proven on the Guild CNC program)."
+  spindle_rpm: 10000
+  feed_rate_mmpm: 750
+  plunge_rate_mmpm: 333
+  max_doc_mm: 2.5       # maximum depth-of-cut per pass (reference contour stepdown)
   recommended_tools:
-    relief: ball_2mm
-    profile: flat_3mm
+    relief: flat_3175
+    profile: flat_3175
     groove: ball_1mm
 
 horn:

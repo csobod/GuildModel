@@ -19,6 +19,15 @@ ball_2mm:
   flutes: 2
   notes: "Relief finishing (scallop, nosepad)."
 
+flat_3175:
+  display_name: '3.175 mm (1/8") Flat End Mill, Single Flute'
+  type: flat
+  diameter_mm: 3.175
+  radius_mm: 1.5875
+  corner_radius_mm: 0.0
+  flutes: 1
+  notes: "The Demo Project reference tool — entire posterior cut, one tool."
+
 flat_3mm:
   display_name: "3 mm Flat End Mill"
   type: flat

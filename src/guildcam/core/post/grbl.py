@@ -41,6 +41,9 @@ class GRBLPost:
             f"G0 Z{self.safe_z_mm:.3f}",
         ]
 
+    def comment(self, text: str) -> None:
+        self._lines.append(f"{self.comment_char} {text}")
+
     def spindle_on(self) -> None:
         self._lines.append(f"M3 S{self.spindle_rpm}")
 
