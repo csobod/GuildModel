@@ -3,6 +3,11 @@
 Reads recognised layers from a DXF file (see core.layers.ALL_LAYERS).
 Flattens arcs, splines, and polylines to point lists at chord_tol precision.
 GuildDraw exports with Y negated (DXF Y-up convention); ezdxf reads this correctly.
+
+GuildDraw draws the ANTERIOR view of the frame front; all GuildCAM modeling and
+machining happens on the POSTERIOR. import_dxf() therefore mirrors x -> -x by
+default (posterior=True) so every downstream consumer works in posterior
+coordinates. This is the single flip point in the pipeline (BUILDPLAN M1.2).
 """
 from __future__ import annotations
 from pathlib import Path
@@ -36,8 +41,14 @@ def _lwpolyline_to_points(entity) -> list[tuple[float, float]]:
 def import_dxf(
     path: Path,
     chord_tol: float = CHORD_TOL_MM,
+    posterior: bool = True,
 ) -> dict[str, list[list[tuple[float, float]]]]:
-    """Return layer-keyed lists of point-list curves from a DXF file."""
+    """Return layer-keyed lists of point-list curves from a DXF file.
+
+    posterior=True (default) mirrors x -> -x: GuildDraw DXF is the anterior
+    view, GuildCAM coordinates are posterior. Pass False only for tooling that
+    must see the raw drawing (e.g. side-by-side debug against GuildDraw).
+    """
     doc = ezdxf.readfile(str(path))
     msp = doc.modelspace()
 
@@ -70,5 +81,11 @@ def import_dxf(
         elif dxf_type == "SPLINE":
             approx = list(entity.flattening(chord_tol))
             result[layer].append([(v.x, v.y) for v in approx])
+
+    if posterior:
+        result = {
+            layer: [[(-x, y) for x, y in curve] for curve in curves]
+            for layer, curves in result.items()
+        }
 
     return result
