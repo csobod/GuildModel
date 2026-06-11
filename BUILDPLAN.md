@@ -16,7 +16,22 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-11, pre-v0.1 — spike complete, redevelopment replanned around the Demo Project reference)*
+## Status snapshot *(2026-06-11, v0.1.0 — M1 complete: repo under git, posterior flip, castle zone partitioning + schema)*
+
+**M1 landed (same day as the replan):** repo initialized with the full spike
+as the baseline commit; `import_dxf(posterior=True)` is the single
+anterior→posterior flip point; `geometry/regions.py` partitions the demo DXF
+into the 9 auto-labeled castle zones with all 10 step edges canonically named
+(verified: `matched=True` on first run against the Demo Project DXF);
+`CastleParams` schema (zones / footing / stock / allowances, demo defaults)
+round-trips through `.guildcam` save/load. Suite: 26 tests green.
+*Snag fixed en route:* the venv's editable install pointed at a stale
+`C:\Users\Chad\Documents\...` path from before the repo moved under Google
+Drive — reinstalled from the G: location.
+
+---
+
+### Snapshot at the 2026-06-11 replan (pre-v0.1)
 
 **Working (from the Sessions 1–6 spike):** DXF intake for all seven layers
 (SPLINE/LWPOLYLINE/ARC/CIRCLE, Y-up convention), ISO 8624 boxing from lens
@@ -178,25 +193,37 @@ later milestone builds on trusting the layer beneath it.
 > cuts use an onion skin, not tabs. The roadmap below rebuilds the relief and
 > CAM layers around that ground truth, frame front only.
 
-## M1 — Foundation & castle regions (v0.1.0) · *the towers get their ground plan*
+## M1 — Foundation & castle regions (v0.1.0) · *the towers get their ground plan* — ✅ DONE 2026-06-11
 
-1. **`git init`** + `.gitignore` + baseline commit, then commit per item;
-   tag `v0.1.0` at milestone end.
-2. **Flip on import**: GuildDraw DXF is the anterior view; mirror x → −x into
-   posterior coordinates at intake (one transform, documented, tested).
-3. **`geometry/regions.py`** (currently an empty stub): partition the OUTLINE
-   polygon by the SCULPT section cuts (Shapely split), subtract LENS holes,
-   and **auto-label** zones — endpieces (outboard of the endpiece cuts),
-   bridge (between the superior cuts), nosepads (nasal, below the bridge
-   cut), superior/inferior eyewires (the walls). Auto-label fires when the
-   demo's 5-cuts-per-side pattern matches; generic numbered zones otherwise.
-4. **Castle schema** in `project/schema.py`: per-zone thickness, per-edge
-   footing fillet pairs (exterior/interior), hinge-pocket depth, two-level
-   stock (blank + pad block), onion-skin and hand-finishing allowances —
-   demo values as defaults.
-5. **Tests**: demo DXF partitions into 9 labeled zones (2 endpieces, bridge,
-   2 nosepads, 2+2 eyewires); flip round-trip; schema round-trip; generic
-   fallback on a synthetic 3-cut frame.
+1. ✅ **`git init`** + `.gitignore` + baseline commit (full spike + Demo
+   Project fixtures + replanned BUILDPLAN); committed per item; tagged
+   `v0.1.0`.
+2. ✅ **Flip on import**: `import_dxf(posterior=True)` (the default) mirrors
+   x → −x — GuildDraw DXF is the anterior view, everything downstream is
+   posterior. OD lands on +x (matching `FrameRegions` convention). One
+   transform, documented in the module docstring, involution-tested.
+3. ✅ **`geometry/regions.py`**: `partition_zones(outline, lenses,
+   sculpt_cuts)` — cuts extended 1 mm past their endpoints (snap-tolerance
+   guard; over-extension is harmless since faces outside the body are
+   discarded), `unary_union(body.boundary + cuts)` → `polygonize`, slivers
+   < 0.05 mm² dropped. Auto-label when 10 cuts → 9 faces and the layout
+   checks pass (endpieces = extreme |x|, bridge = sole centerline-crosser,
+   nosepads = nearest centerline, walls split superior/inferior by centroid
+   y per side); deterministic `zone_N` fallback otherwise. `ZoneEdge` names
+   every cut from its adjacent zone kinds (`endpiece_superior_od` …) — the
+   footing-schedule keys for M2. **First run against the demo DXF:
+   `matched=True`, 9 zones, 10/10 canonical edges.**
+4. ✅ **Castle schema**: `CastleParams` (`ZoneThicknesses`, `FootingSchedule`
+   of `FootingFillet` pairs, `StockDefinition` blank+pad-block,
+   `hinge_pocket_depth_mm`, `onion_skin_mm`, `hand_finishing_allowance_mm`)
+   with demo defaults; `for_kind()` / `for_edge()` accessors keyed by
+   `Zone.kind` / `ZoneEdge.canonical`. Wired into `ProjectSchema.castle`;
+   the spike `ReliefRecipe` stays as legacy until M2/M4 retire it.
+5. ✅ **Tests** (`tests/test_castle_m1.py`, suite 16 → 26): flip negates x
+   only + involution; demo → 9 named zones, positions (OD +x, superior +y,
+   bridge crosses center), full-cover/no-overlap, 10 canonical edges;
+   generic fallback (3-cut synthetic, no-cut single zone with lens hole
+   preserved); castle defaults + `.guildcam` round-trip.
 
 ## M2 — Terraced relief: towers, walls, footing (v0.2.0) · *the castle stands*
 
@@ -326,18 +353,18 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-11, pre-M1)
+## Module status (as of 2026-06-11, M1 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
 | Module | Status | Notes |
 |---|---|---|
 | `core/layers.py` | ✅ | Single source of truth for layer names/styles (importers, validator, GUI all import it) |
-| `io_import/dxf.py` | ✅ | All 7 layers incl. SCULPT/ENGRAVING; M1 adds the posterior flip |
+| `io_import/dxf.py` | ✅ | All 7 layers incl. SCULPT/ENGRAVING; `posterior=True` flip is the default (M1) |
 | `io_import/svg.py` | ⚠️ | npoint float-arg bug; decide fix-or-drop in M6 |
 | `io_import/normalize.py` `validate.py` | ✅ | close-if-nearly-closed; OUTLINE+2×LENS checks |
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
-| `geometry/regions.py` | 🔲 | **M1 centerpiece** — zone partition + auto-label |
+| `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
 | `geometry/symmetry.py` | 🔲 | Stub; needed at latest for the M5 asymmetry question |
 | `relief/builder.py` | 🔄 | Distance-scallop preview builder → M2 terraced castle builder |
 | `relief/scallop.py` `nosepad.py` | 🔄 | Legacy; deleted when the M2 harness is green |
@@ -350,10 +377,10 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
 | `post/grbl.py` | ⚠️ | Straight plunge → M3 ramp entry |
 | `mesh/twosided.py` `stl_export.py` | ✅ | M2 stitches the builder rim for watertight preview/STL |
-| `project/schema.py` `save_load.py` | ✅ | M1 adds the castle schema |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` retired in M2/M4 |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges; M3 adds the 1/8" tool + acetate feeds |
 | `gui/app.py` + widgets | ✅ | Shell, workers, live-rebuild pattern; M4 reworks the params panel into the castle UI |
-| `tests/test_smoke.py` | ✅ | 16 green; M-series adds the STL/NC validation harness |
+| `tests/` | ✅ | 26 green (`test_smoke.py` 16 + `test_castle_m1.py` 10); M2 adds the STL harness |
 
 ## Dependency list (v1 — unchanged)
 
