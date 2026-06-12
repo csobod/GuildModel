@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import (
     QPainter, QPen, QColor, QWheelEvent, QMouseEvent,
-    QPaintEvent, QResizeEvent, QFont,
+    QPaintEvent, QResizeEvent, QFont, QPainterPath,
 )
 
 from guildcam.core.layers import LAYER_STYLES
@@ -33,6 +33,11 @@ class DxfCanvas(QWidget):
         self._layers: dict[str, list[list[tuple[float, float]]]] = {}
         self._visible: dict[str, bool] = {k: True for k in LAYER_STYLES}
 
+        # stock outline rectangles (x0, y0, x1, y1 in mm), drawn dashed
+        self._stock_rects: list[tuple[float, float, float, float]] = []
+        # zone-inspector hover highlight: polygon rings in mm
+        self._zone_rings: list[list[tuple[float, float]]] = []
+
         # view transform: world_to_screen = point * scale + offset
         self._scale: float = 5.0       # px / mm
         self._offset: QPointF = QPointF(0.0, 0.0)
@@ -55,6 +60,22 @@ class DxfCanvas(QWidget):
         self._visible[layer] = visible
         self.update()
 
+    def set_stock(self, rects: list[tuple[float, float, float, float]]) -> None:
+        """Stock outline rectangles (x0, y0, x1, y1 in mm); empty hides them."""
+        refit = rects != self._stock_rects
+        self._stock_rects = list(rects)
+        if refit and self._layers:
+            self.fit_to_view()
+        else:
+            self.update()
+
+    def set_zone_highlight(
+        self, rings: list[list[tuple[float, float]]] | None
+    ) -> None:
+        """Highlight a zone polygon (exterior + hole rings); None clears."""
+        self._zone_rings = rings or []
+        self.update()
+
     def fit_to_view(self) -> None:
         """Scale and centre so all geometry fills 90% of the widget."""
         if not self._layers:
@@ -66,6 +87,9 @@ class DxfCanvas(QWidget):
                 for x, y in curve:
                     xs.append(x)
                     ys.append(y)
+        for x0, y0, x1, y1 in self._stock_rects:
+            xs += [x0, x1]
+            ys += [y0, y1]
         if not xs:
             return
 
@@ -115,7 +139,9 @@ class DxfCanvas(QWidget):
             return
 
         self._draw_grid(painter)
+        self._draw_stock(painter)
         self._draw_layers(painter)
+        self._draw_zone_highlight(painter)
         self._draw_scale_bar(painter)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
@@ -149,6 +175,39 @@ class DxfCanvas(QWidget):
             sp = self._world_to_screen(0, gy)
             painter.drawLine(0, int(sp.y()), self.width(), int(sp.y()))
             gy += grid_mm
+
+    def _draw_stock(self, painter: QPainter) -> None:
+        """Dashed outlines of the stock blank and pad block."""
+        if not self._stock_rects:
+            return
+        pen = QPen(QColor("#909090"), 1.2, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for x0, y0, x1, y1 in self._stock_rects:
+            top_left = self._world_to_screen(min(x0, x1), max(y0, y1))
+            bottom_right = self._world_to_screen(max(x0, x1), min(y0, y1))
+            painter.drawRect(QRectF(top_left, bottom_right))
+
+    def _draw_zone_highlight(self, painter: QPainter) -> None:
+        if not self._zone_rings:
+            return
+        path = QPainterPath()
+        path.setFillRule(Qt.FillRule.OddEvenFill)
+        for ring in self._zone_rings:
+            if len(ring) < 3:
+                continue
+            pts = [self._world_to_screen(x, y) for x, y in ring]
+            path.moveTo(pts[0])
+            for p in pts[1:]:
+                path.lineTo(p)
+            path.closeSubpath()
+        painter.fillPath(path, QColor(255, 150, 30, 70))
+        pen = QPen(QColor("#e07800"), 1.5)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
 
     def _draw_layers(self, painter: QPainter) -> None:
         for layer, curves in self._layers.items():

@@ -21,45 +21,6 @@ class BoxingParams(BaseModel):
     symmetric: bool = True
 
 
-class ScallopParams(BaseModel):
-    enabled: bool = True
-    central_zone_mm: float = 10.0     # half-width of full-thickness zone
-    slope_extent_mm: float = 8.0      # transition distance from full to min
-    min_edge_thickness_mm: float = 1.2
-
-
-class NosepadParams(BaseModel):
-    enabled: bool = True
-    height_mm: float = 1.5
-    footprint_mm: float = 12.0
-    blend_radius_mm: float = 4.0
-
-
-class GrooveParams(BaseModel):
-    enabled: bool = True
-    depth_mm: float = 0.8
-    width_mm: float = 0.6
-    profile: Literal["vee", "radius"] = "radius"
-
-
-class PocketParams(BaseModel):
-    enabled: bool = True
-    depth_mm: float = 1.2
-
-
-class HingeParams(BaseModel):
-    """Per-hinge placement and catalog reference.  Two entries expected: OD and OS."""
-    enabled: bool = True
-    catalog_file: str = "hinges/standard.yaml"
-    hinge_name: str = "screw_barrel_14x5p5"
-    # Placement in frame local coordinates (mm, degrees).
-    # RotationCharniere from CHA vocabulary.
-    x_mm: float = 0.0
-    y_mm: float = 0.0
-    rotation_deg: float = 0.0
-    face: str = "front"     # "front" | "back"
-
-
 class ZoneThicknesses(BaseModel):
     """Posterior height of each castle zone (mm from the flat anterior face).
 
@@ -145,15 +106,6 @@ class CastleParams(BaseModel):
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
 
 
-class ReliefRecipe(BaseModel):
-    scallop: ScallopParams = Field(default_factory=ScallopParams)
-    nosepad: NosepadParams = Field(default_factory=NosepadParams)
-    groove: GrooveParams = Field(default_factory=GrooveParams)
-    pocket: PocketParams = Field(default_factory=PocketParams)
-    hinge_od: HingeParams = Field(default_factory=HingeParams)
-    hinge_os: HingeParams = Field(default_factory=HingeParams)
-
-
 class FormingMetadata(BaseModel):
     """Recorded for archive; NOT machined in v1. Heat-forming is post-cutting."""
     base_curve: float = 0.0          # diopters
@@ -201,6 +153,5 @@ class ProjectSchema(BaseModel):
     stock_height_mm: float = 50.0
     boxing: BoxingParams = Field(default_factory=BoxingParams)
     castle: CastleParams = Field(default_factory=CastleParams)
-    relief: ReliefRecipe = Field(default_factory=ReliefRecipe)  # legacy spike recipe; superseded by castle in M2/M4
     forming: FormingMetadata = Field(default_factory=FormingMetadata)
     cam: CAMSettings = Field(default_factory=CAMSettings)

@@ -51,6 +51,15 @@ class CamOp:
         ys = [p[1] for path in self.paths for p in path]
         return min(xs), min(ys), max(xs), max(ys)
 
+    def path_length_mm(self) -> float:
+        """Total 3D cutting length over all paths (rapids between paths excluded)."""
+        total = 0.0
+        for path in self.paths:
+            if len(path) > 1:
+                pts = np.asarray(path, dtype=np.float64)
+                total += float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+        return total
+
 
 @dataclass
 class CastleCamParams:
@@ -336,6 +345,42 @@ def generate_castle_program(
         tool_r, allowance, top_z, skin, params,
     ))
     return ops
+
+
+# Strategy descriptions for the in-app setup sheet, keyed by op name.
+_OP_STRATEGIES = {
+    "Hinge Pockets": "Pocket 2D · ramped lap entry",
+    "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
+    "Fine Relief": "Raster drop-cutter",
+    "Eyewires": "Contour 2D (inside) · onion skin",
+    "Perimeter": "Contour 2D (outside) · onion skin",
+}
+
+
+def op_summaries(
+    ops: list[CamOp], feed_rate_mmpm: float | None = None,
+) -> list[dict]:
+    """Setup-sheet rows for the op-summary dialog (BUILDPLAN M4.6).
+
+    Each row: name, strategy, paths, floor_z_mm, cut_length_mm, and
+    est_minutes when a feed rate is given (cutting only — rapids excluded,
+    so it is a lower bound).
+    """
+    rows: list[dict] = []
+    for op in ops:
+        floor_z, _ = op.z_range()
+        length = op.path_length_mm()
+        row = {
+            "name": op.name,
+            "strategy": _OP_STRATEGIES.get(op.name, "—"),
+            "paths": len(op.paths),
+            "floor_z_mm": floor_z,
+            "cut_length_mm": length,
+        }
+        if feed_rate_mmpm:
+            row["est_minutes"] = length / feed_rate_mmpm
+        rows.append(row)
+    return rows
 
 
 def write_castle_program(

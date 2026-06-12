@@ -10,10 +10,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QStatusBar, QGroupBox, QTextEdit,
     QFrame, QSizePolicy, QMessageBox, QStackedWidget,
+    QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
+    QHeaderView,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject
 from PySide6.QtGui import QAction, QFont
 
+from guildcam.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildcam.gui.widgets.dxf_canvas import DxfCanvas
 from guildcam.gui.widgets.params_panel import ParamsPanel
 from guildcam.gui.widgets.preview_3d import Preview3D
@@ -36,7 +39,6 @@ class ImportWorker(QObject):
             import ezdxf as _ezdxf
             from collections import Counter as _Counter
             from guildcam.core.io_import.dxf import import_dxf
-            from guildcam.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
             from guildcam.core.io_import.normalize import points_to_polygon
             from guildcam.core.geometry.boxing import measure_from_polygon
 
@@ -71,40 +73,33 @@ class ImportWorker(QObject):
 # ------------------------------------------------------------------ 3D mesh build worker
 
 class MeshWorker(QObject):
-    """Builds the relief mesh off the GUI thread."""
+    """Builds the castle relief mesh off the GUI thread (matched SCULPT
+    zone layouts only — the spike's distance-based fallback is retired)."""
 
-    finished = Signal(object)   # trimesh.Trimesh
+    finished = Signal(object, str)   # trimesh.Trimesh, stage
     error = Signal(str)
 
-    def __init__(self, outline, lens_od, lens_os, params, partition=None, hinge_polys=()) -> None:
+    def __init__(
+        self, partition, castle, hinge_polys=(), stage: str = "pockets",
+        resolution: float = 0.3,
+    ) -> None:
         super().__init__()
-        self.outline = outline
-        self.lens_od = lens_od
-        self.lens_os = lens_os
-        self.params = params
         self.partition = partition
+        self.castle = castle
         self.hinge_polys = list(hinge_polys)
+        self.stage = stage
+        self.resolution = resolution
 
     def run(self) -> None:
         try:
-            if self.partition is not None and self.partition.matched:
-                # Castle path: terraces + footing from SCULPT zones.
-                # Uses CastleParams defaults until the M4 parametric UI lands.
-                from guildcam.core.project.schema import CastleParams
-                from guildcam.core.relief.castle import (
-                    build_castle_mesh, build_castle_relief,
-                )
-                relief = build_castle_relief(
-                    self.partition, CastleParams(), self.hinge_polys,
-                    resolution=self.params.resolution,
-                )
-                mesh = build_castle_mesh(relief)
-            else:
-                from guildcam.core.relief.builder import build_preview_mesh
-                mesh = build_preview_mesh(
-                    self.outline, self.lens_od, self.lens_os, self.params
-                )
-            self.finished.emit(mesh)
+            from guildcam.core.relief.castle import (
+                build_castle_mesh, build_castle_stage,
+            )
+            relief = build_castle_stage(
+                self.partition, self.castle, self.hinge_polys,
+                stage=self.stage, resolution=self.resolution,
+            )
+            self.finished.emit(build_castle_mesh(relief), self.stage)
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -112,19 +107,20 @@ class MeshWorker(QObject):
 # ------------------------------------------------------------------ G-code generation worker
 
 class GCodeWorker(QObject):
-    """Builds back_relief.nc and front_profile.nc off the GUI thread."""
+    """Builds posterior_cut.nc (castle) or front_profile.nc (fallback)
+    off the GUI thread."""
 
-    finished = Signal(str)    # summary message with file paths
-    progress = Signal(str)    # log line
-    error = Signal(str)       # traceback
+    finished = Signal(str, object)   # summary message, op-summary rows | None
+    progress = Signal(str)           # log line
+    error = Signal(str)              # traceback
 
     def __init__(
-        self, outline, scallop_enabled: bool, params: dict, out_dir: Path,
+        self, outline, castle, params: dict, out_dir: Path,
         partition=None, hinge_polys=(),
     ) -> None:
         super().__init__()
         self.outline = outline
-        self.scallop_enabled = scallop_enabled
+        self.castle = castle
         self.params = params
         self.out_dir = out_dir
         self.partition = partition
@@ -142,14 +138,13 @@ class GCodeWorker(QObject):
         import yaml
         from guildcam.core.cam.castle_ops import (
             fixture_clearance_violations, generate_castle_program,
-            write_castle_program,
+            op_summaries, write_castle_program,
         )
         from guildcam.core.post.grbl import GRBLPost
-        from guildcam.core.project.schema import CastleParams
         from guildcam.core.relief.castle import build_castle_relief
 
         p = self.params
-        castle = CastleParams()        # M4 wires the UI parameters in
+        castle = self.castle
         tool = tools_cfg.get("flat_3175", next(iter(tools_cfg.values())))
         mat_key = p["material_name"].split()[0].lower()
         mat = mats_cfg.get(mat_key, mats_cfg["acetate"])
@@ -190,14 +185,12 @@ class GCodeWorker(QObject):
         summary = f"Posterior program written:\n  {out_file}"
         if violations:
             summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
-        self.finished.emit(summary)
+        rows = op_summaries(ops, feed_rate_mmpm=mat["feed_rate_mmpm"])
+        self.finished.emit(summary, rows)
 
     def _generate(self) -> None:
         import yaml
-        import numpy as np
         from guildcam.core.cam.profile import profile_cut
-        from guildcam.core.cam.dropcutter import drop_cutter_paths
-        from guildcam.core.relief.heightfield import Heightfield
         from guildcam.core.post.grbl import GRBLPost
 
         p = self.params
@@ -213,7 +206,7 @@ class GCodeWorker(QObject):
             self._generate_castle(tools_cfg, mats_cfg, config_dir)
             return
 
-        relief_tool = tools_cfg.get(p["relief_tool_name"], tools_cfg["ball_2mm"])
+        # ---- Fallback for DXFs without SCULPT zones: profile cut only ----
         profile_tool = tools_cfg.get(p["profile_tool_name"], tools_cfg["flat_3mm"])
 
         mat_key = p["material_name"].split()[0].lower()
@@ -222,66 +215,11 @@ class GCodeWorker(QObject):
         feed_rate = mat["feed_rate_mmpm"]
         plunge_rate = mat["plunge_rate_mmpm"]
 
-        written: list[Path] = []
-
-        # ---- back_relief.nc ----
-        # The relief surface comes from the castle builder (SCULPT zones).
-        # The full five-operation recipe (rough/fine, onion skin) lands in M3;
-        # this path still emits the spike's single relief program.
-        if self.scallop_enabled and self.partition is not None and self.partition.matched:
-            self.progress.emit("[gcode] Building castle relief heightfield…")
-            from guildcam.core.project.schema import CastleParams
-            from guildcam.core.relief.castle import build_castle_relief
-
-            relief = build_castle_relief(
-                self.partition, CastleParams(), self.hinge_polys, resolution=0.5
-            )
-            # Convert posterior-height field to cut-depth field:
-            #   cut_z = castle_z - stock_thickness  (negative = depth from back
-            #   face; clamped so the pad-block zone never reads above stock)
-            cut_z = np.minimum(relief.field.z - p["stock_thickness"], 0.0)
-            cut_hf = Heightfield(
-                z=cut_z, origin=relief.field.origin, resolution=relief.field.resolution
-            )
-
-            self.progress.emit("[gcode] Computing back-relief raster paths…")
-            back_paths = drop_cutter_paths(
-                field=cut_hf,
-                tool_type=relief_tool["type"],
-                tool_radius_mm=relief_tool["radius_mm"],
-                stepover_mm=p["stepover"],
-            )
-            self.progress.emit(f"[gcode] Back relief: {len(back_paths)} raster lines")
-
-            post_back = GRBLPost(
-                job_name="frame_back_relief",
-                material=p["material_name"],
-                tool_diameter_mm=relief_tool["diameter_mm"],
-                spindle_rpm=spindle_rpm,
-                feed_rate_mmpm=feed_rate,
-                plunge_rate_mmpm=plunge_rate,
-            )
-            post_back.header("Back Relief")
-            post_back.spindle_on()
-            for line in back_paths:
-                post_back.emit_polyline(line)
-            post_back.end_program()
-
-            back_file = self.out_dir / "back_relief.nc"
-            post_back.write(back_file)
-            written.append(back_file)
-            self.progress.emit(
-                f"[gcode] Wrote {back_file.name}  ({back_file.stat().st_size:,} bytes)"
-            )
-        elif not self.scallop_enabled:
-            self.progress.emit("[gcode] Back relief disabled — skipping back_relief.nc")
-        else:
-            self.progress.emit(
-                "[gcode] No matched SCULPT zones — skipping back_relief.nc "
-                "(draw section cuts on the SCULPT layer in GuildDraw)"
-            )
-
-        # ---- front_profile.nc ----
+        self.progress.emit(
+            "[gcode] No matched SCULPT zones — emitting profile cut only "
+            "(draw 5 section cuts per side on the SCULPT layer in GuildDraw "
+            "for the five-op castle program)."
+        )
         self.progress.emit("[gcode] Computing front profile passes…")
         passes = profile_cut(
             outline=self.outline,
@@ -311,13 +249,69 @@ class GCodeWorker(QObject):
 
         front_file = self.out_dir / "front_profile.nc"
         post_front.write(front_file)
-        written.append(front_file)
         self.progress.emit(
             f"[gcode] Wrote {front_file.name}  ({front_file.stat().st_size:,} bytes)"
         )
 
-        summary = "Generated:\n" + "\n".join(f"  {f}" for f in written)
-        self.finished.emit(summary)
+        self.finished.emit(f"Generated:\n  {front_file}", None)
+
+
+# ------------------------------------------------------------------ op summary dialog
+
+class OpSummaryDialog(QDialog):
+    """The in-app setup sheet (BUILDPLAN M4.6): one row per CAM operation."""
+
+    def __init__(self, rows: list[dict], summary: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Posterior program — operation summary")
+        self.setMinimumWidth(560)
+
+        lay = QVBoxLayout(self)
+
+        head = QLabel(summary.replace("\n", "<br>"))
+        head.setTextFormat(Qt.TextFormat.RichText)
+        head.setWordWrap(True)
+        lay.addWidget(head)
+
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(
+            ["Operation", "Strategy", "Z floor", "Cut length", "Est. time*"]
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        for r, row in enumerate(rows):
+            cells = [
+                row["name"],
+                row["strategy"],
+                f"{row['floor_z_mm']:.2f} mm",
+                f"{row['cut_length_mm'] / 1000.0:.2f} m",
+                f"{row['est_minutes']:.1f} min" if "est_minutes" in row else "—",
+            ]
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c >= 2:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        table.setFixedHeight(
+            table.horizontalHeader().height()
+            + sum(table.rowHeight(r) for r in range(len(rows))) + 8
+        )
+        lay.addWidget(table)
+
+        foot = QLabel("* cutting moves at the material feed rate; rapids excluded.")
+        foot.setStyleSheet("font-size: 10px; color: #888;")
+        lay.addWidget(foot)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        lay.addWidget(buttons)
 
 
 # ------------------------------------------------------------------ action panel
@@ -382,7 +376,10 @@ class ActionPanel(QWidget):
         self.generate_btn.clicked.connect(self.generate_requested)
         act_lay.addWidget(self.generate_btn)
 
-        note = QLabel("Generates two GRBL .nc files:\n  • back_relief.nc\n  • front_profile.nc")
+        note = QLabel(
+            "SCULPT castle: posterior_cut.nc\n(five ops, onion skin)\n"
+            "No SCULPT: front_profile.nc"
+        )
         note.setStyleSheet("font-size: 10px; color: #666;")
         note.setWordWrap(True)
         act_lay.addWidget(note)
@@ -448,6 +445,18 @@ class MainWindow(QMainWindow):
         self._lens_os = None
         self._partition = None
         self._hinge_polys = []
+
+        # Castle preview state: current teaching stage + per-stage mesh cache
+        # (cache invalidated whenever a castle parameter changes)
+        self._stage = "pockets"
+        self._stage_cache: dict[str, object] = {}
+
+        # Debounce for live parametric rebuilds (every spinbox tick would
+        # otherwise queue a ~2 s build)
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(350)
+        self._rebuild_timer.timeout.connect(self._start_mesh_build)
 
     # ------------------------------------------------------------------ style
 
@@ -584,8 +593,11 @@ class MainWindow(QMainWindow):
         self.action_panel.export_requested.connect(self._on_export_stl)
         self.action_panel.build3d_requested.connect(self._on_build_3d)
 
-        # Live rebuild when relief params change (only if 3D view is active)
-        self.params.relief_changed.connect(self._on_relief_params_changed)
+        # Live parametric rebuild (debounced; only while the 3D view is up)
+        self.params.castle_changed.connect(self._on_castle_params_changed)
+        self.params.stock_changed.connect(self._on_stock_changed)
+        self.params.zone_hovered.connect(self._on_zone_hover)
+        self.preview3d.stage_changed.connect(self._on_stage_changed)
 
     # ------------------------------------------------------------------ view switch
 
@@ -694,6 +706,15 @@ class MainWindow(QMainWindow):
                 f"{len(sculpt_curves)} SCULPT cuts ({kind})"
             )
 
+        # Castle UI state: zone inspector, stage stepper, stock ghost, cache
+        self.params.set_zones(self._partition)
+        matched = self._partition is not None and self._partition.matched
+        self.preview3d.set_stage_enabled(matched)
+        self._stage = "pockets"
+        self.preview3d.set_stage(self._stage)
+        self._stage_cache.clear()
+        self._update_stock_canvas()
+
         # Boxing
         if boxing is not None:
             self.params.update_boxing(boxing.a, boxing.b, boxing.dbl, boxing.ed)
@@ -722,45 +743,76 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ 3D build
 
+    def _castle_ready(self) -> bool:
+        return self._partition is not None and self._partition.matched
+
     def _on_build_3d(self) -> None:
-        if self._outline_poly is None or self._lens_od is None or self._lens_os is None:
+        if not self._castle_ready():
             self.action_panel.append_log(
-                "[3D] Need OUTLINE + 2 LENS polygons. Load a valid frame DXF first."
+                "[3D] Castle relief needs the standard SCULPT zone layout "
+                "(5 section cuts per side). Draw them in GuildDraw and re-export."
             )
             return
         self._start_mesh_build()
 
-    def _on_relief_params_changed(self) -> None:
-        if self.stack.currentIndex() == 1 and self._outline_poly is not None:
+    def _on_castle_params_changed(self) -> None:
+        # Parameters changed: every cached stage is stale.
+        self._stage_cache.clear()
+        if self.stack.currentIndex() == 1 and self._castle_ready():
+            self._rebuild_timer.start()
+
+    def _on_stage_changed(self, stage: str) -> None:
+        self._stage = stage
+        cached = self._stage_cache.get(stage)
+        if cached is not None:
+            self._show_stage_mesh(cached)
+        elif self._castle_ready():
             self._start_mesh_build()
 
+    def _on_stock_changed(self) -> None:
+        self._update_stock_canvas()
+        # Re-draw the stock ghost around the currently shown stage, if any.
+        cached = self._stage_cache.get(self._stage)
+        if cached is not None and self.stack.currentIndex() == 1:
+            self._show_stage_mesh(cached)
+
+    def _update_stock_canvas(self) -> None:
+        if self._outline_poly is None:
+            return
+        s = self.params.castle_params().stock
+        self.canvas.set_stock([
+            (-s.blank_length_mm / 2.0, -s.blank_width_mm / 2.0,
+             s.blank_length_mm / 2.0, s.blank_width_mm / 2.0),
+            (s.pad_block_dx_mm - s.pad_block_length_mm / 2.0,
+             s.pad_block_dy_mm - s.pad_block_width_mm / 2.0,
+             s.pad_block_dx_mm + s.pad_block_length_mm / 2.0,
+             s.pad_block_dy_mm + s.pad_block_width_mm / 2.0),
+        ])
+
+    def _on_zone_hover(self, name: str) -> None:
+        if not name or self._partition is None:
+            self.canvas.set_zone_highlight(None)
+            return
+        try:
+            poly = self._partition.zone(name).polygon
+        except KeyError:
+            self.canvas.set_zone_highlight(None)
+            return
+        rings = [list(poly.exterior.coords)]
+        rings += [list(r.coords) for r in poly.interiors]
+        self.canvas.set_zone_highlight(rings)
+
     def _start_mesh_build(self) -> None:
-        from guildcam.core.relief.builder import ReliefBuildParams
-
-        p = self.params
-        params = ReliefBuildParams(
-            stock_thickness_mm=p.stock_thickness.value(),
-            scallop_enabled=p.scallop_cb.isChecked(),
-            scallop_central_zone_mm=p.scallop_central.value(),
-            scallop_slope_extent_mm=p.scallop_slope.value(),
-            scallop_min_edge_mm=p.scallop_min.value(),
-            nosepad_enabled=p.nosepad_cb.isChecked(),
-            nosepad_height_mm=p.nosepad_height.value(),
-            nosepad_footprint_mm=p.nosepad_footprint.value(),
-            nosepad_blend_radius_mm=4.0,
-            groove_enabled=p.groove_cb.isChecked(),
-            groove_depth_mm=p.groove_depth.value(),
-            groove_width_mm=p.groove_width.value(),
-        )
-
+        if not self._castle_ready():
+            return
         self.action_panel.build_status.setText("Building…")
         self.action_panel.build3d_btn.setEnabled(False)
-        self.action_panel.append_log("[3D] Building mesh…")
+        self.action_panel.append_log(f"[3D] Building castle ({self._stage})…")
         self._switch_view(1)
 
         self._mesh_worker = MeshWorker(
-            self._outline_poly, self._lens_od, self._lens_os, params,
-            partition=self._partition, hinge_polys=self._hinge_polys,
+            self._partition, self.params.castle_params(),
+            hinge_polys=self._hinge_polys, stage=self._stage,
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -771,12 +823,20 @@ class MainWindow(QMainWindow):
         self._mesh_worker.error.connect(self._mesh_thread.quit)
         self._mesh_thread.start()
 
-    def _on_mesh_finished(self, mesh) -> None:
-        self.preview3d.show_mesh(mesh)
+    def _show_stage_mesh(self, mesh) -> None:
+        self.preview3d.show_mesh(mesh, stock=self.params.castle_params().stock)
         n_v = len(mesh.vertices)
         n_t = len(mesh.faces)
-        self.action_panel.append_log(f"[3D] Done — {n_v:,} verts, {n_t:,} tris")
         self.action_panel.build_status.setText(f"{n_v:,} verts · {n_t:,} tris")
+
+    def _on_mesh_finished(self, mesh, stage: str) -> None:
+        self._stage_cache[stage] = mesh
+        if stage == self._stage:
+            self._show_stage_mesh(mesh)
+        self.action_panel.append_log(
+            f"[3D] Done ({stage}) — {len(mesh.vertices):,} verts, "
+            f"{len(mesh.faces):,} tris"
+        )
         self.action_panel.build3d_btn.setEnabled(True)
         self.status_lbl.setText("3D model ready")
 
@@ -818,7 +878,7 @@ class MainWindow(QMainWindow):
 
         self._gcode_worker = GCodeWorker(
             outline=self._outline_poly,
-            scallop_enabled=params["scallop_enabled"],
+            castle=self.params.castle_params(),
             params=params,
             out_dir=Path(out_dir),
             partition=self._partition,
@@ -837,27 +897,23 @@ class MainWindow(QMainWindow):
     def _collect_gcode_params(self) -> dict:
         p = self.params
         return {
-            "relief_tool_name":  p.tool_relief.currentText(),
             "profile_tool_name": p.tool_profile.currentText(),
             "material_name":     p.material.currentText(),
-            "stock_thickness":   p.stock_thickness.value(),
-            "stepover":          p.stepover.value(),
-            "stepdown_relief":   p.stepdown_relief.value(),
+            "stock_thickness":   p.blank_thickness.value(),
             "stepdown_profile":  p.stepdown_profile.value(),
             "tab_count":         p.tab_count.value(),
             "tab_width":         p.tab_width.value(),
             "tab_height":        p.tab_height.value(),
-            "scallop_enabled":   p.scallop_cb.isChecked(),
-            "scallop_central":   p.scallop_central.value(),
-            "scallop_slope":     p.scallop_slope.value(),
-            "scallop_min":       p.scallop_min.value(),
         }
 
-    def _on_gcode_finished(self, summary: str) -> None:
+    def _on_gcode_finished(self, summary: str, rows) -> None:
         self.action_panel.append_log("[gcode] Done.")
         self.action_panel.generate_btn.setEnabled(True)
         self.status_lbl.setText("G-code ready")
-        QMessageBox.information(self, "G-code generated", summary)
+        if rows:
+            OpSummaryDialog(rows, summary, self).exec()
+        else:
+            QMessageBox.information(self, "G-code generated", summary)
 
     def _on_gcode_error(self, tb: str) -> None:
         self.action_panel.append_log("[gcode ERROR]\n" + tb)
@@ -865,14 +921,28 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("G-code generation failed — see log")
 
     def _on_export_stl(self) -> None:
-        self.action_panel.append_log("[export] STL export not yet implemented.")
-        QMessageBox.information(self, "Export STL", "STL export will be available in M3.")
+        mesh = self._stage_cache.get("pockets")
+        if mesh is None:
+            QMessageBox.information(
+                self, "Export STL",
+                "Build the full castle first (Build 3D Model with the "
+                "stepper on 'Full').",
+            )
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Export STL", "frame_front.stl", "STL files (*.stl)"
+        )
+        if not path_str:
+            return
+        mesh.export(path_str)
+        self.action_panel.append_log(f"[export] Wrote {path_str}")
+        self.status_lbl.setText("STL exported")
 
     def _on_about(self) -> None:
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.1 — pre-release demo<br><br>"
+            "<b>GuildCAM</b> v0.4 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",
@@ -889,9 +959,14 @@ def main() -> None:
     win = MainWindow()
     win.show()
 
-    # Auto-load demo frame in dev mode
+    # Auto-load demo frame in dev mode (the Demo Project DXF exercises the
+    # full castle pipeline; the illustrations have no SCULPT layer)
     project_root = Path(__file__).parents[3]
-    for dev_name in ("frame_illustration.dxf", "hinge_th-23_front.dxf"):
+    for dev_name in (
+        "Demo Project/GuildDraw DXF Export.dxf",
+        "frame_illustration.dxf",
+        "hinge_th-23_front.dxf",
+    ):
         dev_dxf = project_root / dev_name
         if dev_dxf.exists():
             win._load_dxf(dev_dxf)

@@ -24,7 +24,7 @@ import numpy as np
 from shapely import contains_xy, distance, points, prepare
 from shapely.geometry import Polygon
 
-from ..geometry.regions import CastlePartition
+from ..geometry.regions import TOWER_KINDS, CastlePartition
 from ..project.schema import CastleParams, StockDefinition
 from .heightfield import Heightfield
 
@@ -287,6 +287,61 @@ def build_castle_relief(
     z[~inside] = 0.0
     field = Heightfield(z=z, origin=(ox, oy), resolution=resolution)
     return CastleRelief(field=field, inside=inside, zone_index=zone_index, partition=partition)
+
+
+# ------------------------------------------------------------------ stages
+#
+# The teaching stepper (BUILDPLAN M4.4): show the castle being built the way
+# the maker explains it — towers first, then the walls between them, then the
+# footing blends, finally the hinge pockets. Stage names are the presentation
+# vocabulary; the zone/edge identifiers they act on stay anatomical (§2).
+
+CASTLE_STAGES = ("towers", "walls", "footing", "pockets")
+STAGE_GROUND_MM = 0.6   # wall zones in the "towers" stage: thin ground slab
+
+
+def build_castle_stage(
+    partition: CastlePartition,
+    castle: CastleParams,
+    hinge_polys: list[Polygon] = (),
+    stage: str = "pockets",
+    resolution: float = PREVIEW_RES_MM,
+    margin: float = GRID_MARGIN_MM,
+) -> CastleRelief:
+    """Build the relief up to a teaching stage.
+
+    towers  — endpiece / bridge / nosepad terraces only; eyewire zones left
+              as a thin ground slab so the towers stand alone
+    walls   — every zone at its terrace height, no footing blends
+    footing — terraces + footing blends
+    pockets — the complete relief (same as build_castle_relief)
+
+    Requires a matched partition (zone kinds drive the stage split).
+    """
+    if stage not in CASTLE_STAGES:
+        raise ValueError(f"stage must be one of {CASTLE_STAGES}, got {stage!r}")
+    if not partition.matched:
+        raise ValueError("castle stages require the standard matched zone layout")
+    level = CASTLE_STAGES.index(stage)
+
+    heights = None
+    if level < 1:
+        heights = {
+            z.name: (castle.zones.for_kind(z.kind) if z.kind in TOWER_KINDS
+                     else STAGE_GROUND_MM)
+            for z in partition.zones
+        }
+    if level < 2:
+        castle = castle.model_copy(deep=True)
+        for name in type(castle.footing).model_fields:
+            fillet = getattr(castle.footing, name)
+            fillet.exterior_mm = 0.0
+            fillet.interior_mm = 0.0
+    hinges = list(hinge_polys) if level >= 3 else []
+    return build_castle_relief(
+        partition, castle, hinges,
+        resolution=resolution, margin=margin, heights=heights,
+    )
 
 
 # ------------------------------------------------------------------ mesh

@@ -1,16 +1,18 @@
 """3D preview widget — PyVista/VTK embedded in a Qt window.
 
 Accepts a trimesh.Trimesh and renders it with a lit, face-coloured surface.
-Provides camera presets (top, front, iso) and a simple toolbar.
+Provides camera presets (top, front, iso), the castle stage stepper
+(BUILDPLAN M4.4 — Towers → +Walls → +Footing → Full), and an optional
+stock-outline ghost.
 """
 from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QSizePolicy,
+    QButtonGroup, QFrame, QLabel, QSizePolicy,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 
 _PLACEHOLDER_TEXT = "Click 'Build 3D' to generate the preview mesh"
@@ -22,6 +24,16 @@ class Preview3D(QWidget):
     The pyvistaqt.QtInteractor is created lazily on first use to avoid
     import overhead at startup.
     """
+
+    stage_changed = Signal(str)   # relief.castle.CASTLE_STAGES value
+
+    # (button label, CASTLE_STAGES value) — the teaching stepper
+    _STAGE_BUTTONS = [
+        ("Towers", "towers"),
+        ("+Walls", "walls"),
+        ("+Footing", "footing"),
+        ("Full", "pockets"),
+    ]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -45,6 +57,34 @@ class Preview3D(QWidget):
             btn.setFixedWidth(44)
             btn.clicked.connect(getattr(self, slot_name))
             tb_lay.addWidget(btn)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet("color: #c8a040;")
+        tb_lay.addSpacing(6)
+        tb_lay.addWidget(sep)
+        tb_lay.addSpacing(6)
+
+        # Castle stage stepper: watch the castle being built
+        stage_lbl = QLabel("Castle:")
+        stage_lbl.setStyleSheet("font-size: 10px; color: #555;")
+        tb_lay.addWidget(stage_lbl)
+
+        self._stage_group = QButtonGroup(self)
+        self._stage_group.setExclusive(True)
+        self._stage_buttons: dict[str, QPushButton] = {}
+        for label, stage in self._STAGE_BUTTONS:
+            btn = QPushButton(label)
+            btn.setFixedHeight(22)
+            btn.setFixedWidth(58)
+            btn.setCheckable(True)
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda _=False, s=stage: self.stage_changed.emit(s))
+            self._stage_group.addButton(btn)
+            tb_lay.addWidget(btn)
+            self._stage_buttons[stage] = btn
+        self._stage_buttons["pockets"].setChecked(True)
+
         tb_lay.addStretch()
 
         self._mesh_label = QLabel("No mesh")
@@ -90,8 +130,23 @@ class Preview3D(QWidget):
 
     # ------------------------------------------------------------------ public API
 
-    def show_mesh(self, mesh: "trimesh.Trimesh") -> None:  # noqa: F821
-        """Load a trimesh.Trimesh into the viewer."""
+    def set_stage_enabled(self, enabled: bool) -> None:
+        """Enable the castle stepper (matched SCULPT zone layouts only)."""
+        for btn in self._stage_buttons.values():
+            btn.setEnabled(enabled)
+
+    def set_stage(self, stage: str) -> None:
+        """Reflect the current stage in the stepper without emitting."""
+        btn = self._stage_buttons.get(stage)
+        if btn is not None:
+            btn.setChecked(True)
+
+    def show_mesh(self, mesh: "trimesh.Trimesh", stock=None) -> None:  # noqa: F821
+        """Load a trimesh.Trimesh into the viewer.
+
+        stock: optional project.schema.StockDefinition — drawn as wireframe
+        ghosts of the blank and pad block around the part.
+        """
         if not self._ensure_plotter():
             return
 
@@ -122,6 +177,25 @@ class Preview3D(QWidget):
         self._plotter.add_light(
             pv.Light(position=(100, -50, 200), focal_point=(0, 0, 0), intensity=0.8)
         )
+
+        if stock is not None:
+            half_l = stock.blank_length_mm / 2.0
+            half_w = stock.blank_width_mm / 2.0
+            boxes = [pv.Box(bounds=(
+                -half_l, half_l, -half_w, half_w, 0.0, stock.blank_thickness_mm
+            ))]
+            half_pl = stock.pad_block_length_mm / 2.0
+            half_pw = stock.pad_block_width_mm / 2.0
+            dx, dy = stock.pad_block_dx_mm, stock.pad_block_dy_mm
+            boxes.append(pv.Box(bounds=(
+                dx - half_pl, dx + half_pl, dy - half_pw, dy + half_pw,
+                stock.blank_thickness_mm, stock.total_pad_height_mm,
+            )))
+            for box in boxes:
+                self._plotter.add_mesh(
+                    box.extract_all_edges(), color="#9a9a9a", line_width=1
+                )
+
         self._plotter.reset_camera()
 
         n_verts = len(verts)

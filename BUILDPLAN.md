@@ -16,7 +16,28 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-11, v0.3.0 — M3 complete: the five-operation program generates and matches the reference)*
+## Status snapshot *(2026-06-12, v0.4.0 — M4 complete: the castle is parametric in the GUI)*
+
+**M4 landed:** the params panel is now the castle — **Towers** (endpiece /
+bridge / nosepad heights + hinge-pocket depth), **Walls** (superior / inferior
+eyewires), **Footing** (the five exterior/interior radius pairs; Fusion
+application order kept as non-exposed defaults) — plus a **Stock** panel
+(blank + pad block, dashed outlines on the 2D canvas, wireframe ghost in 3D),
+onion-skin + hand-finishing-allowance spinboxes, a **Zones inspector** (hover
+highlights the region on the canvas; generic zones flagged), and the **castle
+stage stepper** in the 3D preview (Towers → +Walls → +Footing → Full) backed
+by `build_castle_stage()` in core. Every castle spinbox live-rebuilds the
+preview (350 ms debounce, per-stage mesh cache). G-code now uses the UI's
+`CastleParams` and ends in an op-summary dialog (op, strategy, Z floor, cut
+length, est. time — `op_summaries()` in core). Legacy spike relief retired:
+`relief/builder.py` deleted, `ReliefRecipe` removed from the schema, the GUI
+scallop/nosepad/groove and hinge-placement groups removed, dead back-relief
+G-code path removed (no-SCULPT DXFs fall back to a profile-only cut).
+Suite: 57 tests green.
+
+---
+
+### Earlier snapshot (v0.3.0 — M3)
 
 **M3 landed:** `cam/castle_ops.py` generates the full posterior program —
 Hinge Pockets (ramped lap entry, no plunge) → Rough Relief (stock-aware) →
@@ -313,24 +334,32 @@ not used for frame fronts).
    Z = skin, rapids above stock+5). GUI G-code button emits the castle
    program with per-op log + clearance warnings. Suite 37 → 49.
 
-## M4 — Parametric castle UI (v0.4.0) · *immediate parametric feedback*
+## M4 — Parametric castle UI (v0.4.0) · *immediate parametric feedback* — ✅ DONE 2026-06-12
 
-1. **Castle panel** (replaces the relief group): **Towers** (endpiece /
+1. ✅ **Castle panel** (replaces the relief group): **Towers** (endpiece /
    bridge / nosepad thickness, hinge-pocket depth), **Walls** (superior /
    inferior eyewire thickness), **Footing** (the five exterior/interior
-   fillet radius pairs). Every spinbox triggers the live 3D rebuild
-   (≤ ~2 s at preview resolution).
-2. **Stock panel**: blank L × W × T + pad block L × W × T (defaults above);
-   redraws the stock outline in the 2D canvas and the preview.
-3. **CAM panel additions**: onion-skin thickness; **"Hand finishing
+   fillet radius pairs; `first` order not exposed — Fusion-timeline defaults).
+   Every spinbox triggers the live 3D rebuild (350 ms debounce, ~2 s at
+   preview resolution 0.3 mm); the spike relief group + hinge-placement
+   group are gone (`relief/builder.py` deleted, `ReliefRecipe` retired).
+2. ✅ **Stock panel**: blank L × W × T + pad block L × W × T (defaults
+   unchanged); dashed outlines on the 2D canvas (included in fit-to-view)
+   and a wireframe ghost in the 3D preview.
+3. ✅ **CAM panel additions**: onion-skin thickness; **"Hand finishing
    allowance"** spinbox (default 0.1 mm) with the tooltip *"places radial
-   leave-behind stock on contour operations"*.
-4. **Castle stage stepper** in the 3D preview: towers only → +walls →
-   +footing → +pockets — the teaching visualization of §2.
-5. **Zone inspector**: hovering a zone row highlights the region on the 2D
-   canvas; unmatched/generic zones flagged.
-6. G-code action produces the five-op program with an op-summary dialog
-   (op, strategy, Z floor, est. length — the in-app setup sheet).
+   leave-behind stock on contour operations"*. Profile-fallback settings
+   (no-SCULPT DXFs) kept in a sub-section.
+4. ✅ **Castle stage stepper** in the 3D preview: towers only → +walls →
+   +footing → +pockets, backed by `build_castle_stage()` in
+   `relief/castle.py` (towers stage parks the eyewire zones on a 0.6 mm
+   ground slab); per-stage mesh cache, invalidated on any castle change.
+5. ✅ **Zone inspector**: hovering a zone row highlights the region on the
+   2D canvas (orange fill, holes respected); unmatched/generic zones and
+   missing-SCULPT imports flagged in the status line.
+6. ✅ G-code action produces the five-op program from the **UI's**
+   `CastleParams` and ends in an op-summary dialog (op, strategy, Z floor,
+   cut length, est. cutting time — `op_summaries()` in `cam/castle_ops.py`).
 
 ## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
 
@@ -370,7 +399,7 @@ not used for frame fronts).
 - [ ] Repo under git with tagged milestones (M1)
 - [ ] Demo DXF → relief matches `Model.stl` within the M2 tolerance gate
 - [ ] Generated program matches `Demo Program.nc` op envelopes (M3 gate)
-- [ ] Castle UI: every zone/footing/stock/allowance parameter live-updates
+- [x] Castle UI: every zone/footing/stock/allowance parameter live-updates
       the preview (M4)
 - [ ] **A physical frame front has been cut and accepted** (M5 — also
       graduates GuildDraw to v1.0.0)
@@ -402,7 +431,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-11, M3 complete)
+## Module status (as of 2026-06-12, M4 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -415,22 +444,22 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
 | `geometry/symmetry.py` | 🔲 | Stub; needed at latest for the M5 asymmetry question |
-| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified |
-| `relief/builder.py` | ⚠️ | No-SCULPT preview fallback only; retire in M4 with the castle UI |
+| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified; `build_castle_stage()` teaching stepper (M4) |
+| `relief/builder.py` | — | **Deleted in M4** (spike fallback retired; no-SCULPT DXFs get profile-only G-code, no 3D preview) |
 | `relief/groove.py` | ✅ | OLGA `bevel_flank` — dormant until lens patterns (post-1.0) |
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4) |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
 | `post/grbl.py` | ✅ | `comment()` added; pockets enter via ramped laps (plunge issue closed); contour passes plunge ≤ one stepdown by design |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` retired in M2/M4 |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` removed (M4) |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
-| `gui/app.py` + widgets | ✅ | Shell, workers, live-rebuild pattern; M4 reworks the params panel into the castle UI |
-| `tests/` | ✅ | 49 green (smoke 16 + M1 10 + M2 11 + M3 12, incl. the STL and NC gates) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4): Towers/Walls/Footing + Stock panels, zone inspector, stage stepper, debounced live rebuild, op-summary dialog |
+| `tests/` | ✅ | 57 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8, incl. the STL and NC gates) |
 
 ## Dependency list (v1 — unchanged)
 

@@ -1,28 +1,32 @@
 """GuildDraw DXF → solid 3D model (STL + rendered PNG).
 
-Exercises GuildCAM's existing core pipeline end-to-end on real GuildDraw
-output, as a planning aid for the GuildCAM redevelopment:
+Exercises GuildCAM's castle pipeline end-to-end on real GuildDraw output,
+headless:
 
-    io_import.dxf.import_dxf      SPLINE tessellation @ 0.01 mm
+    io_import.dxf.import_dxf      SPLINE tessellation @ 0.01 mm (posterior flip)
     io_import.normalize           point lists → Shapely polygons, auto-close
     io_import.validate            strict layer rules (OUTLINE ×1, LENS ×2)
     geometry.boxing               recover A / B / DBL from the lens pair
-    relief.builder                front relief (nosepad, lens grooves) +
-                                  back scallop on a shared heightfield grid
-    mesh (trimesh)                watertight solid masked to the outline
+    geometry.regions              SCULPT section cuts → castle zone partition
+    relief.castle                 terraces + footing fillets + hinge pockets,
+                                  watertight mesh
     mesh.stl_export               binary STL
 
-Run:  .venv\\Scripts\\python scripts\\dxf_to_stl.py demo\\guilddraw_front.dxf
+Requires the standard SCULPT layout (5 section cuts per side).
+
+Run:  .venv\\Scripts\\python scripts\\dxf_to_stl.py "Demo Project\\GuildDraw DXF Export.dxf"
 """
 from __future__ import annotations
 import sys
 from pathlib import Path
 
 from guildcam.core.io_import.dxf import import_dxf
-from guildcam.core.io_import.normalize import normalize
+from guildcam.core.io_import.normalize import normalize, points_to_polygon
 from guildcam.core.io_import.validate import validate
 from guildcam.core.geometry.boxing import measure_from_polygon
-from guildcam.core.relief.builder import ReliefBuildParams, build_preview_mesh
+from guildcam.core.geometry.regions import partition_zones
+from guildcam.core.project.schema import CastleParams
+from guildcam.core.relief.castle import build_castle_mesh, build_castle_relief
 from guildcam.core.mesh.stl_export import export_stl
 
 
@@ -41,14 +45,29 @@ def main(dxf_path: Path, stl_path: Path, png_path: Path) -> int:
 
     outline = layers["OUTLINE"][0]
     lenses = sorted(layers["LENS"], key=lambda p: p.centroid.x)
-    lens_od, lens_os = lenses[0], lenses[1]   # OD on viewer's left (neg x)
+    lens_os, lens_od = lenses[0], lenses[1]   # posterior coords: OD on +x
 
     bd = measure_from_polygon(lens_od, lens_os)
     print(f"boxing from DXF: A={bd.a:.1f}  B={bd.b:.1f}  DBL={bd.dbl:.1f}  "
           f"ED={bd.ed:.1f}  frame width={bd.derived_frame_width():.1f} mm")
 
-    params = ReliefBuildParams(stock_thickness_mm=6.0, resolution=0.2)
-    mesh = build_preview_mesh(outline, lens_od, lens_os, params)
+    sculpt = raw.get("SCULPT", [])
+    if not sculpt:
+        print("error: no SCULPT section cuts — castle relief needs the "
+              "5-cuts-per-side layout (draw them in GuildDraw)")
+        return 1
+    partition = partition_zones(outline, [lens_od, lens_os], sculpt)
+    print(f"castle: {len(partition.zones)} zones, matched={partition.matched}")
+    if not partition.matched:
+        print("error: SCULPT cuts did not match the standard castle layout")
+        return 1
+
+    hinges = [
+        p for p in (points_to_polygon(c) for c in raw.get("HINGE", []) if len(c) >= 3)
+        if p.is_valid and p.area > 0.5
+    ]
+    relief = build_castle_relief(partition, CastleParams(), hinges, resolution=0.2)
+    mesh = build_castle_mesh(relief)
     print(f"mesh: {len(mesh.vertices)} verts, {len(mesh.faces)} faces, "
           f"watertight={mesh.is_watertight}, "
           f"extents={[round(e, 1) for e in mesh.extents]} mm")
