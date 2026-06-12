@@ -16,7 +16,42 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-12, v0.4.0 — M4 complete: the castle is parametric in the GUI)*
+## Status snapshot *(2026-06-12, v0.4.5 — M4.5 landed; M5 hardware gate is next)*
+
+**M4.5 landed (same day as the diagnosis):** both stoppers closed.
+
+*Part A — design parity.* `gui/style/theme.py` now carries GuildDraw's `QSS`
+/ `QSS_DARK` verbatim (same palette, Inter stack) extended for GuildCAM's
+extra widgets, plus a `CanvasPalette` for everything QPainter/VTK draws;
+`guild.qss` and the League Spartan stack are gone, and no `gui/` module
+contains a hex literal that isn't sourced from theme.py (layer colors come
+from `core.layers` and get dark variants via `theme.layer_color`). Live
+**Settings ▸ Dark Mode** toggle (placed in a Settings menu exactly like
+GuildDraw's, not View as first sketched) restyles the app sheet, both
+canvases, and the layer-check tints; `gui/prefs.py` persists to
+`~/.guildcam/prefs.json` (GuildDraw's DEFAULTS-merge pattern); tabbed
+**Preferences** dialog (Appearance / Preview resolutions / Paths); **File ▸
+Open Recent** (8 entries, missing-file pruning).
+
+*Part B — mesh fidelity.* `build_castle_mesh` now snaps every silhouette
+vertex onto the true ring it belongs to (outline exterior / lens interiors
+for the mask boundary; hinge-pocket rings for the pocket walls, found via
+8-neighbour z-jump pairs). Demo results: axis-aligned sharp edges **98.9 % →
+15.3 %**, rim-vertex ring deviation **0.0000 mm**, watertight, and — better
+than the planned ±0.5 %-of-pre-fix volume check — the mesh volume now equals
+the Fusion reference (**7825 vs 7826 mm³**, resolution-independent; the old
+staircase under-read by a half-pixel band, ~7.8 %). STL export rebuilds at
+`export_resolution_mm` in its own worker (never the preview cache); preview
+normals split at 40° so footing blends shade smooth while rims stay crisp.
+Closeup render is visually indistinguishable from the reference
+(`_m45_closeup_*.png`; theme screenshots `_m45_theme_*.png`).
+
+Suite: 64 tests green (57 + 7 new M4.5 gates). Next: **M5 hardware
+round-trip** — the gate that also graduates GuildDraw to v1.0.0.
+
+---
+
+### Earlier same-day snapshot (v0.4.0 — M4)
 
 **M4 landed:** the params panel is now the castle — **Towers** (endpiece /
 bridge / nosepad heights + hinge-pocket depth), **Walls** (superior / inferior
@@ -361,6 +396,151 @@ not used for frame fronts).
    `CastleParams` and ends in an op-summary dialog (op, strategy, Z floor,
    cut length, est. cutting time — `op_summaries()` in `cam/castle_ops.py`).
 
+## M4.5 — Fit & finish stopover (v0.4.5) · *look like the Guild, model like the reference* — ✅ DONE 2026-06-12
+
+> **Status: diagnosed, planned, and implemented 2026-06-12; tagged `v0.4.5`.**
+> User direction: GuildDraw is the design reference and **must not change**;
+> GuildCAM adapts to it. And the M4 preview/STL output "doesn't produce a
+> result we can use" — fix the mesh before any hardware gate.
+> Implementation notes vs the plan below: the dark-mode action lives in a
+> **Settings** menu (GuildDraw parity beats the "View ▸" wording in task 4);
+> the preview-normals task used feature-angle vertex splitting (40°) instead
+> of hand-built gradient normals; and the volume sanity check was replaced by
+> a stronger gate — conformed volume must match the *Fusion reference*
+> (7825 vs 7826 mm³), since the pre-fix mesh systematically under-read by a
+> half-pixel rim band (−7.8 %).
+
+### Part A — Design parity with GuildDraw
+
+**Diagnosis.** GuildCAM's GUI was styled from memory of the Guild palette,
+not from GuildDraw, and the two have drifted:
+
+| Aspect | GuildDraw (reference — `framedraft/app.py`) | GuildCAM v0.4.0 |
+|---|---|---|
+| Theme source | Two complete inline QSS sheets: `QSS` (light) + `QSS_DARK` (app.py:118–302), swapped live by `_toggle_dark_mode` | One light-only `gui/style/guild.qss`, loaded once at startup |
+| Light palette | bg `#ffd580`, text `#1f1f1f`, inputs/buttons `#fce9c2`, borders/accents `#d4a840`, amber buttons with 1 px black border; checked = inverted black/amber | Same bg, but **inverted black buttons** (`#1a1a1a` bg / amber text), panel `#ffe8a8`, border `#c8a040` — visibly different control language |
+| Dark palette | bg `#1a1a1a`, warm-grey text `#d4cfc0`, surfaces `#2a2a2a`, borders `#554433`; canvas `#1e1e1e` | **None** |
+| Font | `"Inter", "Segoe UI", …` 13 px everywhere | `"League Spartan", "Poppins", Arial` (a font GuildDraw never uses) |
+| Canvas | bg `#faf6ee` light / `#1e1e1e` dark; every scene/guide item has `set_dark_mode()` | Hardcoded `#fafaf5` + hardcoded grid/scale-bar/placeholder colors; 3D viewport hardcoded `#fafaf5` |
+| Preferences | `framedraft/prefs.py` → `~/.guilddraw/prefs.json` (DEFAULTS-merged); 3-tab SettingsDialog (General / Toolbar / Hotkeys); recent-files list | No prefs file, no settings dialog, no recent files |
+| Hardcoded styles | Centralized in the two QSS sheets | Inline `setStyleSheet` hex scattered through `gui/app.py` (toolbar strip `#ffe8a8`, status bar, log `#1a1a1a`/`#ffd580`), `params_panel.py` (grey hint labels), `dxf_canvas.py`, `preview_3d.py` (toolbar strip) |
+
+**Plan (implementation tasks).**
+
+1. **`gui/style/theme.py`**: port GuildDraw's `QSS` / `QSS_DARK` verbatim as
+   the base (same hexes, same Inter font stack, same control styling), then
+   extend both sheets for widgets GuildCAM has and GuildDraw lacks:
+   `QListWidget`, `QTableWidget`/`QHeaderView` (op-summary dialog),
+   `QTextEdit` (log), `QScrollArea`, `QDialogButtonBox`. Retire
+   `guild.qss` and the League Spartan/Poppins stack. The log keeps its
+   monospace amber-on-dark look in both themes (it already matches dark).
+2. **De-hardcode**: replace every inline `setStyleSheet` hex in
+   `gui/app.py` and the three widgets with theme-driven styling — either
+   QSS object-name selectors (`#toolbarStrip`, `#statusBar`) or a small
+   palette dataclass exposed by `theme.py` (canvas bg, grid, scale bar,
+   placeholder, stock-dash, toolbar strip). One source of truth.
+3. **`gui/prefs.py`** modeled line-for-line on `framedraft/prefs.py`
+   (DEFAULTS + merge-on-load, silent save) → `~/.guildcam/prefs.json`.
+   Initial keys: `dark_mode`, `recent_files`, `preview_resolution_mm`
+   (default 0.3), `export_resolution_mm` (default 0.15), `last_output_dir`.
+4. **Dark mode toggle**: checkable View ▸ Dark Mode action (mirroring
+   GuildDraw's `_act_dark`) that swaps the app stylesheet live and calls
+   `set_dark_mode(dark)` on `DxfCanvas` (bg `#faf6ee`/`#1e1e1e`, grid,
+   scale bar, placeholder, stock dashes) and `Preview3D`
+   (`set_background`). Persisted via prefs; applied at startup.
+5. **Preferences dialog** patterned on GuildDraw's `SettingsDialog`
+   (tabbed, OK/Cancel): General tab only for now — Appearance (dark mode),
+   Preview (preview/export resolution), Paths (default output folder).
+   GuildDraw's Toolbar/Hotkeys tabs have no GuildCAM equivalent yet (no
+   drawing toolbar); the dialog structure leaves room for them.
+6. **Recent files**: File ▸ Open Recent (prefs-backed, most recent first),
+   same behaviour as GuildDraw.
+7. **Acceptance**: light and dark screenshots of GuildCAM next to GuildDraw
+   show the same palette, font, and control styling; toggling dark mode
+   restyles every surface (both canvases included) without restart; prefs
+   survive an app restart; no `setStyleSheet` call in `gui/` contains a
+   hex literal that isn't sourced from `theme.py`.
+
+### Part B — Mesh fidelity: the staircase rim
+
+**Symptom (user report, confirmed).** The 3D preview looks jagged and
+pixelated; exported STL is "jagged all over" vs the smooth Fusion reference.
+Parameter behaviour is correct — only the surface artifact is wrong.
+
+**Diagnosis (probe: `Demo Project/_probe_m45_mesh.py`, renders
+`_m45_overview_flat.png`, `_m45_closeup_*.png`).**
+
+- `build_castle_relief` rasterizes the body/zones/pockets to a square grid
+  by pixel-center point-in-polygon tests; `build_castle_mesh` then emits
+  only grid cells whose four corners are inside and stitches the rim along
+  the mask's boundary edges — which are **axis-aligned grid segments by
+  construction**. The true outline/lens splines never enter the mesh.
+- Measured on the demo: **98.9 % of sharp silhouette edges are axis-aligned
+  at 0.3 mm — and still 98.9 % at 0.15 mm.** Resolution shrinks the steps
+  (0.31 → 0.16 mm) but cannot remove the staircase; it is topological, not
+  a sampling-density problem. The Fusion reference STL is 1,299 verts /
+  2,602 faces with 3.7 mm mean edges — adaptive B-rep tessellation with
+  exactly-flat plateaus and smooth curved walls.
+- Same mechanism makes the **hinge-pocket walls** blocky (per-pixel carve
+  of the HINGE polygons).
+- Compounding it, the M4 GUI exports the cached **0.3 mm preview** mesh
+  (the `pockets` stage cache) — the coarsest possible variant.
+- The **top surfaces are not the problem**: terraces and footing blends are
+  analytic per-pixel heights (M2 gate: plateaus exact, band p95 0.045 mm).
+  Smooth shading hides this on top but cannot hide the corduroy rim.
+- **CAM output is unaffected.** Eyewire/perimeter/pocket toolpaths are
+  pyclipper offsets of the *true* polygons, and relief ops ride the smooth
+  heightfield (M3 NC gate matched the reference). The staircase exists only
+  in the preview/STL artifact — but that artifact is the product's face and
+  the M5 inspection record, so it must be fixed before hardware.
+
+**Plan (implementation tasks).**
+
+1. **Boundary-conforming rim (the fix).** After building the masked-grid
+   top surface, project every boundary-ring vertex onto the nearest point
+   of the true ring it belongs to (outline exterior, each lens interior,
+   each hinge-pocket ring) — shapely nearest-point per ring, ring chosen by
+   proximity. The Manhattan staircase becomes a chordal approximation of
+   the spline with ~`resolution`-length segments (chord error ≈ res²/8R —
+   microns). Keep the vertex's z (plateau/blend heights vary ≤ slope·res/2
+   across the snap distance). The rim wall quads then sweep a smooth ribbon
+   from the snapped top ring to the matching anterior ring.
+   - Risks to handle + test: 1-pixel-wide necks and concave corners
+     (snapping two adjacent verts to the same curve point → degenerate
+     faces — collapse them); rings must not cross after snapping
+     (`trimesh` watertight + winding checks); the M2 STL gate must still
+     pass unchanged; mesh volume within ~0.5 % of pre-fix.
+   - Fallback if snapping proves fragile: constrained triangulation of the
+     body polygon with grid interior points (more code, new dep — only if
+     needed).
+2. **Decouple export from preview.** Export STL rebuilds at
+   `export_resolution_mm` (default 0.15, prefs-configurable) in a worker —
+   never the preview cache. Progress in the log; file dialog remembers
+   `last_output_dir`.
+3. **Preview polish.** Per-vertex normals from the heightfield gradient for
+   the top surface (instead of `compute_normals` averaging over the rim),
+   so footing blends shade smoothly and rim walls stay crisp. Re-check
+   whether 0.3 mm preview still needs this after the rim fix; drop if
+   redundant.
+4. **Acceptance gates** (extend `_probe_m45_mesh.py` into
+   `tests/test_castle_m45.py`):
+   - axis-aligned fraction of sharp silhouette edges **< 20 %** (from 99 %);
+   - max XY deviation of rim vertices from the true outline/lens/pocket
+     rings **≤ 0.02 mm**;
+   - mesh watertight, M2 STL validation gate unchanged;
+   - regenerate the probe renders — closeup visually comparable to the
+     reference closeup.
+
+### M4.5 exit criteria
+
+- [x] GuildCAM light/dark themes match GuildDraw's palette, font, and
+      control styling; live toggle; prefs persisted (`~/.guildcam`)
+- [x] Preferences dialog + recent files
+- [x] Rim/pocket walls follow the true curves (silhouette gate < 20 %
+      axis-aligned — measured 15.3 %); STL exports at export resolution and
+      is visually comparable to the Fusion reference (volume 7825 vs 7826 mm³)
+- [x] Full suite green including the new M4.5 gates (64); tag `v0.4.5`
+
 ## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
 
 1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using
@@ -401,6 +581,8 @@ not used for frame fronts).
 - [ ] Generated program matches `Demo Program.nc` op envelopes (M3 gate)
 - [x] Castle UI: every zone/footing/stock/allowance parameter live-updates
       the preview (M4)
+- [x] GuildDraw design parity (theme/dark mode/prefs) and curve-true
+      preview/STL meshes (M4.5)
 - [ ] **A physical frame front has been cut and accepted** (M5 — also
       graduates GuildDraw to v1.0.0)
 - [ ] `.guildcam` round-trips the full castle schema; archive bundle exports
@@ -431,7 +613,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-12, M4 complete)
+## Module status (as of 2026-06-12, M4.5 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -444,7 +626,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
 | `geometry/symmetry.py` | 🔲 | Stub; needed at latest for the M5 asymmetry question |
-| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified; `build_castle_stage()` teaching stepper (M4) |
+| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified; `build_castle_stage()` teaching stepper (M4); boundary-conforming rim — silhouette follows the true curves, volume matches the reference (M4.5) |
 | `relief/builder.py` | — | **Deleted in M4** (spike fallback retired; no-SCULPT DXFs get profile-only G-code, no 3D preview) |
 | `relief/groove.py` | ✅ | OLGA `bevel_flank` — dormant until lens patterns (post-1.0) |
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
@@ -458,8 +640,9 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` removed (M4) |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4): Towers/Walls/Footing + Stock panels, zone inspector, stage stepper, debounced live rebuild, op-summary dialog |
-| `tests/` | ✅ | 57 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8, incl. the STL and NC gates) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); GuildDraw-parity theming, dark mode, Preferences, recent files, export-resolution STL worker (M4.5) |
+| `gui/style/theme.py` `gui/prefs.py` | ✅ | New in M4.5 — GuildDraw QSS port + CanvasPalette; `~/.guildcam/prefs.json` |
+| `tests/` | ✅ | 64 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7, incl. the STL, NC, and silhouette gates) |
 
 ## Dependency list (v1 — unchanged)
 

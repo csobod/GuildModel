@@ -11,6 +11,8 @@ from PySide6.QtGui import (
 )
 
 from guildcam.core.layers import LAYER_STYLES
+from guildcam.gui.style import theme
+
 _PLACEHOLDER_TEXT = "Open a DXF file to begin"
 
 
@@ -28,6 +30,10 @@ class DxfCanvas(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(400, 300)
         self.setMouseTracking(True)
+
+        # theme palette for everything QPainter draws (M4.5: no hardcoded hexes)
+        self._dark = False
+        self._palette = theme.palette(False)
 
         # layer-name → list of polylines (each polyline = list of (x, y) in mm)
         self._layers: dict[str, list[list[tuple[float, float]]]] = {}
@@ -49,6 +55,12 @@ class DxfCanvas(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
 
     # ------------------------------------------------------------------ public API
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Swap the painter palette (mirrors GuildDraw's scene.set_dark_mode)."""
+        self._dark = dark
+        self._palette = theme.palette(dark)
+        self.update()
 
     def set_layers(self, layers: dict[str, list[list[tuple[float, float]]]]) -> None:
         """Replace layer data and refresh."""
@@ -132,7 +144,7 @@ class DxfCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        painter.fillRect(self.rect(), QColor("#fafaf5"))
+        painter.fillRect(self.rect(), QColor(self._palette.canvas_bg))
 
         if not self._layers:
             self._draw_placeholder(painter)
@@ -145,15 +157,16 @@ class DxfCanvas(QWidget):
         self._draw_scale_bar(painter)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
-        font = QFont("Arial", 14)
+        font = QFont(self.font())
+        font.setPointSize(13)
         painter.setFont(font)
-        painter.setPen(QColor("#c8a040"))
+        painter.setPen(QColor(self._palette.placeholder))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _PLACEHOLDER_TEXT)
 
     def _draw_grid(self, painter: QPainter) -> None:
         """Light 10-mm grid."""
         grid_mm = 10.0
-        pen = QPen(QColor("#e8e0c0"), 0.5, Qt.PenStyle.DotLine)
+        pen = QPen(QColor(self._palette.grid), 0.5, Qt.PenStyle.DotLine)
         painter.setPen(pen)
 
         # find world bounds of the widget
@@ -180,7 +193,7 @@ class DxfCanvas(QWidget):
         """Dashed outlines of the stock blank and pad block."""
         if not self._stock_rects:
             return
-        pen = QPen(QColor("#909090"), 1.2, Qt.PenStyle.DashLine)
+        pen = QPen(QColor(self._palette.stock_dash), 1.2, Qt.PenStyle.DashLine)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -202,8 +215,8 @@ class DxfCanvas(QWidget):
             for p in pts[1:]:
                 path.lineTo(p)
             path.closeSubpath()
-        painter.fillPath(path, QColor(255, 150, 30, 70))
-        pen = QPen(QColor("#e07800"), 1.5)
+        painter.fillPath(path, QColor(*self._palette.zone_fill_rgba))
+        pen = QPen(QColor(self._palette.zone_outline), 1.5)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -213,7 +226,10 @@ class DxfCanvas(QWidget):
         for layer, curves in self._layers.items():
             if not self._visible.get(layer, True):
                 continue
-            color_hex, width = LAYER_STYLES.get(layer, ("#444444", 1.0))
+            color_hex, width = LAYER_STYLES.get(
+                layer, (self._palette.annotation, 1.0)
+            )
+            color_hex = theme.layer_color(color_hex, self._dark)
             pen = QPen(QColor(color_hex), width)
             pen.setCosmetic(True)   # width in screen px regardless of zoom
             painter.setPen(pen)
@@ -260,16 +276,17 @@ class DxfCanvas(QWidget):
         x1 = x2 - bar_px
         y = self.height() - margin
 
-        pen = QPen(QColor("#444444"), 1.5)
+        pen = QPen(QColor(self._palette.annotation), 1.5)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawLine(int(x1), int(y), int(x2), int(y))
         painter.drawLine(int(x1), int(y) - 4, int(x1), int(y) + 4)
         painter.drawLine(int(x2), int(y) - 4, int(x2), int(y) + 4)
 
-        font = QFont("Arial", 9)
+        font = QFont(self.font())
+        font.setPointSize(9)
         painter.setFont(font)
-        painter.setPen(QColor("#444444"))
+        painter.setPen(QColor(self._palette.annotation))
         label_rect = QRectF(x1, y - 18, bar_px, 14)
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, "10 mm")
 

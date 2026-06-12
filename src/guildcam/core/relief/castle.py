@@ -18,7 +18,7 @@ Also here: the two-level stock heightfield (blank + pad block), the
 heightfield analogue of the complex Fusion stock model.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 
 import numpy as np
 from shapely import contains_xy, distance, points, prepare
@@ -40,6 +40,7 @@ class CastleRelief:
     inside: np.ndarray          # bool (rows, cols): inside body (lens holes excluded)
     zone_index: np.ndarray      # int (rows, cols): index into partition.zones, -1 outside
     partition: CastlePartition
+    pocket_polys: list[Polygon] = dc_field(default_factory=list)  # carved hinge pockets
 
     @property
     def Xs(self) -> np.ndarray:
@@ -286,7 +287,10 @@ def build_castle_relief(
 
     z[~inside] = 0.0
     field = Heightfield(z=z, origin=(ox, oy), resolution=resolution)
-    return CastleRelief(field=field, inside=inside, zone_index=zone_index, partition=partition)
+    return CastleRelief(
+        field=field, inside=inside, zone_index=zone_index,
+        partition=partition, pocket_polys=list(hinge_polys),
+    )
 
 
 # ------------------------------------------------------------------ stages
@@ -345,12 +349,131 @@ def build_castle_stage(
 
 
 # ------------------------------------------------------------------ mesh
+#
+# M4.5 Part B: the masked-grid mesher emits axis-aligned boundary edges by
+# construction (a Manhattan staircase at any resolution — topological, not a
+# sampling problem). _conform_rim() fixes it by projecting every silhouette
+# vertex onto the nearest point of the true ring it belongs to: the outline
+# exterior / lens interiors for the mask boundary, and each hinge-pocket ring
+# for the pocket walls. Only XY moves (each vertex keeps its z), so plateaus
+# and footing blends are untouched and the M2 STL gate is unaffected.
 
-def build_castle_mesh(relief: CastleRelief) -> "trimesh.Trimesh":  # noqa: F821
+
+def _snap_to_rings(xy: np.ndarray, rings: list, max_dist: float) -> np.ndarray:
+    """Project (k, 2) points onto the nearest candidate ring within max_dist."""
+    import shapely
+
+    pts = shapely.points(xy[:, 0], xy[:, 1])
+    best_d = np.full(len(xy), np.inf)
+    best_ring = np.full(len(xy), -1, dtype=np.int64)
+    for i, ring in enumerate(rings):
+        d = shapely.distance(pts, ring)
+        better = d < best_d
+        best_d[better] = d[better]
+        best_ring[better] = i
+    out = xy.copy()
+    for i, ring in enumerate(rings):
+        sel = (best_ring == i) & (best_d <= max_dist)
+        if not sel.any():
+            continue
+        station = shapely.line_locate_point(ring, pts[sel])
+        moved = shapely.line_interpolate_point(ring, station)
+        out[sel, 0] = shapely.get_x(moved)
+        out[sel, 1] = shapely.get_y(moved)
+    return out
+
+
+def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray) -> list[tuple[np.ndarray, object]]:
+    """Vertex ids flanking each hinge-pocket wall, paired with the true ring.
+
+    A wall pixel pair is an inside-pocket / outside-pocket 4-neighbour pair
+    with a real z jump between them (pockets shallower than the local relief
+    carve nothing and get no snap).
+    """
+    z = relief.field.z
+    inside = relief.inside
+    rows, cols = z.shape
+    ox, oy = relief.field.origin
+    res = relief.field.resolution
+    out: list[tuple[np.ndarray, object]] = []
+    for poly in relief.pocket_polys:
+        bx0, by0, bx1, by1 = poly.bounds
+        c0 = max(0, int((bx0 - ox) / res) - 2)
+        c1 = min(cols, int((bx1 - ox) / res) + 3)
+        r0 = max(0, int((by0 - oy) / res) - 2)
+        r1 = min(rows, int((by1 - oy) / res) + 3)
+        if c0 >= c1 or r0 >= r1:
+            continue
+        sub = (slice(r0, r1), slice(c0, c1))
+        xs = ox + np.arange(c0, c1) * res
+        ys = oy + np.arange(r0, r1) * res
+        Xs, Ys = np.meshgrid(xs, ys)
+        prepare(poly)
+        in_p = contains_xy(poly, Xs.ravel(), Ys.ravel()).reshape(r1 - r0, c1 - c0)
+        ins = inside[sub]
+        zs = z[sub]
+        wall = np.zeros(in_p.shape, dtype=bool)
+        # 8-neighbourhood: diagonal-only contacts at staircase corners still
+        # share a top-surface face, so their vertices must snap too.
+        pairs = [
+            ((slice(1, None), slice(None)), (slice(None, -1), slice(None))),
+            ((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+            ((slice(1, None), slice(1, None)), (slice(None, -1), slice(None, -1))),
+            ((slice(1, None), slice(None, -1)), (slice(None, -1), slice(1, None))),
+        ]
+        for sl_a, sl_b in pairs:
+            across = (in_p[sl_a] != in_p[sl_b]) & ins[sl_a] & ins[sl_b]
+            jump = np.abs(zs[sl_a] - zs[sl_b]) > 0.02
+            m = across & jump
+            wall[sl_a] |= m
+            wall[sl_b] |= m
+        ids = vid[sub][wall]
+        ids = ids[ids >= 0]
+        if len(ids):
+            out.append((ids, poly.exterior))
+    return out
+
+
+def _conform_rim(
+    relief: CastleRelief,
+    verts: np.ndarray,
+    vid: np.ndarray,
+    n: int,
+    boundary: np.ndarray,
+) -> np.ndarray:
+    """Snap silhouette vertices onto the true outline / lens / pocket rings."""
+    res = relief.field.resolution
+    max_snap = 1.5 * res
+    body = relief.partition.body
+
+    # Mask boundary (outline + lens-hole rims): move top and anterior twins
+    # together so the rim wall stays a vertical ribbon.
+    rim_ids = np.unique(boundary)
+    body_rings = [body.exterior] + list(body.interiors)
+    snapped = _snap_to_rings(verts[rim_ids, :2], body_rings, max_snap)
+    verts[rim_ids, 0:2] = snapped
+    verts[rim_ids + n, 0:2] = snapped
+
+    # Hinge-pocket walls: interior z discontinuities — top vertices only.
+    rim_set = set(rim_ids.tolist())
+    for ids, ring in _pocket_wall_ids(relief, vid):
+        ids = np.array([i for i in ids if i not in rim_set], dtype=np.int64)
+        if not len(ids):
+            continue
+        verts[ids, 0:2] = _snap_to_rings(verts[ids, :2], [ring], max_snap)
+    return verts
+
+
+def build_castle_mesh(
+    relief: CastleRelief, conform: bool = True
+) -> "trimesh.Trimesh":  # noqa: F821
     """Watertight solid: castle top, flat anterior at z=0, stitched rim.
 
     Works on the masked grid, so the rim follows every boundary ring —
     outline and lens holes alike (closes the spike's open-mesh issue).
+    With conform=True (the default) the silhouette vertices are projected
+    onto the true outline / lens / hinge-pocket curves, replacing the grid
+    staircase with a chordal approximation of the splines (M4.5 Part B).
     """
     import trimesh
 
@@ -406,6 +529,9 @@ def build_castle_mesh(relief: CastleRelief) -> "trimesh.Trimesh":  # noqa: F821
         np.column_stack([b, a, a + n]),
         np.column_stack([b, a + n, b + n]),
     ])
+
+    if conform:
+        verts = _conform_rim(relief, verts, vid, n, boundary)
 
     mesh = trimesh.Trimesh(
         vertices=verts, faces=np.vstack([top, bottom, rim]), process=True

@@ -1,5 +1,6 @@
 """GuildCAM main window — thin PySide6 shell over guildcam.core."""
 from __future__ import annotations
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -11,12 +12,15 @@ from PySide6.QtWidgets import (
     QFileDialog, QStatusBar, QGroupBox, QTextEdit,
     QFrame, QSizePolicy, QMessageBox, QStackedWidget,
     QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
-    QHeaderView,
+    QHeaderView, QTabWidget, QCheckBox, QFormLayout,
+    QDoubleSpinBox, QLineEdit, QScrollArea,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction
 
 from guildcam.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
+from guildcam.gui import prefs as prefs_mod
+from guildcam.gui.style import theme
 from guildcam.gui.widgets.dxf_canvas import DxfCanvas
 from guildcam.gui.widgets.params_panel import ParamsPanel
 from guildcam.gui.widgets.preview_3d import Preview3D
@@ -100,6 +104,52 @@ class MeshWorker(QObject):
                 stage=self.stage, resolution=self.resolution,
             )
             self.finished.emit(build_castle_mesh(relief), self.stage)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ------------------------------------------------------------------ STL export worker
+
+class ExportWorker(QObject):
+    """Rebuilds the full castle at export resolution and writes the STL.
+
+    Never the preview cache (M4.5 Part B): export quality is controlled by
+    the export_resolution_mm preference, independent of the 3D view.
+    """
+
+    finished = Signal(str)   # written path
+    progress = Signal(str)   # log line
+    error = Signal(str)
+
+    def __init__(
+        self, partition, castle, hinge_polys, resolution: float, path: Path,
+    ) -> None:
+        super().__init__()
+        self.partition = partition
+        self.castle = castle
+        self.hinge_polys = list(hinge_polys)
+        self.resolution = resolution
+        self.path = Path(path)
+
+    def run(self) -> None:
+        try:
+            from guildcam.core.relief.castle import (
+                build_castle_mesh, build_castle_relief,
+            )
+            self.progress.emit(
+                f"[export] Building castle at {self.resolution} mm…"
+            )
+            relief = build_castle_relief(
+                self.partition, self.castle, self.hinge_polys,
+                resolution=self.resolution,
+            )
+            mesh = build_castle_mesh(relief)
+            self.progress.emit(
+                f"[export] {len(mesh.vertices):,} verts, "
+                f"{len(mesh.faces):,} tris, watertight={mesh.is_watertight}"
+            )
+            mesh.export(str(self.path))
+            self.finished.emit(str(self.path))
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -306,12 +356,117 @@ class OpSummaryDialog(QDialog):
         lay.addWidget(table)
 
         foot = QLabel("* cutting moves at the material feed rate; rapids excluded.")
-        foot.setStyleSheet("font-size: 10px; color: #888;")
+        foot.setObjectName("hintLabel")
         lay.addWidget(foot)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         lay.addWidget(buttons)
+
+
+# ------------------------------------------------------------------ preferences dialog
+
+class PrefsDialog(QDialog):
+    """Application preferences (M4.5 Part A) — patterned on GuildDraw's
+    SettingsDialog: tabbed with OK/Cancel.  General tab only for now; the
+    structure leaves room for more tabs as GuildCAM grows."""
+
+    def __init__(self, prefs: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(380)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        tabs = QTabWidget()
+        root_layout.addWidget(tabs)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(16, 8, 16, 16)
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        root_layout.addLayout(btn_row)
+
+        # ── Tab 0 — General ───────────────────────────────────────────────
+        gen_scroll = QScrollArea()
+        gen_scroll.setWidgetResizable(True)
+        gen_scroll.setFrameShape(gen_scroll.Shape.NoFrame)
+        gen_inner = QWidget()
+        gen_lay = QVBoxLayout(gen_inner)
+        gen_lay.setSpacing(12)
+        gen_lay.setContentsMargins(16, 16, 16, 8)
+        gen_scroll.setWidget(gen_inner)
+        tabs.addTab(gen_scroll, "General")
+
+        # Appearance
+        app_box = QGroupBox("Appearance")
+        app_form = QFormLayout(app_box)
+        self._dark_check = QCheckBox("Enable dark mode")
+        self._dark_check.setChecked(prefs["dark_mode"])
+        app_form.addRow(self._dark_check)
+        gen_lay.addWidget(app_box)
+
+        # Preview / export mesh resolution
+        def _res_spin(value: float) -> QDoubleSpinBox:
+            s = QDoubleSpinBox()
+            s.setRange(0.05, 1.0)
+            s.setSingleStep(0.05)
+            s.setDecimals(2)
+            s.setSuffix(" mm")
+            s.setValue(value)
+            return s
+
+        prev_box = QGroupBox("Preview")
+        prev_form = QFormLayout(prev_box)
+        self._preview_res = _res_spin(prefs["preview_resolution_mm"])
+        self._preview_res.setToolTip(
+            "Grid resolution of the live 3D preview (coarser = faster rebuilds)."
+        )
+        self._export_res = _res_spin(prefs["export_resolution_mm"])
+        self._export_res.setToolTip(
+            "Grid resolution used when exporting STL (finer = smoother file)."
+        )
+        prev_form.addRow("Preview resolution:", self._preview_res)
+        prev_form.addRow("Export resolution:", self._export_res)
+        gen_lay.addWidget(prev_box)
+
+        # Paths
+        path_box = QGroupBox("Paths")
+        path_form = QFormLayout(path_box)
+        path_row = QHBoxLayout()
+        self._out_dir = QLineEdit(prefs["last_output_dir"])
+        self._out_dir.setPlaceholderText("(ask every time)")
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_out_dir)
+        path_row.addWidget(self._out_dir)
+        path_row.addWidget(browse_btn)
+        path_form.addRow("Output folder:", path_row)
+        gen_lay.addWidget(path_box)
+
+        gen_lay.addStretch()
+
+    def _browse_out_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(
+            self, "Default output folder", self._out_dir.text()
+        )
+        if d:
+            self._out_dir.setText(d)
+
+    def to_prefs(self) -> dict:
+        return {
+            "dark_mode": self._dark_check.isChecked(),
+            "preview_resolution_mm": round(self._preview_res.value(), 2),
+            "export_resolution_mm": round(self._export_res.value(), 2),
+            "last_output_dir": self._out_dir.text(),
+        }
 
 
 # ------------------------------------------------------------------ action panel
@@ -337,9 +492,9 @@ class ActionPanel(QWidget):
         info_lay = QVBoxLayout(info_grp)
         self.filename_label = QLabel("None")
         self.filename_label.setWordWrap(True)
-        self.filename_label.setStyleSheet("font-size: 11px;")
+        self.filename_label.setObjectName("smallLabel")
         self.layers_label = QLabel("Layers: —")
-        self.layers_label.setStyleSheet("font-size: 11px; color: #555;")
+        self.layers_label.setObjectName("mutedSmallLabel")
         info_lay.addWidget(self.filename_label)
         info_lay.addWidget(self.layers_label)
         lay.addWidget(info_grp)
@@ -358,7 +513,7 @@ class ActionPanel(QWidget):
         prev_lay.addWidget(self.build3d_btn)
 
         self.build_status = QLabel("Load a DXF first")
-        self.build_status.setStyleSheet("font-size: 10px; color: #666;")
+        self.build_status.setObjectName("hintLabel")
         self.build_status.setWordWrap(True)
         prev_lay.addWidget(self.build_status)
         lay.addWidget(preview_grp)
@@ -380,7 +535,7 @@ class ActionPanel(QWidget):
             "SCULPT castle: posterior_cut.nc\n(five ops, onion skin)\n"
             "No SCULPT: front_profile.nc"
         )
-        note.setStyleSheet("font-size: 10px; color: #666;")
+        note.setObjectName("hintLabel")
         note.setWordWrap(True)
         act_lay.addWidget(note)
 
@@ -399,10 +554,7 @@ class ActionPanel(QWidget):
         log_lay = QVBoxLayout(log_grp)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setStyleSheet(
-            "background: #1a1a1a; color: #ffd580; font-family: Consolas, monospace;"
-            " font-size: 11px; border: none;"
-        )
+        self.log.setObjectName("logView")   # amber-on-dark in both themes
         log_lay.addWidget(self.log)
         lay.addWidget(log_grp)
 
@@ -427,10 +579,22 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("GuildCAM  —  Frame CAM")
         self.setMinimumSize(1200, 780)
 
-        self._load_stylesheet()
+        # Persistent preferences (~/.guildcam/prefs.json — GuildDraw pattern)
+        self._prefs = prefs_mod.load()
+        self._dark_mode = bool(self._prefs["dark_mode"])
+        self._recent_files: list[str] = [
+            p for p in self._prefs.get("recent_files", []) if isinstance(p, str)
+        ]
+
         self._build_ui()
         self._build_menu()
         self._connect_signals()
+
+        # Apply the persisted theme to every surface (QSS is set app-wide
+        # in main(); the painter/VTK surfaces need the explicit call).
+        if self._dark_mode:
+            self._act_dark.setChecked(True)
+        self._apply_dark_mode(self._dark_mode)
 
         self._import_thread: Optional[QThread] = None
         self._import_worker: Optional[ImportWorker] = None
@@ -438,6 +602,8 @@ class MainWindow(QMainWindow):
         self._mesh_worker: Optional[MeshWorker] = None
         self._gcode_thread: Optional[QThread] = None
         self._gcode_worker: Optional[GCodeWorker] = None
+        self._export_thread: Optional[QThread] = None
+        self._export_worker: Optional[ExportWorker] = None
 
         # Stored geometry from the last successful import
         self._outline_poly = None
@@ -458,12 +624,22 @@ class MainWindow(QMainWindow):
         self._rebuild_timer.setInterval(350)
         self._rebuild_timer.timeout.connect(self._start_mesh_build)
 
-    # ------------------------------------------------------------------ style
+    # ------------------------------------------------------------------ theme
 
-    def _load_stylesheet(self) -> None:
-        qss_path = Path(__file__).parent / "style" / "guild.qss"
-        if qss_path.exists():
-            self.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+    def _apply_dark_mode(self, dark: bool) -> None:
+        """Restyle every surface live (mirrors GuildDraw's _toggle_dark_mode)."""
+        self._dark_mode = dark
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.stylesheet(dark))
+        self.canvas.set_dark_mode(dark)
+        self.preview3d.set_dark_mode(dark)
+        self.params.set_dark_mode(dark)
+
+    def _on_toggle_dark_mode(self, dark: bool) -> None:
+        self._apply_dark_mode(dark)
+        self._prefs["dark_mode"] = dark
+        prefs_mod.save(self._prefs)
 
     # ------------------------------------------------------------------ layout
 
@@ -480,17 +656,15 @@ class MainWindow(QMainWindow):
         center_lay.setContentsMargins(0, 0, 0, 0)
         center_lay.setSpacing(0)
 
-        # Toolbar strip
+        # Toolbar strip (styled by the theme via #toolbarStrip)
         toolbar_strip = QWidget()
+        toolbar_strip.setObjectName("toolbarStrip")
         toolbar_strip.setFixedHeight(36)
-        toolbar_strip.setStyleSheet("background: #ffe8a8; border-bottom: 1px solid #c8a040;")
         ts_lay = QHBoxLayout(toolbar_strip)
         ts_lay.setContentsMargins(8, 4, 8, 4)
 
         lbl = QLabel("GuildCAM")
-        font = QFont("League Spartan", 16)
-        font.setBold(True)
-        lbl.setFont(font)
+        lbl.setObjectName("appTitle")
         ts_lay.addWidget(lbl)
         ts_lay.addStretch()
 
@@ -509,7 +683,7 @@ class MainWindow(QMainWindow):
         ts_lay.addSpacing(8)
 
         self.zoom_label = QLabel("Zoom: —")
-        self.zoom_label.setStyleSheet("font-size: 11px; color: #555;")
+        self.zoom_label.setObjectName("mutedSmallLabel")
         ts_lay.addWidget(self.zoom_label)
 
         fit_btn = QPushButton("Fit")
@@ -540,7 +714,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         sb = QStatusBar()
-        sb.setStyleSheet("background: #ffe8a8; border-top: 1px solid #c8a040;")
         self.status_lbl = QLabel("Ready — open a DXF to begin")
         sb.addWidget(self.status_lbl)
         self.setStatusBar(sb)
@@ -555,6 +728,8 @@ class MainWindow(QMainWindow):
         open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self._on_open)
         file_menu.addAction(open_act)
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
         quit_act.setShortcut("Ctrl+Q")
@@ -573,10 +748,83 @@ class MainWindow(QMainWindow):
         view3d_act.triggered.connect(lambda: self._switch_view(1))
         view_menu.addAction(view3d_act)
 
+        # Settings menu mirrors GuildDraw: Dark Mode toggle + Preferences…
+        settings_menu = mb.addMenu("&Settings")
+        self._act_dark = QAction("Dark Mode", self, checkable=True, checked=False)
+        self._act_dark.triggered.connect(self._on_toggle_dark_mode)
+        settings_menu.addAction(self._act_dark)
+        settings_menu.addSeparator()
+        settings_menu.addAction("Preferences…", self._open_preferences)
+
         help_menu = mb.addMenu("&Help")
         about_act = QAction("&About GuildCAM", self)
         about_act.triggered.connect(self._on_about)
         help_menu.addAction(about_act)
+
+    # ------------------------------------------------------------------ recent files
+
+    _MAX_RECENT = 8
+
+    def _add_recent(self, path: str) -> None:
+        path = os.path.abspath(path)
+        self._recent_files = ([path]
+                              + [p for p in self._recent_files if p != path])
+        del self._recent_files[self._MAX_RECENT:]
+        self._prefs["recent_files"] = list(self._recent_files)
+        prefs_mod.save(self._prefs)
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        m = self._recent_menu
+        m.clear()
+        if not self._recent_files:
+            empty = m.addAction("(empty)")
+            empty.setEnabled(False)
+            return
+        for p in self._recent_files:
+            act = m.addAction(os.path.basename(p),
+                              lambda checked=False, p=p: self._open_recent(p))
+            act.setToolTip(p)
+        m.addSeparator()
+        m.addAction("Clear Recent", self._clear_recent)
+
+    def _clear_recent(self) -> None:
+        self._recent_files = []
+        self._prefs["recent_files"] = []
+        prefs_mod.save(self._prefs)
+        self._rebuild_recent_menu()
+
+    def _open_recent(self, path: str) -> None:
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "File not found",
+                                f"{path}\n\nno longer exists.")
+            self._recent_files = [p for p in self._recent_files if p != path]
+            self._prefs["recent_files"] = list(self._recent_files)
+            prefs_mod.save(self._prefs)
+            self._rebuild_recent_menu()
+            return
+        self._load_dxf(Path(path))
+
+    # ------------------------------------------------------------------ preferences
+
+    def _open_preferences(self) -> None:
+        current = {**self._prefs, "dark_mode": self._dark_mode}
+        dlg = PrefsDialog(current, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        p = dlg.to_prefs()
+        old_preview_res = self._prefs["preview_resolution_mm"]
+        self._prefs.update(p)
+        prefs_mod.save(self._prefs)
+
+        if p["dark_mode"] != self._dark_mode:
+            self._act_dark.setChecked(p["dark_mode"])
+            self._apply_dark_mode(p["dark_mode"])
+        if p["preview_resolution_mm"] != old_preview_res:
+            # Cached stage meshes were built at the old resolution.
+            self._stage_cache.clear()
+            if self.stack.currentIndex() == 1 and self._castle_ready():
+                self._rebuild_timer.start()
 
     # ------------------------------------------------------------------ connections
 
@@ -735,6 +983,8 @@ class MainWindow(QMainWindow):
             )
 
         self.status_lbl.setText(f"Loaded: {fname}")
+        if self._import_worker is not None:
+            self._add_recent(str(self._import_worker.path))
 
     def _on_import_error(self, tb: str) -> None:
         self.action_panel.append_log("[ERROR] Import failed:\n" + tb)
@@ -813,6 +1063,7 @@ class MainWindow(QMainWindow):
         self._mesh_worker = MeshWorker(
             self._partition, self.params.castle_params(),
             hinge_polys=self._hinge_polys, stage=self._stage,
+            resolution=self._prefs["preview_resolution_mm"],
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -866,10 +1117,13 @@ class MainWindow(QMainWindow):
             return
 
         out_dir = QFileDialog.getExistingDirectory(
-            self, "Choose output folder for .nc files"
+            self, "Choose output folder for .nc files",
+            self._prefs["last_output_dir"],
         )
         if not out_dir:
             return
+        self._prefs["last_output_dir"] = out_dir
+        prefs_mod.save(self._prefs)
 
         params = self._collect_gcode_params()
 
@@ -921,28 +1175,57 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("G-code generation failed — see log")
 
     def _on_export_stl(self) -> None:
-        mesh = self._stage_cache.get("pockets")
-        if mesh is None:
+        if not self._castle_ready():
             QMessageBox.information(
                 self, "Export STL",
-                "Build the full castle first (Build 3D Model with the "
-                "stepper on 'Full').",
+                "STL export needs the standard SCULPT zone layout "
+                "(5 section cuts per side). Draw them in GuildDraw and "
+                "re-export the DXF.",
             )
             return
+        start = str(
+            Path(self._prefs["last_output_dir"] or ".") / "frame_front.stl"
+        )
         path_str, _ = QFileDialog.getSaveFileName(
-            self, "Export STL", "frame_front.stl", "STL files (*.stl)"
+            self, "Export STL", start, "STL files (*.stl)"
         )
         if not path_str:
             return
-        mesh.export(path_str)
-        self.action_panel.append_log(f"[export] Wrote {path_str}")
+        self._prefs["last_output_dir"] = str(Path(path_str).parent)
+        prefs_mod.save(self._prefs)
+
+        # Always a fresh build at export resolution — never the preview cache.
+        self.action_panel.export_stl_btn.setEnabled(False)
+        self.status_lbl.setText("Exporting STL…")
+        self._export_worker = ExportWorker(
+            self._partition, self.params.castle_params(), self._hinge_polys,
+            resolution=self._prefs["export_resolution_mm"], path=Path(path_str),
+        )
+        self._export_thread = QThread()
+        self._export_worker.moveToThread(self._export_thread)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.progress.connect(self.action_panel.append_log)
+        self._export_worker.finished.connect(self._on_export_finished)
+        self._export_worker.error.connect(self._on_export_error)
+        self._export_worker.finished.connect(self._export_thread.quit)
+        self._export_worker.error.connect(self._export_thread.quit)
+        self._export_thread.start()
+
+    def _on_export_finished(self, path: str) -> None:
+        self.action_panel.append_log(f"[export] Wrote {path}")
+        self.action_panel.export_stl_btn.setEnabled(True)
         self.status_lbl.setText("STL exported")
+
+    def _on_export_error(self, tb: str) -> None:
+        self.action_panel.append_log("[export ERROR]\n" + tb)
+        self.action_panel.export_stl_btn.setEnabled(True)
+        self.status_lbl.setText("STL export failed — see log")
 
     def _on_about(self) -> None:
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.4 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.4.5 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",
@@ -955,6 +1238,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("GuildCAM")
     app.setOrganizationName("Guild")
+    app.setStyleSheet(theme.stylesheet(prefs_mod.load()["dark_mode"]))
 
     win = MainWindow()
     win.show()

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
+from guildcam.gui.style import theme
 
 _PLACEHOLDER_TEXT = "Click 'Build 3D' to generate the preview mesh"
 
@@ -39,14 +40,16 @@ class Preview3D(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+        self._palette = theme.palette(False)
+
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
-        # Top camera toolbar
+        # Top camera toolbar (styled by the theme via #toolbarStrip)
         toolbar = QWidget()
+        toolbar.setObjectName("toolbarStrip")
         toolbar.setFixedHeight(30)
-        toolbar.setStyleSheet("background: #ffe8a8; border-bottom: 1px solid #c8a040;")
         tb_lay = QHBoxLayout(toolbar)
         tb_lay.setContentsMargins(6, 2, 6, 2)
         tb_lay.setSpacing(4)
@@ -60,14 +63,13 @@ class Preview3D(QWidget):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: #c8a040;")
         tb_lay.addSpacing(6)
         tb_lay.addWidget(sep)
         tb_lay.addSpacing(6)
 
         # Castle stage stepper: watch the castle being built
         stage_lbl = QLabel("Castle:")
-        stage_lbl.setStyleSheet("font-size: 10px; color: #555;")
+        stage_lbl.setObjectName("hintLabel")
         tb_lay.addWidget(stage_lbl)
 
         self._stage_group = QButtonGroup(self)
@@ -88,15 +90,15 @@ class Preview3D(QWidget):
         tb_lay.addStretch()
 
         self._mesh_label = QLabel("No mesh")
-        self._mesh_label.setStyleSheet("font-size: 10px; color: #888;")
+        self._mesh_label.setObjectName("hintLabel")
         tb_lay.addWidget(self._mesh_label)
 
         self._layout.addWidget(toolbar)
 
         # Placeholder until PyVista is initialised
         self._placeholder = QLabel(_PLACEHOLDER_TEXT)
+        self._placeholder.setObjectName("placeholderLabel")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setStyleSheet("color: #c8a040; font-size: 13px;")
         self._layout.addWidget(self._placeholder)
 
         self._plotter: Optional[object] = None   # pyvistaqt.QtInteractor
@@ -113,7 +115,7 @@ class Preview3D(QWidget):
             import pyvista as pv
 
             self._plotter = QtInteractor(self)
-            self._plotter.set_background("#fafaf5")
+            self._plotter.set_background(self._palette.canvas_bg)
             self._plotter.enable_anti_aliasing()
             self._plotter.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -129,6 +131,13 @@ class Preview3D(QWidget):
             return False
 
     # ------------------------------------------------------------------ public API
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Swap the viewport palette (the Qt chrome restyles via the app QSS)."""
+        self._palette = theme.palette(dark)
+        if self._plotter is not None:
+            self._plotter.set_background(self._palette.canvas_bg)
+            self._plotter.render()
 
     def set_stage_enabled(self, enabled: bool) -> None:
         """Enable the castle stepper (matched SCULPT zone layouts only)."""
@@ -162,12 +171,17 @@ class Preview3D(QWidget):
             faces.astype(np.int32),
         ]).ravel()
         pv_mesh = pv.PolyData(verts, pv_faces)
-        pv_mesh.compute_normals(inplace=True)
+        # Split sharp creases (rim corners, pocket walls) so smooth shading
+        # keeps the footing blends soft without smearing the silhouette
+        # (M4.5 Part B preview polish).
+        pv_mesh = pv_mesh.compute_normals(
+            split_vertices=True, feature_angle=40.0
+        )
 
         self._plotter.clear()
         self._mesh_actor = self._plotter.add_mesh(
             pv_mesh,
-            color="#d4a84b",
+            color=self._palette.mesh_surface,
             smooth_shading=True,
             show_edges=False,
             lighting=True,
@@ -193,7 +207,8 @@ class Preview3D(QWidget):
             )))
             for box in boxes:
                 self._plotter.add_mesh(
-                    box.extract_all_edges(), color="#9a9a9a", line_width=1
+                    box.extract_all_edges(),
+                    color=self._palette.stock_ghost, line_width=1,
                 )
 
         self._plotter.reset_camera()

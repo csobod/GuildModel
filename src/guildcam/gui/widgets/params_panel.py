@@ -25,6 +25,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from guildcam.core.layers import LAYER_STYLES
+from guildcam.gui.style import theme
 from guildcam.core.project.schema import (
     CastleParams, FootingFillet, FootingSchedule, StockDefinition,
     ZoneThicknesses,
@@ -58,7 +59,7 @@ def _spinbox(
 
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("font-size: 11px; font-weight: bold; margin-top: 4px;")
+    lbl.setObjectName("sectionLabel")
     return lbl
 
 
@@ -123,21 +124,30 @@ class ParamsPanel(QWidget):
 
         self.source_label = QLabel("No file loaded")
         self.source_label.setWordWrap(True)
-        self.source_label.setStyleSheet("font-size: 11px; color: #555;")
+        self.source_label.setObjectName("mutedSmallLabel")
         lay.addWidget(self.source_label)
 
-        # layer visibility checkboxes
+        # layer visibility checkboxes (tinted with the layer color)
         lay.addWidget(_section_label("Layer visibility:"))
 
         self._layer_checks: dict[str, QCheckBox] = {}
-        for layer, (color, _) in LAYER_STYLES.items():
+        for layer in LAYER_STYLES:
             cb = QCheckBox(layer)
             cb.setChecked(True)
-            cb.setStyleSheet(f"color: {color}; font-size: 11px;")
             lay.addWidget(cb)
             self._layer_checks[layer] = cb
+        self._tint_layer_checks(dark=False)
 
         self._layout.addWidget(grp)
+
+    def _tint_layer_checks(self, dark: bool) -> None:
+        for layer, cb in self._layer_checks.items():
+            color = theme.layer_color(LAYER_STYLES[layer][0], dark)
+            cb.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    def set_dark_mode(self, dark: bool) -> None:
+        """Re-tint the layer checkboxes (everything else restyles via QSS)."""
+        self._tint_layer_checks(dark)
 
     # ------------------------------------------------------------------ boxing
 
@@ -160,7 +170,7 @@ class ParamsPanel(QWidget):
         lay.addLayout(form)
 
         note = QLabel("Auto-calculated from lens outline on import.")
-        note.setStyleSheet("font-size: 10px; color: #888; margin-top: 2px;")
+        note.setObjectName("hintLabel")
         note.setWordWrap(True)
         lay.addWidget(note)
 
@@ -293,13 +303,12 @@ class ParamsPanel(QWidget):
 
         self.zones_status = QLabel("No SCULPT zones — load a frame DXF.")
         self.zones_status.setWordWrap(True)
-        self.zones_status.setStyleSheet("font-size: 10px; color: #888;")
+        self.zones_status.setObjectName("hintLabel")
         lay.addWidget(self.zones_status)
 
         self.zone_list = _ZoneList()
         self.zone_list.setMouseTracking(True)
         self.zone_list.setFixedHeight(140)
-        self.zone_list.setStyleSheet("font-size: 11px;")
         self.zone_list.itemEntered.connect(
             lambda item: self.zone_hovered.emit(item.data(Qt.ItemDataRole.UserRole))
         )
