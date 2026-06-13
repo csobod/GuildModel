@@ -16,7 +16,7 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-12, M4.6 implemented — tag `v0.4.6` pending; then M5)*
+## Status snapshot *(2026-06-12, M4.6 done — `v0.4.6` tagged (commit d8cf26f); next M5)*
 
 **M4.6 landed (same day):** the window architecture was rebuilt on
 GuildDraw's pattern. The two fixed-width sidebars inside a `QSplitter` (the
@@ -47,8 +47,8 @@ the workers use this for the Cancel button). Icons: `gui/icons.py` ports
 GuildDraw's `_make_icon` (SVG → two-state QIcon, `currentColor` recolored per
 theme), called from `_apply_dark_mode`; the 11 GuildCAM drawings + 2 reused
 GuildDraw icons live in `gui/resources/icons/`, with text fallback when an
-SVG is absent. Suite: 79 tests green (64 + 15 new M4.6 gates). Tag `v0.4.6`
-once committed.
+SVG is absent. Suite: 87 tests green (64 + 23 new M4.6 gates). Tagged
+`v0.4.6` (commit d8cf26f).
 
 ---
 
@@ -578,10 +578,11 @@ Parameter behaviour is correct — only the surface artifact is wrong.
 
 ## M4.6 — UI architecture stopover (v0.4.6) · *one sidebar, like the reference; never leave the user guessing*
 
-> **Status: IMPLEMENTED 2026-06-12; tag `v0.4.6` pending commit. M5 stays
-> blocked behind it.** All three parts landed (window architecture, progress
-> dialogs, icon runtime); the icon SVGs were delivered by Claude Design and
-> are consumed by `gui/icons.py` with text fallback. Suite 79 green.
+> **Status: DONE 2026-06-12 — `v0.4.6` tagged (commit d8cf26f). M5 next.**
+> All three parts landed (window architecture, progress dialogs, icon
+> runtime); the full icon set (toolbar + camera presets + the 4-step castle
+> stage storyboard) was delivered by Claude Design and is consumed by
+> `gui/icons.py` with text fallback. Suite 87 green.
 
 ### Part A — Main-window architecture (docks + tabs, the GuildDraw pattern)
 
@@ -696,7 +697,7 @@ ops) report only log lines; the user reads stalls as glitches.
       `main_window_geometry` / `main_window_state`)
 - [x] `docs/ICON-STYLE-GUIDE.md` delivered; `gui/icons.py` consumes SVGs
       from `gui/resources/icons/` with text fallback
-- [x] Full suite green (79); tag `v0.4.6` *(pending commit)*
+- [x] Full suite green (87); **`v0.4.6` tagged (commit d8cf26f)**
 
 ## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
 
