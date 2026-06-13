@@ -12,9 +12,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QButtonGroup, QFrame, QLabel, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 
 from guildcam.gui.style import theme
+from guildcam.gui import icons as icons_mod
 
 _PLACEHOLDER_TEXT = "Click 'Build 3D' to generate the preview mesh"
 
@@ -28,12 +29,13 @@ class Preview3D(QWidget):
 
     stage_changed = Signal(str)   # relief.castle.CASTLE_STAGES value
 
-    # (button label, CASTLE_STAGES value) — the teaching stepper
+    # (button label, CASTLE_STAGES value, icon name, tooltip) — the teaching
+    # stepper. Icons are a 4-step build storyboard; label is the text fallback.
     _STAGE_BUTTONS = [
-        ("Towers", "towers"),
-        ("+Walls", "walls"),
-        ("+Footing", "footing"),
-        ("Full", "pockets"),
+        ("Towers",   "towers",  "stage-towers",  "Towers only"),
+        ("+Walls",   "walls",   "stage-walls",   "Towers + walls"),
+        ("+Footing", "footing", "stage-footing", "Towers + walls + footing"),
+        ("Full",     "pockets", "stage-full",    "Full posterior (with pockets)"),
     ]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -41,6 +43,7 @@ class Preview3D(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._palette = theme.palette(False)
+        self._dark = False
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -54,12 +57,24 @@ class Preview3D(QWidget):
         tb_lay.setContentsMargins(6, 2, 6, 2)
         tb_lay.setSpacing(4)
 
-        for label, slot_name in [("Iso", "_cam_iso"), ("Top", "_cam_top"), ("Front", "_cam_front"), ("Reset", "_cam_reset")]:
-            btn = QPushButton(label)
+        # Camera presets — icon-only with tooltips (icons recolored per theme).
+        # (label kept for the text fallback when an SVG is missing.)
+        self._cam_buttons: dict[str, tuple[QPushButton, str]] = {}
+        for icon_name, label, slot_name in [
+            ("view-iso", "Iso", "_cam_iso"),
+            ("view-top", "Top", "_cam_top"),
+            ("view-front", "Front", "_cam_front"),
+            ("view-reset", "Reset", "_cam_reset"),
+        ]:
+            btn = QPushButton()
             btn.setFixedHeight(22)
-            btn.setFixedWidth(44)
+            btn.setFixedWidth(30)
+            btn.setIconSize(QSize(18, 18))
+            btn.setToolTip(f"{label} view" if icon_name != "view-reset" else "Reset camera")
             btn.clicked.connect(getattr(self, slot_name))
             tb_lay.addWidget(btn)
+            self._cam_buttons[icon_name] = (btn, label)
+        self._apply_camera_icons()
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
@@ -75,17 +90,23 @@ class Preview3D(QWidget):
         self._stage_group = QButtonGroup(self)
         self._stage_group.setExclusive(True)
         self._stage_buttons: dict[str, QPushButton] = {}
-        for label, stage in self._STAGE_BUTTONS:
-            btn = QPushButton(label)
+        # icon-name -> (button, text-fallback label), for per-theme recoloring
+        self._stage_icons: dict[str, tuple[QPushButton, str]] = {}
+        for label, stage, icon_name, tip in self._STAGE_BUTTONS:
+            btn = QPushButton()
             btn.setFixedHeight(22)
-            btn.setFixedWidth(58)
+            btn.setFixedWidth(30)
+            btn.setIconSize(QSize(18, 18))
             btn.setCheckable(True)
             btn.setEnabled(False)
+            btn.setToolTip(tip)
             btn.clicked.connect(lambda _=False, s=stage: self.stage_changed.emit(s))
             self._stage_group.addButton(btn)
             tb_lay.addWidget(btn)
             self._stage_buttons[stage] = btn
+            self._stage_icons[icon_name] = (btn, label)
         self._stage_buttons["pockets"].setChecked(True)
+        self._apply_stage_icons()
 
         tb_lay.addStretch()
 
@@ -132,9 +153,34 @@ class Preview3D(QWidget):
 
     # ------------------------------------------------------------------ public API
 
+    def _apply_camera_icons(self) -> None:
+        """(Re)render the camera-preset icons for the current theme; fall back
+        to the short text label when an SVG is missing."""
+        for icon_name, (btn, label) in self._cam_buttons.items():
+            icon = icons_mod.themed_icon(icon_name, self._dark)
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setText("")
+            else:
+                btn.setText(label)
+
+    def _apply_stage_icons(self) -> None:
+        """(Re)render the castle stage-stepper icons for the current theme;
+        fall back to the text label when an SVG is missing."""
+        for icon_name, (btn, label) in self._stage_icons.items():
+            icon = icons_mod.themed_icon(icon_name, self._dark)
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setText("")
+            else:
+                btn.setText(label)
+
     def set_dark_mode(self, dark: bool) -> None:
         """Swap the viewport palette (the Qt chrome restyles via the app QSS)."""
+        self._dark = dark
         self._palette = theme.palette(dark)
+        self._apply_camera_icons()
+        self._apply_stage_icons()
         if self._plotter is not None:
             self._plotter.set_background(self._palette.canvas_bg)
             self._plotter.render()

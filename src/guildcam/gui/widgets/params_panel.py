@@ -1,11 +1,17 @@
-"""Left-sidebar parameter panel.
+"""Right-dock parameter panel — a tabbed container (BUILDPLAN M4.6 Part A).
 
-Organises GuildCAM parameters into QGroupBox sections:
-  Import, Boxing (read-only / auto-computed), the parametric castle
-  (Towers / Walls / Footing — BUILDPLAN M4.1), Stock, Zones (inspector),
-  and CAM.
+``ParamsPanel`` is a ``QTabWidget`` with four tabs, each its own scroll area
+(no fixed width, no horizontal clipping):
 
-Castle vocabulary (towers / walls / footing) appears only in group titles
+  * **Frame**  — file identity, raw layer summary, layer-visibility checks,
+                 Boxing read-outs (ISO 8624);
+  * **Castle** — the parametric castle (Towers / Walls / Footing) + the Zones
+                 inspector;
+  * **Stock**  — blank + pad block;
+  * **CAM**    — material, onion skin, hand-finishing allowance, and the
+                 no-SCULPT profile fallback.
+
+Castle vocabulary (towers / walls / footing) appears only in tab/group titles
 and labels — the teaching frame. Widget identifiers and the schema built by
 :meth:`castle_params` keep the anatomical/boxing vocabulary (BUILDPLAN §2).
 
@@ -19,10 +25,9 @@ from PySide6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
     QGroupBox, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox,
-    QLineEdit, QListWidget, QListWidgetItem, QSizePolicy, QFrame,
+    QLineEdit, QListWidget, QListWidgetItem, QFrame, QTabWidget,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 
 from guildcam.core.layers import LAYER_STYLES
 from guildcam.gui.style import theme
@@ -73,8 +78,8 @@ class _ZoneList(QListWidget):
         super().leaveEvent(event)
 
 
-class ParamsPanel(QWidget):
-    """Scrollable panel with all GuildCAM parameter groups."""
+class ParamsPanel(QTabWidget):
+    """Tabbed parameter panel (Frame / Castle / Stock / CAM)."""
 
     # --- signals emitted when values change ---
     castle_changed = Signal()      # any zone height / footing / pocket depth
@@ -84,61 +89,66 @@ class ParamsPanel(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(290)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setMinimumWidth(300)
 
         self._partition = None    # CastlePartition from the last import
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        # Each tab is an independently scrolling column; no fixed width so the
+        # Footing label + spinbox-pair rows never clip at the right edge.
+        self.addTab(self._scroll_tab(self._build_frame_tab), "Frame")
+        self.addTab(self._scroll_tab(self._build_castle_tab), "Castle")
+        self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
+        self.addTab(self._scroll_tab(self._build_cam_tab), "CAM")
 
+    # ------------------------------------------------------------------ tab scaffold
+
+    def _scroll_tab(self, build) -> QScrollArea:
+        """Wrap a tab-builder's column in a vertically scrolling area."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer.addWidget(scroll)
-
         container = QWidget()
-        self._layout = QVBoxLayout(container)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._layout.setSpacing(8)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        build(lay)
+        lay.addStretch()
         scroll.setWidget(container)
+        return scroll
 
-        self._build_import_group()
-        self._build_boxing_group()
-        self._build_castle_group()
-        self._build_stock_group()
-        self._build_zones_group()
-        self._build_cam_group()
-        self._layout.addStretch()
+    # ------------------------------------------------------------------ Frame tab
 
-    # ------------------------------------------------------------------ import
+    def _build_frame_tab(self, lay: QVBoxLayout) -> None:
+        self._build_file_group(lay)
+        self._build_boxing_group(lay)
 
-    def _build_import_group(self) -> None:
-        grp = QGroupBox("Import")
-        lay = QVBoxLayout(grp)
-
-        self.import_btn = QPushButton("Open DXF…")
-        lay.addWidget(self.import_btn)
+    def _build_file_group(self, lay: QVBoxLayout) -> None:
+        grp = QGroupBox("Frame")
+        glay = QVBoxLayout(grp)
 
         self.source_label = QLabel("No file loaded")
         self.source_label.setWordWrap(True)
-        self.source_label.setObjectName("mutedSmallLabel")
-        lay.addWidget(self.source_label)
+        self.source_label.setObjectName("smallLabel")
+        glay.addWidget(self.source_label)
+
+        self.raw_layers_label = QLabel("Layers: —")
+        self.raw_layers_label.setWordWrap(True)
+        self.raw_layers_label.setObjectName("mutedSmallLabel")
+        glay.addWidget(self.raw_layers_label)
 
         # layer visibility checkboxes (tinted with the layer color)
-        lay.addWidget(_section_label("Layer visibility:"))
+        glay.addWidget(_section_label("Layer visibility:"))
 
         self._layer_checks: dict[str, QCheckBox] = {}
         for layer in LAYER_STYLES:
             cb = QCheckBox(layer)
             cb.setChecked(True)
-            lay.addWidget(cb)
+            glay.addWidget(cb)
             self._layer_checks[layer] = cb
         self._tint_layer_checks(dark=False)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     def _tint_layer_checks(self, dark: bool) -> None:
         for layer, cb in self._layer_checks.items():
@@ -149,11 +159,16 @@ class ParamsPanel(QWidget):
         """Re-tint the layer checkboxes (everything else restyles via QSS)."""
         self._tint_layer_checks(dark)
 
+    def set_file(self, name: str, layer_summary: str) -> None:
+        """Update the Frame tab's file identity (called on import)."""
+        self.source_label.setText(name)
+        self.raw_layers_label.setText(layer_summary)
+
     # ------------------------------------------------------------------ boxing
 
-    def _build_boxing_group(self) -> None:
+    def _build_boxing_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Boxing Dimensions  (ISO 8624)")
-        lay = QVBoxLayout(grp)
+        glay = QVBoxLayout(grp)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -167,14 +182,14 @@ class ParamsPanel(QWidget):
         form.addRow("B  (lens height):", self.field_b)
         form.addRow("DBL  (bridge gap):", self.field_dbl)
         form.addRow("ED  (eff. dia.):", self.field_ed)
-        lay.addLayout(form)
+        glay.addLayout(form)
 
         note = QLabel("Auto-calculated from lens outline on import.")
         note.setObjectName("hintLabel")
         note.setWordWrap(True)
-        lay.addWidget(note)
+        glay.addWidget(note)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     def update_boxing(
         self, a: float, b: float, dbl: float, ed: float
@@ -185,14 +200,18 @@ class ParamsPanel(QWidget):
         self.field_dbl.setText(f"{dbl:.2f} mm")
         self.field_ed.setText(f"{ed:.2f} mm")
 
-    # ------------------------------------------------------------------ castle
+    # ------------------------------------------------------------------ Castle tab
 
-    def _build_castle_group(self) -> None:
+    def _build_castle_tab(self, lay: QVBoxLayout) -> None:
+        self._build_castle_group(lay)
+        self._build_zones_group(lay)
+
+    def _build_castle_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Castle")
-        lay = QVBoxLayout(grp)
+        glay = QVBoxLayout(grp)
 
         # --- Towers: the high load-bearing masses ---
-        lay.addWidget(_section_label("Towers"))
+        glay.addWidget(_section_label("Towers"))
         towers = QFormLayout()
         towers.setContentsMargins(8, 0, 0, 0)
         towers.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -207,10 +226,10 @@ class ParamsPanel(QWidget):
         self.hinge_pocket_depth.setToolTip(
             "Pocket floor sits this far below the endpiece height."
         )
-        lay.addLayout(towers)
+        glay.addLayout(towers)
 
         # --- Walls: the eyewires spanning between the towers ---
-        lay.addWidget(_section_label("Walls"))
+        glay.addWidget(_section_label("Walls"))
         walls = QFormLayout()
         walls.setContentsMargins(8, 0, 0, 0)
         walls.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -218,10 +237,10 @@ class ParamsPanel(QWidget):
         self.zone_eyewire_inferior = _spinbox(4.2, 0.5, 12.0, decimals=1)
         walls.addRow("Superior eyewires:", self.zone_eyewire_superior)
         walls.addRow("Inferior eyewires:", self.zone_eyewire_inferior)
-        lay.addLayout(walls)
+        glay.addLayout(walls)
 
         # --- Footing: rolling-ball fillet pairs per step edge ---
-        lay.addWidget(_section_label("Footing  (exterior / interior)"))
+        glay.addWidget(_section_label("Footing  (exterior / interior)"))
         footing = QFormLayout()
         footing.setContentsMargins(8, 0, 0, 0)
         footing.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -247,12 +266,12 @@ class ParamsPanel(QWidget):
             pair.addWidget(int_sb)
             footing.addRow(label, pair)
             self.footing_spins[canonical] = (ext_sb, int_sb)
-        lay.addLayout(footing)
+        glay.addLayout(footing)
 
         for sb in self._castle_spinboxes():
             sb.valueChanged.connect(self._on_castle_spin)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     def _castle_spinboxes(self) -> list[QDoubleSpinBox]:
         boxes = [
@@ -268,9 +287,12 @@ class ParamsPanel(QWidget):
         self._refresh_zone_list()
         self.castle_changed.emit()
 
-    # ------------------------------------------------------------------ stock
+    # ------------------------------------------------------------------ Stock tab
 
-    def _build_stock_group(self) -> None:
+    def _build_stock_tab(self, lay: QVBoxLayout) -> None:
+        self._build_stock_group(lay)
+
+    def _build_stock_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Stock")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -293,18 +315,18 @@ class ParamsPanel(QWidget):
                    self.pad_length, self.pad_width, self.pad_thickness):
             sb.valueChanged.connect(self.stock_changed)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     # ------------------------------------------------------------------ zones
 
-    def _build_zones_group(self) -> None:
+    def _build_zones_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Zones")
-        lay = QVBoxLayout(grp)
+        glay = QVBoxLayout(grp)
 
         self.zones_status = QLabel("No SCULPT zones — load a frame DXF.")
         self.zones_status.setWordWrap(True)
         self.zones_status.setObjectName("hintLabel")
-        lay.addWidget(self.zones_status)
+        glay.addWidget(self.zones_status)
 
         self.zone_list = _ZoneList()
         self.zone_list.setMouseTracking(True)
@@ -313,9 +335,9 @@ class ParamsPanel(QWidget):
             lambda item: self.zone_hovered.emit(item.data(Qt.ItemDataRole.UserRole))
         )
         self.zone_list.pointer_left.connect(lambda: self.zone_hovered.emit(""))
-        lay.addWidget(self.zone_list)
+        glay.addWidget(self.zone_list)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
@@ -348,11 +370,14 @@ class ParamsPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, z.name)
             self.zone_list.addItem(item)
 
-    # ------------------------------------------------------------------ CAM
+    # ------------------------------------------------------------------ CAM tab
 
-    def _build_cam_group(self) -> None:
+    def _build_cam_tab(self, lay: QVBoxLayout) -> None:
+        self._build_cam_group(lay)
+
+    def _build_cam_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("CAM Settings")
-        lay = QVBoxLayout(grp)
+        glay = QVBoxLayout(grp)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -379,10 +404,10 @@ class ParamsPanel(QWidget):
             "places radial leave-behind stock on contour operations"
         )
         form.addRow("Hand finishing allowance:", self.hand_allowance)
-        lay.addLayout(form)
+        glay.addLayout(form)
 
         # Fallback profile cut for DXFs without SCULPT zones (legacy path).
-        lay.addWidget(_section_label("Profile fallback  (no SCULPT)"))
+        glay.addWidget(_section_label("Profile fallback  (no SCULPT)"))
         fb = QFormLayout()
         fb.setContentsMargins(8, 0, 0, 0)
         fb.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -404,7 +429,7 @@ class ParamsPanel(QWidget):
         fb.addRow("Hold-down tabs:", self.tab_count)
         fb.addRow("Tab width:", self.tab_width)
         fb.addRow("Tab height:", self.tab_height)
-        lay.addLayout(fb)
+        glay.addLayout(fb)
 
         for w in (self.material, self.onion_skin, self.hand_allowance,
                   self.tool_profile, self.stepdown_profile,
@@ -414,7 +439,7 @@ class ParamsPanel(QWidget):
             else:
                 w.currentIndexChanged.connect(self.cam_changed)
 
-        self._layout.addWidget(grp)
+        lay.addWidget(grp)
 
     # ------------------------------------------------------------------ schema
 

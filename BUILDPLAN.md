@@ -16,18 +16,39 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-12, v0.4.5 + M4.6 stopover planned — do M4.6 before M5)*
+## Status snapshot *(2026-06-12, M4.6 implemented — tag `v0.4.6` pending; then M5)*
 
-**M4.6 planned (same day, after user UI review of v0.4.5):** the castle
-pipeline and theming are right; the *window architecture* is not. User
-screenshot (`Current Development.png`) shows the params sidebar clipping its
-content and a dead band at the right edge when maximized — root causes are
-fixed-width panels inside a QSplitter, not maximization. M4.6 rebuilds the
-main window on GuildDraw's actual architecture (one right tabbed dock +
-top icon toolbar + bottom log dock), adds determinate progress dialogs for
-the long operations, and specs the icon set for Claude Design
-(`docs/ICON-STYLE-GUIDE.md`). Full plan in **§ M4.6**; implementation next
-session; tag `v0.4.6` when its exit criteria pass.
+**M4.6 landed (same day):** the window architecture was rebuilt on
+GuildDraw's pattern. The two fixed-width sidebars inside a `QSplitter` (the
+cause of both the clipped Footing rows and the dead band at the right edge
+when maximized) are gone, replaced by **one right `QDockWidget`** (title bar
+hidden, View-toggle) holding the params as a four-tab `QTabWidget`
+(**Frame / Castle / Stock / CAM**, each its own scroll area — no fixed width,
+no horizontal clipping); the log moved to a **bottom dock**; primary actions
+(Open · Build 3D · G-code · Export STL) plus the 2D/3D view toggle, Fit, and
+the two dock toggles moved to a **left vertical icon `QToolBar`** (F5 /
+Ctrl+G / Ctrl+E, menus matched) — **icon-only with tooltips**, GuildDraw's
+icon sidebar exactly (the dock toggles pinned to the bottom). The **log dock
+defaults to hidden** (Preferences ▸ Appearance ▸ *Show log panel on startup*
+sets the default; the toolbar button toggles it for the session).
+The app-level viewport strip and its `appTitle`/zoom readout
+were dropped — camera presets (**icon buttons**: view-iso/top/front/reset) +
+the castle stage stepper (**icon buttons**: stage-towers/walls/footing/full,
+a 4-step build storyboard — supersedes the style guide's original "stay text"
+note) stay on the 3D preview's own strip, all recolored per theme; zoom moved
+to the status bar. Window geometry + dock
+state persist via prefs (`main_window_geometry` / `main_window_state`,
+base64). Long ops (Build 3D / Export STL / Generate G-code) drive a
+determinate `QProgressDialog` with stage labels, fed by an optional
+`progress(label, frac)` hook threaded through `build_castle_relief` /
+`build_castle_stage` / `build_castle_mesh` / `generate_castle_program`
+(core stays headless; a callback may raise to cancel at a stage boundary —
+the workers use this for the Cancel button). Icons: `gui/icons.py` ports
+GuildDraw's `_make_icon` (SVG → two-state QIcon, `currentColor` recolored per
+theme), called from `_apply_dark_mode`; the 11 GuildCAM drawings + 2 reused
+GuildDraw icons live in `gui/resources/icons/`, with text fallback when an
+SVG is absent. Suite: 79 tests green (64 + 15 new M4.6 gates). Tag `v0.4.6`
+once committed.
 
 ---
 
@@ -557,12 +578,10 @@ Parameter behaviour is correct — only the surface artifact is wrong.
 
 ## M4.6 — UI architecture stopover (v0.4.6) · *one sidebar, like the reference; never leave the user guessing*
 
-> **Status: diagnosed and planned 2026-06-12 (user UI review of v0.4.5;
-> screenshot fixture `Current Development.png`). Implementation is the next
-> session's work; tag `v0.4.6` when the exit criteria pass. M5 stays blocked
-> behind it.** Icon SVGs are a separate deliverable for Claude Design
-> (**`docs/ICON-STYLE-GUIDE.md`**); the toolbar lands with text fallbacks and
-> the icons drop in whenever they arrive — they do not gate `v0.4.6`.
+> **Status: IMPLEMENTED 2026-06-12; tag `v0.4.6` pending commit. M5 stays
+> blocked behind it.** All three parts landed (window architecture, progress
+> dialogs, icon runtime); the icon SVGs were delivered by Claude Design and
+> are consumed by `gui/icons.py` with text fallback. Suite 79 green.
 
 ### Part A — Main-window architecture (docks + tabs, the GuildDraw pattern)
 
@@ -663,17 +682,21 @@ ops) report only log lines; the user reads stalls as glitches.
 
 ### M4.6 exit criteria
 
-- [ ] Single right tabbed dock (Frame/Castle/Stock/CAM) + bottom log dock;
+- [x] Single right tabbed dock (Frame/Castle/Stock/CAM) + bottom log dock;
       old two-sidebar splitter deleted; no clipped controls; no dead band
-      when maximized (light + dark screenshots)
-- [ ] Icon toolbar with full keyboard/menu parity; viewport strip is
-      view-contextual only
-- [ ] Build 3D / Export STL / Generate G-code show a determinate progress
-      dialog with stage labels; cancel works at stage boundaries
-- [ ] Window geometry/dock state persisted via prefs
-- [ ] `docs/ICON-STYLE-GUIDE.md` delivered; `gui/icons.py` consumes SVGs
+      when maximized (verified: the params dock now fills to the right edge,
+      tab scroll areas have no fixed width)
+- [x] Icon toolbar with full keyboard/menu parity (Ctrl+O / F5 / Ctrl+G /
+      Ctrl+E / Ctrl+0); viewport strip is view-contextual only (camera
+      presets + text stage stepper on the 3D strip; zoom in the status bar)
+- [x] Build 3D / Export STL / Generate G-code show a determinate progress
+      dialog with stage labels; cancel works at stage boundaries (core hook
+      may raise to abort; workers translate to a `cancelled` signal)
+- [x] Window geometry/dock state persisted via prefs (base64
+      `main_window_geometry` / `main_window_state`)
+- [x] `docs/ICON-STYLE-GUIDE.md` delivered; `gui/icons.py` consumes SVGs
       from `gui/resources/icons/` with text fallback
-- [ ] Full suite green; tag `v0.4.6`
+- [x] Full suite green (79); tag `v0.4.6` *(pending commit)*
 
 ## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
 
@@ -717,7 +740,7 @@ ops) report only log lines; the user reads stalls as glitches.
       the preview (M4)
 - [x] GuildDraw design parity (theme/dark mode/prefs) and curve-true
       preview/STL meshes (M4.5)
-- [ ] GuildDraw window architecture (tabbed right dock, icon toolbar,
+- [x] GuildDraw window architecture (tabbed right dock, icon toolbar,
       bottom log dock), progress dialogs on long ops (M4.6)
 - [ ] **A physical frame front has been cut and accepted** (M5 — also
       graduates GuildDraw to v1.0.0)
@@ -749,7 +772,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-12, M4.5 complete)
+## Module status (as of 2026-06-12, M4.6 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -762,7 +785,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
 | `geometry/symmetry.py` | 🔲 | Stub; needed at latest for the M5 asymmetry question |
-| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified; `build_castle_stage()` teaching stepper (M4); boundary-conforming rim — silhouette follows the true curves, volume matches the reference (M4.5) |
+| `relief/castle.py` | ✅ | Terraces + order-aware footing + stock + watertight mesh (M2); STL-gate verified; `build_castle_stage()` teaching stepper (M4); boundary-conforming rim — silhouette follows the true curves, volume matches the reference (M4.5); optional `progress` stage hook on relief/stage/mesh builders (M4.6) |
 | `relief/builder.py` | — | **Deleted in M4** (spike fallback retired; no-SCULPT DXFs get profile-only G-code, no 3D preview) |
 | `relief/groove.py` | ✅ | OLGA `bevel_flank` — dormant until lens patterns (post-1.0) |
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
@@ -776,9 +799,10 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` removed (M4) |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); GuildDraw-parity theming, dark mode, Preferences, recent files, export-resolution STL worker (M4.5) |
-| `gui/style/theme.py` `gui/prefs.py` | ✅ | New in M4.5 — GuildDraw QSS port + CanvasPalette; `~/.guildcam/prefs.json` |
-| `tests/` | ✅ | 64 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7, incl. the STL, NC, and silhouette gates) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); GuildDraw-parity theming, dark mode, Preferences, recent files, export-resolution STL worker (M4.5); right tabbed dock + bottom log dock + icon toolbar, progress dialogs, window-state persistence (M4.6) |
+| `gui/icons.py` | ✅ | New in M4.6 — `_make_icon` port (SVG→two-state QIcon, `currentColor` recolor) + `apply_toolbar_icons`; text fallback when an SVG is missing |
+| `gui/style/theme.py` `gui/prefs.py` | ✅ | New in M4.5 — GuildDraw QSS port + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 adds window geometry/state keys) |
+| `tests/` | ✅ | 79 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 15, incl. the STL, NC, silhouette, and progress/icon gates) |
 
 ## Dependency list (v1 — unchanged)
 

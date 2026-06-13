@@ -19,6 +19,7 @@ heightfield analogue of the complex Fusion stock model.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field as dc_field
+from typing import Callable, Optional
 
 import numpy as np
 from shapely import contains_xy, distance, points, prepare
@@ -27,6 +28,17 @@ from shapely.geometry import Polygon
 from ..geometry.regions import TOWER_KINDS, CastlePartition
 from ..project.schema import CastleParams, StockDefinition
 from .heightfield import Heightfield
+
+# Optional progress hook (BUILDPLAN M4.6 Part B). Called at stage boundaries
+# with a human label and a 0..1 fraction. Core stays headless — the default is
+# None and no GUI is imported. A caller may raise from the callback to abort
+# at a stage boundary (the GUI uses this for cancellation); core never catches.
+ProgressFn = Callable[[str, float], None]
+
+
+def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
+    if progress is not None:
+        progress(label, frac)
 
 PREVIEW_RES_MM = 0.3
 VALIDATE_RES_MM = 0.2
@@ -178,12 +190,15 @@ def build_castle_relief(
     resolution: float = PREVIEW_RES_MM,
     margin: float = GRID_MARGIN_MM,
     heights: dict[str, float] | None = None,
+    progress: Optional[ProgressFn] = None,
 ) -> CastleRelief:
     """Rasterize the castle: terraces -> footing blends -> hinge pockets.
 
     heights: optional zone-name -> height override (used for generic
     partitions / tests). Defaults to castle.zones.for_kind per zone; requires
     partition.matched when omitted.
+
+    progress: optional stage-boundary hook (BUILDPLAN M4.6 Part B).
     """
     if heights is None:
         if not partition.matched:
@@ -203,6 +218,7 @@ def build_castle_relief(
     Xs, Ys = np.meshgrid(xs, ys)
     flat_x, flat_y = Xs.ravel(), Ys.ravel()
 
+    _report(progress, "Rasterizing zones", 0.05)
     prepare(body)
     inside = contains_xy(body, flat_x, flat_y).reshape(rows, cols)
 
@@ -228,10 +244,14 @@ def build_castle_relief(
     z[assigned] = height_by_index[zone_index[assigned]]
 
     # ---- Footing blends: fills (low side) first, then carves (high side) ----
+    _report(progress, "Building terraces", 0.30)
     zone_pos = {zone.name: i for i, zone in enumerate(partition.zones)}
     fill = z.copy()
     carve = np.full_like(z, np.inf)
-    for edge in partition.edges:
+    n_edges = max(1, len(partition.edges))
+    for ei, edge in enumerate(partition.edges):
+        _report(progress, f"Footing edge {ei + 1}/{n_edges}",
+                 0.30 + 0.55 * (ei / n_edges))
         if len(edge.zone_names) != 2:
             continue
         ia, ib = (zone_pos[n] for n in edge.zone_names)
@@ -279,6 +299,7 @@ def build_castle_relief(
     z = np.minimum(fill, carve)
 
     # ---- Hinge pockets: sharp-walled cut below the endpiece height ----
+    _report(progress, "Hinge pockets", 0.88)
     pocket_floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
     for poly in hinge_polys:
         prepare(poly)
@@ -286,6 +307,7 @@ def build_castle_relief(
         z[in_pocket & inside] = np.minimum(z[in_pocket & inside], pocket_floor)
 
     z[~inside] = 0.0
+    _report(progress, "Relief ready", 0.92)
     field = Heightfield(z=z, origin=(ox, oy), resolution=resolution)
     return CastleRelief(
         field=field, inside=inside, zone_index=zone_index,
@@ -311,6 +333,7 @@ def build_castle_stage(
     stage: str = "pockets",
     resolution: float = PREVIEW_RES_MM,
     margin: float = GRID_MARGIN_MM,
+    progress: Optional[ProgressFn] = None,
 ) -> CastleRelief:
     """Build the relief up to a teaching stage.
 
@@ -345,6 +368,7 @@ def build_castle_stage(
     return build_castle_relief(
         partition, castle, hinges,
         resolution=resolution, margin=margin, heights=heights,
+        progress=progress,
     )
 
 
@@ -465,7 +489,8 @@ def _conform_rim(
 
 
 def build_castle_mesh(
-    relief: CastleRelief, conform: bool = True
+    relief: CastleRelief, conform: bool = True,
+    progress: Optional[ProgressFn] = None,
 ) -> "trimesh.Trimesh":  # noqa: F821
     """Watertight solid: castle top, flat anterior at z=0, stitched rim.
 
@@ -474,9 +499,12 @@ def build_castle_mesh(
     With conform=True (the default) the silhouette vertices are projected
     onto the true outline / lens / hinge-pocket curves, replacing the grid
     staircase with a chordal approximation of the splines (M4.5 Part B).
+
+    progress: optional stage-boundary hook (BUILDPLAN M4.6 Part B).
     """
     import trimesh
 
+    _report(progress, "Meshing surface", 0.94)
     z = relief.field.z
     inside = relief.inside
     rows, cols = z.shape
@@ -531,6 +559,7 @@ def build_castle_mesh(
     ])
 
     if conform:
+        _report(progress, "Conforming rim to curves", 0.97)
         verts = _conform_rim(relief, verts, vid, n, boundary)
 
     mesh = trimesh.Trimesh(
@@ -538,4 +567,5 @@ def build_castle_mesh(
     )
     if mesh.volume < 0:
         mesh.invert()
+    _report(progress, "Mesh ready", 1.0)
     return mesh

@@ -24,9 +24,14 @@ Deliberate deviations from the reference NC (documented, both improvements):
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import numpy as np
 from shapely.geometry import Polygon
+
+# Optional stage-boundary progress hook (BUILDPLAN M4.6 Part B); see
+# relief.castle.ProgressFn. Default None — core never imports the GUI.
+ProgressFn = Callable[[str, float], None]
 
 from ..project.schema import CastleParams, StockDefinition
 from ..relief.castle import CastleRelief, stock_top_heightfield
@@ -308,8 +313,12 @@ def generate_castle_program(
     hinge_polys: list[Polygon],
     tool: dict,
     params: CastleCamParams | None = None,
+    progress: Optional[ProgressFn] = None,
 ) -> list[CamOp]:
-    """The five ops, in machining order, from the castle relief."""
+    """The five ops, in machining order, from the castle relief.
+
+    progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
+    """
     params = params or CastleCamParams()
     tool_r = tool["radius_mm"]
     stock = castle.stock
@@ -320,8 +329,13 @@ def generate_castle_program(
 
     ops: list[CamOp] = []
 
+    def _p(label: str, k: int) -> None:
+        if progress is not None:
+            progress(f"Op {k}/5 · {label}", k / 5.0)
+
     # 1 — hinge pockets (cut first, stock rigid). Hinges sit on the blank
     # outside the pad block, so the local stock top is the blank thickness.
+    _p("Hinge pockets", 1)
     floor_z = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
     ops.append(hinge_pocket_op(
         hinge_polys, floor_z,
@@ -330,16 +344,19 @@ def generate_castle_program(
     ))
 
     # 2 + 3 — rough then fine relief
+    _p("Rough + fine relief", 3)
     rough, fine = relief_ops(relief, stock, tool["type"], tool_r, params)
     ops += [rough, fine]
 
     # 4 — eyewires (lens holes are the body's interior rings)
+    _p("Eyewires", 4)
     lenses = [Polygon(ring) for ring in body.interiors]
     ops.append(contour_op(
         "Eyewires", lenses, "inside", tool_r, allowance, top_z, skin, params
     ))
 
     # 5 — perimeter
+    _p("Perimeter", 5)
     ops.append(contour_op(
         "Perimeter", [Polygon(body.exterior)], "outside",
         tool_r, allowance, top_z, skin, params,
