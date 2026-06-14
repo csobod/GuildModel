@@ -164,6 +164,50 @@ def hinge_pocket_op(
 
 # ------------------------------------------------------------------ ops 2+3: relief
 
+def _densify_xy(coords: list, spacing: float) -> np.ndarray:
+    """Resample a 2D polyline to ~`spacing` point spacing (vectorised)."""
+    pts = np.asarray(coords, dtype=np.float64)
+    if len(pts) < 2:
+        return pts
+    seg = np.hypot(*np.diff(pts, axis=0).T)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(cum[-1])
+    if total < spacing:
+        return pts
+    n = max(2, int(np.ceil(total / spacing)))
+    s = np.linspace(0.0, total, n + 1)
+    return np.column_stack([np.interp(s, cum, pts[:, 0]),
+                            np.interp(s, cum, pts[:, 1])])
+
+
+def contour_parallel_rings(body: Polygon, stepover_mm: float,
+                           max_rings: int = 4000) -> list[list]:
+    """Concentric boundary-offset rings tiling `body` (Fusion 'Scallop' style).
+
+    Successive inward erosions of the material polygon: the exterior shrinks and
+    the lens holes grow, so the rings wrap the outline *and* every eyewire. The
+    relief finish then follows the frame instead of raster-sweeping it.
+    """
+    rings: list[list] = []
+    d = 0.0
+    for _ in range(max_rings):
+        region = body if d <= 0 else body.buffer(-d, join_style="round")
+        if region.is_empty:
+            break
+        geoms = region.geoms if region.geom_type == "MultiPolygon" else [region]
+        added = False
+        for g in geoms:
+            if g.is_empty or g.area <= 0:
+                continue
+            rings.append(list(g.exterior.coords))
+            rings += [list(r.coords) for r in g.interiors]
+            added = True
+        if not added:
+            break
+        d += stepover_mm
+    return rings
+
+
 def relief_ops(
     relief: CastleRelief,
     stock: StockDefinition,
@@ -173,17 +217,25 @@ def relief_ops(
 ) -> tuple[CamOp, CamOp]:
     """Rough (surface + axial stock, stock-aware) and fine (final surface).
 
-    Outside the body the CAM field is held at local stock height so the tool
-    never dives off the rim — the strip beyond the outline stays untouched
-    until the perimeter op.
+    Both passes are **contour-parallel** (BUILDPLAN M5 CAM-quality work): the
+    toolpath is a set of boundary-offset rings that follow the outline and the
+    eyewires, riding the drop-cutter surface — not an axis-aligned raster. The
+    cutter-location surface, the two-level stock surface, the tool-reach mask
+    and the stock-aware rough mask are unchanged, so the cut envelopes match the
+    reference NC; only the path *pattern* differs.
+
+    Outside the body the CAM field is held at local stock height, so the rim
+    band stays untouched until the perimeter op.
     """
     f = relief.field
+    res = f.resolution
+    ox, oy = f.origin
     stock_hf = stock_top_heightfield(
-        stock, resolution=f.resolution, origin=f.origin, shape=f.z.shape
+        stock, resolution=res, origin=f.origin, shape=f.z.shape
     )
     cam_z = np.where(relief.inside, f.z, stock_hf.z)
     cls_fine = cutter_location_surface(
-        Heightfield(z=cam_z, origin=f.origin, resolution=f.resolution),
+        Heightfield(z=cam_z, origin=f.origin, resolution=res),
         tool_type, tool_radius_mm,
     )
     stock_cls = cutter_location_surface(stock_hf, tool_type, tool_radius_mm)
@@ -194,35 +246,38 @@ def relief_ops(
 
     # tool centers may roam anywhere within tool reach of the body
     from scipy.ndimage import binary_dilation
-    r_px = max(1, int(round(tool_radius_mm / f.resolution)))
+    r_px = max(1, int(round(tool_radius_mm / res)))
     yy, xx = np.ogrid[-r_px:r_px + 1, -r_px:r_px + 1]
     reach = binary_dilation(relief.inside, structure=(xx**2 + yy**2) <= r_px**2)
 
-    step_px = max(1, int(round(params.relief_stepover_mm / f.resolution)))
     rows, cols = cls_fine.z.shape
-    xs = f.origin[0] + np.arange(cols) * f.resolution
+    z_fine = cls_fine.z
+    z_rough = np.minimum(z_fine + params.rough_axial_stock_mm, stock_cls.z)
+    # rough only where stock actually sits above the rough target
+    cut_rough = reach & ((z_fine + params.rough_axial_stock_mm) < stock_cls.z - eps)
 
-    for direction, row in enumerate(range(0, rows, step_px)):
-        y = f.origin[1] + row * f.resolution
-        z_fine = cls_fine.z[row]
-        z_rough = z_fine + params.rough_axial_stock_mm
-        cut_fine = reach[row]
-        # rough only where stock actually sits above the rough target
-        cut_rough = cut_fine & (z_rough < stock_cls.z[row] - eps)
-
-        for op, zline, mask in ((fine, z_fine, cut_fine), (rough, np.minimum(z_rough, stock_cls.z[row]), cut_rough)):
-            idx = np.flatnonzero(mask)
-            if idx.size == 0:
+    def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray) -> None:
+        for ring in contour_parallel_rings(relief.partition.body,
+                                           params.relief_stepover_mm):
+            dp = _densify_xy(ring, res)
+            if len(dp) < 2:
                 continue
-            # split into contiguous runs
-            breaks = np.flatnonzero(np.diff(idx) > 1)
-            for run in np.split(idx, breaks + 1):
+            ci = np.clip(((dp[:, 0] - ox) / res).round().astype(int), 0, cols - 1)
+            ri = np.clip(((dp[:, 1] - oy) / res).round().astype(int), 0, rows - 1)
+            m = mask[ri, ci]
+            idx = np.flatnonzero(m)
+            if idx.size < 2:
+                continue
+            zline = zgrid[ri, ci]
+            for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
                 if run.size < 2:
                     continue
-                pts = [(float(xs[c]), float(y), float(zline[c])) for c in run]
-                if direction % 2 == 1:
-                    pts.reverse()
+                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
+                       for k in run]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
+
+    _emit(fine, z_fine, reach)
+    _emit(rough, z_rough, cut_rough)
     return rough, fine
 
 
@@ -263,8 +318,13 @@ def contour_op(
             coords = list(g.exterior.coords)
             rings.append(coords)
 
-    for z in contour_passes(top_z, skin_z, params.contour_stepdown_mm):
-        for ring in rings:
+    # Ring-major ordering: finish one ring through its full depth stack before
+    # moving to the next (Fusion's order). Depth-major (the old order)
+    # alternated lenses at each level, adding a long OD<->OS traverse per pass
+    # — the back-and-forth that dramatically inflates eyewire cut time.
+    passes = contour_passes(top_z, skin_z, params.contour_stepdown_mm)
+    for ring in rings:
+        for z in passes:
             pts = [(x, y, z) for x, y in ring]
             op.paths.append(_rdp(pts, params.simplify_tol_mm))
     return op
@@ -404,13 +464,22 @@ def write_castle_program(
     ops: list[CamOp],
     post: "GRBLPost",  # noqa: F821
     side: str = "Posterior Cut",
+    arc_tol_mm: float = 0.01,
+    contour_stepdown_mm: float = CastleCamParams.contour_stepdown_mm,
 ) -> None:
-    """Emit the five ops into a single GRBL program."""
+    """Emit the five ops into a single GRBL program.
+
+    arc_tol_mm > 0 fits G2/G3 arcs to the curved passes (smooth motion, smaller
+    files). The through-cut contours (Eyewires / Perimeter) get a ramped
+    lead-in over the stepdown instead of a straight slot-plunge.
+    """
+    contour_ops = {"Eyewires", "Perimeter"}
     post.header(side)
     post.spindle_on()
     for op in ops:
         post.comment(f"--- {op.name} ---")
+        ramp = contour_stepdown_mm if op.name in contour_ops else 0.0
         for path in op.paths:
-            post.emit_polyline(path)
+            post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp)
         post.safe_retract()
     post.end_program()

@@ -16,7 +16,27 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-12, M4.6 done — `v0.4.6` tagged (commit d8cf26f); next M5)*
+## Status snapshot *(2026-06-14, M4.7 CAM-quality done — `v0.4.7` tagged; next M4.8 cut-time/params, then M5)*
+
+**M4.7 — CAM-quality pass (`v0.4.7`):** a deep compare of our output vs
+`Demo Project/Demo Program.nc` (the Fusion reference) found two
+toolpath-strategy defects (the 3D model/heightfield is fine — the CLS the CAM
+rides matches the reference STL; only the path *pattern* was wrong). Fixed in
+`core/cam/castle_ops.py` + `core/post/`:
+- **Eyewires were depth-major** (OD,OS,OD,OS… at each level — 8 long lens-to-
+  lens traverses). Now **ring-major** (`contour_op`: finish one ring's full
+  depth stack, then the next), matching Fusion. Demo: eyewire long-rapid
+  traverse **559 mm → 80 mm** (7 hops → 1).
+- **Relief was an axis-aligned raster** (~96 % constant-Y rows, MeshCAM-style).
+  Now **contour-parallel** (`relief_ops` + `contour_parallel_rings`): concentric
+  boundary-offset rings of the body that follow the outline and eyewires,
+  riding the same CLS/stock/rough masks (so the M3 envelopes are unchanged).
+  Demo: ~96 % axis-aligned → **0 %**, like Fusion's Scallop.
+- **Arc fitting + ramped lead-ins** (`post/arcfit.py`, `post/grbl.py`): curved
+  passes emit GRBL-valid **G2/G3** (worst start/end radius mismatch 19 µm ≪
+  50 µm tol), and the through-cut contours descend with a ramped lead-in over
+  the stepdown instead of a straight slot-plunge.
+- Suite: **94 green** (+7 `tests/test_cam_quality.py`). M3 NC gate unchanged.
 
 **M4.6 landed (same day):** the window architecture was rebuilt on
 GuildDraw's pattern. The two fixed-width sidebars inside a `QSplitter` (the
@@ -699,6 +719,73 @@ ops) report only log lines; the user reads stalls as glitches.
       from `gui/resources/icons/` with text fallback
 - [x] Full suite green (87); **`v0.4.6` tagged (commit d8cf26f)**
 
+## M4.7 — CAM-quality pass (v0.4.7) · *cut like Fusion, not MeshCAM* — ✅ DONE 2026-06-14
+
+> Triggered by a user review: our `posterior_cut.nc` had "a lot of optimization
+> issues" vs the Fusion control `Demo Project/Demo Program.nc`. Deep compare
+> (parsed both NCs) isolated the cause to **toolpath strategy, not the 3D
+> model** — the heightfield/CLS the CAM rides already matches the reference STL
+> (M2/M3 gates). Three fixes:
+
+1. ✅ **Eyewires ring-major** (`contour_op`): finish one ring's full depth
+   stack before the next, instead of depth-major OD/OS alternation at every
+   level. Demo eyewire long lens-to-lens rapid travel **559 → 80 mm** (7→1
+   hops). Perimeter (single ring) unchanged.
+2. ✅ **Contour-parallel relief** (`relief_ops` + `contour_parallel_rings`):
+   concentric boundary-offset rings (successive `body.buffer(-d)` erosions) that
+   follow the outline and eyewires, replacing the axis-aligned Y-raster. Rides
+   the **same** cls_fine / stock_cls / reach / cut_rough grids, so the M3 cut
+   envelopes are unchanged — only the pattern differs. Demo: **~96 % → 0 %**
+   axis-aligned, matching Fusion's Scallop.
+3. ✅ **Arc fitting + ramped lead-ins** (`post/arcfit.py`, `post/grbl.py`):
+   greedy Kasa circle fit emits GRBL-valid **G2/G3** on constant-Z runs (596
+   arcs; worst start/end radius mismatch 19 µm ≪ 50 µm tol); through-cut
+   contours descend via a ramped lead-in over the stepdown (feed through cleared
+   air to z_cut+stepdown, ramp one lap to depth) — no straight slot-plunge, and
+   never a `G0 Z` below safe (lint gate holds).
+4. ✅ **Gate**: `tests/test_cam_quality.py` (7) — ring-major order,
+   contour-parallel-not-raster, arc circle recovery, GRBL-valid arcs, ramped
+   lead-in. Suite 87 → **94 green**; M3 NC gate unchanged.
+
+**Open follow-ups (revisit — likely in M4.8):**
+- **Arc aggressiveness.** We fit 596 arcs vs Fusion's 51 (ours fits shorter
+  arcs / leaves fewer straight runs). Correct but verbose; tune
+  `arcfit.fit_arcs` `max_window` / `tol_mm` for fewer, longer arcs once the
+  cut-time harness exists to measure the trade.
+- **Ramped lead-in cost.** Each contour depth pass adds one finish lap after
+  the ramp lap (gentler entry, more cut time). Consider a partial-lap ramp
+  (descend over a fraction, not a full lap) and make it a tunable parameter.
+
+## M4.8 — Cut-time efficiency & machine-portable parameters (v0.4.8) · *measure against the control; let the machine set the rules* — 🔲 PLANNED (next session)
+
+> **Status: planned 2026-06-14; next session's work.** M5 (hardware) stays
+> behind it. Goal: close the remaining gap to the Fusion control on *time*, not
+> just path shape, and stop hard-coding machine assumptions so the program is
+> valid across GRBL-supported CNCs.
+
+1. **Cut-time model + harness.** Estimate cycle time from the program (feed +
+   plunge + rapid moves, with simple accel-aware dwell at corners) and compare
+   ours vs `Demo Program.nc` (~10 min reference) op-by-op. Land it as a
+   regression-style report (and a test asserting we stay within a budget of the
+   control). Use it to settle the two M4.7 follow-ups (arc aggressiveness,
+   ramp-lap cost) with numbers.
+2. **User-controllable CAM parameters.** Surface the knobs that drive time and
+   finish — stepover, stepdown, axial rough stock, arc tolerance, ramp
+   style/length, feeds/plunge, safe-Z, rapid behaviour — in the CAM tab
+   (schema + persisted), with sane Demo defaults. Today these are
+   `CastleCamParams` constants.
+3. **GRBL-variant / machine-spec compliance.** A machine profile (work area,
+   max feed/spindle, arc support + arc tolerance, max DOC, supported G-codes,
+   units, soft-limits) that the post validates against and adapts to: clamp
+   feeds/DOC, optionally disable arcs (emit linearized G1) for controllers
+   without reliable G2/G3, respect travel limits, and lint the output against
+   the active profile. Default profile = the Guild CNC; ship a couple of common
+   GRBL variants.
+4. **Acceptance**: cut-time report green vs the control within budget; every
+   time/finish-driving parameter is user-editable and persisted; a non-Guild
+   machine profile produces a compliant program (or a clear, actionable
+   warning); full suite green; tag `v0.4.8`.
+
 ## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
 
 1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using
@@ -792,18 +879,19 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4) |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); **contour-parallel relief + ring-major eyewires** (CAM-quality pass) |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ✅ | `comment()` added; pockets enter via ramped laps (plunge issue closed); contour passes plunge ≤ one stepdown by design |
+| `post/grbl.py` | ✅ | `comment()` added; pockets enter via ramped laps (plunge issue closed); `arc()` G2/G3 + arc-fit emit + ramped contour lead-in (CAM-quality pass) |
+| `post/arcfit.py` | ✅ | New (CAM-quality pass) — greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` removed (M4) |
 | `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
 | `gui/app.py` + widgets | ✅ | Castle UI (M4); GuildDraw-parity theming, dark mode, Preferences, recent files, export-resolution STL worker (M4.5); right tabbed dock + bottom log dock + icon toolbar, progress dialogs, window-state persistence (M4.6) |
 | `gui/icons.py` | ✅ | New in M4.6 — `_make_icon` port (SVG→two-state QIcon, `currentColor` recolor) + `apply_toolbar_icons`; text fallback when an SVG is missing |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | New in M4.5 — GuildDraw QSS port + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 adds window geometry/state keys) |
-| `tests/` | ✅ | 79 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 15, incl. the STL, NC, silhouette, and progress/icon gates) |
+| `tests/` | ✅ | 94 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7, incl. the STL, NC, silhouette, progress/icon, and contour-parallel/arc/ramp gates) |
 
 ## Dependency list (v1 — unchanged)
 

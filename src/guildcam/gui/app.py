@@ -1347,7 +1347,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.4.6 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.4.7 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",
