@@ -16,7 +16,7 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 done — pyproject `v0.5.0`, not yet committed/tagged; next M6 hardware round-trip)*
+## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 done — committed + tagged `v0.5.0`; next M5.1 `.gcam` container → M5.2 readiness light → M6 hardware)*
 
 > **M5 — cut-simulation workspace & the relief fix (`v0.5.0`):** a CAMotics sim
 > showed our posterior relief left the pad-block zone uncut (lower-inner lens
@@ -1008,6 +1008,76 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    fix keeps the M2/M3 gates and the cut-time budget green; full suite **121
    green**; tag `v0.5.0`.
 
+## M5.1 — `.gcam` project container & gSender hand-off (v0.5.1) · *one file holds the whole job* — 🔲 PLANNED
+
+> **Status: planned 2026-06-14.** A single self-describing project file so a job
+> can be re-opened anywhere and handed to the machine. The format is a **ZIP
+> container with the `.gcam` extension** (mirroring GuildDraw's `.gdraw`
+> multi-workspace ZIP for cross-app consistency) that holds *both* everything
+> GuildCAM needs to fully reopen the project *and* the subset a custom **gSender
+> fork** (adapted to our two-sided acetate workflow) needs to run it. This
+> **supersedes the planned `.guildcam` save/load and archive bundle** (old M7
+> tasks 1 + 3, now folded here).
+
+1. **Container layout** (`core/project/gcam.py`, stdlib `zipfile`):
+   - `manifest.json` — format version, GuildCAM version, created/modified, a
+     content inventory + per-file SHA-256, and the run mode (two-file vs single
+     `M0` program).
+   - `project.json` — the full `ProjectSchema` (boxing, castle, `cam_params`,
+     machine ref, stock, forming, source name) — independent reopen.
+   - `source.dxf` — the imported GuildDraw DXF, so the project is self-contained
+     and re-importable with no external file.
+   - `program/posterior_cut.nc` (+ `back_cut.nc` once two-sided lands) — the
+     generated G-code.
+   - `machine.yaml` — a snapshot of the active `MachineProfile` (work area,
+     feeds, accel, arc support) so the fork knows the machine's limits.
+   - `setup.json` — the setup sheet: tool, feeds/speeds, op order + strategies,
+     Z floors, cut lengths, estimated cycle time (`op_summaries` + `cuttime`),
+     fixture/stock, onion-skin/allowance, flip axis.
+   - `cut_report.json` — the verification result (completeness/gouge + cut-time)
+     — evidence the program was simulated before transmission.
+   - `model.stl` (optional) + `preview.png` (optional) — inspection record.
+2. **API**: `save_gcam(path, project, *, dxf_bytes, programs, machine, setup,
+   report, stl=None, preview=None)` and `load_gcam(path) -> GcamBundle`;
+   round-trip tests (schema + every file survives byte-for-byte; checksums
+   validate; a `.gcam` built on one machine reopens cleanly on another).
+3. **gSender-fork contract** (documented like §3's import contract, so the fork
+   is built against a frozen subset): the fork consumes `program/*.nc` +
+   `machine.yaml` + `setup.json` (+ `manifest.json` for the two-file flip /
+   dowel re-registration). It shows the setup sheet, enforces the machine
+   profile, and drives the flip workflow with the `M0` pause. Capture this in
+   `docs/GCAM-FORMAT.md`.
+4. **GUI**: File ▸ **Save Project** / **Open Project** (`.gcam`); generating
+   G-code writes it into the current `.gcam` (the green-light trigger for M5.2);
+   Open Recent extended to `.gcam`; `last_output_dir` reused.
+5. **Acceptance**: a `.gcam` round-trips the full project and reopens with no
+   external files; the documented fork subset is present and validated; tests
+   green; tag `v0.5.1`.
+
+## M5.2 — Readiness traffic-light (v0.5.2) · *is this job ready to send?* — 🔲 PLANNED
+
+> **Status: planned 2026-06-14; depends on M5.1** (the green state means the
+> G-code is stored in the `.gcam`). A small, subtle status **dot** in the corner
+> of the window (status-bar corner) that tells the maker at a glance how far the
+> job is from transmittable, with the stage named in its tooltip.
+
+1. **States + tooltips** (exact wording):
+   - **grey/off** — nothing loaded (no DXF).
+   - **red** — DXF imported, nothing built. Tooltip: *"DXF Loaded, Missing 3D
+     Model + G-Code"*.
+   - **yellow** — 3D model built. Tooltip: *"Model Built, Missing G-Code"*.
+   - **green** — G-code generated **and stored to the `.gcam`**. Tooltip:
+     *"Ready for Transmission"*.
+2. **Widget**: a small painted circle (subtle, ~10 px) docked in the status-bar
+   corner — dot only, state in the tooltip; recolored per light/dark theme.
+3. **State machine** in `MainWindow`: a `_readiness` enum advanced on DXF
+   import (→ red), mesh-build finished (→ yellow), and G-code-saved-to-`.gcam`
+   (→ green). A design change that **invalidates the stored program drops the
+   light back to yellow** (stale-program guard) so the green never lies.
+4. **Acceptance**: the dot walks grey → red → yellow → green across the real
+   workflow with the exact tooltips above and reverts on a stale program;
+   subtle in both themes; tag `v0.5.2`.
+
 ## M6 — Hardware round-trip (v0.6.0) · *the only gate that cuts acetate*
 
 1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using the
@@ -1021,16 +1091,17 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    tag GuildDraw `v1.0.0` when this milestone passes.
 5. Findings feed fixes; milestone ends when a cut part is accepted.
 
-## M7 — Project I/O & two-sided workflow (v0.7.0)
+## M7 — Two-sided workflow & export polish (v0.7.0)
 
-1. `.guildcam` project save/load extended with the castle schema (zones,
-   footing, stock, allowances) — full round-trip tests.
-2. Back-side program generation for the two-sided cut-and-flip loop using the
-   fixture flip axis (the spike's back/front split, now castle-aware), with
-   the `M0` single-file option.
-3. Export set: STL (watertight), canonical DXF archive, PNG render, archive
-   bundle (project + DXF + NC + setup summary).
-4. SVG intake npoint bug: fix or formally drop SVG import for v1 (DXF is the
+> Project save/load + the archive bundle moved to **M5.1** (the `.gcam`
+> container). What remains here is the two-sided cut and the leftover exports.
+
+1. **Back-side program** generation for the two-sided cut-and-flip loop using
+   the fixture flip axis (the spike's back/front split, now castle-aware), with
+   the `M0` single-file option — written into the `.gcam` as `program/back_cut.nc`.
+2. Export set beyond the `.gcam`: standalone STL (watertight), canonical DXF
+   archive, PNG render — for users who want loose files.
+3. SVG intake npoint bug: fix or formally drop SVG import for v1 (DXF is the
    contract; decide here, not silently).
 
 ## M8 — Packaging, docs & release (v1.0.0)
@@ -1055,10 +1126,11 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
       bottom log dock), progress dialogs on long ops (M4.6)
 - [x] Cut-simulation workspace verifies the machined result (completeness +
       gouge); relief reaches the whole surface like the control (M5)
+- [ ] `.gcam` container round-trips the full project + carries the gSender-fork
+      hand-off (M5.1); readiness traffic-light (M5.2)
 - [ ] **A physical frame front has been cut and accepted** (M6 — also
       graduates GuildDraw to v1.0.0)
-- [ ] `.guildcam` round-trips the full castle schema; archive bundle exports
-      (M7)
+- [ ] Two-sided back-side program + loose exports (M7)
 - [ ] Packaged Windows build + user guide with the castle chapter (M8)
 - [ ] Test suite green and run before every release build
 
