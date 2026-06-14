@@ -33,7 +33,7 @@ from shapely.geometry import Polygon
 # relief.castle.ProgressFn. Default None — core never imports the GUI.
 ProgressFn = Callable[[str, float], None]
 
-from ..project.schema import CastleParams, StockDefinition
+from ..project.schema import CastleCamParams, CastleParams, StockDefinition
 from ..relief.castle import CastleRelief, stock_top_heightfield
 from ..relief.heightfield import Heightfield
 from .dropcutter import cutter_location_surface
@@ -66,17 +66,10 @@ class CamOp:
         return total
 
 
-@dataclass
-class CastleCamParams:
-    """Operation parameters; defaults are the Demo Project reference values."""
-    tool_name: str = "flat_3175"
-    pocket_stepover_mm: float = 1.2
-    relief_stepover_mm: float = 0.8
-    rough_axial_stock_mm: float = 2.0
-    contour_stepdown_mm: float = 2.5
-    ramp_step_mm: float = 0.6        # pocket ramp descent per lap
-    skim_epsilon_mm: float = 0.05    # "nothing to cut" threshold for roughing
-    simplify_tol_mm: float = 0.01
+# CastleCamParams now lives in project.schema (persisted with the project and
+# editable from the CAM tab, BUILDPLAN M4.8); re-exported here so existing
+# callers keep importing it from cam.castle_ops.
+_DEFAULT_CAM = CastleCamParams()
 
 
 # ------------------------------------------------------------------ helpers
@@ -217,23 +210,39 @@ def relief_ops(
 ) -> tuple[CamOp, CamOp]:
     """Rough (surface + axial stock, stock-aware) and fine (final surface).
 
-    Both passes are **contour-parallel** (BUILDPLAN M5 CAM-quality work): the
-    toolpath is a set of boundary-offset rings that follow the outline and the
-    eyewires, riding the drop-cutter surface — not an axis-aligned raster. The
-    cutter-location surface, the two-level stock surface, the tool-reach mask
-    and the stock-aware rough mask are unchanged, so the cut envelopes match the
-    reference NC; only the path *pattern* differs.
+    Both passes are **contour-parallel**: the toolpath is a set of boundary-
+    offset rings that follow the outline and the eyewires, riding the drop-cutter
+    surface — not an axis-aligned raster.
 
-    Outside the body the CAM field is held at local stock height, so the rim
-    band stays untouched until the perimeter op.
+    **Rim-band clearing (BUILDPLAN M5).** A flat tool finishing a rim cannot get
+    under the *not-yet-cut* lens openings / outside stock next to it — near those
+    boundaries the drop-cutter rides up to stock height, leaving the rim floors
+    uncut (badly so in the 10 mm pad-block zone, where the cut simulator measured
+    ~14 % of the body left proud vs Fusion's ~4 %). The fix mirrors Fusion's
+    rough: clear a tool-radius band of the to-be-removed material down to the
+    neighbouring rim level so the finish pass can reach the rim. Beyond the band
+    the openings stay at stock height — the eyewire / perimeter contours cut them
+    through later — so the extra clearing (and cut time) stays bounded.
     """
+    from scipy.ndimage import distance_transform_edt
     f = relief.field
     res = f.resolution
     ox, oy = f.origin
+    inside = relief.inside
     stock_hf = stock_top_heightfield(
         stock, resolution=res, origin=f.origin, shape=f.z.shape
     )
-    cam_z = np.where(relief.inside, f.z, stock_hf.z)
+
+    # Machining region = body grown by a tool-radius band; the band's target is
+    # the relief level of the nearest body cell (so the rim floor is reachable).
+    band_mm = max(tool_radius_mm, params.relief_stepover_mm)
+    dist, (iy, ix) = distance_transform_edt(
+        ~inside, sampling=res, return_indices=True
+    )
+    nearest_relief = f.z[iy, ix]
+    band = inside | (dist <= band_mm + 1e-9)
+    cam_z = np.where(band, np.minimum(nearest_relief, stock_hf.z), stock_hf.z)
+
     cls_fine = cutter_location_surface(
         Heightfield(z=cam_z, origin=f.origin, resolution=res),
         tool_type, tool_radius_mm,
@@ -244,20 +253,16 @@ def relief_ops(
     fine = CamOp("Fine Relief")
     rough = CamOp("Rough Relief")
 
-    # tool centers may roam anywhere within tool reach of the body
-    from scipy.ndimage import binary_dilation
-    r_px = max(1, int(round(tool_radius_mm / res)))
-    yy, xx = np.ogrid[-r_px:r_px + 1, -r_px:r_px + 1]
-    reach = binary_dilation(relief.inside, structure=(xx**2 + yy**2) <= r_px**2)
-
     rows, cols = cls_fine.z.shape
     z_fine = cls_fine.z
     z_rough = np.minimum(z_fine + params.rough_axial_stock_mm, stock_cls.z)
     # rough only where stock actually sits above the rough target
-    cut_rough = reach & ((z_fine + params.rough_axial_stock_mm) < stock_cls.z - eps)
+    cut_rough = band & ((z_fine + params.rough_axial_stock_mm) < stock_cls.z - eps)
+
+    machining = relief.partition.body.buffer(band_mm, join_style="round")
 
     def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray) -> None:
-        for ring in contour_parallel_rings(relief.partition.body,
+        for ring in contour_parallel_rings(machining,
                                            params.relief_stepover_mm):
             dp = _densify_xy(ring, res)
             if len(dp) < 2:
@@ -276,7 +281,7 @@ def relief_ops(
                        for k in run]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
-    _emit(fine, z_fine, reach)
+    _emit(fine, z_fine, band)
     _emit(rough, z_rough, cut_rough)
     return rough, fine
 
@@ -465,13 +470,16 @@ def write_castle_program(
     post: "GRBLPost",  # noqa: F821
     side: str = "Posterior Cut",
     arc_tol_mm: float = 0.01,
-    contour_stepdown_mm: float = CastleCamParams.contour_stepdown_mm,
+    contour_stepdown_mm: float = _DEFAULT_CAM.contour_stepdown_mm,
+    contour_ramp_angle_deg: float = _DEFAULT_CAM.contour_ramp_angle_deg,
 ) -> None:
     """Emit the five ops into a single GRBL program.
 
     arc_tol_mm > 0 fits G2/G3 arcs to the curved passes (smooth motion, smaller
-    files). The through-cut contours (Eyewires / Perimeter) get a ramped
-    lead-in over the stepdown instead of a straight slot-plunge.
+    files). The through-cut contours (Eyewires / Perimeter) get a partial-lap
+    ramped lead-in over the stepdown instead of a straight slot-plunge: the tool
+    ramps to depth over a short lead-in (set by contour_ramp_angle_deg) then
+    cuts one full finish lap, rather than ramping a whole extra lap.
     """
     contour_ops = {"Eyewires", "Perimeter"}
     post.header(side)
@@ -480,6 +488,7 @@ def write_castle_program(
         post.comment(f"--- {op.name} ---")
         ramp = contour_stepdown_mm if op.name in contour_ops else 0.0
         for path in op.paths:
-            post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp)
+            post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp,
+                               ramp_angle_deg=contour_ramp_angle_deg)
         post.safe_retract()
     post.end_program()

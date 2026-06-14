@@ -106,6 +106,80 @@ class CastleParams(BaseModel):
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
 
 
+class CastleCamParams(BaseModel):
+    """Operation parameters for the five-op posterior program (BUILDPLAN M4.8).
+
+    The knobs that drive cut time and finish, persisted with the project and
+    editable from the CAM tab. Defaults are the Demo Project reference values
+    (proven on the Guild CNC); the relief stepover (0.9) matches the Fusion
+    Scallop's effective coverage. Feed/plunge/spindle overrides are optional —
+    when None the active material preset supplies them — and are clamped to the
+    active machine profile at post time.
+    """
+    tool_name: str = "flat_3175"
+    machine_name: str = "guild_cnc"
+
+    # strategy / geometry
+    pocket_stepover_mm: float = 1.2
+    relief_stepover_mm: float = 0.9        # matches Fusion Scallop coverage
+    rough_axial_stock_mm: float = 2.0
+    contour_stepdown_mm: float = 2.5
+    ramp_step_mm: float = 0.6              # pocket ramp descent per lap
+    contour_ramp_angle_deg: float = 8.0    # through-cut lead-in ramp (partial lap)
+    skim_epsilon_mm: float = 0.05          # "nothing to cut" threshold for roughing
+    simplify_tol_mm: float = 0.01
+    arc_tolerance_mm: float = 0.01         # 0 disables arc fitting (linearized G1)
+
+    # output / feeds (None -> use the material preset)
+    feed_rate_mmpm: float | None = None
+    plunge_rate_mmpm: float | None = None
+    spindle_rpm: int | None = None
+    safe_z_clearance_mm: float = 5.0       # rapid clearance above the stock top
+
+
+class MachineProfile(BaseModel):
+    """A GRBL-family machine's capabilities (BUILDPLAN M4.8 task 3).
+
+    The post validates against and adapts to this: feeds, plunge, spindle and
+    depth-of-cut are clamped to the machine's limits; arcs are linearized for
+    controllers without reliable G2/G3; the work envelope bounds soft-limit
+    checks; and the motion dynamics drive the cut-time estimate. Shipped as
+    user-editable YAML under config/machines/; the default is the Guild CNC.
+    """
+    name: str = "guild_cnc"
+    display_name: str = "Guild CNC"
+
+    # work envelope (mm), origin lower-left, Z+ above stock
+    work_area_x_mm: float = 300.0
+    work_area_y_mm: float = 200.0
+    work_area_z_mm: float = 80.0
+
+    # feed / speed limits
+    max_feed_mmpm: float = 2000.0
+    max_plunge_mmpm: float = 1000.0
+    max_spindle_rpm: float = 24000.0
+    min_spindle_rpm: float = 0.0
+
+    # depth of cut
+    max_doc_mm: float = 2.5
+
+    # motion dynamics (GRBL $110/$111, $120/$121, $11) — feed the cut-time model
+    rapid_rate_mmpm: float = 3000.0
+    max_accel_mmps2: float = 500.0
+    junction_deviation_mm: float = 0.01
+
+    # output dialect
+    supports_arcs: bool = True             # G2/G3; linearize when False
+    units: Literal["mm", "inch"] = "mm"
+    enforce_soft_limits: bool = True
+    notes: str = ""
+
+
+class MachineRef(BaseModel):
+    name: str = "guild_cnc"
+    preset_file: str = "machines/guild_cnc.yaml"
+
+
 class FormingMetadata(BaseModel):
     """Recorded for archive; NOT machined in v1. Heat-forming is post-cutting."""
     base_curve: float = 0.0          # diopters
@@ -155,3 +229,5 @@ class ProjectSchema(BaseModel):
     castle: CastleParams = Field(default_factory=CastleParams)
     forming: FormingMetadata = Field(default_factory=FormingMetadata)
     cam: CAMSettings = Field(default_factory=CAMSettings)
+    cam_params: CastleCamParams = Field(default_factory=CastleCamParams)
+    machine: MachineRef = Field(default_factory=MachineRef)

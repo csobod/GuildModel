@@ -33,6 +33,7 @@ from guildcam.gui.style import theme
 from guildcam.gui.widgets.dxf_canvas import DxfCanvas
 from guildcam.gui.widgets.params_panel import ParamsPanel
 from guildcam.gui.widgets.preview_3d import Preview3D
+from guildcam.gui.widgets.cut_sim_view import CutSimView
 
 
 class _Cancelled(Exception):
@@ -211,12 +212,13 @@ class GCodeWorker(_ProgressWorker):
 
     def __init__(
         self, outline, castle, params: dict, out_dir: Path,
-        partition=None, hinge_polys=(),
+        partition=None, hinge_polys=(), cam_params=None,
     ) -> None:
         super().__init__()
         self.outline = outline
         self.castle = castle
         self.params = params
+        self.cam_params = cam_params
         self.out_dir = out_dir
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
@@ -234,17 +236,37 @@ class GCodeWorker(_ProgressWorker):
         eyewires -> perimeter, single .nc, onion skin instead of tabs."""
         import yaml
         from guildcam.core.cam.castle_ops import (
-            fixture_clearance_violations, generate_castle_program,
+            CastleCamParams, fixture_clearance_violations, generate_castle_program,
             op_summaries, write_castle_program,
         )
+        from guildcam.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildcam.core.post.grbl import GRBLPost
+        from guildcam.core.post.machine import apply_machine_limits, lint_program, load_machine_profile
         from guildcam.core.relief.castle import build_castle_relief
 
         p = self.params
         castle = self.castle
-        tool = tools_cfg.get("flat_3175", next(iter(tools_cfg.values())))
+        cam = self.cam_params or CastleCamParams()
+        tool = tools_cfg.get(cam.tool_name, tools_cfg.get("flat_3175", next(iter(tools_cfg.values()))))
         mat_key = p["material_name"].split()[0].lower()
         mat = mats_cfg.get(mat_key, mats_cfg["acetate"])
+        machine = load_machine_profile(cam.machine_name, config_dir)
+        self.progress.emit(f"[gcode] Machine: {machine.display_name} · Tool: {cam.tool_name}")
+
+        # Clamp requested feeds / spindle / depth-of-cut to the machine (the
+        # material caps DOC too); choose arc vs. linearized output.
+        clamp = apply_machine_limits(
+            machine,
+            feed_rate_mmpm=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+            plunge_rate_mmpm=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+            spindle_rpm=cam.spindle_rpm or mat["spindle_rpm"],
+            contour_stepdown_mm=cam.contour_stepdown_mm,
+            requested_arc_tol_mm=cam.arc_tolerance_mm,
+            material_max_doc_mm=mat.get("max_doc_mm"),
+        )
+        for w in clamp.warnings:
+            self.progress.emit(f"[gcode] machine: {w}")
+        cam = cam.model_copy(update={"contour_stepdown_mm": clamp.contour_stepdown_mm})
 
         self.progress.emit("[gcode] Castle: building relief…")
         relief = build_castle_relief(
@@ -253,7 +275,7 @@ class GCodeWorker(_ProgressWorker):
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
         ops = generate_castle_program(
-            relief, castle, self.hinge_polys, tool, progress=self._progress
+            relief, castle, self.hinge_polys, tool, params=cam, progress=self._progress
         )
         for op in ops:
             zmin, zmax = op.z_range()
@@ -271,22 +293,40 @@ class GCodeWorker(_ProgressWorker):
             job_name="posterior_cut",
             material=p["material_name"],
             tool_diameter_mm=tool["diameter_mm"],
-            spindle_rpm=mat["spindle_rpm"],
-            feed_rate_mmpm=mat["feed_rate_mmpm"],
-            plunge_rate_mmpm=mat["plunge_rate_mmpm"],
-            safe_z_mm=castle.stock.total_pad_height_mm + 5.0,
+            spindle_rpm=clamp.spindle_rpm,
+            feed_rate_mmpm=clamp.feed_rate_mmpm,
+            plunge_rate_mmpm=clamp.plunge_rate_mmpm,
+            safe_z_mm=castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
         )
         self._progress("Writing program", 0.95)
-        write_castle_program(ops, post)
+        write_castle_program(
+            ops, post, arc_tol_mm=clamp.arc_tol_mm,
+            contour_stepdown_mm=cam.contour_stepdown_mm,
+            contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+        )
         out_file = self.out_dir / "posterior_cut.nc"
         post.write(out_file)
         self.progress.emit(
             f"[gcode] Wrote {out_file.name}  ({out_file.stat().st_size:,} bytes)"
         )
+
+        # Lint against the machine + estimate cut time (machine dynamics).
+        text = post.to_string()
+        machine_warnings = lint_program(text, machine)
+        for w in machine_warnings:
+            self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        report = estimate_program(text, MachineDynamics.from_profile(machine))
+        self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
+
         summary = f"Posterior program written:\n  {out_file}"
+        summary += (f"\n\nMachine: {machine.display_name}"
+                    f"\nEstimated cycle: {report.cycle_seconds / 60:.1f} min "
+                    f"(cut {report.cutting_only_seconds / 60:.1f} min)")
         if violations:
             summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
-        rows = op_summaries(ops, feed_rate_mmpm=mat["feed_rate_mmpm"])
+        if machine_warnings:
+            summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
+        rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm)
         self.finished.emit(summary, rows)
 
     def _generate(self) -> None:
@@ -355,6 +395,88 @@ class GCodeWorker(_ProgressWorker):
         )
 
         self.finished.emit(f"Generated:\n  {front_file}", None)
+
+
+# ------------------------------------------------------------------ cut simulation worker
+
+class SimWorker(_ProgressWorker):
+    """Simulates the machined result from the *posted* program (BUILDPLAN M5).
+
+    Builds the relief and the five-op program, posts it (arcs + ramped lead-ins,
+    exactly what runs), sweeps the tool along every cutting move to get the
+    achieved floor, and verifies it against the target relief surface — so the
+    simulation catches both strategy and post-processing defects before cutting.
+    """
+
+    finished = Signal(object, object)   # core.sim.CutReport, summary lines
+    progress = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, partition, castle, cam_params, hinge_polys=(),
+                 material_name="acetate", resolution: float = 0.3) -> None:
+        super().__init__()
+        self.partition = partition
+        self.castle = castle
+        self.cam_params = cam_params
+        self.hinge_polys = list(hinge_polys)
+        self.material_name = material_name
+        self.resolution = resolution
+
+    def run(self) -> None:
+        try:
+            import numpy as np
+            import yaml
+            from guildcam.core.relief.castle import build_castle_relief
+            from guildcam.core.cam.castle_ops import (
+                CastleCamParams, generate_castle_program, write_castle_program,
+            )
+            from guildcam.core.post.grbl import GRBLPost
+            from guildcam.core.sim import (
+                ToolProfile, achieved_floor, cutting_paths_from_program, verify,
+            )
+
+            cam = self.cam_params or CastleCamParams()
+            config_dir = Path(__file__).parent.parent / "config"
+            tools_cfg = yaml.safe_load((config_dir / "tools.yaml").read_text(encoding="utf-8"))
+            mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
+            tool = tools_cfg.get(cam.tool_name, tools_cfg.get("flat_3175"))
+            mat = mats_cfg.get(self.material_name.split()[0].lower(), mats_cfg["acetate"])
+
+            self.progress.emit(f"[sim] Building relief at {self.resolution} mm…")
+            relief = build_castle_relief(
+                self.partition, self.castle, self.hinge_polys,
+                resolution=self.resolution, progress=self._progress,
+            )
+            self._progress("Generating program", 0.55)
+            ops = generate_castle_program(
+                relief, self.castle, self.hinge_polys, tool, params=cam)
+            post = GRBLPost(
+                job_name="sim", material=self.material_name,
+                tool_diameter_mm=tool["diameter_mm"],
+                spindle_rpm=mat["spindle_rpm"], feed_rate_mmpm=mat["feed_rate_mmpm"],
+                plunge_rate_mmpm=mat["plunge_rate_mmpm"],
+                safe_z_mm=self.castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
+            )
+            write_castle_program(
+                ops, post, arc_tol_mm=cam.arc_tolerance_mm,
+                contour_stepdown_mm=cam.contour_stepdown_mm,
+                contour_ramp_angle_deg=cam.contour_ramp_angle_deg)
+
+            self.progress.emit("[sim] Sweeping tool along the toolpaths…")
+            f = relief.field
+            paths = cutting_paths_from_program(post.to_string())
+            init_z = self.castle.stock.total_pad_height_mm + 1.0
+            floor = achieved_floor(
+                paths, ToolProfile.from_tool(tool), f.origin, f.z.shape,
+                f.resolution, init_z, progress=lambda p: self._progress("Simulating", 0.6 + 0.35 * p))
+            report = verify(
+                floor, np.where(relief.inside, f.z, np.nan), relief.inside,
+                f.origin, f.resolution, partition=self.partition)
+            self.finished.emit(report, report.summary_lines())
+        except _Cancelled:
+            self.cancelled.emit()
+        except Exception:
+            self.error.emit(traceback.format_exc())
 
 
 # ------------------------------------------------------------------ op summary dialog
@@ -439,7 +561,7 @@ class PrefsDialog(QDialog):
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
         ok_btn.setDefault(True)
-        ok_btn.clicked.connect(self.accept)
+        ok_btn.clicked.connect(self._accept)
         cancel_btn.clicked.connect(self.reject)
         btn_row.addStretch()
         btn_row.addWidget(ok_btn)
@@ -510,6 +632,78 @@ class PrefsDialog(QDialog):
 
         gen_lay.addStretch()
 
+        # ── Tab 1 — Materials ─────────────────────────────────────────────
+        self._build_materials_tab(tabs)
+
+    # ── Materials tab (feeds/speeds/stepover/stepdown defaults) ───────────
+
+    _MAT_FIELDS = [
+        ("spindle_rpm", "Spindle", 0, 60000, 500, 0, " RPM"),
+        ("feed_rate_mmpm", "Feed", 0, 10000, 50, 0, " mm/min"),
+        ("plunge_rate_mmpm", "Plunge", 0, 5000, 25, 0, " mm/min"),
+        ("relief_stepover_mm", "Relief stepover", 0.05, 3.0, 0.05, 2, " mm"),
+        ("contour_stepdown_mm", "Contour stepdown", 0.1, 6.0, 0.1, 2, " mm"),
+        ("rough_axial_stock_mm", "Rough axial stock", 0.0, 5.0, 0.1, 2, " mm"),
+    ]
+
+    def _build_materials_tab(self, tabs) -> None:
+        from guildcam.gui import material_store
+        self._mat_widgets: dict = {}
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setSpacing(12)
+        lay.setContentsMargins(16, 16, 16, 8)
+        scroll.setWidget(inner)
+        tabs.addTab(scroll, "Materials")
+
+        eff = material_store.effective()
+        for name, vals in eff.items():
+            box = QGroupBox(vals.get("display_name", name))
+            form = QFormLayout(box)
+            self._mat_widgets[name] = {}
+            for key, label, lo, hi, step, dec, suffix in self._MAT_FIELDS:
+                if key not in vals:
+                    continue
+                sb = QDoubleSpinBox()
+                sb.setRange(lo, hi); sb.setSingleStep(step); sb.setDecimals(dec)
+                sb.setSuffix(suffix); sb.setValue(float(vals[key]))
+                form.addRow(label + ":", sb)
+                self._mat_widgets[name][key] = sb
+            reset = QPushButton("Reset to shipped")
+            reset.clicked.connect(lambda _=False, n=name: self._reset_material(n))
+            form.addRow(reset)
+            lay.addWidget(box)
+        lay.addStretch()
+
+    def _reset_material(self, name: str) -> None:
+        from guildcam.gui import material_store
+        material_store.reset_material(name)
+        shipped = material_store.shipped_material(name)
+        for key, sb in self._mat_widgets.get(name, {}).items():
+            if key in shipped:
+                sb.setValue(float(shipped[key]))
+
+    def _save_materials(self) -> None:
+        """Persist edited material values: store overrides that differ from
+        shipped, drop overrides that now match shipped."""
+        from guildcam.gui import material_store
+        for name, widgets in getattr(self, "_mat_widgets", {}).items():
+            shipped = material_store.shipped_material(name)
+            values = {k: sb.value() for k, sb in widgets.items()}
+            differs = any(abs(values[k] - float(shipped.get(k, values[k]))) > 1e-6
+                          for k in values)
+            if differs:
+                material_store.save_override(name, values)
+            else:
+                material_store.reset_material(name)
+
+    def _accept(self) -> None:
+        self._save_materials()
+        self.accept()
+
     def _browse_out_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(
             self, "Default output folder", self._out_dir.text()
@@ -570,6 +764,8 @@ class MainWindow(QMainWindow):
         self._mesh_worker: Optional[MeshWorker] = None
         self._gcode_thread: Optional[QThread] = None
         self._gcode_worker: Optional[GCodeWorker] = None
+        self._sim_thread: Optional[QThread] = None
+        self._sim_worker: Optional[SimWorker] = None
         self._export_thread: Optional[QThread] = None
         self._export_worker: Optional[ExportWorker] = None
         self._progress_dialog: Optional[QProgressDialog] = None
@@ -605,6 +801,7 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(theme.stylesheet(dark))
         self.canvas.set_dark_mode(dark)
         self.preview3d.set_dark_mode(dark)
+        self.cutsim.set_dark_mode(dark)
         self.params.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
 
@@ -621,8 +818,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.canvas = DxfCanvas()
         self.preview3d = Preview3D()
-        self.stack.addWidget(self.canvas)
-        self.stack.addWidget(self.preview3d)
+        self.cutsim = CutSimView()
+        self.stack.addWidget(self.canvas)        # 0 — 2D outline
+        self.stack.addWidget(self.preview3d)     # 1 — 3D model
+        self.stack.addWidget(self.cutsim)        # 2 — cut simulation
         self.setCentralWidget(self.stack)
 
         # Right dock: the tabbed params panel (title bar hidden, GuildDraw look)
@@ -701,6 +900,13 @@ class MainWindow(QMainWindow):
         self._act_view3d.setToolTip("3D preview view")
         self._act_view3d.triggered.connect(lambda: self._switch_view(1))
 
+        self._act_simulate = QAction("Simulate Cut", self)
+        self._act_simulate.setShortcut("Ctrl+Shift+S")
+        self._act_simulate.setToolTip(
+            "Simulate the machined result and verify completeness  (Ctrl+Shift+S)")
+        self._act_simulate.setEnabled(False)
+        self._act_simulate.triggered.connect(self._on_simulate)
+
         self._act_fit = QAction("Fit", self)
         self._act_fit.setShortcut("Ctrl+0")
         self._act_fit.setToolTip("Fit to view  (Ctrl+0)")
@@ -726,6 +932,7 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
+        tb.addAction(self._act_simulate)
         tb.addAction(self._act_fit)
         # push the dock toggles to the bottom of the vertical strip
         spacer = QWidget()
@@ -743,6 +950,7 @@ class MainWindow(QMainWindow):
             (self._act_export, "op-export-stl"),
             (self._act_view2d, "view-2d"),
             (self._act_view3d, "view-3d"),
+            (self._act_simulate, "sim-cut"),
             (self._act_fit, "op-fit"),
             (self._act_log, "toggle-log"),
             (self._act_sidebar, "view-sidebar"),
@@ -770,6 +978,7 @@ class MainWindow(QMainWindow):
         view_menu = mb.addMenu("&View")
         view_menu.addAction(self._act_view2d)
         view_menu.addAction(self._act_view3d)
+        view_menu.addAction(self._act_simulate)
         view_menu.addAction(self._act_fit)
         view_menu.addSeparator()
         view_menu.addAction(self._act_sidebar)
@@ -899,7 +1108,20 @@ class MainWindow(QMainWindow):
         self.params.castle_changed.connect(self._on_castle_params_changed)
         self.params.stock_changed.connect(self._on_stock_changed)
         self.params.zone_hovered.connect(self._on_zone_hover)
+        self.params.cam_changed.connect(self._on_cam_changed)
         self.preview3d.stage_changed.connect(self._on_stage_changed)
+
+        # Restore persisted material + CAM params (machine / tool / strategy /
+        # feeds). Set the material first (without repopulating), then apply the
+        # persisted CAM values so the user's last edits survive the restart.
+        self.params.set_material(self._prefs.get("material_name") or "acetate")
+        saved_cam = self._prefs.get("cam_params") or {}
+        if saved_cam:
+            from guildcam.core.project.schema import CastleCamParams
+            try:
+                self.params.set_cam_params(CastleCamParams(**saved_cam))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ view switch
 
@@ -1014,6 +1236,7 @@ class MainWindow(QMainWindow):
         self.params.set_zones(self._partition)
         matched = self._partition is not None and self._partition.matched
         self.preview3d.set_stage_enabled(matched)
+        self._act_simulate.setEnabled(matched)
         self._stage = "pockets"
         self.preview3d.set_stage(self._stage)
         self._stage_cache.clear()
@@ -1106,6 +1329,16 @@ class MainWindow(QMainWindow):
         if cached is not None and self.stack.currentIndex() == 1:
             self._show_stage_mesh(cached)
 
+    def _on_cam_changed(self) -> None:
+        """Persist the CAM tab (material / machine / tool / strategy / feeds).
+        CAM params do not affect the 3D preview, so no rebuild is triggered."""
+        try:
+            self._prefs["cam_params"] = self.params.cam_params().model_dump()
+            self._prefs["material_name"] = self.params.material_name()
+            prefs_mod.save(self._prefs)
+        except Exception:
+            pass
+
     def _update_stock_canvas(self) -> None:
         if self._outline_poly is None:
             return
@@ -1193,13 +1426,76 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ other slots
 
     def _on_fit(self) -> None:
-        if self.stack.currentIndex() == 0:
+        idx = self.stack.currentIndex()
+        if idx == 0:
             self.canvas.fit_to_view()
-        else:
+        elif idx == 1:
             self.preview3d._cam_reset()
+        else:
+            self.cutsim._cam_reset()
 
     def _on_zoom_changed(self, scale: float) -> None:
         self.zoom_label.setText(f"Zoom: {scale:.1f} px/mm")
+
+    # ------------------------------------------------------------------ cut simulation
+
+    def _on_simulate(self) -> None:
+        if not self._castle_ready():
+            QMessageBox.warning(
+                self, "No castle",
+                "Load a DXF with matched SCULPT zones to simulate the cut.")
+            return
+        self.status_lbl.setText("Simulating cut…")
+        self._act_simulate.setEnabled(False)
+        self.append_log("[sim] Simulating the machined result…")
+        self._switch_view(2)
+
+        self._sim_worker = SimWorker(
+            self._partition, self.params.castle_params(),
+            cam_params=self.params.cam_params(),
+            hinge_polys=self._hinge_polys,
+            material_name=self.params.material_name(),
+            resolution=self._prefs["preview_resolution_mm"],
+        )
+        self._sim_thread = QThread()
+        self._sim_worker.moveToThread(self._sim_thread)
+        self._sim_thread.started.connect(self._sim_worker.run)
+        self._sim_worker.progress.connect(self.append_log)
+        self._sim_worker.finished.connect(self._on_sim_finished)
+        self._sim_worker.error.connect(self._on_sim_error)
+        self._sim_worker.cancelled.connect(self._on_sim_cancelled)
+        self._sim_worker.finished.connect(self._sim_thread.quit)
+        self._sim_worker.error.connect(self._sim_thread.quit)
+        self._sim_worker.cancelled.connect(self._sim_thread.quit)
+
+        dlg = self._open_progress("Simulating cut")
+        self._sim_worker.stage.connect(self._on_stage)
+        dlg.canceled.connect(self._sim_worker.cancel)
+        self._sim_thread.start()
+
+    def _on_sim_finished(self, report, lines) -> None:
+        self._close_progress()
+        self.cutsim.show_report(report)
+        for line in lines:
+            self.append_log("[sim] " + line)
+        self.status_lbl.setText({
+            "ok": "Cut verified — surface fully reached",
+            "warn": "Cut simulated — review the flagged regions",
+            "fail": "Cut incomplete — see the flagged regions",
+        }.get(report.status(), "Cut simulated"))
+        self._act_simulate.setEnabled(True)
+
+    def _on_sim_error(self, tb: str) -> None:
+        self._close_progress()
+        self.append_log("[sim ERROR]\n" + tb)
+        self.status_lbl.setText("Simulation failed — see log")
+        self._act_simulate.setEnabled(True)
+
+    def _on_sim_cancelled(self) -> None:
+        self._close_progress()
+        self.append_log("[sim] Cancelled.")
+        self.status_lbl.setText("Simulation cancelled")
+        self._act_simulate.setEnabled(True)
 
     def _on_generate(self) -> None:
         if self._outline_poly is None:
@@ -1220,6 +1516,7 @@ class MainWindow(QMainWindow):
         prefs_mod.save(self._prefs)
 
         params = self._collect_gcode_params()
+        self._maybe_write_back_material()
 
         self._act_gcode.setEnabled(False)
         self.append_log(f"[gcode] Output folder: {out_dir}")
@@ -1231,6 +1528,7 @@ class MainWindow(QMainWindow):
             out_dir=Path(out_dir),
             partition=self._partition,
             hinge_polys=self._hinge_polys,
+            cam_params=self.params.cam_params(),
         )
         self._gcode_thread = QThread()
         self._gcode_worker.moveToThread(self._gcode_thread)
@@ -1259,6 +1557,32 @@ class MainWindow(QMainWindow):
             "tab_width":         p.tab_width.value(),
             "tab_height":        p.tab_height.value(),
         }
+
+    def _maybe_write_back_material(self) -> None:
+        """If the CAM tab's feeds/speeds/stepover/stepdown differ from the
+        selected material's stored defaults, offer to save them back."""
+        from guildcam.gui import material_store
+        name = self.params.material_name()
+        values = self.params.current_material_values()
+        changed = material_store.changed_keys(name, values)
+        if not changed:
+            return
+        labels = {
+            "spindle_rpm": "spindle", "feed_rate_mmpm": "feed",
+            "plunge_rate_mmpm": "plunge", "relief_stepover_mm": "stepover",
+            "contour_stepdown_mm": "stepdown", "rough_axial_stock_mm": "rough stock",
+        }
+        what = ", ".join(labels.get(k, k) for k in changed)
+        resp = QMessageBox.question(
+            self, "Update material defaults?",
+            f"You changed {what} from the “{name}” defaults.\n\n"
+            f"Save these as the new defaults for {name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp == QMessageBox.StandardButton.Yes:
+            material_store.save_override(name, values)
+            self.append_log(f"[material] Saved new {name} defaults: {what}.")
 
     def _on_gcode_finished(self, summary: str, rows) -> None:
         self._close_progress()
@@ -1347,7 +1671,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.4.7 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.5.0 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",
@@ -1364,19 +1688,6 @@ def main() -> None:
 
     win = MainWindow()
     win.show()
-
-    # Auto-load demo frame in dev mode (the Demo Project DXF exercises the
-    # full castle pipeline; the illustrations have no SCULPT layer)
-    project_root = Path(__file__).parents[3]
-    for dev_name in (
-        "Demo Project/GuildDraw DXF Export.dxf",
-        "frame_illustration.dxf",
-        "hinge_th-23_front.dxf",
-    ):
-        dev_dxf = project_root / dev_name
-        if dev_dxf.exists():
-            win._load_dxf(dev_dxf)
-            break
 
     sys.exit(app.exec())
 

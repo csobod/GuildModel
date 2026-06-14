@@ -19,7 +19,10 @@ Signals fire whenever the user changes a value.  The owning window connects
 them to rebuild the preview and redraw the stock outline.
 """
 from __future__ import annotations
+from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from PySide6.QtWidgets import (
     QWidget, QScrollArea, QVBoxLayout, QHBoxLayout,
@@ -31,10 +34,22 @@ from PySide6.QtCore import Qt, Signal
 
 from guildcam.core.layers import LAYER_STYLES
 from guildcam.gui.style import theme
+from guildcam.gui import material_store
+from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
-    CastleParams, FootingFillet, FootingSchedule, StockDefinition,
-    ZoneThicknesses,
+    CastleCamParams, CastleParams, FootingFillet, FootingSchedule,
+    StockDefinition, ZoneThicknesses,
 )
+
+_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+
+
+def _tool_names() -> list[str]:
+    try:
+        data = yaml.safe_load((_CONFIG_DIR / "tools.yaml").read_text(encoding="utf-8"))
+        return list(data.keys())
+    except Exception:
+        return ["flat_3175"]
 
 
 def _ro_field(value: str = "—") -> QLineEdit:
@@ -373,7 +388,105 @@ class ParamsPanel(QTabWidget):
     # ------------------------------------------------------------------ CAM tab
 
     def _build_cam_tab(self, lay: QVBoxLayout) -> None:
+        self._build_machine_tool_group(lay)
+        self._build_strategy_group(lay)
         self._build_cam_group(lay)
+
+    def _build_machine_tool_group(self, lay: QVBoxLayout) -> None:
+        grp = QGroupBox("Machine & Tool")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.machine = QComboBox()
+        self._machine_names: list[str] = []
+        for name, display in available_machines():
+            self._machine_names.append(name)
+            self.machine.addItem(display)
+        self.machine.setToolTip(
+            "Target controller. Feeds, plunge, spindle and depth-of-cut are "
+            "clamped to this machine; curves are linearized if it has no arc "
+            "support. Profiles are user-editable YAML in config/machines/."
+        )
+        form.addRow("Machine:", self.machine)
+
+        self.cam_tool = QComboBox()
+        self.cam_tool.addItems(_tool_names())
+        self.cam_tool.setCurrentText("flat_3175")
+        self.cam_tool.setToolTip(
+            "Single tool for the whole posterior program; all five ops adapt to "
+            "its diameter. Add tools by editing config/tools.yaml."
+        )
+        form.addRow("Tool:", self.cam_tool)
+        lay.addWidget(grp)
+
+    def _build_strategy_group(self, lay: QVBoxLayout) -> None:
+        d = CastleCamParams()
+        grp = QGroupBox("Cut Strategy  (time / finish)")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.relief_stepover = _spinbox(d.relief_stepover_mm, 0.2, 3.0, step=0.05)
+        self.relief_stepover.setToolTip(
+            "Spacing between relief finishing passes. Lower = finer surface but "
+            "longer cut; 0.9 mm matches the Fusion reference's coverage."
+        )
+        form.addRow("Relief stepover:", self.relief_stepover)
+
+        self.contour_stepdown = _spinbox(d.contour_stepdown_mm, 0.5, 6.0, step=0.1)
+        self.contour_stepdown.setToolTip(
+            "Axial depth per through-cut pass (capped by material and machine "
+            "max depth-of-cut)."
+        )
+        form.addRow("Contour stepdown:", self.contour_stepdown)
+
+        self.rough_axial_stock = _spinbox(d.rough_axial_stock_mm, 0.0, 5.0, step=0.1)
+        self.rough_axial_stock.setToolTip("Axial stock the rough pass leaves for the fine pass.")
+        form.addRow("Rough axial stock:", self.rough_axial_stock)
+
+        self.contour_ramp_angle = _spinbox(
+            d.contour_ramp_angle_deg, 0.0, 90.0, step=1.0, decimals=1, suffix="°")
+        self.contour_ramp_angle.setToolTip(
+            "Lead-in ramp angle for through-cuts: the tool ramps to depth over a "
+            "short lead-in then cuts one finish lap. Steeper = shorter lead-in "
+            "(faster); 0 ramps a full extra lap (gentlest)."
+        )
+        form.addRow("Contour ramp angle:", self.contour_ramp_angle)
+
+        self.arc_tolerance = _spinbox(
+            d.arc_tolerance_mm, 0.0, 0.2, step=0.005, decimals=3)
+        self.arc_tolerance.setToolTip(
+            "Arc-fitting tolerance for G2/G3 output. 0 disables arcs (linearized "
+            "G1). Ignored on machines without arc support."
+        )
+        form.addRow("Arc tolerance:", self.arc_tolerance)
+        lay.addWidget(grp)
+
+        # Feeds & speeds — populated from the selected material; editable.
+        og = QGroupBox("Feeds & Speeds  (from material)")
+        of = QFormLayout(og)
+        of.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.feed_override = _spinbox(0.0, 0.0, 10000.0, step=50.0, decimals=0, suffix=" mm/min")
+        self.plunge_override = _spinbox(0.0, 0.0, 5000.0, step=25.0, decimals=0, suffix=" mm/min")
+        self.spindle_override = QSpinBox()
+        self.spindle_override.setRange(0, 60000)
+        self.spindle_override.setSingleStep(500)
+        self.spindle_override.setSuffix(" RPM")
+        self.safe_z_clearance = _spinbox(
+            CastleCamParams().safe_z_clearance_mm, 1.0, 30.0, step=0.5)
+        self.safe_z_clearance.setToolTip("Rapid clearance height above the stock top.")
+        of.addRow("Feed override:", self.feed_override)
+        of.addRow("Plunge override:", self.plunge_override)
+        of.addRow("Spindle override:", self.spindle_override)
+        of.addRow("Safe-Z clearance:", self.safe_z_clearance)
+        lay.addWidget(og)
+
+        for w in (self.relief_stepover, self.contour_stepdown, self.rough_axial_stock,
+                  self.contour_ramp_angle, self.arc_tolerance, self.feed_override,
+                  self.plunge_override, self.safe_z_clearance):
+            w.valueChanged.connect(self.cam_changed)
+        self.spindle_override.valueChanged.connect(self.cam_changed)
+        self.machine.currentIndexChanged.connect(self.cam_changed)
+        self.cam_tool.currentIndexChanged.connect(self.cam_changed)
 
     def _build_cam_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("CAM Settings")
@@ -389,7 +502,12 @@ class ParamsPanel(QTabWidget):
         form.addRow("Tool:", self.tool_label)
 
         self.material = QComboBox()
-        self.material.addItems(["acetate", "zyl (auto)", "horn", "metal"])
+        self.material.addItems(material_store.names() or ["acetate"])
+        self.material.setToolTip(
+            "Selecting a material loads its feeds, speeds, stepover and stepdown "
+            "into the CAM tab. After generating, you'll be asked whether to save "
+            "any changes back as this material's defaults."
+        )
         form.addRow("Material:", self.material)
 
         self.onion_skin = _spinbox(0.4, 0.0, 2.0, step=0.1, decimals=2)
@@ -431,7 +549,7 @@ class ParamsPanel(QTabWidget):
         fb.addRow("Tab height:", self.tab_height)
         glay.addLayout(fb)
 
-        for w in (self.material, self.onion_skin, self.hand_allowance,
+        for w in (self.onion_skin, self.hand_allowance,
                   self.tool_profile, self.stepdown_profile,
                   self.tab_count, self.tab_width, self.tab_height):
             if isinstance(w, (QDoubleSpinBox, QSpinBox)):
@@ -439,7 +557,11 @@ class ParamsPanel(QTabWidget):
             else:
                 w.currentIndexChanged.connect(self.cam_changed)
 
+        # Selecting a material repopulates feeds/speeds/stepover/stepdown.
+        self.material.currentIndexChanged.connect(self._on_material_changed)
         lay.addWidget(grp)
+        # Seed the feeds/strategy fields from the initial material.
+        self.apply_material_values(material_store.cam_values(self.material.currentText()))
 
     # ------------------------------------------------------------------ schema
 
@@ -478,6 +600,91 @@ class ParamsPanel(QTabWidget):
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
         )
+
+    def cam_params(self) -> CastleCamParams:
+        """Snapshot the CAM tab into the persisted CastleCamParams schema."""
+        idx = self.machine.currentIndex()
+        machine_name = self._machine_names[idx] if 0 <= idx < len(self._machine_names) else "guild_cnc"
+
+        def _opt(v: float) -> Optional[float]:
+            return v if v > 0 else None
+
+        return CastleCamParams(
+            tool_name=self.cam_tool.currentText(),
+            machine_name=machine_name,
+            relief_stepover_mm=self.relief_stepover.value(),
+            contour_stepdown_mm=self.contour_stepdown.value(),
+            rough_axial_stock_mm=self.rough_axial_stock.value(),
+            contour_ramp_angle_deg=self.contour_ramp_angle.value(),
+            arc_tolerance_mm=self.arc_tolerance.value(),
+            feed_rate_mmpm=_opt(self.feed_override.value()),
+            plunge_rate_mmpm=_opt(self.plunge_override.value()),
+            spindle_rpm=int(self.spindle_override.value()) or None,
+            safe_z_clearance_mm=self.safe_z_clearance.value(),
+        )
+
+    def set_cam_params(self, cp: CastleCamParams) -> None:
+        """Restore the CAM tab from a persisted CastleCamParams (prefs/project)."""
+        if cp.tool_name:
+            self.cam_tool.setCurrentText(cp.tool_name)
+        if cp.machine_name in self._machine_names:
+            self.machine.setCurrentIndex(self._machine_names.index(cp.machine_name))
+        self.relief_stepover.setValue(cp.relief_stepover_mm)
+        self.contour_stepdown.setValue(cp.contour_stepdown_mm)
+        self.rough_axial_stock.setValue(cp.rough_axial_stock_mm)
+        self.contour_ramp_angle.setValue(cp.contour_ramp_angle_deg)
+        self.arc_tolerance.setValue(cp.arc_tolerance_mm)
+        self.feed_override.setValue(cp.feed_rate_mmpm or 0.0)
+        self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)
+        self.spindle_override.setValue(cp.spindle_rpm or 0)
+        self.safe_z_clearance.setValue(cp.safe_z_clearance_mm)
+
+    # ------------------------------------------------------------------ material
+
+    def material_name(self) -> str:
+        return self.material.currentText()
+
+    def set_material(self, name: str) -> None:
+        """Select a material without repopulating the feeds (used on restore,
+        where the persisted CAM values are applied separately)."""
+        i = self.material.findText(name)
+        if i >= 0:
+            self.material.blockSignals(True)
+            self.material.setCurrentIndex(i)
+            self.material.blockSignals(False)
+
+    def _on_material_changed(self) -> None:
+        self.apply_material_values(material_store.cam_values(self.material.currentText()))
+
+    def apply_material_values(self, vals: dict) -> None:
+        """Load a material's feeds/speeds/stepover/stepdown into the CAM tab."""
+        spins = {
+            "feed_rate_mmpm": self.feed_override,
+            "plunge_rate_mmpm": self.plunge_override,
+            "relief_stepover_mm": self.relief_stepover,
+            "contour_stepdown_mm": self.contour_stepdown,
+            "rough_axial_stock_mm": self.rough_axial_stock,
+        }
+        for key, sb in spins.items():
+            if key in vals:
+                sb.blockSignals(True); sb.setValue(float(vals[key])); sb.blockSignals(False)
+        if "spindle_rpm" in vals:
+            self.spindle_override.blockSignals(True)
+            self.spindle_override.setValue(int(vals["spindle_rpm"]))
+            self.spindle_override.blockSignals(False)
+        self.cam_changed.emit()
+
+    def current_material_values(self) -> dict:
+        """The feeds/speeds/stepover/stepdown currently in the CAM tab — for
+        comparing against the material's stored defaults (write-back prompt)."""
+        return {
+            "spindle_rpm": int(self.spindle_override.value()),
+            "feed_rate_mmpm": float(self.feed_override.value()),
+            "plunge_rate_mmpm": float(self.plunge_override.value()),
+            "relief_stepover_mm": float(self.relief_stepover.value()),
+            "contour_stepdown_mm": float(self.contour_stepdown.value()),
+            "rough_axial_stock_mm": float(self.rough_axial_stock.value()),
+        }
 
     # ------------------------------------------------------------------ helpers
 

@@ -16,7 +16,41 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-14, M4.7 CAM-quality done — `v0.4.7` tagged; next M4.8 cut-time/params, then M5)*
+## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 done — pyproject `v0.5.0`, not yet committed/tagged; next M6 hardware round-trip)*
+
+> **M5 — cut-simulation workspace & the relief fix (`v0.5.0`):** a CAMotics sim
+> showed our posterior relief left the pad-block zone uncut (lower-inner lens
+> rims, around the nosepads, the bridge) — the rough pass was confined to the
+> body so it never cleared the to-be-removed lens openings, which stayed 10 mm
+> tall and the flat drop-cutter rode up on them. The M2/M3 gates missed it (they
+> check Z envelopes & the model surface, not whether toolpaths *reach* it). Built
+> a real machined-result verifier: headless `core/sim/` (tool-profile Z-buffer
+> material-removal → achieved floor → completeness/gouge report), a GUI **Cut
+> Simulation** workspace (3rd view + Simulate button), and **fixed the relief**
+> (rim-band clearing in `relief_ops`). Demo uncut **13.7 % → 0.05 %** (worst
+> 5.8 mm → 1.0 mm corner band), at/above the Fusion control, M2/M3 + cut-time
+> budget still green. Suite **121** (+5 cut-completeness). Hardware is now M6.
+
+**M4.8 — cut-time efficiency & machine-portable params (`v0.4.8`):** built a
+GRBL cut-time model (`cam/cuttime.py`: assumption-free cutting-only + accel-aware
+GRBL-planner cycle estimate) and drove the generated program from **~1.95× the
+Fusion control to 0.87× of its cycle time** with the same finish and unchanged
+M2/M3 envelopes. Two fixes did it: a **partial-lap ramp lead-in** for through-cuts
+(`post/grbl.py`; Eyewires/Perimeter cut ~halved) and **relief stepover 0.8→0.9**
+to match Fusion's Scallop coverage (Fine 4179→2252 mm). The rough air-plunge
+concern was measured away (stock-aware rough already beats Fusion, 1.09 vs 3.27).
+**User control:** `CastleCamParams` is now persisted (schema + `~/.guildcam`),
+the CAM tab exposes machine/tool selectors + strategy + feeds, and a
+`MachineProfile` system (`core/post/machine.py` + `config/machines/`: Guild,
+Carbide Nomad 3, Carbide Shapeoko, generic GRBL, no-arc) clamps feeds/DOC,
+linearizes arcs for no-arc controllers, and lints the output. Suite **111 green**
+(+5 cuttime, +12 machine). *Open follow-ups:* tool-reach warning + optional
+tool-change (single-tool for now), Fine-relief stay-down linking, Carbide spec
+confirmation — see M4.8 below.
+
+---
+
+### Earlier same-day snapshot (v0.4.7 — M4.7 CAM-quality)
 
 **M4.7 — CAM-quality pass (`v0.4.7`):** a deep compare of our output vs
 `Demo Project/Demo Program.nc` (the Fusion reference) found two
@@ -756,40 +790,228 @@ ops) report only log lines; the user reads stalls as glitches.
   the ramp lap (gentler entry, more cut time). Consider a partial-lap ramp
   (descend over a fraction, not a full lap) and make it a tunable parameter.
 
-## M4.8 — Cut-time efficiency & machine-portable parameters (v0.4.8) · *measure against the control; let the machine set the rules* — 🔲 PLANNED (next session)
+## M4.8 — Cut-time efficiency & machine-portable parameters (v0.4.8) · *measure against the control; let the machine set the rules* — ✅ DONE 2026-06-14
 
-> **Status: planned 2026-06-14; next session's work.** M5 (hardware) stays
-> behind it. Goal: close the remaining gap to the Fusion control on *time*, not
-> just path shape, and stop hard-coding machine assumptions so the program is
-> valid across GRBL-supported CNCs.
+> **Status: DONE 2026-06-14.** M5 (hardware) is next. Goal met: the generated
+> program went from **~1.95× slower than Fusion to 0.87× of its cycle time**
+> (faster than the control), with the same surface finish and identical M2/M3
+> cut envelopes; machine assumptions are no longer hard-coded — feeds/DOC/arc
+> behaviour adapt to a selectable machine profile, and every time/finish knob is
+> user-editable and persisted.
+>
+> **Result (production res 0.15 mm, cut-time model in `cam/cuttime.py`):**
+>
+> | Op | Fusion cycle (min) | GuildCAM cycle (min) |
+> |---|---|---|
+> | Hinge | 0.86 | 0.42 |
+> | Rough | 3.27 | 1.09 |
+> | Fine | 3.22 | 3.82 |
+> | Eyewires | 1.62 | 2.00 |
+> | Perimeter | 2.03 | 2.21 |
+> | **Total** | **11.00** | **9.55** (0.87×) |
+>
+> What moved the needle: **(1) partial-lap ramp lead-in** for through-cuts
+> (`post/grbl.py`) — ramp to depth over a short lead-in then one finish lap,
+> replacing the full-lap-ramp + full-finish-lap (Eyewires cycle 4.32→2.00,
+> Perimeter 6.12→2.21); **(2) relief stepover 0.8→0.9 mm** to match the Fusion
+> Scallop's effective coverage (the 0.8 value laid redundant rings in the thin
+> frame walls — Fine 4179→2252 mm, ≈ Fusion's 2204). Rough was *already* faster
+> than Fusion once measured (stock-aware mask), so the plan's air-plunge concern
+> (#3) was a non-issue against the control — settled with numbers, not a rewrite.
 
-1. **Cut-time model + harness.** Estimate cycle time from the program (feed +
-   plunge + rapid moves, with simple accel-aware dwell at corners) and compare
-   ours vs `Demo Program.nc` (~10 min reference) op-by-op. Land it as a
-   regression-style report (and a test asserting we stay within a budget of the
-   control). Use it to settle the two M4.7 follow-ups (arc aggressiveness,
-   ramp-lap cost) with numbers.
-2. **User-controllable CAM parameters.** Surface the knobs that drive time and
-   finish — stepover, stepdown, axial rough stock, arc tolerance, ramp
-   style/length, feeds/plunge, safe-Z, rapid behaviour — in the CAM tab
-   (schema + persisted), with sane Demo defaults. Today these are
-   `CastleCamParams` constants.
-3. **GRBL-variant / machine-spec compliance.** A machine profile (work area,
-   max feed/spindle, arc support + arc tolerance, max DOC, supported G-codes,
-   units, soft-limits) that the post validates against and adapts to: clamp
-   feeds/DOC, optionally disable arcs (emit linearized G1) for controllers
-   without reliable G2/G3, respect travel limits, and lint the output against
-   the active profile. Default profile = the Guild CNC; ship a couple of common
-   GRBL variants.
-4. **Acceptance**: cut-time report green vs the control within budget; every
-   time/finish-driving parameter is user-editable and persisted; a non-Guild
-   machine profile produces a compliant program (or a clear, actionable
-   warning); full suite green; tag `v0.4.8`.
+### Baseline measurement (2026-06-14, first-order estimate — the starting point)
 
-## M5 — Hardware round-trip (v0.5.0) · *the only gate that cuts acetate*
+Quick cut-time estimate of `Demo Project/GuildCAM Generated Cut (improved).nc`
+(M4.7 output) vs the Fusion control `Demo Project/Demo Program.nc`. Cutting
+moves at their programmed feed; arc length from IJK; rapids at an assumed
+3000 mm/min (GRBL `$110/$111` are not in the file, so **cutting-only** is the
+assumption-free figure). No accel/decel modeling yet — our many short segments
+likely make the real gap slightly *worse*, though arc fitting helps.
 
-1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using
-   M1–M4 output: hinge pockets → relief → eyewires → perimeter, onion skin,
+| Op | Fusion cut (min) | GuildCAM cut (min) | Fusion len (mm) | GuildCAM len (mm) |
+|---|---|---|---|---|
+| Hinge | 0.77 | 0.35 | 282 | 238 |
+| Rough | 2.99 | 3.63 | 2212 | 1420 |
+| Fine | 2.97 | 5.90 | 2203 | 4179 |
+| Eyewires | 1.53 | 4.24 | 1038 | 1930 |
+| Perimeter | 2.10 | 6.08 | 1521 | 2793 |
+| **Total cut** | **10.37** | **20.21** | | |
+| Est. cycle (cut+rapid @3000) | 10.84 | 21.34 | | |
+
+Fusion ≈ 10.4 min (matches the ~10 min setup-sheet reference — the model is
+sane). **We are ~1.95× slower.** Three named causes, in priority order:
+
+1. **Ramped lead-in double-laps the contours** (Eyewires + Perimeter). Each
+   depth pass cuts a ramp lap *and* a finish lap, so our contour length is ~2×
+   Fusion's (1930 vs 1038; 2793 vs 1521) — ~6.7 min of the gap. This is M4.7
+   follow-up #2: a **partial-lap ramp** (descend over a fraction of the loop,
+   then finish) should recover most of it.
+2. **Relief path length** — our contour-parallel Fine pass is ~2× Fusion's
+   Scallop (4179 vs 2203 mm). Likely 0.8 mm rings over the whole body
+   (incl. flat terraces) vs Fusion's constant-scallop spacing — a
+   stepover/coverage tuning question (and ties to M4.7 follow-up #1, arc
+   aggressiveness).
+3. **Air-plunges + extra rapids in Rough** — the stock-aware mask splits the
+   rings into 133 short arcs, each retracting to safe Z and re-plunging at F333
+   (Rough rapid 0.50 vs Fusion 0.17; cut time > Fusion despite *less* cut
+   length). Plunge-from-safe through air is the waste; rapid-to-near + short
+   plunge, or chaining adjacent arcs, would help.
+
+The baseline table above is the starting point; the work below closed it.
+
+1. ✅ **Cut-time model + harness** (`cam/cuttime.py`, `tests/test_cuttime.py`).
+   Parses a posted GRBL program (ours *or* the Fusion control) into modal moves
+   and reports two figures op-by-op: an **assumption-free cutting-only** time
+   (length / programmed feed) and an **accel-aware cycle estimate** — a compact
+   reimplementation of GRBL's planner (trapezoidal accel, junction-deviation
+   cornering `$11`, centripetal arc-speed limiting), so the many-short-segment
+   penalty is in the number. `format_report` tables it for the log / setup
+   sheet; the GUI prints it after every generate. Budget test asserts our
+   cutting-only total stays ≤ 1.30× the control (now ~0.9× at test res 0.3 mm).
+2. ✅ **User-controllable CAM parameters.** `CastleCamParams` is now a persisted
+   pydantic model (`project.schema`, re-exported from `cam.castle_ops`), on
+   `ProjectSchema.cam_params` and saved in `~/.guildcam/prefs.json`
+   (`cam_params` key). The CAM tab gained **Machine & Tool** (machine + tool
+   selectors), **Cut Strategy** (relief stepover, contour stepdown, rough axial
+   stock, ramp angle, arc tolerance) and **Feeds & Speeds** (feed/plunge/spindle
+   overrides — 0 = material preset — and safe-Z clearance) groups, all bound via
+   `cam_params()` / `set_cam_params()`. Defaults are the Demo reference values.
+3. ✅ **GRBL-variant / machine-spec compliance.** `MachineProfile`
+   (`project.schema`) + `core/post/machine.py`: `apply_machine_limits` clamps
+   feed / plunge / spindle / depth-of-cut (material caps DOC too) and linearizes
+   arcs (arc_tol→0) for no-arc controllers, each clamp emitting an actionable
+   warning; `lint_program` checks a posted program's part-envelope fit, feed
+   ceiling, spindle range and arc support; `MachineDynamics.from_profile` feeds
+   the cut-time estimate per machine. Shipped profiles in `config/machines/`:
+   **guild_cnc** (default), **carbide_nomad3**, **carbide_shapeoko**,
+   **generic_grbl**, **grbl_no_arc** — all user-editable YAML.
+4. ✅ **Acceptance**: budget green (0.87× cycle vs control); every time/finish
+   knob user-editable + persisted (prefs round-trip + GUI round-trip verified);
+   a non-Guild profile produces a compliant program (`grbl_no_arc`: linearized,
+   lint-clean; Nomad 3: arcs kept, fits the 203 mm bed); full suite **111 green**
+   (+5 cuttime, +12 machine); ready to tag `v0.4.8`.
+
+**Open follow-ups (post-M4.8):**
+- **Tool-reach warning + optional tool change** (user request 2026-06-14):
+  detect when the selected tool radius is too large to reach a feature (e.g. a
+  2 mm-wide hinge pocket with the 3.175 mm tool) and offer the user a tool
+  change (or other resolution) for just that op. Deferred deliberately — v1
+  stays single-tool; this graduates toward the post-1.0 multi-tool item.
+- **Fine-relief stay-down linking.** Fine is the only op still above the control
+  (3.82 vs 3.22 cycle), and only on *rapids* (retract-to-safe + replunge between
+  ring paths, ~0.45 min). Recoverable with stay-down linking between adjacent
+  rings, but that adds gouge risk for a small gain on an op that's already near
+  Fusion — left until a hardware cut justifies it.
+- **Carbide profile specs are templates** — work area / spindle / DOC vary by
+  model and spindle; the shipped Nomad 3 / Shapeoko values want a real-machine
+  confirmation pass.
+
+## M4.9 — Material-driven CAM defaults & write-back (v0.4.9) · *the material sets the feeds; the maker tunes them* — ✅ DONE 2026-06-14
+
+> Small follow-on after M4.8, alongside the cut-incompleteness diagnosis that
+> re-planned M5. Selecting a material now **populates** the CAM tab's feeds,
+> speeds, stepover and stepdown from that material's defaults; if the maker edits
+> them and generates, GuildCAM **offers to save the changes back** as that
+> material's defaults; and Preferences ▸ Materials edits or **resets to the
+> shipped defaults**.
+
+1. ✅ **Material schema + store.** `config/materials.yaml` gained
+   `relief_stepover_mm` / `contour_stepdown_mm` / `rough_axial_stock_mm` per
+   material (acetate 0.9/2.5/2.0; horn 0.6/0.8/1.0). New `gui/material_store.py`
+   merges shipped defaults with per-user overrides in `~/.guildcam/materials.yaml`
+   (the prefs DEFAULTS-merge pattern) — `effective()`, `cam_values()`,
+   `changed_keys()`, `save_override()`, `reset_material()`/`reset_all()`. The
+   shipped file is never written.
+2. ✅ **CAM tab.** Material combo is sourced from the store; selecting a material
+   loads its feeds/speeds/stepover/stepdown into the spinboxes
+   (`apply_material_values`); the feeds group is "from material", not
+   "0 = preset". Material + edited values persist (`material_name` pref +
+   `cam_params`), restored on startup without clobbering the user's last edits.
+3. ✅ **Write-back prompt.** On Generate, if the CAM values differ from the
+   selected material's stored defaults, a dialog offers to save them as the new
+   defaults for that material (`_maybe_write_back_material`).
+4. ✅ **Preferences ▸ Materials.** Per-material editable feeds/speeds/stepover/
+   stepdown with a per-material **Reset to shipped** button; OK saves overrides
+   that differ from shipped and drops those that match.
+5. ✅ Suite **116 green** (+5 `tests/test_materials_m4x.py`); offscreen GUI smoke
+   of the populate / write-back / reset flow. (Diagnosis lives in
+   `Demo Project/_diagnose_nosepad.py`; the relief fix itself is M5, behind the
+   simulator.)
+
+## M5 — Cut-simulation workspace & verification (v0.5.0) · *prove the cut before we waste acetate* — ✅ DONE 2026-06-14
+
+> **Outcome:** built the headless simulator (`core/sim/`), the verification
+> report + completeness gate, **fixed the relief incompleteness** (rim-band
+> clearing in `relief_ops`), and the GUI **Cut Simulation** workspace. The fix
+> took the demo from **13.7 % of the body left uncut (worst 5.8 mm) to 0.05 %
+> (worst 1.0 mm = the unavoidable tool-radius corner band)** — at or better than
+> the Fusion control — with the M2/M3 gates and the cut-time budget still green
+> (cut-time 0.87×→1.20× of control from the extra band clearing, within the
+> 1.30× budget). Suite **121 green** (+5 `tests/test_cut_completeness.py`).
+> Tag `v0.5.0`. Hardware round-trip is now M6.
+
+> **Why this jumped the queue (2026-06-14):** a CAMotics simulation of our
+> program revealed the posterior relief leaves material uncut in the pad-block
+> zone — the lower-inner lens rims, around the nosepads, the bridge — that
+> Fusion's program clears. A throwaway achieved-floor check
+> (`Demo Project/_diagnose_nosepad.py`) quantified it: **ours leaves 11.1 % of
+> the body uncut (worst 5.8 mm proud); Fusion 2.3 % (worst 1.1 mm — only the
+> tool-radius corner band).** Root cause: our **rough pass is confined to the
+> body** (`cut_rough = reach & …`), so it never clears the to-be-removed lens
+> openings / pockets; they stay at full 10 mm pad-block height, and the flat
+> drop-cutter rides up on them, leaving the rims unfinished. The M3 NC-envelope
+> gate and the M2 STL gate **both passed** through this — they check Z
+> envelopes and the *model* surface, not whether the *toolpaths actually reach
+> the whole surface*. We need a real machined-result verifier, integrated and
+> visual, before trusting any cut. It's a big enough build to be its own
+> milestone, and hardware (now M6) must wait behind it.
+
+**Goal:** a **Cut Simulation** workspace — a third primary view after *2D
+Outline* and *3D Model*, with its own left-toolbar button right after the 3D
+Model toggle — that geometrically simulates the machined result from the
+generated G-code, renders the cut piece, and flags **uncut** and **gouged**
+regions against the intended surface. Geometric material-removal only (no
+forces/feeds-physics); CAMotics stays a useful external cross-check.
+
+1. ✅ **Headless simulator core** (`core/sim/`). `toolsim.py`: `ToolProfile`
+   (flat = cylinder, ball = sphere, toroid = corner-radius drop profile) +
+   `achieved_floor` (vectorised disc/profile Z-buffer stamping). `paths.py`:
+   `cutting_paths_from_program` (modal parse, arcs flattened, rapids dropped —
+   works on ours *and* the Fusion control) and `cutting_paths_from_ops`.
+   Optional `progress` hook. *(Per-op playback snapshots deferred — see task 4.)*
+2. ✅ **Verification report** (`report.py`): `Completeness` (uncut cells,
+   max/mean excess, per-zone via shapely) + `Gouge` + `CutReport` with a
+   pass/warn/fail `status()`. Gouge excludes the tool-radius band around vertical
+   target steps (terrace / pocket / rim walls) — a flat tool can't machine a
+   sharp concave corner cleaner than its radius, so those are unavoidable, not
+   defects. `tests/test_cut_completeness.py` (+5): tool-profile units, program
+   parse, and the gate (our uncut % ≤ control + margin). *(cuttime / fixture /
+   machine-lint stay their own reports, surfaced on the G-code path, rather than
+   merged into CutReport.)*
+3. ✅ **Relief incompleteness fixed, gated by the simulator** (`relief_ops`):
+   clear a tool-radius **rim band** of the to-be-removed openings/outside down to
+   the nearest rim level (nearest-inside via `distance_transform_edt`), and ring
+   the body grown by that band, so the finish pass reaches every rim — mirroring
+   Fusion's pocket clearing. Demo uncut **13.7 % → 0.05 %**; M2/M3 gates +
+   cut-time budget still green.
+4. ✅ **GUI workspace.** `gui/widgets/cut_sim_view.py` `CutSimView` (PyVista
+   sibling of `Preview3D`) in the stacked centre (index 2); left-toolbar
+   **Simulate Cut** button after *3D Model* (new `sim-cut` icon, `Ctrl+Shift+S`);
+   renders the simulated cut piece with **Uncut (red) / Gouge (orange)** overlay
+   toggles + a pass/warn/fail badge; off-thread `SimWorker` (progress dialog,
+   cancellable) simulates the **posted program** (so it catches post defects too);
+   themed for dark/light. *(Trimmed from the sketch: the per-op playback scrubber
+   and the target-ghost toggle; the cut report goes to the log + badge rather
+   than a side panel — revisit if the hardware round-trip wants them.)*
+5. ✅ **Acceptance:** the workspace simulates the demo program and the report
+   reads "Cut verified" (0.05 % uncut); `test_cut_completeness` green; the relief
+   fix keeps the M2/M3 gates and the cut-time budget green; full suite **121
+   green**; tag `v0.5.0`.
+
+## M6 — Hardware round-trip (v0.6.0) · *the only gate that cuts acetate*
+
+1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using the
+   M1–M5 output: hinge pockets → relief → eyewires → perimeter, onion skin,
    release by hand, compare against the Fusion-cut reference part.
 2. Verify: plateau heights (calipers), pocket fit of a catalog hinge, lens
    opening size after the 0.1 mm allowance is hand-finished, skin release
@@ -799,7 +1021,7 @@ ops) report only log lines; the user reads stalls as glitches.
    tag GuildDraw `v1.0.0` when this milestone passes.
 5. Findings feed fixes; milestone ends when a cut part is accepted.
 
-## M6 — Project I/O & two-sided workflow (v0.6.0)
+## M7 — Project I/O & two-sided workflow (v0.7.0)
 
 1. `.guildcam` project save/load extended with the castle schema (zones,
    footing, stock, allowances) — full round-trip tests.
@@ -811,12 +1033,13 @@ ops) report only log lines; the user reads stalls as glitches.
 4. SVG intake npoint bug: fix or formally drop SVG import for v1 (DXF is the
    contract; decide here, not silently).
 
-## M7 — Packaging, docs & release (v1.0.0)
+## M8 — Packaging, docs & release (v1.0.0)
 
 1. PyInstaller → Windows installer (Inno Setup); frozen-build smoke test.
 2. User guide: castle ethos chapter (§2 expanded with the stage-stepper
    walkthrough), zone/SCULPT drawing guidance for GuildDraw, parameter
-   reference, fixture/stock setup, hand-finishing notes.
+   reference, fixture/stock setup, hand-finishing notes; cut-simulation
+   verification chapter.
 3. README, NOTICE refresh, version stamp, tag `v1.0.0`.
 
 ### 1.0 release criteria (definition of done)
@@ -830,11 +1053,13 @@ ops) report only log lines; the user reads stalls as glitches.
       preview/STL meshes (M4.5)
 - [x] GuildDraw window architecture (tabbed right dock, icon toolbar,
       bottom log dock), progress dialogs on long ops (M4.6)
-- [ ] **A physical frame front has been cut and accepted** (M5 — also
+- [x] Cut-simulation workspace verifies the machined result (completeness +
+      gouge); relief reaches the whole surface like the control (M5)
+- [ ] **A physical frame front has been cut and accepted** (M6 — also
       graduates GuildDraw to v1.0.0)
 - [ ] `.guildcam` round-trips the full castle schema; archive bundle exports
-      (M6)
-- [ ] Packaged Windows build + user guide with the castle chapter (M7)
+      (M7)
+- [ ] Packaged Windows build + user guide with the castle chapter (M8)
 - [ ] Test suite green and run before every release build
 
 ---
@@ -860,7 +1085,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-12, M4.6 complete)
+## Module status (as of 2026-06-14, M5 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -879,19 +1104,24 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); **contour-parallel relief + ring-major eyewires** (CAM-quality pass) |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %) |
+| `cam/cuttime.py` | ✅ | **New (M4.8)** — GRBL cut-time model: assumption-free cutting-only + accel-aware GRBL-planner cycle estimate; `format_report`; `MachineDynamics.from_profile`; drove the 1.95×→0.87× gap close |
+| `core/sim/` | ✅ | **New (M5)** — geometric cut simulation: `toolsim.py` (`ToolProfile` flat/ball/toroid + `achieved_floor` Z-buffer), `paths.py` (cutting paths from posted program or CamOps), `report.py` (`verify` → completeness/gouge `CutReport`); the machined-result verifier that caught the relief incompleteness |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ✅ | `comment()` added; pockets enter via ramped laps (plunge issue closed); `arc()` G2/G3 + arc-fit emit + ramped contour lead-in (CAM-quality pass) |
-| `post/arcfit.py` | ✅ | New (CAM-quality pass) — greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement |
+| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8) — ramp to depth over a short lead-in then one finish lap |
+| `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
+| `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` landed (M1); legacy `ReliefRecipe` removed (M4) |
-| `config/` | ✅ | fixture (incl. nosepad sub-zone), hinges, `flat_3175` tool, proven acetate feeds (M3) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); GuildDraw-parity theming, dark mode, Preferences, recent files, export-resolution STL worker (M4.5); right tabbed dock + bottom log dock + icon toolbar, progress dialogs, window-state persistence (M4.6) |
-| `gui/icons.py` | ✅ | New in M4.6 — `_make_icon` port (SVG→two-state QIcon, `currentColor` recolor) + `apply_toolbar_icons`; text fallback when an SVG is missing |
-| `gui/style/theme.py` `gui/prefs.py` | ✅ | New in M4.5 — GuildDraw QSS port + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 adds window geometry/state keys) |
-| `tests/` | ✅ | 94 green (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7, incl. the STL, NC, silhouette, progress/icon, and contour-parallel/arc/ramp gates) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); **`CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema`** (M4.8) |
+| `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); **Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view)** (M5) |
+| `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
+| `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
+| `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
+| `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
+| `tests/` | ✅ | **121 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + **materials 5 + cut-completeness 5**, incl. STL/NC/silhouette/arc/ramp/budget/clamp gates + the cut-completeness gate vs the control) |
 
 ## Dependency list (v1 — unchanged)
 

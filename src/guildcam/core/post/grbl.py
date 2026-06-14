@@ -6,9 +6,47 @@ M0 program pause is used between sides, or two separate .nc files are emitted
 (two-file is the safer default for non-expert users).
 """
 from __future__ import annotations
+import bisect
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+
+def _cumlen(xy: list[tuple[float, float]]) -> list[float]:
+    cum = [0.0]
+    for k in range(1, len(xy)):
+        cum.append(cum[-1] + math.dist(xy[k - 1], xy[k]))
+    return cum
+
+
+def _interp_xy(xy: list[tuple[float, float]], cum: list[float], s: float) -> tuple[float, float]:
+    s = max(0.0, min(s, cum[-1]))
+    k = bisect.bisect_left(cum, s)
+    if k <= 0:
+        return xy[0]
+    if k >= len(xy):
+        return xy[-1]
+    s0, s1 = cum[k - 1], cum[k]
+    t = 0.0 if s1 <= s0 else (s - s0) / (s1 - s0)
+    return (xy[k - 1][0] + (xy[k][0] - xy[k - 1][0]) * t,
+            xy[k - 1][1] + (xy[k][1] - xy[k - 1][1]) * t)
+
+
+def _lap_from(xy: list[tuple[float, float]], cum: list[float], start_s: float) -> list[tuple[float, float]]:
+    """One full lap of a closed loop (xy[0]==xy[-1]) starting at arc-length
+    start_s, going forward and returning to that same point."""
+    sp = _interp_xy(xy, cum, start_s)
+    n = len(xy)
+    out = [sp]
+    out += [xy[k] for k in range(n) if cum[k] > start_s + 1e-9]   # …→ end(==P0)
+    for k in range(1, n):                                          # P0 → just before start
+        if cum[k] < start_s - 1e-9:
+            out.append(xy[k])
+        else:
+            break
+    out.append(sp)
+    return out
 
 
 @dataclass
@@ -117,27 +155,48 @@ class GRBLPost:
                 self.feed(x=x, y=y, z=z)
 
     def _emit_ramped_loop(
-        self, pts: list[tuple[float, float, float]], ramp_height: float, arc_tol: float
+        self, pts: list[tuple[float, float, float]], ramp_height: float,
+        ramp_angle_deg: float, arc_tol: float,
     ) -> None:
-        """Ramped lead-in for a closed constant-Z contour loop: feed down through
-        cleared air, descend one lap to depth (plunge feed), then one finish lap
-        at depth (cut feed). No straight slot-plunge into the material."""
+        """Partial-lap ramped lead-in for a closed constant-Z contour loop.
+
+        Feed down through cleared air to one stepdown above the cut, ramp down to
+        full depth over a short lead-in distance (set by the ramp angle, capped
+        to the loop perimeter), then cut one full finish lap at depth. This
+        replaces the old full-lap-ramp + full-finish-lap (two laps per depth
+        pass) with ~1 + lead-in/perimeter laps — roughly halving contour cut
+        length while still leaving a clean full-depth wall (no slot-plunge).
+
+        A non-positive ramp angle (or a loop shorter than the lead-in) degrades
+        to ramping the whole lap, i.e. the original two-lap behaviour.
+        """
         z_cut = pts[0][2]
         z_top = z_cut + ramp_height
+        xy = [(p[0], p[1]) for p in pts]          # closed: xy[0] == xy[-1]
+        cum = _cumlen(xy)
+        total = cum[-1] or 1.0
+        if ramp_angle_deg and ramp_angle_deg > 0:
+            ramp_dist = min(total, ramp_height / math.tan(math.radians(ramp_angle_deg)))
+        else:
+            ramp_dist = total
+        ramp_dist = max(ramp_dist, 1e-9)
+
         # controlled descent through air to the ramp-start height (never a rapid
         # below safe Z — keeps the tool out of uncleared stock)
         self.feed(z=z_top, feed=self.plunge_rate_mmpm)
-        xy = [(p[0], p[1]) for p in pts]
-        seg = [((xy[k][0] - xy[k - 1][0]) ** 2 + (xy[k][1] - xy[k - 1][1]) ** 2) ** 0.5
-               for k in range(1, len(xy))]
-        total = sum(seg) or 1.0
-        run = 0.0
+
+        # Phase A — ramp z_top -> z_cut over the first ramp_dist of the loop
         for k in range(1, len(xy)):
-            run += seg[k - 1]
-            z = z_top + (z_cut - z_top) * (run / total)
+            if cum[k] >= ramp_dist - 1e-9:
+                break
+            z = z_top + (z_cut - z_top) * (cum[k] / ramp_dist)
             self.feed(x=xy[k][0], y=xy[k][1], z=z, feed=self.plunge_rate_mmpm)
-        # finish lap at full depth
-        self._emit_moves([(p[0], p[1], z_cut) for p in pts], arc_tol)
+        pr = _interp_xy(xy, cum, ramp_dist)
+        self.feed(x=pr[0], y=pr[1], z=z_cut, feed=self.plunge_rate_mmpm)
+
+        # Phase B — one full finish lap at depth, starting/ending at the ramp end
+        lap = _lap_from(xy, cum, ramp_dist)
+        self._emit_moves([(x, y, z_cut) for x, y in lap], arc_tol)
 
     def emit_polyline(
         self,
@@ -145,6 +204,7 @@ class GRBLPost:
         first_move_is_plunge: bool = True,
         arc_tol: float = 0.0,
         ramp_height: float = 0.0,
+        ramp_angle_deg: float = 8.0,
     ) -> None:
         if not points:
             return
@@ -158,7 +218,7 @@ class GRBLPost:
                   and abs(pts[0][1] - pts[-1][1]) < 1e-6)
         const_z = (max(p[2] for p in pts) - min(p[2] for p in pts)) < 1e-6
         if ramp_height > 0 and closed and const_z:
-            self._emit_ramped_loop(pts, ramp_height, arc_tol)
+            self._emit_ramped_loop(pts, ramp_height, ramp_angle_deg, arc_tol)
             return
 
         if first_move_is_plunge:

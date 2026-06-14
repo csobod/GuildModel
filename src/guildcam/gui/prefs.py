@@ -30,6 +30,11 @@ DEFAULTS: dict = {
     # "" = first run, fall back to the coded default layout) — M4.6 Part A.5
     "main_window_geometry":  "",
     "main_window_state":     "",
+    # CAM tab: persisted CastleCamParams (machine/tool/strategy/feeds) — M4.8.
+    # {} = first run, fall back to the schema defaults.
+    "cam_params":            {},
+    # Selected material (drives feeds/speeds/stepover/stepdown) — M4.x.
+    "material_name":         "acetate",
 }
 
 

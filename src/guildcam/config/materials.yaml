@@ -1,6 +1,12 @@
-# GuildCAM material presets
+# GuildCAM material presets (shipped defaults).
 # All feeds in mm/min, speeds in RPM, depths in mm.
 # These are conservative starting defaults — adjust per actual machine and stock.
+#
+# spindle_rpm / feed_rate_mmpm / plunge_rate_mmpm / relief_stepover_mm /
+# contour_stepdown_mm / rough_axial_stock_mm are the CAM defaults loaded into the
+# CAM tab when a material is selected. User edits can be written back as
+# overrides in ~/.guildcam/materials.yaml (this file stays the shipped baseline,
+# restorable from Preferences ▸ Materials ▸ Reset to shipped).
 
 acetate:
   display_name: "Acetate"
@@ -9,6 +15,9 @@ acetate:
   feed_rate_mmpm: 750
   plunge_rate_mmpm: 333
   max_doc_mm: 2.5       # maximum depth-of-cut per pass (reference contour stepdown)
+  relief_stepover_mm: 0.9       # matches the Fusion Scallop coverage
+  contour_stepdown_mm: 2.5
+  rough_axial_stock_mm: 2.0
   recommended_tools:
     relief: flat_3175
     profile: flat_3175
@@ -21,6 +30,9 @@ horn:
   feed_rate_mmpm: 400
   plunge_rate_mmpm: 100
   max_doc_mm: 0.8
+  relief_stepover_mm: 0.6       # finer + shallower: horn is brittle
+  contour_stepdown_mm: 0.8
+  rough_axial_stock_mm: 1.0
   recommended_tools:
     relief: ball_2mm
     profile: flat_3mm
