@@ -17,7 +17,7 @@ job.gcam  (zip)
 ├── source.dxf         # the imported GuildDraw DXF — self-contained reopen
 ├── program/
 │   ├── posterior_cut.nc   # generated G-code (the posterior one-setup program)
-│   └── back_cut.nc        # (M7) back-side program for the two-sided flip
+│   └── back_cut.nc        # (M8) back-side program for the two-sided flip
 ├── machine.yaml       # snapshot of the active MachineProfile
 ├── setup.json         # setup sheet (tool, feeds/speeds, op order, cut lengths, est. time, flip axis)
 ├── cut_report.json    # cut-simulation verification (completeness / gouge + cut-time)
@@ -30,6 +30,12 @@ is written when it exists, so a `.gcam` is valid at any stage — saved right af
 import (project + `source.dxf`) or after generation (adds `program/`,
 `machine.yaml`, `setup.json`, `cut_report.json`). This staging is what drives the
 GuildCAM readiness traffic-light.
+
+**The generated program lives in the `.gcam` by default.** Generating G-code
+stores the program in the project (folded into the open `.gcam`, or written on
+the next Save Project); it no longer writes a loose `.nc`. A standalone `.nc` is
+an explicit, optional export — **File ▸ Export G-code** (`Ctrl+Shift+G`), the
+G-code counterpart of **Export STL**.
 
 ## `manifest.json`
 

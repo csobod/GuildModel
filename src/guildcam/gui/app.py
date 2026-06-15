@@ -213,7 +213,7 @@ class GCodeWorker(_ProgressWorker):
     error = Signal(str)              # traceback
 
     def __init__(
-        self, outline, castle, params: dict, out_dir: Path,
+        self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
     ) -> None:
         super().__init__()
@@ -221,7 +221,6 @@ class GCodeWorker(_ProgressWorker):
         self.castle = castle
         self.params = params
         self.cam_params = cam_params
-        self.out_dir = out_dir
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
         # .gcam artifacts (filled by the castle path on success)
@@ -310,21 +309,22 @@ class GCodeWorker(_ProgressWorker):
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
         )
-        out_file = self.out_dir / "posterior_cut.nc"
-        post.write(out_file)
-        self.progress.emit(
-            f"[gcode] Wrote {out_file.name}  ({out_file.stat().st_size:,} bytes)"
-        )
+        # The program is kept in the project (.gcam) by default — no loose .nc
+        # is written here; File ▸ Export G-code writes a standalone file on
+        # demand (mirrors Export STL).
+        text = post.to_string()
+        self.progress.emit(f"[gcode] posterior_cut.nc generated ({len(text):,} bytes)")
 
         # Lint against the machine + estimate cut time (machine dynamics).
-        text = post.to_string()
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
         report = estimate_program(text, MachineDynamics.from_profile(machine))
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
 
-        summary = f"Posterior program written:\n  {out_file}"
+        summary = ("Posterior program generated and stored in the project.\n"
+                   "Save the project (Ctrl+S) to keep it in the .gcam, or "
+                   "File ▸ Export G-code for a standalone .nc.")
         summary += (f"\n\nMachine: {machine.display_name}"
                     f"\nEstimated cycle: {report.cycle_seconds / 60:.1f} min "
                     f"(cut {report.cutting_only_seconds / 60:.1f} min)")
@@ -335,7 +335,7 @@ class GCodeWorker(_ProgressWorker):
         rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm)
 
         # Stash artifacts for the .gcam container (M5.1); read on the GUI thread.
-        self.programs = {out_file.name: text}
+        self.programs = {"posterior_cut.nc": text}
         self.machine_dump = machine.model_dump()
         flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
         self.setup_dict = {
@@ -415,13 +415,15 @@ class GCodeWorker(_ProgressWorker):
                 post_front.emit_polyline(polyline)
         post_front.end_program()
 
-        front_file = self.out_dir / "front_profile.nc"
-        post_front.write(front_file)
-        self.progress.emit(
-            f"[gcode] Wrote {front_file.name}  ({front_file.stat().st_size:,} bytes)"
+        # Kept in the project by default; Export G-code writes a loose .nc.
+        text = post_front.to_string()
+        self.progress.emit(f"[gcode] front_profile.nc generated ({len(text):,} bytes)")
+        self.programs = {"front_profile.nc": text}
+        self.finished.emit(
+            "Front profile program generated and stored in the project.\n"
+            "Save the project (Ctrl+S) or File ▸ Export G-code for a standalone .nc.",
+            None,
         )
-
-        self.finished.emit(f"Generated:\n  {front_file}", None)
 
 
 # ------------------------------------------------------------------ cut simulation worker
@@ -967,6 +969,13 @@ class MainWindow(QMainWindow):
         self._act_export.setEnabled(False)
         self._act_export.triggered.connect(self._on_export_stl)
 
+        self._act_export_nc = QAction("Export G-code", self)
+        self._act_export_nc.setShortcut("Ctrl+Shift+G")
+        self._act_export_nc.setToolTip(
+            "Export the generated program to a standalone .nc file…  (Ctrl+Shift+G)")
+        self._act_export_nc.setEnabled(False)
+        self._act_export_nc.triggered.connect(self._on_export_nc)
+
         self._act_view2d = QAction("2D Outline", self, checkable=True)
         self._act_view2d.setChecked(True)
         self._act_view2d.setToolTip("2D outline view")
@@ -1003,6 +1012,7 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self._act_build)
         tb.addAction(self._act_gcode)
+        tb.addAction(self._act_export_nc)
         tb.addAction(self._act_export)
         tb.addSeparator()
         tb.addAction(self._act_view2d)
@@ -1022,6 +1032,7 @@ class MainWindow(QMainWindow):
             (self._act_open, "op-open-dxf"),
             (self._act_build, "op-build-3d"),
             (self._act_gcode, "op-gcode"),
+            (self._act_export_nc, "op-export-gcode"),
             (self._act_export, "op-export-stl"),
             (self._act_view2d, "view-2d"),
             (self._act_view3d, "view-3d"),
@@ -1046,6 +1057,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_build)
         file_menu.addAction(self._act_gcode)
+        file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
         file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
@@ -1252,6 +1264,7 @@ class MainWindow(QMainWindow):
         # import drops it to red. The model is rebuilt lazily from the DXF.
         self._mesh_built = False
         self._program_stored = bundle.has_program()
+        self._act_export_nc.setEnabled(bundle.has_program())
         self._add_recent(str(path))
         self.setWindowTitle(f"GuildCAM  —  {path.name}")
         self.append_log(
@@ -1354,6 +1367,8 @@ class MainWindow(QMainWindow):
             # Readiness restarts at red once the import lands (no model/program).
             self._mesh_built = False
             self._program_stored = False
+            # No program for the fresh design yet — disable loose export.
+            self._act_export_nc.setEnabled(False)
 
         self._import_worker = ImportWorker(path)
         self._import_thread = QThread()
@@ -1737,26 +1752,16 @@ class MainWindow(QMainWindow):
             )
             return
 
-        out_dir = QFileDialog.getExistingDirectory(
-            self, "Choose output folder for .nc files",
-            self._prefs["last_output_dir"],
-        )
-        if not out_dir:
-            return
-        self._prefs["last_output_dir"] = out_dir
-        prefs_mod.save(self._prefs)
-
         params = self._collect_gcode_params()
         self._maybe_write_back_material()
 
         self._act_gcode.setEnabled(False)
-        self.append_log(f"[gcode] Output folder: {out_dir}")
+        self.append_log("[gcode] Generating — the program is stored in the project.")
 
         self._gcode_worker = GCodeWorker(
             outline=self._outline_poly,
             castle=self.params.castle_params(),
             params=params,
-            out_dir=Path(out_dir),
             partition=self._partition,
             hinge_polys=self._hinge_polys,
             cam_params=self.params.cam_params(),
@@ -1828,6 +1833,7 @@ class MainWindow(QMainWindow):
             self._last_setup = w.setup_dict
             self._last_machine = w.machine_dump
             self._last_report = None
+            self._act_export_nc.setEnabled(True)
             # If a project file is open, fold the new program straight into it.
             if self._project_path is not None:
                 self._save_gcam_to(self._project_path, announce=False)
@@ -1848,6 +1854,57 @@ class MainWindow(QMainWindow):
         self.append_log("[gcode] Cancelled.")
         self._act_gcode.setEnabled(True)
         self.status_lbl.setText("G-code cancelled")
+
+    def _on_export_nc(self) -> None:
+        """Write the generated program(s) to standalone .nc file(s) on demand
+        (the program lives in the project by default; this is the opt-in loose
+        export, mirroring Export STL)."""
+        if not self._last_programs:
+            QMessageBox.information(
+                self, "Export G-code",
+                "Generate G-code first (Ctrl+G) — then export it to a .nc file.",
+            )
+            return
+        base = Path(self._prefs["last_output_dir"] or ".")
+        if len(self._last_programs) == 1:
+            name, text = next(iter(self._last_programs.items()))
+            path_str, _ = QFileDialog.getSaveFileName(
+                self, "Export G-code", str(base / name), "G-code (*.nc);;All files (*)"
+            )
+            if not path_str:
+                return
+            out = Path(path_str)
+            try:
+                out.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                QMessageBox.critical(self, "Export failed", str(exc))
+                return
+            self._prefs["last_output_dir"] = str(out.parent)
+            written = [out]
+        else:
+            # Multiple programs (e.g. a future back-side cut): pick a folder.
+            d = QFileDialog.getExistingDirectory(
+                self, "Export G-code — choose folder", str(base)
+            )
+            if not d:
+                return
+            written = []
+            try:
+                for name, text in self._last_programs.items():
+                    p = Path(d) / name
+                    p.write_text(text, encoding="utf-8")
+                    written.append(p)
+            except OSError as exc:
+                QMessageBox.critical(self, "Export failed", str(exc))
+                return
+            self._prefs["last_output_dir"] = d
+        prefs_mod.save(self._prefs)
+        for p in written:
+            self.append_log(f"[export] Wrote {p}")
+        self.status_lbl.setText(
+            f"G-code exported — {written[0].name}"
+            + (f" (+{len(written) - 1} more)" if len(written) > 1 else "")
+        )
 
     def _on_export_stl(self) -> None:
         if not self._castle_ready():

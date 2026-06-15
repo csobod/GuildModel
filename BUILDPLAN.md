@@ -33,6 +33,10 @@ Guild CNC, and prove the result on real stock — and nothing else.
 > hand-off subset (`docs/GCAM-FORMAT.md`). Generating/simulating folds the
 > program/setup/report into the open `.gcam` (the M5.2 green-light hook). Suite
 > **127** (+6). The dev-mode demo-DXF auto-load was removed in `v0.5.0`.
+> *Workflow refinement (post-`v0.5.2`):* **the generated program lives in the
+> `.gcam` by default** — Generate G-code no longer prompts for a folder or writes
+> a loose `.nc`; a standalone `.nc` is an opt-in **File ▸ Export G-code**
+> (`Ctrl+Shift+G`), the counterpart of Export STL (icon `op-export-gcode`).
 
 > **M5 — cut-simulation workspace & the relief fix (`v0.5.0`):** a CAMotics sim
 > showed our posterior relief left the pad-block zone uncut (lower-inner lens
@@ -1368,7 +1372,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
