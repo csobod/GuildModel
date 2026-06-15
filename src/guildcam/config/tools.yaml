@@ -2,6 +2,12 @@
 # Geometry used by the drop-cutter (scipy morphology) structuring element.
 # type: flat | ball | toroid
 # all dimensions in mm
+#
+# Optional per-tool feeds/limits (BUILDPLAN M6.1, multi-tool jobs): a tool may
+# carry feed_rate_mmpm / plunge_rate_mmpm / spindle_rpm / max_doc_mm. When set,
+# they override the material preset for any op assigned that tool (a small tool
+# wants gentler feeds than the bulk tool); when absent the material supplies
+# them. All are clamped to the active machine profile at post time.
 
 ball_1mm:
   display_name: "1 mm Ball Nose"
@@ -27,6 +33,19 @@ flat_3175:
   corner_radius_mm: 0.0
   flutes: 1
   notes: "The Demo Project reference tool — entire posterior cut, one tool."
+
+flat_2mm:
+  display_name: "2 mm Flat End Mill"
+  type: flat
+  diameter_mm: 2.0
+  radius_mm: 1.0
+  corner_radius_mm: 0.0
+  flutes: 2
+  feed_rate_mmpm: 500.0
+  plunge_rate_mmpm: 200.0
+  spindle_rpm: 12000
+  max_doc_mm: 1.5
+  notes: "Hinge pockets and tight internal radii (multi-tool jobs, M6.1)."
 
 flat_3mm:
   display_name: "3 mm Flat End Mill"

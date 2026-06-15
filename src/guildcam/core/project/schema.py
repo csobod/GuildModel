@@ -106,6 +106,14 @@ class CastleParams(BaseModel):
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
 
 
+# Canonical posterior op names, in machining order. These are the keys for the
+# per-operation tool assignment (BUILDPLAN M6.1) and the labels the post / sim /
+# cut-time model already canonicalize on.
+POSTERIOR_OPS: tuple[str, ...] = (
+    "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
+)
+
+
 class CastleCamParams(BaseModel):
     """Operation parameters for the five-op posterior program (BUILDPLAN M4.8).
 
@@ -116,8 +124,30 @@ class CastleCamParams(BaseModel):
     when None the active material preset supplies them — and are clamped to the
     active machine profile at post time.
     """
-    tool_name: str = "flat_3175"
+    tool_name: str = "flat_3175"          # default / fallback tool for any op
     machine_name: str = "guild_cnc"
+
+    # Per-operation tool override (BUILDPLAN M6.1): op name -> tool name from
+    # tools.yaml. Empty = every op uses tool_name (single-tool, M1–M5 behaviour).
+    # The everyday multi-tool case: a small tool clears the hinge pockets, the
+    # bulk tool does relief / eyewires / perimeter.
+    op_tools: dict[str, str] = Field(default_factory=dict)
+
+    def tool_for_op(self, op_name: str) -> str:
+        """The tool assigned to `op_name`, falling back to the global tool."""
+        return self.op_tools.get(op_name, self.tool_name)
+
+    def tools_in_use(self) -> list[str]:
+        """Distinct tool names across all five ops, in machining order."""
+        seen: list[str] = []
+        for op in POSTERIOR_OPS:
+            name = self.tool_for_op(op)
+            if name not in seen:
+                seen.append(name)
+        return seen
+
+    def is_multi_tool(self) -> bool:
+        return len(self.tools_in_use()) > 1
 
     # strategy / geometry
     pocket_stepover_mm: float = 1.2
@@ -172,6 +202,12 @@ class MachineProfile(BaseModel):
     supports_arcs: bool = True             # G2/G3; linearize when False
     units: Literal["mm", "inch"] = "mm"
     enforce_soft_limits: bool = True
+
+    # tool-change policy (BUILDPLAN M6.1): "m6" = automatic ATC (M6 Tn),
+    # "m0" = manual change behind an M0 pause with an operator prompt. The
+    # Guild CNC has no ATC, so manual is the default.
+    tool_change_mode: Literal["m6", "m0"] = "m0"
+    tool_change_seconds: float = 20.0      # nominal dwell per change, cut-time model
     notes: str = ""
 
 

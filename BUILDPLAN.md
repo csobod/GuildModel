@@ -16,7 +16,18 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-15, M5.1 `.gcam` container + M5.2 readiness light tagged `v0.5.2` (commit bc930a4); roadmap replanned — **M6 is now "Expanded CAM operations"** (M6.1 multi-tool → M6.2 stock-box zero → M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip bumped to M7, two-sided M8, packaging/v1.0.0 M9; next M6.1 multi-tool)*
+## Status snapshot *(2026-06-15, **M6.1 multi-tool jobs tagged `v0.6.1`** — per-op tool assignment through schema → generation → post (M0/M6 tool-change blocks) → sim → cut-time → GUI; single-tool jobs byte-unchanged; suite 151 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → M6.2 stock-box zero → M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.2 stock-box zero)*
+
+> **M6.1 — multi-tool jobs (`v0.6.1`):** the everyday 2 mm-pocket → 3.175 mm-bulk
+> job now posts. `CamOp.tool` + `CastleCamParams.op_tools` (empty = single-tool);
+> `generate_castle_program(tools_cfg=)` resolves a tool per op and `relief_ops`
+> takes fine/rough tools; `post/grbl.py` `ToolSetting` + `tool_change` emit an
+> `M6 Tn` (ATC) or manual-`M0` block (per `MachineProfile.tool_change_mode`) only
+> where the tool differs; `build_tool_settings` resolves per-tool feeds (tool
+> override or material, machine-clamped). Reach gating (`reach_warnings`) warns +
+> suggests a fitting tool; the sim (`achieved_floor_grouped`) and cut-time
+> (change-dwell) are tool-aware. CAM tab gains a **Per-operation tools** group.
+> Suite **151** (+14).
 
 > **M5.2 — readiness traffic-light (`v0.5.2`):** a subtle ~10 px status-bar dot
 > (`gui/widgets/readiness_dot.py`) that walks grey → red → yellow → green across
@@ -1136,31 +1147,52 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
 > Hardware validation (M7) then exercises the whole expanded op set in one pass.
 > No standalone `v0.6.0`: the first deliverable is M6.1 / `v0.6.1`.
 
-### M6.1 — Multi-tool jobs & per-operation tool assignment (v0.6.1)
+### M6.1 — Multi-tool jobs & per-operation tool assignment (v0.6.1) — ✅ DONE 2026-06-15
 
-The everyday case M1–M5 can't post: a **small tool (e.g. 2 mm)** clears the
+> **Done 2026-06-15 (`v0.6.1`).** Per-op tool binding through the whole stack —
+> schema → generation → post → sim → cut-time → GUI — single-tool jobs are byte-
+> unchanged (every new path is opt-in behind `op_tools` / `tool_settings`). The
+> demo multi-tool job (2 mm `flat_2mm` hinge pockets → 3.175 mm bulk) posts one
+> clean `M0` tool-change block, lints clean, and sims at 0.04 % uncut. Suite
+> **151 green** (+14 `tests/test_multitool_m61.py`).
+
+The everyday case M1–M5 couldn't post: a **small tool (e.g. 2 mm)** clears the
 hinge pockets and any tight internal radius, then a **larger tool (3.175 mm)**
-does the bulk relief / eyewires / perimeter. Today every op rides one global tool.
+does the bulk relief / eyewires / perimeter. Each op now rides its own tool.
 
-1. **Per-op tool binding**: each `CamOp` gains a `tool` (from `tools.yaml`); the
-   CAM tab lets every operation pick its tool (default = today's single tool).
-   Drop-cutter CLS, pyclipper offsets, feeds/DOC all key off the op's tool.
-2. **Tool-change posting** (`post/grbl.py`): a change block at op boundaries
-   where the tool differs — spindle stop / `M5`, retract to safe Z, `M6 Tn` or a
-   manual-change `M0` pause with a prompt comment (per `MachineProfile`), re-zero
-   per the machine's tool-length policy, restart spindle. Ops are grouped by tool
-   where it doesn't change the result (fewest changes), preserving the M4.7
-   ring-major / contour-parallel ordering within a tool.
-3. **Tool-reach gating** (closes the M4.8 open follow-up): warn + suggest a
-   small-enough tool when an op's narrowest feature can't be reached by its
-   assigned tool (e.g. a 2 mm pocket with a 3.175 mm tool); shown in the CAM tab
-   and the cut-sim.
-4. **Sim + cut-time multi-tool aware**: the Z-buffer sim and `cuttime.py` model
-   per-tool profiles + change dwell; the lint gate checks each tool against the
-   machine DOC/feed/spindle limits.
-5. Tests: per-op tool binds round-trip through `.gcam`; change blocks parse +
-   lint; the 2 mm-pocket / 3.175 mm-bulk demo sims cleaner than the single-tool
-   baseline.
+1. ✅ **Per-op tool binding**: `CamOp.tool` (a `tools.yaml` dict + `name`);
+   `CastleCamParams.op_tools` maps op → tool (empty = single-tool, the M1–M5
+   behaviour) with `tool_for_op` / `tools_in_use` / `is_multi_tool`.
+   `generate_castle_program(..., tools_cfg=)` resolves each op's tool and attaches
+   it; the drop-cutter CLS keys off the op's tool — `relief_ops` takes
+   `fine_tool` + `rough_tool` and computes the surface per distinct tool (shared
+   when identical). The CAM tab has a **Per-operation tools** group (one combo
+   per op, "(same as Tool)" = the global default). A new **`flat_2mm`** tool ships
+   with optional per-tool feeds/DOC in `tools.yaml`.
+2. ✅ **Tool-change posting** (`post/grbl.py`): `ToolSetting` + `apply_tool` /
+   `tool_change` — spindle stop `M5`, retract to safe Z, then `M6 Tn` (ATC) or a
+   manual-change `M0` pause with an operator prompt (per `MachineProfile.
+   tool_change_mode`, Guild = `m0`), a re-zero comment, spindle restart at the
+   new RPM. `write_castle_program(..., tool_settings=, tool_change_mode=)` emits a
+   change only at op boundaries where the tool differs; the fixed order (pockets
+   → relief → contours) keeps same-tool ops naturally grouped (one change for the
+   demo). Per-tool feeds = the tool's own override or the material, clamped to the
+   machine (`build_tool_settings`). Tool numbers assigned by first appearance.
+3. ✅ **Tool-reach gating** (closes the M4.8 follow-up): `reach_warnings` /
+   `analyze_program_reach` warn when an op's tool can't enter a feature (tool
+   radius > the feature's inscribed radius) and suggest the largest fitting tool;
+   surfaced in the G-code log + the summary dialog.
+4. ✅ **Sim + cut-time multi-tool aware**: `achieved_floor_grouped` +
+   `cutting_paths_from_program_grouped` (tool tracked from the post's announce
+   comments) sweep each move with its own tool profile; `cuttime.estimate_program`
+   counts change blocks and charges `tool_change_seconds` into `total_seconds`
+   (kept out of the motion `cycle_seconds`); `lint_program` already checks each
+   programmed feed/spindle/DOC against the machine.
+5. ✅ Tests (`tests/test_multitool_m61.py`, +14): per-op binding + `.gcam`
+   round-trip of `op_tools`; `m0`/`m6` change blocks parse + lint clean; per-tool
+   feeds applied; reach warns/suggests (and stays quiet when the tool fits);
+   change dwell in the cut-time total; and a 2 mm tool reaching a narrow pocket
+   the 3.175 mm bulk tool can't enter. Single-tool post verified unchanged.
 
 ### M6.2 — Program zero from the stock box (v0.6.2)
 
@@ -1243,8 +1275,8 @@ CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
    tool changes; clearance over the layout; round-trips.
 
 ### M6 exit criteria
-- [ ] Per-operation tool assignment with posted, linted tool-change blocks +
-      tool-reach warnings (M6.1)
+- [x] Per-operation tool assignment with posted, linted tool-change blocks +
+      tool-reach warnings (M6.1) — `v0.6.1`
 - [ ] Program zero settable from the stock-box datum; fixture mode retained (M6.2)
 - [ ] Temples cut with ENGRAVING passes + the engraving tool change (M6.3)
 - [ ] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
@@ -1340,7 +1372,7 @@ the 2026-06-15 M6 replan and are no longer listed here.)
 
 # Reference
 
-## Module status (as of 2026-06-14, M5.2 complete)
+## Module status (as of 2026-06-15, M6.1 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -1348,7 +1380,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 |---|---|---|
 | `core/layers.py` | ✅ | Single source of truth for layer names/styles (importers, validator, GUI all import it) |
 | `io_import/dxf.py` | ✅ | All 7 layers incl. SCULPT/ENGRAVING; `posterior=True` flip is the default (M1) |
-| `io_import/svg.py` | ⚠️ | npoint float-arg bug; decide fix-or-drop in M6 |
+| `io_import/svg.py` | ⚠️ | npoint float-arg bug; decide fix-or-drop in M8 (export polish) |
 | `io_import/normalize.py` `validate.py` | ✅ | close-if-nearly-closed; OUTLINE+2×LENS checks |
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
@@ -1359,26 +1391,26 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %) |
-| `cam/cuttime.py` | ✅ | **New (M4.8)** — GRBL cut-time model: assumption-free cutting-only + accel-aware GRBL-planner cycle estimate; `format_report`; `MachineDynamics.from_profile`; drove the 1.95×→0.87× gap close |
-| `core/sim/` | ✅ | **New (M5)** — geometric cut simulation: `toolsim.py` (`ToolProfile` flat/ball/toroid + `achieved_floor` Z-buffer), `paths.py` (cutting paths from posted program or CamOps), `report.py` (`verify` → completeness/gouge `CutReport`); the machined-result verifier that caught the relief incompleteness |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %); **per-op tools** — `CamOp.tool`, `generate_castle_program(tools_cfg=)`, `relief_ops(fine_tool, rough_tool)`, `reach_warnings`/`analyze_program_reach`, `build_tool_settings`/`count_tool_changes` (M6.1) |
+| `cam/cuttime.py` | ✅ | **New (M4.8)** — GRBL cut-time model: assumption-free cutting-only + accel-aware GRBL-planner cycle estimate; `format_report`; `MachineDynamics.from_profile`; drove the 1.95×→0.87× gap close; **tool-change count + dwell → `total_seconds`** (M6.1) |
+| `core/sim/` | ✅ | **New (M5)** — geometric cut simulation: `toolsim.py` (`ToolProfile` flat/ball/toroid + `achieved_floor` Z-buffer), `paths.py` (cutting paths from posted program or CamOps), `report.py` (`verify` → completeness/gouge `CutReport`); the machined-result verifier that caught the relief incompleteness; **multi-tool** `achieved_floor_grouped` + `cutting_paths_from_program_grouped` (per-move tool profiles) (M6.1) |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8) — ramp to depth over a short lead-in then one finish lap |
+| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1) |
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
-| `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement) |
+| `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **136 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + **readiness 9**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine) |
+| `tests/` | ✅ | **151 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + **multitool 14**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1 per-op-tool/change-block/reach/tool-aware-sim gates) |
 
 ## Dependency list (v1 — unchanged)
 

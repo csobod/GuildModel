@@ -37,6 +37,91 @@ def _flatten_arc(cur, end, i, j, ccw, chord_mm=0.3):
     return pts
 
 
+# Tool announce comments the post emits: "--- Tool T1: flat_2mm (2.00 mm) ---"
+# and "--- Tool Change → T2: flat_3175 (3.18 mm) ---" (BUILDPLAN M6.1).
+_TOOL_COMMENT = re.compile(r"Tool(?:\s*Change)?[^A-Za-z0-9]*T\d+:\s*(\S+)")
+
+
+def cutting_paths_from_program_grouped(
+    gcode: str, chord_mm: float = 0.3,
+) -> list[tuple[list[Point3], str | None]]:
+    """Like ``cutting_paths_from_program`` but tag each cutting polyline with the
+    active tool name, tracked from the post's tool-announce comments. Paths
+    before any announcement (e.g. an external control) get ``None``."""
+    x = y = z = 0.0
+    motion = 0
+    incremental = False
+    scale = 1.0
+    tool: str | None = None
+    out: list[tuple[list[Point3], str | None]] = []
+    cur: list[Point3] = []
+    cur_tool: str | None = None
+
+    def _flush():
+        nonlocal cur, cur_tool
+        if len(cur) >= 1:
+            out.append((cur, cur_tool))
+        cur = []
+
+    for raw in gcode.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith((";", "(")):
+            m = _TOOL_COMMENT.search(s)
+            if m:
+                tool = m.group(1)
+            continue
+        for c in (";", "("):
+            if c in s:
+                s = s.split(c, 1)[0].strip()
+        if not s:
+            continue
+        words = _WORD.findall(s)
+        if not words:
+            continue
+        if any(w[0].upper() == "G" and w[1] in ("28", "30") for w in words):
+            _flush()
+            continue
+        for letter, num in words:
+            L = letter.upper()
+            if L == "G":
+                g = int(round(float(num)))
+                if g in (0, 1, 2, 3):
+                    motion = g
+                elif g == 20:
+                    scale = 25.4
+                elif g == 21:
+                    scale = 1.0
+                elif g == 90:
+                    incremental = False
+                elif g == 91:
+                    incremental = True
+        d = {w[0].upper(): float(w[1]) * scale for w in words if w[0].upper() in "XYZIJ"}
+        nx = (x + d["X"]) if ("X" in d and incremental) else d.get("X", x)
+        ny = (y + d["Y"]) if ("Y" in d and incremental) else d.get("Y", y)
+        nz = (z + d["Z"]) if ("Z" in d and incremental) else d.get("Z", z)
+        if not (("X" in d) or ("Y" in d) or ("Z" in d)):
+            continue
+        if motion == 0:
+            _flush()
+        elif motion in (2, 3) and ("I" in d or "J" in d):
+            if not cur:
+                cur = [(x, y, z)]
+                cur_tool = tool
+            cur += _flatten_arc((x, y, z), (nx, ny, nz),
+                                d.get("I", 0.0), d.get("J", 0.0),
+                                ccw=(motion == 3), chord_mm=chord_mm)
+        else:
+            if not cur:
+                cur = [(x, y, z)]
+                cur_tool = tool
+            cur.append((nx, ny, nz))
+        x, y, z = nx, ny, nz
+    _flush()
+    return [(p, t) for p, t in out if len(p) >= 1]
+
+
 def cutting_paths_from_program(gcode: str, chord_mm: float = 0.3) -> list[list[Point3]]:
     """Modal-parse a GRBL program into cutting polylines (G1/G2/G3); arcs
     flattened to chords; rapids (G0) split the polylines."""

@@ -23,6 +23,7 @@ Deliberate deviations from the reference NC (documented, both improvements):
     the complex stock model.
 """
 from __future__ import annotations
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -46,6 +47,16 @@ Point3 = tuple[float, float, float]
 class CamOp:
     name: str
     paths: list[list[Point3]] = field(default_factory=list)
+    # The tool this op is cut with (a tools.yaml entry dict, with a "name" key).
+    # None = the program's single global tool (BUILDPLAN M1–M5 behaviour). Per-op
+    # tools are assigned in generate_castle_program from CastleCamParams.op_tools
+    # (multi-tool jobs, BUILDPLAN M6.1) — the post, sim, cut-time model and
+    # fixture-clearance check all read it.
+    tool: dict | None = None
+
+    @property
+    def tool_name(self) -> str | None:
+        return self.tool.get("name") if self.tool else None
 
     def z_range(self) -> tuple[float, float]:
         zs = [p[2] for path in self.paths for p in path]
@@ -70,6 +81,28 @@ class CamOp:
 # editable from the CAM tab, BUILDPLAN M4.8); re-exported here so existing
 # callers keep importing it from cam.castle_ops.
 _DEFAULT_CAM = CastleCamParams()
+
+
+def resolve_tool(name: str, tools_cfg: dict, default: dict | None = None) -> dict:
+    """A normalized tool dict for `name` from a tools.yaml mapping.
+
+    Always carries a "name" key so downstream (post / sim / cut-time) can group
+    by tool. Falls back to `default` (then the first available tool) when the
+    name is unknown — generation never crashes on a stale assignment.
+    """
+    entry = tools_cfg.get(name)
+    if entry is None:
+        if default is not None:
+            return default
+        name, entry = next(iter(tools_cfg.items()))
+    t = dict(entry)
+    t.setdefault("name", name)
+    return t
+
+
+def _same_tool(a: dict, b: dict) -> bool:
+    return (a.get("type") == b.get("type")
+            and abs(a.get("radius_mm", 0.0) - b.get("radius_mm", 0.0)) < 1e-9)
 
 
 # ------------------------------------------------------------------ helpers
@@ -204,11 +237,17 @@ def contour_parallel_rings(body: Polygon, stepover_mm: float,
 def relief_ops(
     relief: CastleRelief,
     stock: StockDefinition,
-    tool_type: str,
-    tool_radius_mm: float,
+    fine_tool: dict,
     params: CastleCamParams,
+    rough_tool: dict | None = None,
 ) -> tuple[CamOp, CamOp]:
     """Rough (surface + axial stock, stock-aware) and fine (final surface).
+
+    `fine_tool` finishes the surface; `rough_tool` (defaults to `fine_tool`)
+    bulk-removes above it. The machining region and rim-reach band are defined by
+    the **finishing** tool (it has to reach every rim); each pass rides its own
+    tool's drop-cutter surface — when the two tools are identical the surface is
+    computed once (BUILDPLAN M6.1: drop-cutter CLS keys off the op's tool).
 
     Both passes are **contour-parallel**: the toolpath is a set of boundary-
     offset rings that follow the outline and the eyewires, riding the drop-cutter
@@ -225,6 +264,9 @@ def relief_ops(
     through later — so the extra clearing (and cut time) stays bounded.
     """
     from scipy.ndimage import distance_transform_edt
+    rough_tool = rough_tool or fine_tool
+    fine_type, fine_r = fine_tool["type"], fine_tool["radius_mm"]
+    rough_type, rough_r = rough_tool["type"], rough_tool["radius_mm"]
     f = relief.field
     res = f.resolution
     ox, oy = f.origin
@@ -233,21 +275,25 @@ def relief_ops(
         stock, resolution=res, origin=f.origin, shape=f.z.shape
     )
 
-    # Machining region = body grown by a tool-radius band; the band's target is
-    # the relief level of the nearest body cell (so the rim floor is reachable).
-    band_mm = max(tool_radius_mm, params.relief_stepover_mm)
+    # Machining region = body grown by a finishing-tool-radius band; the band's
+    # target is the relief level of the nearest body cell (so the rim floor is
+    # reachable by the finishing tool).
+    band_mm = max(fine_r, params.relief_stepover_mm)
     dist, (iy, ix) = distance_transform_edt(
         ~inside, sampling=res, return_indices=True
     )
     nearest_relief = f.z[iy, ix]
     band = inside | (dist <= band_mm + 1e-9)
     cam_z = np.where(band, np.minimum(nearest_relief, stock_hf.z), stock_hf.z)
+    cam_hf = Heightfield(z=cam_z, origin=f.origin, resolution=res)
 
-    cls_fine = cutter_location_surface(
-        Heightfield(z=cam_z, origin=f.origin, resolution=res),
-        tool_type, tool_radius_mm,
-    )
-    stock_cls = cutter_location_surface(stock_hf, tool_type, tool_radius_mm)
+    cls_fine = cutter_location_surface(cam_hf, fine_type, fine_r)
+    if _same_tool(rough_tool, fine_tool):
+        cls_rough_surf = cls_fine
+        stock_cls = cutter_location_surface(stock_hf, fine_type, fine_r)
+    else:
+        cls_rough_surf = cutter_location_surface(cam_hf, rough_type, rough_r)
+        stock_cls = cutter_location_surface(stock_hf, rough_type, rough_r)
 
     eps = params.skim_epsilon_mm
     fine = CamOp("Fine Relief")
@@ -255,9 +301,9 @@ def relief_ops(
 
     rows, cols = cls_fine.z.shape
     z_fine = cls_fine.z
-    z_rough = np.minimum(z_fine + params.rough_axial_stock_mm, stock_cls.z)
+    z_rough = np.minimum(cls_rough_surf.z + params.rough_axial_stock_mm, stock_cls.z)
     # rough only where stock actually sits above the rough target
-    cut_rough = band & ((z_fine + params.rough_axial_stock_mm) < stock_cls.z - eps)
+    cut_rough = band & ((cls_rough_surf.z + params.rough_axial_stock_mm) < stock_cls.z - eps)
 
     machining = relief.partition.body.buffer(band_mm, join_style="round")
 
@@ -351,11 +397,14 @@ def fixture_clearance_violations(
     zone = fixture["blank_zones"][blank]
     cx = zone["x_mm"] + zone["width_mm"] / 2.0
     cy = zone["y_mm"] + zone["height_mm"] / 2.0
-    keep_r = fixture["hold_down_screw_radius_mm"] + tool_radius_mm
+    screw_r = fixture["hold_down_screw_radius_mm"]
     screws = np.array([[s["x"], s["y"]] for s in fixture["hold_down_screws"]])
 
     violations: list[str] = []
     for op in ops:
+        # each op's own tool radius (multi-tool jobs, M6.1), else the default
+        op_r = op.tool["radius_mm"] if op.tool else tool_radius_mm
+        keep_r = screw_r + op_r
         for path in op.paths:
             pts = np.asarray([(p[0] + cx, p[1] + cy) for p in path])
             d2 = ((pts[:, None, :] - screws[None, :, :]) ** 2).sum(axis=2)
@@ -370,6 +419,101 @@ def fixture_clearance_violations(
     return violations
 
 
+# ------------------------------------------------------------------ tool-reach gating
+
+@dataclass
+class ReachWarning:
+    """An op whose assigned tool is too large to reach a feature (M6.1 task 3)."""
+    op_name: str
+    feature: str                 # human description, e.g. "hinge pocket"
+    tool_name: str
+    tool_radius_mm: float
+    fits_radius_mm: float        # the largest tool radius the feature admits
+    suggested_tool: str | None   # a tools.yaml entry that fits, if any
+
+    def message(self) -> str:
+        msg = (f"{self.op_name}: tool {self.tool_name} (r={self.tool_radius_mm:.2f} mm) "
+               f"is too large to reach the {self.feature} "
+               f"(needs r ≤ {self.fits_radius_mm:.2f} mm)")
+        if self.suggested_tool:
+            msg += f" — try {self.suggested_tool}"
+        return msg
+
+
+def _inscribed_radius(poly: Polygon, tol: float = 0.02) -> float:
+    """Max inscribed-circle radius of `poly` — the largest tool that can enter
+    the feature at all (the largest r with poly.buffer(-r) non-empty)."""
+    if poly.is_empty or poly.area <= 0:
+        return 0.0
+    minx, miny, maxx, maxy = poly.bounds
+    hi = 0.5 * min(maxx - minx, maxy - miny) + tol   # inradius ≤ half the min side
+    lo = 0.0
+    while hi - lo > tol:
+        mid = 0.5 * (lo + hi)
+        if poly.buffer(-mid).is_empty:
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+
+def _suggest_fitting_tool(fits_radius_mm: float, tools_cfg: dict,
+                          prefer_type: str | None = None) -> str | None:
+    """The largest tool whose radius fits within `fits_radius_mm` (same type
+    preferred). None if nothing in the table is small enough."""
+    best: str | None = None
+    best_r = -1.0
+    for name, t in tools_cfg.items():
+        r = t.get("radius_mm")
+        if r is None or r > fits_radius_mm + 1e-9:
+            continue
+        score = r + (0.001 if prefer_type and t.get("type") == prefer_type else 0.0)
+        if score > best_r:
+            best, best_r = name, score
+    return best
+
+
+def reach_warnings(
+    features: list[tuple[str, str, list[Polygon], dict]],
+    tools_cfg: dict | None = None,
+) -> list[ReachWarning]:
+    """Warn when an op's tool can't enter a closed pocket-like feature.
+
+    `features`: ``(op_name, feature_label, polys, tool_dict)`` per checked op.
+    The check is the can-it-enter test (tool radius ≤ the feature's inscribed
+    radius); when it fails and `tools_cfg` is given, a fitting tool is suggested.
+    """
+    out: list[ReachWarning] = []
+    for op_name, label, polys, tool in features:
+        good = [p for p in polys if not p.is_empty and p.area > 0]
+        if not good:
+            continue
+        R = float(tool["radius_mm"])
+        fits = min(_inscribed_radius(p) for p in good)
+        if R > fits + 1e-6:
+            suggested = (_suggest_fitting_tool(fits, tools_cfg, tool.get("type"))
+                         if tools_cfg else None)
+            out.append(ReachWarning(
+                op_name, label, tool.get("name", "tool"), R, fits, suggested))
+    return out
+
+
+def analyze_program_reach(
+    ops: list[CamOp],
+    hinge_polys: list[Polygon],
+    tools_cfg: dict | None = None,
+) -> list[ReachWarning]:
+    """Reach check for a generated program: today the hinge pockets (the case
+    where a 2 mm pocket can't admit the 3.175 mm bulk tool). Extensible to other
+    closed features as M6 grows."""
+    by_name = {op.name: op for op in ops}
+    features: list[tuple[str, str, list[Polygon], dict]] = []
+    hinge_op = by_name.get("Hinge Pockets")
+    if hinge_op is not None and hinge_op.tool and hinge_polys:
+        features.append(("Hinge Pockets", "hinge pocket", list(hinge_polys), hinge_op.tool))
+    return reach_warnings(features, tools_cfg)
+
+
 # ------------------------------------------------------------------ program assembly
 
 def generate_castle_program(
@@ -379,18 +523,26 @@ def generate_castle_program(
     tool: dict,
     params: CastleCamParams | None = None,
     progress: Optional[ProgressFn] = None,
+    tools_cfg: dict | None = None,
 ) -> list[CamOp]:
     """The five ops, in machining order, from the castle relief.
 
-    progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
+    `tool` is the global/default tool. When `tools_cfg` is given, each op resolves
+    its own tool from `params.op_tools` (BUILDPLAN M6.1 multi-tool jobs) and
+    carries it on `CamOp.tool`; otherwise every op uses `tool` (single-tool, the
+    M1–M5 behaviour). progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
     """
     params = params or CastleCamParams()
-    tool_r = tool["radius_mm"]
     stock = castle.stock
     body = relief.partition.body
     skin = castle.onion_skin_mm
     allowance = castle.hand_finishing_allowance_mm
     top_z = stock.total_pad_height_mm
+
+    def _tool_for(op_name: str) -> dict:
+        if tools_cfg is None:
+            return tool
+        return resolve_tool(params.tool_for_op(op_name), tools_cfg, default=tool)
 
     ops: list[CamOp] = []
 
@@ -401,31 +553,44 @@ def generate_castle_program(
     # 1 — hinge pockets (cut first, stock rigid). Hinges sit on the blank
     # outside the pad block, so the local stock top is the blank thickness.
     _p("Hinge pockets", 1)
+    hinge_tool = _tool_for("Hinge Pockets")
     floor_z = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
-    ops.append(hinge_pocket_op(
+    op1 = hinge_pocket_op(
         hinge_polys, floor_z,
         start_z=stock.blank_thickness_mm + 0.5,
-        tool_radius_mm=tool_r, params=params,
-    ))
+        tool_radius_mm=hinge_tool["radius_mm"], params=params,
+    )
+    op1.tool = hinge_tool
+    ops.append(op1)
 
     # 2 + 3 — rough then fine relief
     _p("Rough + fine relief", 3)
-    rough, fine = relief_ops(relief, stock, tool["type"], tool_r, params)
+    rough_tool = _tool_for("Rough Relief")
+    fine_tool = _tool_for("Fine Relief")
+    rough, fine = relief_ops(relief, stock, fine_tool, params, rough_tool=rough_tool)
+    rough.tool, fine.tool = rough_tool, fine_tool
     ops += [rough, fine]
 
     # 4 — eyewires (lens holes are the body's interior rings)
     _p("Eyewires", 4)
+    eyewire_tool = _tool_for("Eyewires")
     lenses = [Polygon(ring) for ring in body.interiors]
-    ops.append(contour_op(
-        "Eyewires", lenses, "inside", tool_r, allowance, top_z, skin, params
-    ))
+    op4 = contour_op(
+        "Eyewires", lenses, "inside", eyewire_tool["radius_mm"],
+        allowance, top_z, skin, params,
+    )
+    op4.tool = eyewire_tool
+    ops.append(op4)
 
     # 5 — perimeter
     _p("Perimeter", 5)
-    ops.append(contour_op(
+    perimeter_tool = _tool_for("Perimeter")
+    op5 = contour_op(
         "Perimeter", [Polygon(body.exterior)], "outside",
-        tool_r, allowance, top_z, skin, params,
-    ))
+        perimeter_tool["radius_mm"], allowance, top_z, skin, params,
+    )
+    op5.tool = perimeter_tool
+    ops.append(op5)
     return ops
 
 
@@ -465,6 +630,73 @@ def op_summaries(
     return rows
 
 
+def count_tool_changes(ops: list[CamOp]) -> int:
+    """Number of tool-change blocks the program will emit (op-order transitions)."""
+    changes = 0
+    current: str | None = None
+    for op in ops:
+        nm = op.tool_name
+        if nm is None:
+            continue
+        if current is not None and nm != current:
+            changes += 1
+        current = nm
+    return changes
+
+
+def build_tool_settings(
+    ops: list[CamOp],
+    tools_cfg: dict,
+    *,
+    default_feed: float,
+    default_plunge: float,
+    default_spindle: float,
+    machine=None,
+) -> tuple[dict, list[str]]:
+    """Assemble a name → ToolSetting map for a multi-tool program (M6.1).
+
+    Each distinct tool (in machining order) gets a Tn number; its feeds come from
+    the tool's own tools.yaml override when present, else the supplied defaults
+    (material/CAM), clamped to the machine profile. Returns (settings, warnings).
+    """
+    from ..post.grbl import ToolSetting
+
+    settings: dict[str, ToolSetting] = {}
+    warnings: list[str] = []
+    number = 0
+    for op in ops:
+        nm = op.tool_name
+        if nm is None or nm in settings:
+            continue
+        number += 1
+        t = op.tool or tools_cfg.get(nm, {})
+        feed = t.get("feed_rate_mmpm") or default_feed
+        plunge = t.get("plunge_rate_mmpm") or default_plunge
+        spindle = t.get("spindle_rpm") or default_spindle
+        if machine is not None:
+            if feed > machine.max_feed_mmpm:
+                warnings.append(f"{nm}: feed {feed:.0f} > machine max "
+                                f"{machine.max_feed_mmpm:.0f} mm/min — clamped")
+                feed = machine.max_feed_mmpm
+            if plunge > machine.max_plunge_mmpm:
+                warnings.append(f"{nm}: plunge {plunge:.0f} > machine max "
+                                f"{machine.max_plunge_mmpm:.0f} mm/min — clamped")
+                plunge = machine.max_plunge_mmpm
+            if spindle > machine.max_spindle_rpm:
+                warnings.append(f"{nm}: spindle {spindle:.0f} > machine max "
+                                f"{machine.max_spindle_rpm:.0f} RPM — clamped")
+                spindle = machine.max_spindle_rpm
+            elif machine.min_spindle_rpm and spindle < machine.min_spindle_rpm:
+                spindle = machine.min_spindle_rpm
+        diameter = float(t.get("diameter_mm", 2.0 * t.get("radius_mm", 1.0)))
+        settings[nm] = ToolSetting(
+            number=number, name=nm, diameter_mm=diameter,
+            feed_rate_mmpm=float(feed), plunge_rate_mmpm=float(plunge),
+            spindle_rpm=int(round(spindle)),
+        )
+    return settings, warnings
+
+
 def write_castle_program(
     ops: list[CamOp],
     post: "GRBLPost",  # noqa: F821
@@ -472,19 +704,36 @@ def write_castle_program(
     arc_tol_mm: float = 0.01,
     contour_stepdown_mm: float = _DEFAULT_CAM.contour_stepdown_mm,
     contour_ramp_angle_deg: float = _DEFAULT_CAM.contour_ramp_angle_deg,
+    tool_settings: dict | None = None,
+    tool_change_mode: str = "m0",
 ) -> None:
     """Emit the five ops into a single GRBL program.
 
     arc_tol_mm > 0 fits G2/G3 arcs to the curved passes (smooth motion, smaller
     files). The through-cut contours (Eyewires / Perimeter) get a partial-lap
-    ramped lead-in over the stepdown instead of a straight slot-plunge: the tool
-    ramps to depth over a short lead-in (set by contour_ramp_angle_deg) then
-    cuts one full finish lap, rather than ramping a whole extra lap.
+    ramped lead-in over the stepdown instead of a straight slot-plunge.
+
+    Multi-tool jobs (BUILDPLAN M6.1): when `tool_settings` (a name → ToolSetting
+    map) is given, the program announces the first op's tool and emits a
+    tool-change block whenever a following op's tool differs — so a change costs
+    one block, and the fixed machining order (pockets → relief → contours) keeps
+    same-tool ops naturally grouped. When `tool_settings` is None the program is
+    single-tool, exactly as before.
     """
     contour_ops = {"Eyewires", "Perimeter"}
     post.header(side)
+    current: str | None = None
+    if tool_settings:
+        first = ops[0].tool_name if ops else None
+        if first in tool_settings:
+            post.apply_tool(tool_settings[first])
+            current = first
     post.spindle_on()
     for op in ops:
+        nm = op.tool_name
+        if tool_settings and nm is not None and nm != current and nm in tool_settings:
+            post.tool_change(tool_settings[nm], mode=tool_change_mode)
+            current = nm
         post.comment(f"--- {op.name} ---")
         ramp = contour_stepdown_mm if op.name in contour_ops else 0.0
         for path in op.paths:

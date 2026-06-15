@@ -98,6 +98,8 @@ class OpTime:
 class CutTimeReport:
     ops: list[OpTime] = field(default_factory=list)
     dynamics: MachineDynamics = field(default_factory=MachineDynamics)
+    n_tool_changes: int = 0           # tool-change blocks (BUILDPLAN M6.1)
+    tool_change_seconds: float = 0.0  # nominal dwell over all changes
 
     def op(self, name: str) -> OpTime | None:
         return next((o for o in self.ops if o.name == name), None)
@@ -116,7 +118,13 @@ class CutTimeReport:
 
     @property
     def cycle_seconds(self) -> float:
+        """Accel-aware motion time only (cut + rapid; excludes change dwell)."""
         return sum(o.cycle_seconds for o in self.ops)
+
+    @property
+    def total_seconds(self) -> float:
+        """Motion cycle + tool-change dwell — the wall-clock estimate."""
+        return self.cycle_seconds + self.tool_change_seconds
 
 
 # ----------------------------------------------------------------- parsing
@@ -307,13 +315,32 @@ def _plan(segs: list[_Segment], dyn: MachineDynamics) -> list[float]:
 
 # ----------------------------------------------------------------- public API
 
-def estimate_program(gcode: str, dynamics: MachineDynamics | None = None) -> CutTimeReport:
-    """Parse a posted GRBL program and estimate its run time, op-by-op."""
+def count_tool_changes(gcode: str) -> int:
+    """Number of tool-change blocks in a posted program (BUILDPLAN M6.1)."""
+    return sum(1 for line in gcode.splitlines() if "Tool Change" in line)
+
+
+def estimate_program(
+    gcode: str,
+    dynamics: MachineDynamics | None = None,
+    tool_change_seconds: float = 0.0,
+) -> CutTimeReport:
+    """Parse a posted GRBL program and estimate its run time, op-by-op.
+
+    `tool_change_seconds` is the nominal dwell charged per tool-change block
+    (BUILDPLAN M6.1); it lands in `tool_change_seconds` / `total_seconds`, kept
+    out of `cycle_seconds` so the motion estimate stays comparable across jobs.
+    """
     dyn = dynamics or MachineDynamics()
     segs = _parse_segments(gcode, dyn)
     cycle = _plan(segs, dyn)
 
-    report = CutTimeReport(dynamics=dyn)
+    n_changes = count_tool_changes(gcode)
+    report = CutTimeReport(
+        dynamics=dyn,
+        n_tool_changes=n_changes,
+        tool_change_seconds=n_changes * tool_change_seconds,
+    )
     by_name: dict[str, OpTime] = {}
     order: list[str] = []
     for seg, t in zip(segs, cycle):
@@ -360,6 +387,11 @@ def format_report(report: CutTimeReport, title: str = "") -> str:
         sum(o.rapid_seconds for o in report.ops),
         report.cycle_seconds,
     ))
+    if report.n_tool_changes:
+        lines.append(
+            f"{'Tool changes':<16}{report.n_tool_changes:>9}{'':>10}{'':>9}{'':>10}"
+            f"{report.tool_change_seconds / 60:>11.2f}")
+        lines.append(f"{'TOTAL w/ changes':<45}{report.total_seconds / 60:>11.2f}")
     return "\n".join(lines)
 
 

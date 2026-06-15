@@ -280,13 +280,22 @@ class GCodeWorker(_ProgressWorker):
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
         ops = generate_castle_program(
-            relief, castle, self.hinge_polys, tool, params=cam, progress=self._progress
+            relief, castle, self.hinge_polys, tool, params=cam,
+            progress=self._progress, tools_cfg=tools_cfg,
         )
         for op in ops:
             zmin, zmax = op.z_range()
+            tag = f" · {op.tool_name}" if (cam.is_multi_tool() and op.tool_name) else ""
             self.progress.emit(
-                f"[gcode]   {op.name}: {len(op.paths)} paths, Z {zmin:.2f}..{zmax:.2f}"
+                f"[gcode]   {op.name}: {len(op.paths)} paths, Z {zmin:.2f}..{zmax:.2f}{tag}"
             )
+
+        # Tool-reach gating (BUILDPLAN M6.1 task 3): warn when an op's tool can't
+        # reach its feature, suggesting a fitting tool.
+        from guildcam.core.cam.castle_ops import analyze_program_reach, build_tool_settings, count_tool_changes
+        reach = analyze_program_reach(ops, self.hinge_polys, tools_cfg)
+        for r in reach:
+            self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
 
         with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
             fixture = yaml.safe_load(fh)
@@ -294,13 +303,44 @@ class GCodeWorker(_ProgressWorker):
         for v in violations:
             self.progress.emit(f"[gcode] WARNING: {v}")
 
+        # Multi-tool jobs (BUILDPLAN M6.1): assemble per-tool feeds (tool override
+        # or material, clamped to the machine) and the Tn map; single-tool jobs
+        # leave tool_settings None and post exactly as before.
+        tool_settings = None
+        if cam.is_multi_tool():
+            tool_settings, ts_warns = build_tool_settings(
+                ops, tools_cfg,
+                default_feed=clamp.feed_rate_mmpm,
+                default_plunge=clamp.plunge_rate_mmpm,
+                default_spindle=clamp.spindle_rpm,
+                machine=machine,
+            )
+            for w in ts_warns:
+                self.progress.emit(f"[gcode] tool: {w}")
+            n_changes = count_tool_changes(ops)
+            tools_list = ", ".join(f"T{s.number} {n}" for n, s in tool_settings.items())
+            self.progress.emit(
+                f"[gcode] Multi-tool: {tools_list} · {n_changes} tool change(s) "
+                f"({machine.tool_change_mode.upper()})"
+            )
+            first_ts = tool_settings[ops[0].tool_name]
+            post_dia = first_ts.diameter_mm
+            post_spindle = first_ts.spindle_rpm
+            post_feed = first_ts.feed_rate_mmpm
+            post_plunge = first_ts.plunge_rate_mmpm
+        else:
+            post_dia = tool["diameter_mm"]
+            post_spindle = clamp.spindle_rpm
+            post_feed = clamp.feed_rate_mmpm
+            post_plunge = clamp.plunge_rate_mmpm
+
         post = GRBLPost(
             job_name="posterior_cut",
             material=p["material_name"],
-            tool_diameter_mm=tool["diameter_mm"],
-            spindle_rpm=clamp.spindle_rpm,
-            feed_rate_mmpm=clamp.feed_rate_mmpm,
-            plunge_rate_mmpm=clamp.plunge_rate_mmpm,
+            tool_diameter_mm=post_dia,
+            spindle_rpm=post_spindle,
+            feed_rate_mmpm=post_feed,
+            plunge_rate_mmpm=post_plunge,
             safe_z_mm=castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
         )
         self._progress("Writing program", 0.95)
@@ -308,6 +348,8 @@ class GCodeWorker(_ProgressWorker):
             ops, post, arc_tol_mm=clamp.arc_tol_mm,
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            tool_settings=tool_settings,
+            tool_change_mode=machine.tool_change_mode,
         )
         # The program is kept in the project (.gcam) by default — no loose .nc
         # is written here; File ▸ Export G-code writes a standalone file on
@@ -319,7 +361,10 @@ class GCodeWorker(_ProgressWorker):
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
-        report = estimate_program(text, MachineDynamics.from_profile(machine))
+        report = estimate_program(
+            text, MachineDynamics.from_profile(machine),
+            tool_change_seconds=machine.tool_change_seconds,
+        )
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
 
         summary = ("Posterior program generated and stored in the project.\n"
@@ -328,8 +373,14 @@ class GCodeWorker(_ProgressWorker):
         summary += (f"\n\nMachine: {machine.display_name}"
                     f"\nEstimated cycle: {report.cycle_seconds / 60:.1f} min "
                     f"(cut {report.cutting_only_seconds / 60:.1f} min)")
+        if tool_settings:
+            summary += (f"\nMulti-tool: {len(tool_settings)} tools, "
+                        f"{report.n_tool_changes} change(s) — "
+                        f"{report.total_seconds / 60:.1f} min incl. changes")
+        if reach:
+            summary += f"\n\n⚠ {len(reach)} tool-reach warning(s) — see log."
         if violations:
-            summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
+            summary += f"\n⚠ {len(violations)} fixture clearance warning(s) — see log."
         if machine_warnings:
             summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
         rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm)
@@ -354,6 +405,19 @@ class GCodeWorker(_ProgressWorker):
             "est_cycle_min": round(report.cycle_seconds / 60, 2),
             "ops": rows,
         }
+        if tool_settings:
+            self.setup_dict.update({
+                "op_tools": {op.name: op.tool_name for op in ops},
+                "tools": [
+                    {"number": s.number, "name": n, "diameter_mm": s.diameter_mm,
+                     "spindle_rpm": s.spindle_rpm, "feed_rate_mmpm": s.feed_rate_mmpm,
+                     "plunge_rate_mmpm": s.plunge_rate_mmpm}
+                    for n, s in tool_settings.items()
+                ],
+                "tool_change_mode": machine.tool_change_mode,
+                "n_tool_changes": report.n_tool_changes,
+                "est_total_min": round(report.total_seconds / 60, 2),
+            })
         self.finished.emit(summary, rows)
 
     def _generate(self) -> None:
@@ -457,11 +521,13 @@ class SimWorker(_ProgressWorker):
             import yaml
             from guildcam.core.relief.castle import build_castle_relief
             from guildcam.core.cam.castle_ops import (
-                CastleCamParams, generate_castle_program, write_castle_program,
+                CastleCamParams, build_tool_settings, generate_castle_program,
+                write_castle_program,
             )
             from guildcam.core.post.grbl import GRBLPost
             from guildcam.core.sim import (
-                ToolProfile, achieved_floor, cutting_paths_from_program, verify,
+                ToolProfile, achieved_floor, achieved_floor_grouped,
+                cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -478,26 +544,48 @@ class SimWorker(_ProgressWorker):
             )
             self._progress("Generating program", 0.55)
             ops = generate_castle_program(
-                relief, self.castle, self.hinge_polys, tool, params=cam)
+                relief, self.castle, self.hinge_polys, tool, params=cam,
+                tools_cfg=tools_cfg)
+
+            # Multi-tool jobs (M6.1): post with per-tool change blocks and sweep
+            # each move with its own tool profile, so the sim matches the real cut.
+            tool_settings = None
+            if cam.is_multi_tool():
+                tool_settings, _ = build_tool_settings(
+                    ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
+                    default_plunge=mat["plunge_rate_mmpm"],
+                    default_spindle=mat["spindle_rpm"])
+            first = tool_settings[ops[0].tool_name] if tool_settings else None
             post = GRBLPost(
                 job_name="sim", material=self.material_name,
-                tool_diameter_mm=tool["diameter_mm"],
-                spindle_rpm=mat["spindle_rpm"], feed_rate_mmpm=mat["feed_rate_mmpm"],
-                plunge_rate_mmpm=mat["plunge_rate_mmpm"],
+                tool_diameter_mm=(first.diameter_mm if first else tool["diameter_mm"]),
+                spindle_rpm=(first.spindle_rpm if first else mat["spindle_rpm"]),
+                feed_rate_mmpm=(first.feed_rate_mmpm if first else mat["feed_rate_mmpm"]),
+                plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
                 safe_z_mm=self.castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
             )
             write_castle_program(
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
-                contour_ramp_angle_deg=cam.contour_ramp_angle_deg)
+                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                tool_settings=tool_settings)
 
             self.progress.emit("[sim] Sweeping tool along the toolpaths…")
             f = relief.field
-            paths = cutting_paths_from_program(post.to_string())
             init_z = self.castle.stock.total_pad_height_mm + 1.0
-            floor = achieved_floor(
-                paths, ToolProfile.from_tool(tool), f.origin, f.z.shape,
-                f.resolution, init_z, progress=lambda p: self._progress("Simulating", 0.6 + 0.35 * p))
+            _swp = lambda p: self._progress("Simulating", 0.6 + 0.35 * p)
+            if tool_settings:
+                groups = cutting_paths_from_program_grouped(post.to_string())
+                profiles = {n: ToolProfile.from_tool(tools_cfg[n])
+                            for n in {t for _, t in groups if t and t in tools_cfg}}
+                floor = achieved_floor_grouped(
+                    groups, profiles, ToolProfile.from_tool(tool),
+                    f.origin, f.z.shape, f.resolution, init_z, progress=_swp)
+            else:
+                paths = cutting_paths_from_program(post.to_string())
+                floor = achieved_floor(
+                    paths, ToolProfile.from_tool(tool), f.origin, f.z.shape,
+                    f.resolution, init_z, progress=_swp)
             report = verify(
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=self.partition)
@@ -1971,7 +2059,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.5.1 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.6.1 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",

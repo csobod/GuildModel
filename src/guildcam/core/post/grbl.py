@@ -50,6 +50,23 @@ def _lap_from(xy: list[tuple[float, float]], cum: list[float], start_s: float) -
 
 
 @dataclass
+class ToolSetting:
+    """Per-tool output context for a multi-tool program (BUILDPLAN M6.1).
+
+    Assembled by the caller (tool geometry from tools.yaml; feeds either the
+    tool's own override or the material preset; all clamped to the machine). The
+    post swaps these in at each tool-change block; `number` is the Tn slot,
+    assigned by first appearance.
+    """
+    number: int
+    name: str
+    diameter_mm: float
+    feed_rate_mmpm: float
+    plunge_rate_mmpm: float
+    spindle_rpm: int
+
+
+@dataclass
 class GRBLPost:
     job_name: str
     material: str
@@ -133,6 +150,41 @@ class GRBLPost:
     def program_pause(self, message: str = "Flip stock and re-register on dowel pins") -> None:
         self._lines.append(f"; {message}")
         self._lines.append("M0")
+
+    def apply_tool(self, ts: "ToolSetting") -> None:
+        """Adopt a tool's geometry/feeds as the current output context, without
+        emitting a change block (used for the program's first tool). Announces it
+        with a parseable comment so the sim / cut-time model can attribute moves."""
+        self.tool_diameter_mm = ts.diameter_mm
+        self.feed_rate_mmpm = ts.feed_rate_mmpm
+        self.plunge_rate_mmpm = ts.plunge_rate_mmpm
+        self.spindle_rpm = ts.spindle_rpm
+        self.comment(f"--- Tool T{ts.number}: {ts.name} ({ts.diameter_mm:.2f} mm) ---")
+
+    def tool_change(self, ts: "ToolSetting", mode: str = "m0",
+                    message: str | None = None) -> None:
+        """Emit a tool-change block, then adopt the new tool (BUILDPLAN M6.1).
+
+        Spindle stop, retract to safe Z, then either an automatic ``M6 Tn``
+        (mode "m6") or a manual-change ``M0`` pause with an operator prompt
+        (mode "m0"); the operator re-establishes tool length / re-zeroes Z per
+        the machine's policy, and the spindle restarts at the new tool's RPM.
+        """
+        self.comment(f"--- Tool Change -> T{ts.number}: {ts.name} ({ts.diameter_mm:.2f} mm) ---")
+        self.spindle_off()
+        self.safe_retract()
+        if mode == "m6":
+            self._lines.append(f"M6 T{ts.number}")
+        else:
+            self.comment(message or (f"Load tool T{ts.number}: {ts.name} "
+                                     f"({ts.diameter_mm:.2f} mm), set tool length, then resume"))
+            self._lines.append("M0")
+        self.comment("Re-zero Z to the tool tip per machine tool-length policy")
+        self.tool_diameter_mm = ts.diameter_mm
+        self.feed_rate_mmpm = ts.feed_rate_mmpm
+        self.plunge_rate_mmpm = ts.plunge_rate_mmpm
+        self.spindle_rpm = ts.spindle_rpm
+        self.spindle_on()
 
     def end_program(self) -> None:
         self._lines += ["M5", "G0 Z" + f"{self.safe_z_mm:.3f}", "M30"]

@@ -76,6 +76,22 @@ def densify(path: list[Point3], spacing: float) -> np.ndarray:
     return np.asarray(out)
 
 
+def _stamp_path(floor, path, kernel, origin, resolution, shape, spacing) -> None:
+    """Stamp one cutting path's tool sweep into `floor` (in place, min-Z)."""
+    di, dj, dz = kernel
+    ox, oy = origin
+    rows, cols = shape
+    P = densify(path, spacing) if len(path) > 1 else np.asarray(path, float)
+    ci = np.round((P[:, 0] - ox) / resolution).astype(np.intp)
+    ri = np.round((P[:, 1] - oy) / resolution).astype(np.intp)
+    z = P[:, 2]
+    cc = (ci[:, None] + di[None, :]).ravel()
+    rr = (ri[:, None] + dj[None, :]).ravel()
+    zz = (z[:, None] + dz[None, :]).ravel()
+    ok = (cc >= 0) & (cc < cols) & (rr >= 0) & (rr < rows)
+    np.minimum.at(floor, (rr[ok], cc[ok]), zz[ok])
+
+
 def achieved_floor(
     paths: list[list[Point3]],
     tool: ToolProfile,
@@ -92,23 +108,54 @@ def achieved_floor(
     only (rapids excluded). Vectorised disc/profile stamping per path.
     """
     floor = np.full(shape, float(init_z), dtype=np.float64)
-    di, dj, dz = tool.kernel(resolution)
-    ox, oy = origin
-    rows, cols = shape
+    kernel = tool.kernel(resolution)
     spacing = point_spacing or resolution
     n = len(paths) or 1
     for idx, path in enumerate(paths):
         if len(path) < 1:
             continue
-        P = densify(path, spacing) if len(path) > 1 else np.asarray(path, float)
-        ci = np.round((P[:, 0] - ox) / resolution).astype(np.intp)
-        ri = np.round((P[:, 1] - oy) / resolution).astype(np.intp)
-        z = P[:, 2]
-        cc = (ci[:, None] + di[None, :]).ravel()
-        rr = (ri[:, None] + dj[None, :]).ravel()
-        zz = (z[:, None] + dz[None, :]).ravel()
-        ok = (cc >= 0) & (cc < cols) & (rr >= 0) & (rr < rows)
-        np.minimum.at(floor, (rr[ok], cc[ok]), zz[ok])
+        _stamp_path(floor, path, kernel, origin, resolution, shape, spacing)
+        if progress is not None and (idx % 16 == 0):
+            progress(idx / n)
+    if progress is not None:
+        progress(1.0)
+    return floor
+
+
+def achieved_floor_grouped(
+    groups: list[tuple[list[Point3], object]],
+    profiles: dict,
+    default: ToolProfile,
+    origin: tuple[float, float],
+    shape: tuple[int, int],
+    resolution: float,
+    init_z: float,
+    point_spacing: float | None = None,
+    progress: Callable[[float], None] | None = None,
+) -> np.ndarray:
+    """Multi-tool achieved floor (BUILDPLAN M6.1).
+
+    `groups` is ``(path, key)`` per cutting move; each path is stamped with the
+    tool profile ``profiles.get(key, default)`` — so a small tool's pocket and
+    the bulk tool's relief are simulated with their own geometry. Kernels are
+    cached per distinct profile.
+    """
+    floor = np.full(shape, float(init_z), dtype=np.float64)
+    spacing = point_spacing or resolution
+    kernels: dict = {}
+
+    def _kern(prof: ToolProfile):
+        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm)
+        if key not in kernels:
+            kernels[key] = prof.kernel(resolution)
+        return kernels[key]
+
+    n = len(groups) or 1
+    for idx, (path, k) in enumerate(groups):
+        if len(path) < 1:
+            continue
+        prof = profiles.get(k, default)
+        _stamp_path(floor, path, _kern(prof), origin, resolution, shape, spacing)
         if progress is not None and (idx % 16 == 0):
             progress(idx / n)
     if progress is not None:

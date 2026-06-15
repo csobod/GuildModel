@@ -29,4 +29,9 @@ junction_deviation_mm: 0.01
 supports_arcs: true          # reliable G2/G3
 units: mm
 enforce_soft_limits: true
+
+# Tool-change policy: manual change behind an M0 pause (no automatic tool
+# changer on the Guild CNC). nominal dwell feeds the cut-time estimate.
+tool_change_mode: m0
+tool_change_seconds: 20.0
 notes: "Reference machine; Demo Project feeds (S10000 F750/F333) proven here."

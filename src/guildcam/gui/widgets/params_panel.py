@@ -38,8 +38,11 @@ from guildcam.gui import material_store
 from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
     CastleCamParams, CastleParams, FootingFillet, FootingSchedule,
-    StockDefinition, ZoneThicknesses,
+    POSTERIOR_OPS, StockDefinition, ZoneThicknesses,
 )
+
+# Sentinel shown in a per-op tool combo meaning "use the global Tool above".
+_SAME_AS_GLOBAL = "(same as Tool)"
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
@@ -413,10 +416,37 @@ class ParamsPanel(QTabWidget):
         self.cam_tool.addItems(_tool_names())
         self.cam_tool.setCurrentText("flat_3175")
         self.cam_tool.setToolTip(
-            "Single tool for the whole posterior program; all five ops adapt to "
-            "its diameter. Add tools by editing config/tools.yaml."
+            "Default tool for the posterior program; every op uses it unless "
+            "given its own tool below. Add tools by editing config/tools.yaml."
         )
         form.addRow("Tool:", self.cam_tool)
+        lay.addWidget(grp)
+        self._build_op_tools_group(lay)
+
+    def _build_op_tools_group(self, lay: QVBoxLayout) -> None:
+        """Per-operation tool selectors (BUILDPLAN M6.1 multi-tool jobs).
+
+        Each op may keep the global tool or pick its own; a tool change is posted
+        at op boundaries where the tool differs (a small tool for the hinge
+        pockets, the bulk tool for relief / eyewires / perimeter is the everyday
+        case)."""
+        grp = QGroupBox("Per-operation tools  (multi-tool jobs)")
+        grp.setToolTip(
+            "Assign a tool per operation. '(same as Tool)' uses the default above. "
+            "Differing tools post a tool-change block (M6/M0 per machine profile); "
+            "the order pockets → relief → contours keeps same-tool ops grouped."
+        )
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        names = _tool_names()
+        self.op_tool_combos: dict[str, QComboBox] = {}
+        for op in POSTERIOR_OPS:
+            cb = QComboBox()
+            cb.addItem(_SAME_AS_GLOBAL)
+            cb.addItems(names)
+            cb.currentIndexChanged.connect(self.cam_changed)
+            self.op_tool_combos[op] = cb
+            form.addRow(f"{op}:", cb)
         lay.addWidget(grp)
 
     def _build_strategy_group(self, lay: QVBoxLayout) -> None:
@@ -494,12 +524,6 @@ class ParamsPanel(QTabWidget):
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.tool_label = _ro_field("flat_3175 · 3.175 mm")
-        self.tool_label.setToolTip(
-            "The five-op posterior program is single-tool (1/8\" single-flute flat)."
-        )
-        form.addRow("Tool:", self.tool_label)
 
         self.material = QComboBox()
         self.material.addItems(material_store.names() or ["acetate"])
@@ -637,9 +661,16 @@ class ParamsPanel(QTabWidget):
         def _opt(v: float) -> Optional[float]:
             return v if v > 0 else None
 
+        op_tools = {}
+        for op, cb in getattr(self, "op_tool_combos", {}).items():
+            txt = cb.currentText()
+            if txt and txt != _SAME_AS_GLOBAL:
+                op_tools[op] = txt
+
         return CastleCamParams(
             tool_name=self.cam_tool.currentText(),
             machine_name=machine_name,
+            op_tools=op_tools,
             relief_stepover_mm=self.relief_stepover.value(),
             contour_stepdown_mm=self.contour_stepdown.value(),
             rough_axial_stock_mm=self.rough_axial_stock.value(),
@@ -655,6 +686,11 @@ class ParamsPanel(QTabWidget):
         """Restore the CAM tab from a persisted CastleCamParams (prefs/project)."""
         if cp.tool_name:
             self.cam_tool.setCurrentText(cp.tool_name)
+        for op, cb in getattr(self, "op_tool_combos", {}).items():
+            name = cp.op_tools.get(op)
+            cb.blockSignals(True)
+            cb.setCurrentText(name if name and cb.findText(name) >= 0 else _SAME_AS_GLOBAL)
+            cb.blockSignals(False)
         if cp.machine_name in self._machine_names:
             self.machine.setCurrentIndex(self._machine_names.index(cp.machine_name))
         self.relief_stepover.setValue(cp.relief_stepover_mm)
