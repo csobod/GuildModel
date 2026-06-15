@@ -601,6 +601,34 @@ class ParamsPanel(QTabWidget):
             hand_finishing_allowance_mm=self.hand_allowance.value(),
         )
 
+    def set_castle_params(self, c: CastleParams) -> None:
+        """Restore the Castle / Stock tabs from a CastleParams (opening a .gcam)."""
+        z = c.zones
+        pairs = [
+            (self.zone_endpiece, z.endpiece_mm), (self.zone_bridge, z.bridge_mm),
+            (self.zone_nosepad, z.nosepad_mm),
+            (self.zone_eyewire_superior, z.eyewire_superior_mm),
+            (self.zone_eyewire_inferior, z.eyewire_inferior_mm),
+            (self.hinge_pocket_depth, c.hinge_pocket_depth_mm),
+            (self.onion_skin, c.onion_skin_mm),
+            (self.hand_allowance, c.hand_finishing_allowance_mm),
+            (self.blank_length, c.stock.blank_length_mm),
+            (self.blank_width, c.stock.blank_width_mm),
+            (self.blank_thickness, c.stock.blank_thickness_mm),
+            (self.pad_length, c.stock.pad_block_length_mm),
+            (self.pad_width, c.stock.pad_block_width_mm),
+            (self.pad_thickness, c.stock.pad_block_thickness_mm),
+        ]
+        for canonical, (ext_sb, int_sb) in self.footing_spins.items():
+            f = c.footing.for_edge(canonical)
+            pairs += [(ext_sb, f.exterior_mm), (int_sb, f.interior_mm)]
+        for sb, val in pairs:
+            sb.blockSignals(True)
+            sb.setValue(val)
+            sb.blockSignals(False)
+        self.castle_changed.emit()
+        self.stock_changed.emit()
+
     def cam_params(self) -> CastleCamParams:
         """Snapshot the CAM tab into the persisted CastleCamParams schema."""
         idx = self.machine.currentIndex()

@@ -16,7 +16,23 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 done — committed + tagged `v0.5.0`; next M5.1 `.gcam` container → M5.2 readiness light → M6 hardware)*
+## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 tagged `v0.5.0`; M5.1 `.gcam` container + M5.2 readiness light done — pyproject `v0.5.2`, uncommitted; next M6 hardware)*
+
+> **M5.2 — readiness traffic-light (`v0.5.2`):** a subtle ~10 px status-bar dot
+> (`gui/widgets/readiness_dot.py`) that walks grey → red → yellow → green across
+> the workflow — DXF import, mesh build, and a program *stored into the open
+> `.gcam`* — with the exact M5.2 tooltips, recolored per theme. The state
+> machine is the pure `state_for(...)` (unit-tested without Qt); a design/CAM
+> change drops green back to yellow (stale-program guard). Suite **136** (+9).
+
+> **M5.1 — `.gcam` project container (`v0.5.1`):** `core/project/gcam.py`
+> (`save_gcam`/`load_gcam`/`extract_handoff`) — a ZIP holding `project.json`
+> (full schema) + the embedded `source.dxf` + `program/*.nc` + `machine.yaml` +
+> `setup.json` + `cut_report.json`, with a SHA-256 manifest. Self-contained
+> reopen (File ▸ Save/Open Project, `Ctrl+S`), and a documented gSender-fork
+> hand-off subset (`docs/GCAM-FORMAT.md`). Generating/simulating folds the
+> program/setup/report into the open `.gcam` (the M5.2 green-light hook). Suite
+> **127** (+6). The dev-mode demo-DXF auto-load was removed in `v0.5.0`.
 
 > **M5 — cut-simulation workspace & the relief fix (`v0.5.0`):** a CAMotics sim
 > showed our posterior relief left the pad-block zone uncut (lower-inner lens
@@ -1008,9 +1024,18 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    fix keeps the M2/M3 gates and the cut-time budget green; full suite **121
    green**; tag `v0.5.0`.
 
-## M5.1 — `.gcam` project container & gSender hand-off (v0.5.1) · *one file holds the whole job* — 🔲 PLANNED
+## M5.1 — `.gcam` project container & gSender hand-off (v0.5.1) · *one file holds the whole job* — ✅ DONE 2026-06-14
 
-> **Status: planned 2026-06-14.** A single self-describing project file so a job
+> **Done 2026-06-14.** `core/project/gcam.py` (`save_gcam`/`load_gcam`/
+> `extract_handoff`, ZIP + manifest with per-file SHA-256, atomic write); the
+> layout below; File ▸ **Save Project** / **Open Project** (`.gcam`) with Open
+> Recent dispatch; the source DXF is embedded so a `.gcam` reopens with no
+> external files; generating G-code (and simulating) folds the program / setup /
+> cut-report into the open `.gcam`; `docs/GCAM-FORMAT.md` documents the format +
+> the gSender-fork hand-off subset. Suite **127 green** (+6
+> `tests/test_gcam_m51.py`). Tag `v0.5.1`.
+
+> **Plan (as built).** A single self-describing project file so a job
 > can be re-opened anywhere and handed to the machine. The format is a **ZIP
 > container with the `.gcam` extension** (mirroring GuildDraw's `.gdraw`
 > multi-workspace ZIP for cross-app consistency) that holds *both* everything
@@ -1019,7 +1044,7 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
 > **supersedes the planned `.guildcam` save/load and archive bundle** (old M7
 > tasks 1 + 3, now folded here).
 
-1. **Container layout** (`core/project/gcam.py`, stdlib `zipfile`):
+1. ✅ **Container layout** (`core/project/gcam.py`, stdlib `zipfile`):
    - `manifest.json` — format version, GuildCAM version, created/modified, a
      content inventory + per-file SHA-256, and the run mode (two-file vs single
      `M0` program).
@@ -1037,29 +1062,40 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    - `cut_report.json` — the verification result (completeness/gouge + cut-time)
      — evidence the program was simulated before transmission.
    - `model.stl` (optional) + `preview.png` (optional) — inspection record.
-2. **API**: `save_gcam(path, project, *, dxf_bytes, programs, machine, setup,
-   report, stl=None, preview=None)` and `load_gcam(path) -> GcamBundle`;
-   round-trip tests (schema + every file survives byte-for-byte; checksums
-   validate; a `.gcam` built on one machine reopens cleanly on another).
-3. **gSender-fork contract** (documented like §3's import contract, so the fork
-   is built against a frozen subset): the fork consumes `program/*.nc` +
-   `machine.yaml` + `setup.json` (+ `manifest.json` for the two-file flip /
-   dowel re-registration). It shows the setup sheet, enforces the machine
-   profile, and drives the flip workflow with the `M0` pause. Capture this in
-   `docs/GCAM-FORMAT.md`.
-4. **GUI**: File ▸ **Save Project** / **Open Project** (`.gcam`); generating
-   G-code writes it into the current `.gcam` (the green-light trigger for M5.2);
-   Open Recent extended to `.gcam`; `last_output_dir` reused.
-5. **Acceptance**: a `.gcam` round-trips the full project and reopens with no
-   external files; the documented fork subset is present and validated; tests
-   green; tag `v0.5.1`.
+2. ✅ **API**: `save_gcam(path, *, project, dxf_bytes, programs, machine, setup,
+   report, stl_bytes=None, preview_bytes=None, run_mode)` and `load_gcam(path,
+   verify=True) -> GcamBundle` (+ `extract_handoff`); round-trip tests (schema +
+   every file survives; SHA-256 verified on load; staged project-only save).
+3. ✅ **gSender-fork contract** (`docs/GCAM-FORMAT.md`): the fork consumes
+   `program/*.nc` + `machine.yaml` + `setup.json` (+ `manifest.json` for the
+   two-file flip / `M0` pause) — `extract_handoff()` writes exactly that subset;
+   `source.dxf` / `cut_report.json` / STL are GuildCAM-only.
+4. ✅ **GUI**: File ▸ **Save Project** / **Open Project** (`.gcam`, `Ctrl+S`);
+   the source DXF is embedded (`_load_dxf` keeps its bytes) so a project reopens
+   with no external files; generating G-code (and simulating) folds the program /
+   setup / cut-report into the open `.gcam`; Open Recent dispatches `.gcam`;
+   `set_castle_params` restores the Castle/Stock tabs on open.
+5. ✅ **Acceptance**: a `.gcam` round-trips the full project and reopens with no
+   external files; the fork subset is present and validated; suite **127 green**
+   (+6 `tests/test_gcam_m51.py`); tag `v0.5.1`.
 
-## M5.2 — Readiness traffic-light (v0.5.2) · *is this job ready to send?* — 🔲 PLANNED
+## M5.2 — Readiness traffic-light (v0.5.2) · *is this job ready to send?* — ✅ DONE 2026-06-14
 
-> **Status: planned 2026-06-14; depends on M5.1** (the green state means the
-> G-code is stored in the `.gcam`). A small, subtle status **dot** in the corner
-> of the window (status-bar corner) that tells the maker at a glance how far the
-> job is from transmittable, with the stage named in its tooltip.
+> **Status: DONE 2026-06-14 (`v0.5.2`).** A subtle ~10 px painted **dot** in
+> the status-bar corner (`gui/widgets/readiness_dot.py` — colors from
+> `theme.palette`, recolored per theme; tooltip carries the stage). The state
+> machine is the pure `state_for(dxf_loaded, mesh_built, program_stored)` so it
+> is unit-tested without Qt; `MainWindow` advances three flags — DXF import
+> (→ red), any mesh-build finishing (→ yellow), and a program *stored into the
+> open `.gcam`* (→ green, via the `_save_gcam_to` choke point that both Save
+> Project and the generate-time auto-fold pass through). A castle/stock/CAM
+> change calls `_invalidate_program()` (green → yellow, stale-program guard);
+> reopening a `.gcam` with a stored program lands green once its DXF imports.
+> Suite **136** (+9 `tests/test_readiness_m52.py`).
+>
+> A small, subtle status **dot** in the corner of the window (status-bar
+> corner) that tells the maker at a glance how far the job is from
+> transmittable, with the stage named in its tooltip.
 
 1. **States + tooltips** (exact wording):
    - **grey/off** — nothing loaded (no DXF).
@@ -1076,7 +1112,10 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    light back to yellow** (stale-program guard) so the green never lies.
 4. **Acceptance**: the dot walks grey → red → yellow → green across the real
    workflow with the exact tooltips above and reverts on a stale program;
-   subtle in both themes; tag `v0.5.2`.
+   subtle in both themes; tag `v0.5.2`. ✅ — verified by a headless walk
+   (off → red → yellow → green → yellow) and `test_readiness_m52.py` (exact
+   tooltip strings, four distinct theme colors per mode, the Qt-skip widget
+   check); suite 136 green.
 
 ## M6 — Hardware round-trip (v0.6.0) · *the only gate that cuts acetate*
 
@@ -1126,7 +1165,7 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
       bottom log dock), progress dialogs on long ops (M4.6)
 - [x] Cut-simulation workspace verifies the machined result (completeness +
       gouge); relief reaches the whole surface like the control (M5)
-- [ ] `.gcam` container round-trips the full project + carries the gSender-fork
+- [x] `.gcam` container round-trips the full project + carries the gSender-fork
       hand-off (M5.1); readiness traffic-light (M5.2)
 - [ ] **A physical frame front has been cut and accepted** (M6 — also
       graduates GuildDraw to v1.0.0)
@@ -1157,7 +1196,7 @@ arises:
 
 # Reference
 
-## Module status (as of 2026-06-14, M5 complete)
+## Module status (as of 2026-06-14, M5.2 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -1186,14 +1225,16 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); **`CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema`** (M4.8) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8) |
+| `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); **Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view)** (M5) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
+| `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **121 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + **materials 5 + cut-completeness 5**, incl. STL/NC/silhouette/arc/ramp/budget/clamp gates + the cut-completeness gate vs the control) |
+| `tests/` | ✅ | **136 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + **readiness 9**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine) |
 
 ## Dependency list (v1 — unchanged)
 

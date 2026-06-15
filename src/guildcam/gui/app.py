@@ -34,6 +34,8 @@ from guildcam.gui.widgets.dxf_canvas import DxfCanvas
 from guildcam.gui.widgets.params_panel import ParamsPanel
 from guildcam.gui.widgets.preview_3d import Preview3D
 from guildcam.gui.widgets.cut_sim_view import CutSimView
+from guildcam.gui.widgets import readiness_dot
+from guildcam.gui.widgets.readiness_dot import ReadinessDot
 
 
 class _Cancelled(Exception):
@@ -222,6 +224,10 @@ class GCodeWorker(_ProgressWorker):
         self.out_dir = out_dir
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
+        # .gcam artifacts (filled by the castle path on success)
+        self.programs: dict = {}
+        self.machine_dump = None
+        self.setup_dict = None
 
     def run(self) -> None:
         try:
@@ -327,6 +333,27 @@ class GCodeWorker(_ProgressWorker):
         if machine_warnings:
             summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
         rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm)
+
+        # Stash artifacts for the .gcam container (M5.1); read on the GUI thread.
+        self.programs = {out_file.name: text}
+        self.machine_dump = machine.model_dump()
+        flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
+        self.setup_dict = {
+            "tool": tool.get("display_name", cam.tool_name),
+            "tool_name": cam.tool_name,
+            "material": p["material_name"],
+            "machine": machine.display_name,
+            "spindle_rpm": clamp.spindle_rpm,
+            "feed_rate_mmpm": clamp.feed_rate_mmpm,
+            "plunge_rate_mmpm": clamp.plunge_rate_mmpm,
+            "contour_stepdown_mm": cam.contour_stepdown_mm,
+            "onion_skin_mm": castle.onion_skin_mm,
+            "hand_finishing_allowance_mm": castle.hand_finishing_allowance_mm,
+            "flip_axis_x_mm": flip,
+            "est_cut_min": round(report.cutting_only_seconds / 60, 2),
+            "est_cycle_min": round(report.cycle_seconds / 60, 2),
+            "ops": rows,
+        }
         self.finished.emit(summary, rows)
 
     def _generate(self) -> None:
@@ -736,6 +763,17 @@ class MainWindow(QMainWindow):
             p for p in self._prefs.get("recent_files", []) if isinstance(p, str)
         ]
 
+        # Readiness traffic-light inputs (M5.2). The dot is a pure function of
+        # these three flags (see _refresh_readiness): a DXF is loaded, a 3D
+        # model has been built for the current design, and the current program
+        # has been stored into the open .gcam. A design/CAM change that
+        # invalidates the stored program clears _program_stored so green never
+        # outlives the toolpaths it stood for. Initialised before _connect_signals,
+        # which can emit cam_changed during startup restore.
+        self._dxf_loaded = False
+        self._mesh_built = False
+        self._program_stored = False
+
         self._build_ui()
         self._build_toolbar()
         self._build_menu()
@@ -777,6 +815,17 @@ class MainWindow(QMainWindow):
         self._partition = None
         self._hinge_polys = []
 
+        # .gcam project state (M5.1): the source DXF bytes, the current project
+        # file, and the artifacts that go into the container (the last generated
+        # program, its setup sheet + machine snapshot, and the last cut report).
+        self._source_dxf_bytes: Optional[bytes] = None
+        self._source_name = ""
+        self._project_path: Optional[Path] = None
+        self._last_programs: dict = {}
+        self._last_setup: Optional[dict] = None
+        self._last_machine: Optional[dict] = None
+        self._last_report: Optional[dict] = None
+
         # Castle preview state: current teaching stage + per-stage mesh cache
         # (cache invalidated whenever a castle parameter changes)
         self._stage = "pockets"
@@ -803,12 +852,27 @@ class MainWindow(QMainWindow):
         self.preview3d.set_dark_mode(dark)
         self.cutsim.set_dark_mode(dark)
         self.params.set_dark_mode(dark)
+        self.readiness.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
 
     def _on_toggle_dark_mode(self, dark: bool) -> None:
         self._apply_dark_mode(dark)
         self._prefs["dark_mode"] = dark
         prefs_mod.save(self._prefs)
+
+    # -------------------------------------------------------------- readiness
+
+    def _refresh_readiness(self) -> None:
+        """Drive the status-bar dot from the three readiness flags (M5.2)."""
+        self.readiness.set_state(readiness_dot.state_for(
+            self._dxf_loaded, self._mesh_built, self._program_stored,
+        ))
+
+    def _invalidate_program(self) -> None:
+        """A design/CAM change makes any stored program stale → drop to yellow."""
+        if self._program_stored:
+            self._program_stored = False
+            self._refresh_readiness()
 
     # ------------------------------------------------------------------ layout
 
@@ -853,6 +917,9 @@ class MainWindow(QMainWindow):
         self.zoom_label = QLabel("")
         self.zoom_label.setObjectName("mutedSmallLabel")
         sb.addPermanentWidget(self.zoom_label)
+        # Readiness traffic-light (M5.2): rightmost corner of the status bar.
+        self.readiness = ReadinessDot()
+        sb.addPermanentWidget(self.readiness)
         self.setStatusBar(sb)
 
     # ------------------------------------------------------------------ toolbar
@@ -873,6 +940,14 @@ class MainWindow(QMainWindow):
         self._act_open.setShortcut(QKeySequence.StandardKey.Open)
         self._act_open.setToolTip("Open a GuildDraw DXF…  (Ctrl+O)")
         self._act_open.triggered.connect(self._on_open)
+
+        self._act_open_project = QAction("Open Project…", self)
+        self._act_open_project.setToolTip("Open a GuildCAM .gcam project")
+        self._act_open_project.triggered.connect(self._on_open_project)
+        self._act_save_project = QAction("Save Project…", self)
+        self._act_save_project.setShortcut("Ctrl+S")
+        self._act_save_project.setToolTip("Save the project as a .gcam container  (Ctrl+S)")
+        self._act_save_project.triggered.connect(self._on_save_project)
 
         self._act_build = QAction("Build 3D Model", self)
         self._act_build.setShortcut("F5")
@@ -965,6 +1040,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_open)
         self._recent_menu = file_menu.addMenu("Open &Recent")
         self._rebuild_recent_menu()
+        file_menu.addSeparator()
+        file_menu.addAction(self._act_open_project)
+        file_menu.addAction(self._act_save_project)
         file_menu.addSeparator()
         file_menu.addAction(self._act_build)
         file_menu.addAction(self._act_gcode)
@@ -1071,7 +1149,124 @@ class MainWindow(QMainWindow):
             prefs_mod.save(self._prefs)
             self._rebuild_recent_menu()
             return
-        self._load_dxf(Path(path))
+        if path.lower().endswith(".gcam"):
+            self._open_project(Path(path))
+        else:
+            self._load_dxf(Path(path))
+
+    # ------------------------------------------------------------------ .gcam project I/O (M5.1)
+
+    def _build_project_schema(self):
+        from guildcam.core.project.schema import MachineRef, MaterialRef, ProjectSchema
+        cam = self.params.cam_params()
+        job = self._source_name.rsplit(".", 1)[0] if self._source_name else "Untitled Frame"
+        proj = ProjectSchema(
+            job_name=job,
+            source_file=self._source_name,
+            castle=self.params.castle_params(),
+            cam_params=cam,
+            machine=MachineRef(name=cam.machine_name,
+                               preset_file=f"machines/{cam.machine_name}.yaml"),
+        )
+        proj.cam.material = MaterialRef(name=self.params.material_name())
+        return proj
+
+    def _save_gcam_to(self, path: Path, announce: bool = True) -> bool:
+        from guildcam.core.project.gcam import save_gcam
+        from guildcam.core.post.machine import load_machine_profile
+        if self._source_dxf_bytes is None:
+            QMessageBox.warning(self, "No design", "Import a DXF before saving a project.")
+            return False
+        cam = self.params.cam_params()
+        config_dir = Path(__file__).parent.parent / "config"
+        machine = self._last_machine
+        if machine is None:
+            try:
+                machine = load_machine_profile(cam.machine_name, config_dir).model_dump()
+            except Exception:
+                machine = None
+        try:
+            save_gcam(
+                path, project=self._build_project_schema(),
+                dxf_bytes=self._source_dxf_bytes,
+                programs=self._last_programs or None,
+                machine=machine, setup=self._last_setup, report=self._last_report,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
+            return False
+        self._project_path = path
+        self._add_recent(str(path))
+        self.setWindowTitle(f"GuildCAM  —  {path.name}")
+        # Green only once a program is actually stored in the .gcam (M5.2).
+        self._program_stored = bool(self._last_programs)
+        self._refresh_readiness()
+        if announce:
+            self.append_log(f"[project] Saved {path.name}")
+            self.status_lbl.setText(f"Project saved — {path.name}")
+        return True
+
+    def _on_save_project(self) -> None:
+        if self._source_dxf_bytes is None:
+            QMessageBox.warning(self, "No design", "Import a DXF before saving a project.")
+            return
+        default = self._project_path or (
+            Path(self._prefs["last_output_dir"] or ".")
+            / ((self._source_name.rsplit(".", 1)[0] if self._source_name else "frame") + ".gcam"))
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save GuildCAM project", str(default), "GuildCAM project (*.gcam)")
+        if not path_str:
+            return
+        if not path_str.lower().endswith(".gcam"):
+            path_str += ".gcam"
+        if self._save_gcam_to(Path(path_str)):
+            self._prefs["last_output_dir"] = str(Path(path_str).parent)
+            prefs_mod.save(self._prefs)
+
+    def _on_open_project(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Open GuildCAM project", self._prefs["last_output_dir"],
+            "GuildCAM project (*.gcam);;All files (*)")
+        if path_str:
+            self._open_project(Path(path_str))
+
+    def _open_project(self, path: Path) -> None:
+        from guildcam.core.project.gcam import GcamError, load_gcam
+        try:
+            bundle = load_gcam(path)
+        except GcamError as exc:
+            QMessageBox.critical(self, "Open failed", f"{path.name}:\n{exc}")
+            return
+        proj = bundle.project
+        # Restore params first so the post-import rebuild uses them.
+        self.params.set_material(proj.cam.material.name)
+        self.params.set_castle_params(proj.castle)
+        self.params.set_cam_params(proj.cam_params)
+        self._last_programs = dict(bundle.programs)
+        self._last_setup = bundle.setup
+        self._last_machine = bundle.machine
+        self._last_report = bundle.report
+        self._project_path = path
+        # Readiness: a stored program means the reopened job is transmittable
+        # (green) as soon as its DXF finishes importing below; otherwise the
+        # import drops it to red. The model is rebuilt lazily from the DXF.
+        self._mesh_built = False
+        self._program_stored = bundle.has_program()
+        self._add_recent(str(path))
+        self.setWindowTitle(f"GuildCAM  —  {path.name}")
+        self.append_log(
+            f"[project] Opened {path.name} "
+            f"({'with program' if bundle.has_program() else 'no program yet'})")
+        if bundle.dxf_bytes:
+            import tempfile
+            tmp = Path(tempfile.gettempdir()) / f"gcam_{path.stem}.dxf"
+            tmp.write_bytes(bundle.dxf_bytes)
+            self._load_dxf(tmp, from_project=True)
+            self._source_dxf_bytes = bundle.dxf_bytes
+            self._source_name = proj.source_file or tmp.name
+        else:
+            QMessageBox.warning(self, "No DXF",
+                                "This project has no embedded DXF; parameters restored only.")
 
     # ------------------------------------------------------------------ preferences
 
@@ -1141,9 +1336,24 @@ class MainWindow(QMainWindow):
             return
         self._load_dxf(Path(path_str))
 
-    def _load_dxf(self, path: Path) -> None:
+    def _load_dxf(self, path: Path, *, from_project: bool = False) -> None:
         self.status_lbl.setText(f"Loading {path.name}…")
         self.append_log(f"[import] {path.name}")
+
+        # Retain the source DXF bytes so a .gcam is self-contained (M5.1).
+        try:
+            self._source_dxf_bytes = Path(path).read_bytes()
+            self._source_name = path.name
+        except Exception:
+            self._source_dxf_bytes = None
+        if not from_project:
+            # A fresh DXF starts a new (unsaved) project; drop stale artifacts.
+            self._project_path = None
+            self._last_programs = {}
+            self._last_setup = self._last_machine = self._last_report = None
+            # Readiness restarts at red once the import lands (no model/program).
+            self._mesh_built = False
+            self._program_stored = False
 
         self._import_worker = ImportWorker(path)
         self._import_thread = QThread()
@@ -1262,6 +1472,8 @@ class MainWindow(QMainWindow):
             )
 
         self.status_lbl.setText(f"Loaded: {fname}")
+        self._dxf_loaded = True
+        self._refresh_readiness()
         if self._import_worker is not None:
             self._add_recent(str(self._import_worker.path))
 
@@ -1309,8 +1521,10 @@ class MainWindow(QMainWindow):
         self._start_mesh_build(show_progress=True)
 
     def _on_castle_params_changed(self) -> None:
-        # Parameters changed: every cached stage is stale.
+        # Parameters changed: every cached stage is stale, and so is any stored
+        # program (the relief it rode just changed) — drop green back to yellow.
         self._stage_cache.clear()
+        self._invalidate_program()
         if self.stack.currentIndex() == 1 and self._castle_ready():
             self._rebuild_timer.start()
 
@@ -1323,6 +1537,7 @@ class MainWindow(QMainWindow):
             self._start_mesh_build(show_progress=False)
 
     def _on_stock_changed(self) -> None:
+        self._invalidate_program()
         self._update_stock_canvas()
         # Re-draw the stock ghost around the currently shown stage, if any.
         cached = self._stage_cache.get(self._stage)
@@ -1332,6 +1547,8 @@ class MainWindow(QMainWindow):
     def _on_cam_changed(self) -> None:
         """Persist the CAM tab (material / machine / tool / strategy / feeds).
         CAM params do not affect the 3D preview, so no rebuild is triggered."""
+        # Feeds/tool/strategy changes invalidate any stored program (M5.2).
+        self._invalidate_program()
         try:
             self._prefs["cam_params"] = self.params.cam_params().model_dump()
             self._prefs["material_name"] = self.params.material_name()
@@ -1410,6 +1627,8 @@ class MainWindow(QMainWindow):
             f"{len(mesh.faces):,} tris"
         )
         self._act_build.setEnabled(True)
+        self._mesh_built = True
+        self._refresh_readiness()
 
     def _on_mesh_error(self, tb: str) -> None:
         self._close_progress()
@@ -1483,6 +1702,18 @@ class MainWindow(QMainWindow):
             "warn": "Cut simulated — review the flagged regions",
             "fail": "Cut incomplete — see the flagged regions",
         }.get(report.status(), "Cut simulated"))
+        # Keep a serialisable summary for the .gcam (no numpy masks).
+        c, g = report.completeness, report.gouge
+        self._last_report = {
+            "status": report.status(),
+            "uncut_fraction": round(c.uncut_fraction, 5),
+            "max_excess_mm": round(c.max_excess_mm, 3),
+            "gouge_cells": g.gouge_cells,
+            "gouge_max_mm": round(g.max_depth_mm, 3),
+            "summary": lines,
+        }
+        if self._project_path is not None:
+            self._save_gcam_to(self._project_path, announce=False)
         self._act_simulate.setEnabled(True)
 
     def _on_sim_error(self, tb: str) -> None:
@@ -1589,6 +1820,18 @@ class MainWindow(QMainWindow):
         self.append_log("[gcode] Done.")
         self._act_gcode.setEnabled(True)
         self.status_lbl.setText("G-code ready")
+        # Capture the program + setup for the .gcam container (M5.1). A new
+        # program supersedes any stale cut report.
+        w = self._gcode_worker
+        if w is not None and getattr(w, "programs", None):
+            self._last_programs = w.programs
+            self._last_setup = w.setup_dict
+            self._last_machine = w.machine_dump
+            self._last_report = None
+            # If a project file is open, fold the new program straight into it.
+            if self._project_path is not None:
+                self._save_gcam_to(self._project_path, announce=False)
+                self.append_log(f"[project] Updated {self._project_path.name} with the new program.")
         if rows:
             OpSummaryDialog(rows, summary, self).exec()
         else:
@@ -1671,7 +1914,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.5.0 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.5.1 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",

@@ -333,6 +333,10 @@ class CanvasPalette:
     zone_outline: str       # zone-inspector hover outline
     zone_fill_rgba: tuple[int, int, int, int]   # zone hover fill
     mesh_surface: str       # 3D part surface
+    ready_off: str          # readiness dot — nothing loaded
+    ready_red: str          # readiness dot — DXF only
+    ready_yellow: str       # readiness dot — model built
+    ready_green: str        # readiness dot — ready for transmission
 
 
 # Canvas backgrounds match GuildDraw (_CANVAS_BG_LIGHT / _CANVAS_BG_DARK).
@@ -346,6 +350,10 @@ LIGHT = CanvasPalette(
     zone_outline="#e07800",
     zone_fill_rgba=(255, 150, 30, 70),
     mesh_surface="#d4a84b",
+    ready_off="#c2b89e",
+    ready_red="#c0392b",
+    ready_yellow="#d4a017",
+    ready_green="#3a8c3a",
 )
 
 DARK = CanvasPalette(
@@ -358,6 +366,10 @@ DARK = CanvasPalette(
     zone_outline="#e8924a",
     zone_fill_rgba=(255, 160, 60, 60),
     mesh_surface="#d4a84b",
+    ready_off="#5a5446",
+    ready_red="#d05a4a",
+    ready_yellow="#d4a840",
+    ready_green="#5aa95a",
 )
 
 
