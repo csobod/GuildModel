@@ -16,7 +16,7 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-14, M4.8 + M4.9 + M5 tagged `v0.5.0`; M5.1 `.gcam` container + M5.2 readiness light done — pyproject `v0.5.2`, uncommitted; next M6 hardware)*
+## Status snapshot *(2026-06-15, M5.1 `.gcam` container + M5.2 readiness light tagged `v0.5.2` (commit bc930a4); roadmap replanned — **M6 is now "Expanded CAM operations"** (M6.1 multi-tool → M6.2 stock-box zero → M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip bumped to M7, two-sided M8, packaging/v1.0.0 M9; next M6.1 multi-tool)*
 
 > **M5.2 — readiness traffic-light (`v0.5.2`):** a subtle ~10 px status-bar dot
 > (`gui/widgets/readiness_dot.py`) that walks grey → red → yellow → green across
@@ -251,11 +251,16 @@ zones from the SCULPT section cuts → build the terraced, fillet-blended relief
 as a heightfield → generate the five-operation single-tool GRBL program →
 cut a real frame on the Guild CNC.
 
-**v1 scope is the frame front only**, matching the Demo Project reference.
-Temples, base-curve forming holding blocks, and lens patterns are post-1.0
-(the user supplies reference material for each when it arises). Explicit
-non-goals: machining arbitrary meshes, B-rep modeling, adaptive/roughing
-strategies, multi-tool jobs.
+**M1–M5 scope was the frame front only**, matching the Demo Project reference.
+**M6 (2026-06-15 replan) widens v1 to the whole shop job**: per-operation
+tool changes (multi-tool jobs), program zero set from the stock box, **temples**
+(with engraving), **auto-generated base-curve forming blocks**, and **multi-part
+worktable layouts** that cut several components in one program. Temples and
+base-curve blocks therefore graduate from the post-1.0 backlog into v1; only
+lens patterns remain deferred. Explicit non-goals (unchanged): machining
+arbitrary meshes, B-rep modeling, adaptive/roughing strategies. (Multi-tool was
+a spike-era non-goal — **lifted in M6**, since the 2 mm-pocket → 3.175 mm-bulk
+job is everyday production.)
 
 ## 2. Design ethos — the castle
 
@@ -1117,7 +1122,135 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
    tooltip strings, four distinct theme colors per mode, the Qt-skip widget
    check); suite 136 green.
 
-## M6 — Hardware round-trip (v0.6.0) · *the only gate that cuts acetate*
+## M6 — Expanded CAM operations (v0.6.x) · *beyond the single-tool frame front*
+
+> **2026-06-15 replan.** The original single-milestone M6 (hardware round-trip)
+> is now **M7**; this M6 is the block of "real shop" CAM the maker needs before
+> a hardware gate is worth running. It deliberately widens the M1–M5 scope
+> (single-tool, frame-front-only) — see §1. Sub-milestones ship in order, each a
+> version bump; M6.1 (multi-tool) is foundational and the others build on it.
+> Hardware validation (M7) then exercises the whole expanded op set in one pass.
+> No standalone `v0.6.0`: the first deliverable is M6.1 / `v0.6.1`.
+
+### M6.1 — Multi-tool jobs & per-operation tool assignment (v0.6.1)
+
+The everyday case M1–M5 can't post: a **small tool (e.g. 2 mm)** clears the
+hinge pockets and any tight internal radius, then a **larger tool (3.175 mm)**
+does the bulk relief / eyewires / perimeter. Today every op rides one global tool.
+
+1. **Per-op tool binding**: each `CamOp` gains a `tool` (from `tools.yaml`); the
+   CAM tab lets every operation pick its tool (default = today's single tool).
+   Drop-cutter CLS, pyclipper offsets, feeds/DOC all key off the op's tool.
+2. **Tool-change posting** (`post/grbl.py`): a change block at op boundaries
+   where the tool differs — spindle stop / `M5`, retract to safe Z, `M6 Tn` or a
+   manual-change `M0` pause with a prompt comment (per `MachineProfile`), re-zero
+   per the machine's tool-length policy, restart spindle. Ops are grouped by tool
+   where it doesn't change the result (fewest changes), preserving the M4.7
+   ring-major / contour-parallel ordering within a tool.
+3. **Tool-reach gating** (closes the M4.8 open follow-up): warn + suggest a
+   small-enough tool when an op's narrowest feature can't be reached by its
+   assigned tool (e.g. a 2 mm pocket with a 3.175 mm tool); shown in the CAM tab
+   and the cut-sim.
+4. **Sim + cut-time multi-tool aware**: the Z-buffer sim and `cuttime.py` model
+   per-tool profiles + change dwell; the lint gate checks each tool against the
+   machine DOC/feed/spindle limits.
+5. Tests: per-op tool binds round-trip through `.gcam`; change blocks parse +
+   lint; the 2 mm-pocket / 3.175 mm-bulk demo sims cleaner than the single-tool
+   baseline.
+
+### M6.2 — Program zero from the stock box (v0.6.2)
+
+Makers touch off zero on the **stock blank**, not the fixture frame. Today the
+program is implicitly zeroed to the design/fixture frame.
+
+1. **Stock-box datum selector**: choose G54 zero from the `StockDefinition`
+   box — a corner (4) or center in X/Y, top or bottom face in Z. A datum marker
+   on the 2D canvas + the setup sheet shows where zero lands.
+2. **Post-time transform only**: geometry/CLS/sim stay in the design frame; the
+   post offsets to the chosen datum, so M2/M3 envelopes and the sim are
+   unaffected.
+3. **Fixture mode retained**: the fixture-relative zero (current behaviour,
+   needed for the two-sided flip axis in M8) stays selectable; stock-box zero is
+   the new default for single-setup jobs. Persisted in `CastleCamParams` + the
+   `.gcam` setup sheet.
+4. Tests: each datum choice posts the expected offset; round-trips; the setup
+   sheet names the datum; the M8 flip-axis math still works from fixture mode.
+
+### M6.3 — Temples with engraving (v0.6.3)
+
+Pulled forward from the post-1.0 backlog. A temple is an outline cut **plus
+ENGRAVING passes**, and the engraving needs a tool change (depends on M6.1).
+
+1. **Temple intake**: the ENGRAVING layer (reserved since M1, "temples only") +
+   the temple OUTLINE — both already in the GuildDraw export contract (§3).
+   Temple blanks added to `config/fixtures/guild_cnc.yaml`.
+2. **Engrave op**: a shallow V-/flat-engrave toolpath following the ENGRAVING
+   curves at a set depth with its own (small) tool — a tool change before/after
+   via M6.1.
+3. **Temple profile cut**: outline contour with onion skin like the perimeter;
+   temples are flat (no castle relief), so no zone/footing machinery.
+4. UI: temples are a component type alongside the frame front (feeds the M6.5
+   layout); the cut-sim renders the engraved result.
+5. Tests: ENGRAVING → engrave op at depth with the right tool + change blocks;
+   temple profile envelope; demo temple round-trips.
+
+### M6.4 — Base-curve forming blocks (v0.6.4)
+
+Pulled forward: auto-generate the post-cut heat-forming holding block straight
+from the frame DXF.
+
+1. **Block geometry from the DXF**: take the **interior shape of the eyewires**
+   (the LENS interiors, posterior) as the block's top profile — the surface the
+   frame front is formed over. Default blank: **acetal, 1/4" (6.35 mm) thick,
+   65 × 65 mm** (editable like the stock model).
+2. **Mounting holes**: **three M4 drill holes spaced 10 mm apart** (default).
+   Arrangement (in-line vs. triangle) and drill Ø (M4 clearance ≈ 4.5 mm vs.
+   tapped ≈ 3.3 mm) are parameters. **OPEN: confirm the canonical arrangement +
+   drill spec against a reference block before locking the default.**
+3. **CAM**: profile-cut the 65 × 65 outline + the eyewire-interior contour/pocket
+   + drill the 3 holes (peck-drill or helical-bore per tool), in acetal feeds
+   (add an acetal-block entry to `materials.yaml`). Likely a drill tool change
+   (M6.1).
+4. UI/output: a "Generate base-curve block" action → its own program (and a
+   component for the M6.5 bed); STL/preview of the block.
+5. Tests: block outline = blank size; top profile tracks the lens interior;
+   3 holes at spec spacing/Ø; program sims clean.
+
+### M6.5 — Custom worktable layout & multi-part nesting (v0.6.5)
+
+Cut several components — frame front(s), temples, base-curve block(s) — in **one
+CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
+
+1. **Bed model**: a configurable worktable (size, origin, keep-out/screw zones —
+   generalizes `config/fixtures/guild_cnc.yaml` beyond the single six-zone
+   blank), saved as a fixture profile.
+2. **Layout workspace**: place component instances on the bed (position/rotate,
+   optional simple auto-pack), each carrying its own stock + ops + tools.
+   Collision/keep-out + reach checks against the bed.
+3. **Combined post**: one program running the placed parts, ordered to
+   **minimize tool changes across the whole bed** (group by tool, M6.1), each
+   part offset to its bed position (built on the M6.2 transform), with the
+   fixture clearance check over the full layout.
+4. **`.gcam` extension**: the container holds the bed layout + per-component
+   sources/programs (a multi-stock project — anticipates the post-1.0 `.gdraw`
+   multi-workspace intake).
+5. Sim + cut-time over the whole bed; readiness/lint gate the combined program.
+6. Tests: a 2-part bed posts one program with correct per-part offsets + grouped
+   tool changes; clearance over the layout; round-trips.
+
+### M6 exit criteria
+- [ ] Per-operation tool assignment with posted, linted tool-change blocks +
+      tool-reach warnings (M6.1)
+- [ ] Program zero settable from the stock-box datum; fixture mode retained (M6.2)
+- [ ] Temples cut with ENGRAVING passes + the engraving tool change (M6.3)
+- [ ] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
+      holes, acetal blank) (M6.4)
+- [ ] Multiple components placed on a custom bed and cut in one program (M6.5)
+- [ ] Full suite green; sub-milestones tagged `v0.6.1` … `v0.6.5`
+
+## M7 — Hardware round-trip (v0.7.0) · *the only gate that cuts acetate*
+
+> Was M6; now validates the full M6 op set on real stock, not just the frame front.
 
 1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using the
    M1–M5 output: hinge pockets → relief → eyewires → perimeter, onion skin,
@@ -1125,31 +1258,36 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
 2. Verify: plateau heights (calipers), pocket fit of a catalog hinge, lens
    opening size after the 0.1 mm allowance is hand-finished, skin release
    behaviour, total cycle time vs ~10 min reference.
-3. Resolve the asymmetric-lens contract question with real geometry (§3).
-4. **This closes GuildDraw's v1.0.0 gate** (its M9 hardware round-trip) —
+3. **Exercise the M6 additions on real stock**: a multi-tool job (2 mm pocket →
+   3.175 mm bulk) with a clean tool change, stock-box zero touch-off, a temple
+   with engraving, a base-curve forming block, and a multi-part bed program.
+4. Resolve the asymmetric-lens contract question with real geometry (§3).
+5. **This closes GuildDraw's v1.0.0 gate** (its M9 hardware round-trip) —
    tag GuildDraw `v1.0.0` when this milestone passes.
-5. Findings feed fixes; milestone ends when a cut part is accepted.
+6. Findings feed fixes; milestone ends when the cut parts are accepted.
 
-## M7 — Two-sided workflow & export polish (v0.7.0)
+## M8 — Two-sided workflow & export polish (v0.8.0)
 
 > Project save/load + the archive bundle moved to **M5.1** (the `.gcam`
 > container). What remains here is the two-sided cut and the leftover exports.
 
 1. **Back-side program** generation for the two-sided cut-and-flip loop using
-   the fixture flip axis (the spike's back/front split, now castle-aware), with
-   the `M0` single-file option — written into the `.gcam` as `program/back_cut.nc`.
+   the fixture flip axis (the spike's back/front split, now castle-aware, from
+   M6.2 fixture mode), with the `M0` single-file option — written into the
+   `.gcam` as `program/back_cut.nc`.
 2. Export set beyond the `.gcam`: standalone STL (watertight), canonical DXF
    archive, PNG render — for users who want loose files.
 3. SVG intake npoint bug: fix or formally drop SVG import for v1 (DXF is the
    contract; decide here, not silently).
 
-## M8 — Packaging, docs & release (v1.0.0)
+## M9 — Packaging, docs & release (v1.0.0)
 
 1. PyInstaller → Windows installer (Inno Setup); frozen-build smoke test.
 2. User guide: castle ethos chapter (§2 expanded with the stage-stepper
    walkthrough), zone/SCULPT drawing guidance for GuildDraw, parameter
    reference, fixture/stock setup, hand-finishing notes; cut-simulation
-   verification chapter.
+   verification chapter; **M6 chapters — multi-tool setup, stock-box zero,
+   temples + engraving, base-curve blocks, worktable layout/nesting**.
 3. README, NOTICE refresh, version stamp, tag `v1.0.0`.
 
 ### 1.0 release criteria (definition of done)
@@ -1167,10 +1305,12 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
       gouge); relief reaches the whole surface like the control (M5)
 - [x] `.gcam` container round-trips the full project + carries the gSender-fork
       hand-off (M5.1); readiness traffic-light (M5.2)
-- [ ] **A physical frame front has been cut and accepted** (M6 — also
-      graduates GuildDraw to v1.0.0)
-- [ ] Two-sided back-side program + loose exports (M7)
-- [ ] Packaged Windows build + user guide with the castle chapter (M8)
+- [ ] Multi-tool jobs (per-op tool change), stock-box zero, temples + engraving,
+      auto base-curve blocks, and multi-part worktable layout (M6.1–M6.5)
+- [ ] **A physical frame front (+ the M6 op set) has been cut and accepted**
+      (M7 — also graduates GuildDraw to v1.0.0)
+- [ ] Two-sided back-side program + loose exports (M8)
+- [ ] Packaged Windows build + user guide with the castle + M6 chapters (M9)
 - [ ] Test suite green and run before every release build
 
 ---
@@ -1178,18 +1318,18 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
 # Post-1.0 backlog (do not build in v1)
 
 In rough priority order; the user supplies reference material per item as it
-arises:
+arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by
+the 2026-06-15 M6 replan and are no longer listed here.)
 
-1. **Temples** — outline + ENGRAVING passes, temple blanks in the fixture.
-2. **Base-curve forming holding blocks** — machined fixtures for post-cut
-   heat-forming.
-3. **Lens patterns** — pattern cutting; OLGA `bevel_flank()` (dormant since
+1. **Lens patterns** — pattern cutting; OLGA `bevel_flank()` (dormant since
    the spike) likely returns here for lens grooves.
-4. BRIDGE angled cutaway (layer reserved in both apps).
-5. `.gdraw` direct intake (multi-workspace ZIP → multi-stock project).
-6. CHA hinge catalog placement UI (v1 drives pockets from the HINGE layer;
+2. BRIDGE angled cutaway (layer reserved in both apps).
+3. `.gdraw` direct intake (multi-workspace ZIP → multi-stock project) — the M6.5
+   bed layout already moves the `.gcam` toward multi-stock, so this is the intake
+   half.
+4. CHA hinge catalog placement UI (v1 drives pockets from the HINGE layer;
    the catalog machinery in `relief/hinge.py` stays for this).
-7. STEP/B-rep export, adaptive strategies, macOS/Linux — unchanged from the
+5. STEP/B-rep export, adaptive strategies, macOS/Linux — unchanged from the
    spike's exclusion list.
 
 ---
