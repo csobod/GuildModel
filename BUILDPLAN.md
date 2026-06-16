@@ -16,7 +16,15 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-15, **M6.1 multi-tool jobs tagged `v0.6.1`** — per-op tool assignment through schema → generation → post (M0/M6 tool-change blocks) → sim → cut-time → GUI; single-tool jobs byte-unchanged; suite 151 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → M6.2 stock-box zero → M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.2 stock-box zero)*
+## Status snapshot *(2026-06-15, **M6.2 program-zero-from-stock-box tagged `v0.6.2`** — `ProgramZero` datum (stock-box corner/center + top/bottom, or fixture) as a rigid post-time work offset; design frame & sim unaffected; default lower-left/top. After M6.1 multi-tool (`v0.6.1`). Suite 163 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.3 temples+engraving)*
+
+> **M6.2 — program zero from the stock box (`v0.6.2`):** `ProgramZero`
+> (`project.schema`) picks G54 zero from the stock blank box — a corner/center in
+> X/Y, top/bottom face in Z (default lower-left/top), or `fixture` (the old
+> design-frame zero, identity offset). `GRBLPost.work_offset` shifts every posted
+> coordinate (arc I/J unchanged); geometry/CLS/sim stay in the design frame, so
+> M2/M3 + the simulator are untouched. CAM tab **Program Zero** group + a 2D-canvas
+> datum crosshair + setup-sheet datum. Suite **163** (+12).
 
 > **M6.1 — multi-tool jobs (`v0.6.1`):** the everyday 2 mm-pocket → 3.175 mm-bulk
 > job now posts. `CamOp.tool` + `CastleCamParams.op_tools` (empty = single-tool);
@@ -1194,23 +1202,40 @@ does the bulk relief / eyewires / perimeter. Each op now rides its own tool.
    change dwell in the cut-time total; and a 2 mm tool reaching a narrow pocket
    the 3.175 mm bulk tool can't enter. Single-tool post verified unchanged.
 
-### M6.2 — Program zero from the stock box (v0.6.2)
+### M6.2 — Program zero from the stock box (v0.6.2) — ✅ DONE 2026-06-15
 
-Makers touch off zero on the **stock blank**, not the fixture frame. Today the
-program is implicitly zeroed to the design/fixture frame.
+> **Done 2026-06-15 (`v0.6.2`).** A `ProgramZero` datum (stock-box corner/center
+> + top/bottom face, or fixture) becomes a rigid post-time work offset — the
+> toolpaths stay in the design frame so every M2/M3 envelope and the cut
+> simulator are untouched. Default is the stock blank's **lower-left corner, top
+> face** (what a maker touches off). Suite **163 green** (+12
+> `tests/test_program_zero_m62.py`).
 
-1. **Stock-box datum selector**: choose G54 zero from the `StockDefinition`
-   box — a corner (4) or center in X/Y, top or bottom face in Z. A datum marker
-   on the 2D canvas + the setup sheet shows where zero lands.
-2. **Post-time transform only**: geometry/CLS/sim stay in the design frame; the
-   post offsets to the chosen datum, so M2/M3 envelopes and the sim are
-   unaffected.
-3. **Fixture mode retained**: the fixture-relative zero (current behaviour,
-   needed for the two-sided flip axis in M8) stays selectable; stock-box zero is
-   the new default for single-setup jobs. Persisted in `CastleCamParams` + the
-   `.gcam` setup sheet.
-4. Tests: each datum choice posts the expected offset; round-trips; the setup
-   sheet names the datum; the M8 flip-axis math still works from fixture mode.
+Makers touch off zero on the **stock blank**, not the fixture frame. The program
+was implicitly zeroed to the design/fixture frame.
+
+1. ✅ **Stock-box datum selector**: `ProgramZero` (`project.schema`) picks G54
+   zero from the `StockDefinition` blank box — a corner or center in X/Y, top or
+   bottom (anterior) face in Z — with `datum_world` / `work_offset` / `label`.
+   The CAM tab has a **Program Zero** group (mode + X/Y/Z datum combos, X/Y/Z
+   disabled in fixture mode); a crosshair **datum marker** on the 2D canvas
+   (`DxfCanvas.set_program_zero`, updated on stock/CAM change) and the setup sheet
+   (`program_zero` / `work_offset_mm` / `datum_world_mm`) show where zero lands.
+2. ✅ **Post-time transform only**: `GRBLPost.work_offset` adds the offset to
+   every emitted coordinate (rapid / feed / arc endpoints / header + end safe-Z),
+   leaving arc I/J (center-relative) unchanged. Geometry / CLS / sim stay in the
+   design frame — the demo cut shape is byte-identical to fixture mode, just
+   translated; the simulator posts at offset 0 so completeness is independent of
+   where zero is set.
+3. ✅ **Fixture mode retained**: `mode="fixture"` is the identity offset (the
+   current design-frame behaviour, needed for the two-sided flip axis in M8);
+   stock-box is the new default for single-setup jobs. Persisted in
+   `CastleCamParams.program_zero` and the `.gcam` (round-trip tested).
+4. ✅ Tests (`tests/test_program_zero_m62.py`, +12): each datum's offset; the
+   post applies it (I/J unchanged, safe-Z offset); the demo lands in the positive
+   quadrant and is a pure translation of fixture mode; the sim is unaffected;
+   fixture mode is the identity; `.gcam` round-trip; the setup sheet/label name
+   the datum.
 
 ### M6.3 — Temples with engraving (v0.6.3)
 
@@ -1277,7 +1302,8 @@ CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
 ### M6 exit criteria
 - [x] Per-operation tool assignment with posted, linted tool-change blocks +
       tool-reach warnings (M6.1) — `v0.6.1`
-- [ ] Program zero settable from the stock-box datum; fixture mode retained (M6.2)
+- [x] Program zero settable from the stock-box datum; fixture mode retained (M6.2)
+      — `v0.6.2`
 - [ ] Temples cut with ENGRAVING passes + the engraving tool change (M6.3)
 - [ ] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
       holes, acetal blank) (M6.4)
@@ -1372,7 +1398,7 @@ the 2026-06-15 M6 replan and are no longer listed here.)
 
 # Reference
 
-## Module status (as of 2026-06-15, M6.1 complete)
+## Module status (as of 2026-06-15, M6.2 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -1397,20 +1423,20 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1) |
+| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1); **`work_offset`** — program-zero datum applied to every emitted coordinate, arc I/J untouched (M6.2) |
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **151 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + **multitool 14**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1 per-op-tool/change-block/reach/tool-aware-sim gates) |
+| `tests/` | ✅ | **163 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + **program-zero 12**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1 per-op-tool/change-block/reach/tool-aware-sim gates + the M6.2 datum-offset/pure-translation/sim-unaffected gates) |
 
 ## Dependency list (v1 — unchanged)
 

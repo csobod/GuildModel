@@ -77,6 +77,11 @@ class GRBLPost:
     safe_z_mm: float = 5.0
     units: str = "mm"           # "mm" or "inch"
     comment_char: str = ";"
+    # Rigid work-zero offset added to every emitted coordinate (BUILDPLAN M6.2).
+    # The toolpaths stay in the design frame; this shifts the posted output so the
+    # chosen datum (e.g. the stock blank's lower-left/top) lands at G54 zero. Arc
+    # I/J are centre-relative and translation-invariant, so they are not offset.
+    work_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
 
@@ -93,7 +98,7 @@ class GRBLPost:
             "",
             "G90" + ("  ; absolute mode" if True else ""),
             "G21" if self.units == "mm" else "G20",
-            f"G0 Z{self.safe_z_mm:.3f}",
+            f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}",
         ]
 
     def comment(self, text: str) -> None:
@@ -106,23 +111,25 @@ class GRBLPost:
         self._lines.append("M5")
 
     def rapid(self, x: float | None = None, y: float | None = None, z: float | None = None) -> None:
+        ox, oy, oz = self.work_offset
         parts = ["G0"]
         if x is not None:
-            parts.append(f"X{x:.4f}")
+            parts.append(f"X{x + ox:.4f}")
         if y is not None:
-            parts.append(f"Y{y:.4f}")
+            parts.append(f"Y{y + oy:.4f}")
         if z is not None:
-            parts.append(f"Z{z:.4f}")
+            parts.append(f"Z{z + oz:.4f}")
         self._lines.append(" ".join(parts))
 
     def feed(self, x: float | None = None, y: float | None = None, z: float | None = None, feed: float | None = None) -> None:
+        ox, oy, oz = self.work_offset
         parts = ["G1"]
         if x is not None:
-            parts.append(f"X{x:.4f}")
+            parts.append(f"X{x + ox:.4f}")
         if y is not None:
-            parts.append(f"Y{y:.4f}")
+            parts.append(f"Y{y + oy:.4f}")
         if z is not None:
-            parts.append(f"Z{z:.4f}")
+            parts.append(f"Z{z + oz:.4f}")
         f = feed if feed is not None else self.feed_rate_mmpm
         parts.append(f"F{f:.0f}")
         self._lines.append(" ".join(parts))
@@ -132,10 +139,13 @@ class GRBLPost:
         i: float, j: float, ccw: bool, feed: float | None = None,
     ) -> None:
         """Circular arc to (x, y[, z]) about centre offset (i, j) from the
-        current position. ccw -> G3, cw -> G2 (G17 plane; z makes it helical)."""
-        parts = ["G3" if ccw else "G2", f"X{x:.4f}", f"Y{y:.4f}"]
+        current position. ccw -> G3, cw -> G2 (G17 plane; z makes it helical).
+        I/J are centre-relative, so the work offset (a translation) leaves them
+        unchanged; only the absolute X/Y/Z endpoint shifts."""
+        ox, oy, oz = self.work_offset
+        parts = ["G3" if ccw else "G2", f"X{x + ox:.4f}", f"Y{y + oy:.4f}"]
         if z is not None:
-            parts.append(f"Z{z:.4f}")
+            parts.append(f"Z{z + oz:.4f}")
         parts += [f"I{i:.4f}", f"J{j:.4f}"]
         f = feed if feed is not None else self.feed_rate_mmpm
         parts.append(f"F{f:.0f}")
@@ -187,7 +197,7 @@ class GRBLPost:
         self.spindle_on()
 
     def end_program(self) -> None:
-        self._lines += ["M5", "G0 Z" + f"{self.safe_z_mm:.3f}", "M30"]
+        self._lines += ["M5", f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}", "M30"]
 
     def _emit_moves(self, pts: list[tuple[float, float, float]], arc_tol: float) -> None:
         """Feed through pts[1:] (current position is pts[0]); arc-fit if asked."""

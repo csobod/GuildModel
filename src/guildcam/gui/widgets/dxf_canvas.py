@@ -43,6 +43,9 @@ class DxfCanvas(QWidget):
         self._stock_rects: list[tuple[float, float, float, float]] = []
         # zone-inspector hover highlight: polygon rings in mm
         self._zone_rings: list[list[tuple[float, float]]] = []
+        # program-zero / G54 datum marker (world mm), or None (BUILDPLAN M6.2)
+        self._program_zero_xy: Optional[tuple[float, float]] = None
+        self._program_zero_label: str = ""
 
         # view transform: world_to_screen = point * scale + offset
         self._scale: float = 5.0       # px / mm
@@ -80,6 +83,13 @@ class DxfCanvas(QWidget):
             self.fit_to_view()
         else:
             self.update()
+
+    def set_program_zero(self, xy: tuple[float, float] | None, label: str = "") -> None:
+        """Mark where the program's G54 work zero lands (world mm); None hides
+        it. The toolpaths stay in the design frame — this is just a datum hint."""
+        self._program_zero_xy = xy
+        self._program_zero_label = label
+        self.update()
 
     def set_zone_highlight(
         self, rings: list[list[tuple[float, float]]] | None
@@ -154,6 +164,7 @@ class DxfCanvas(QWidget):
         self._draw_stock(painter)
         self._draw_layers(painter)
         self._draw_zone_highlight(painter)
+        self._draw_program_zero(painter)
         self._draw_scale_bar(painter)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
@@ -201,6 +212,26 @@ class DxfCanvas(QWidget):
             top_left = self._world_to_screen(min(x0, x1), max(y0, y1))
             bottom_right = self._world_to_screen(max(x0, x1), min(y0, y1))
             painter.drawRect(QRectF(top_left, bottom_right))
+
+    def _draw_program_zero(self, painter: QPainter) -> None:
+        """A small crosshair-in-circle at the G54 work-zero datum (M6.2)."""
+        if self._program_zero_xy is None:
+            return
+        c = self._world_to_screen(*self._program_zero_xy)
+        color = QColor(self._palette.zone_outline)
+        pen = QPen(color, 1.4)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        r = 7.0
+        painter.drawEllipse(c, r, r)
+        painter.drawLine(QPointF(c.x() - r - 3, c.y()), QPointF(c.x() + r + 3, c.y()))
+        painter.drawLine(QPointF(c.x(), c.y() - r - 3), QPointF(c.x(), c.y() + r + 3))
+        if self._program_zero_label:
+            font = QFont(self.font())
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.drawText(QPointF(c.x() + r + 5, c.y() - r), self._program_zero_label)
 
     def _draw_zone_highlight(self, painter: QPainter) -> None:
         if not self._zone_rings:

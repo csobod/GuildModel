@@ -334,6 +334,16 @@ class GCodeWorker(_ProgressWorker):
             post_feed = clamp.feed_rate_mmpm
             post_plunge = clamp.plunge_rate_mmpm
 
+        # Program zero / G54 datum (BUILDPLAN M6.2): a post-time offset so the
+        # chosen stock-box datum lands at work zero; geometry/sim stay in the
+        # design frame. Fixture mode = identity.
+        work_offset = cam.program_zero.work_offset(castle.stock)
+        datum = cam.program_zero.datum_world(castle.stock)
+        self.progress.emit(
+            f"[gcode] Program zero: {cam.program_zero.label()} · "
+            f"offset ({work_offset[0]:+.2f}, {work_offset[1]:+.2f}, {work_offset[2]:+.2f}) mm"
+        )
+
         post = GRBLPost(
             job_name="posterior_cut",
             material=p["material_name"],
@@ -342,6 +352,7 @@ class GCodeWorker(_ProgressWorker):
             feed_rate_mmpm=post_feed,
             plunge_rate_mmpm=post_plunge,
             safe_z_mm=castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
+            work_offset=work_offset,
         )
         self._progress("Writing program", 0.95)
         write_castle_program(
@@ -371,6 +382,7 @@ class GCodeWorker(_ProgressWorker):
                    "Save the project (Ctrl+S) to keep it in the .gcam, or "
                    "File ▸ Export G-code for a standalone .nc.")
         summary += (f"\n\nMachine: {machine.display_name}"
+                    f"\nProgram zero: {cam.program_zero.label()}"
                     f"\nEstimated cycle: {report.cycle_seconds / 60:.1f} min "
                     f"(cut {report.cutting_only_seconds / 60:.1f} min)")
         if tool_settings:
@@ -401,6 +413,10 @@ class GCodeWorker(_ProgressWorker):
             "onion_skin_mm": castle.onion_skin_mm,
             "hand_finishing_allowance_mm": castle.hand_finishing_allowance_mm,
             "flip_axis_x_mm": flip,
+            "program_zero": cam.program_zero.label(),
+            "program_zero_mode": cam.program_zero.mode,
+            "work_offset_mm": [round(v, 3) for v in work_offset],
+            "datum_world_mm": [round(v, 3) for v in datum],
             "est_cut_min": round(report.cutting_only_seconds / 60, 2),
             "est_cycle_min": round(report.cycle_seconds / 60, 2),
             "ops": rows,
@@ -1652,6 +1668,7 @@ class MainWindow(QMainWindow):
         CAM params do not affect the 3D preview, so no rebuild is triggered."""
         # Feeds/tool/strategy changes invalidate any stored program (M5.2).
         self._invalidate_program()
+        self._update_program_zero_marker()   # program-zero datum may have moved
         try:
             self._prefs["cam_params"] = self.params.cam_params().model_dump()
             self._prefs["material_name"] = self.params.material_name()
@@ -1671,6 +1688,20 @@ class MainWindow(QMainWindow):
              s.pad_block_dx_mm + s.pad_block_length_mm / 2.0,
              s.pad_block_dy_mm + s.pad_block_width_mm / 2.0),
         ])
+        self._update_program_zero_marker()
+
+    def _update_program_zero_marker(self) -> None:
+        """Draw the G54 datum where posted (0,0) lands in the design frame
+        (= -work_offset): the stock-box datum, or the design origin in fixture
+        mode (BUILDPLAN M6.2)."""
+        if self._outline_poly is None:
+            self.canvas.set_program_zero(None)
+            return
+        s = self.params.castle_params().stock
+        pz = self.params.cam_params().program_zero
+        ox, oy, _ = pz.work_offset(s)
+        label = "G54" if pz.mode == "stock_box" else "G54 (fixture)"
+        self.canvas.set_program_zero((-ox, -oy), label)
 
     def _on_zone_hover(self, name: str) -> None:
         if not name or self._partition is None:
@@ -2059,7 +2090,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.6.1 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.6.2 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",

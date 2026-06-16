@@ -114,6 +114,53 @@ POSTERIOR_OPS: tuple[str, ...] = (
 )
 
 
+class ProgramZero(BaseModel):
+    """Where the program's G54 work zero lands (BUILDPLAN M6.2).
+
+    `fixture` keeps the design frame (current behaviour — zero at the blank
+    center, anterior face; needed for the two-sided flip axis in M8). `stock_box`
+    zeroes to a datum on the stock blank box — a corner or center in X/Y and the
+    top or bottom (anterior) face in Z — what a maker touches off on the blank.
+    Applied as a rigid post-time offset only; geometry / CLS / sim stay in the
+    design frame, so the M2/M3 envelopes and the cut simulator are unaffected.
+
+    Design-frame convention (relief.castle.stock_top_heightfield): the blank is
+    centered on the world origin and the anterior face is Z = 0, so the blank box
+    spans x ∈ [-L/2, L/2], y ∈ [-W/2, W/2], z ∈ [0, blank_thickness].
+    """
+    mode: Literal["fixture", "stock_box"] = "stock_box"
+    x_ref: Literal["left", "center", "right"] = "left"
+    y_ref: Literal["bottom", "center", "top"] = "bottom"
+    z_ref: Literal["top", "bottom"] = "top"
+
+    def datum_world(self, stock: "StockDefinition") -> tuple[float, float, float]:
+        """The datum point in design-frame (world) coordinates."""
+        hl = stock.blank_length_mm / 2.0
+        hw = stock.blank_width_mm / 2.0
+        x = {"left": -hl, "center": 0.0, "right": hl}[self.x_ref]
+        y = {"bottom": -hw, "center": 0.0, "top": hw}[self.y_ref]
+        z = {"bottom": 0.0, "top": stock.blank_thickness_mm}[self.z_ref]
+        return (x, y, z)
+
+    def work_offset(self, stock: "StockDefinition") -> tuple[float, float, float]:
+        """Rigid offset added to every posted coordinate so the datum maps to 0.
+        Fixture mode is the identity (the design frame is unchanged)."""
+        if self.mode == "fixture":
+            return (0.0, 0.0, 0.0)
+        dx, dy, dz = self.datum_world(stock)
+        return (-dx + 0.0, -dy + 0.0, -dz + 0.0)   # +0.0 normalizes -0.0
+
+    def label(self) -> str:
+        if self.mode == "fixture":
+            return "Fixture (design frame: blank center, anterior face)"
+        corner = {
+            ("left", "bottom"): "lower-left", ("right", "bottom"): "lower-right",
+            ("left", "top"): "upper-left", ("right", "top"): "upper-right",
+            ("center", "center"): "center",
+        }.get((self.x_ref, self.y_ref), f"{self.y_ref}/{self.x_ref}")
+        return f"Stock blank {corner}, {self.z_ref} face"
+
+
 class CastleCamParams(BaseModel):
     """Operation parameters for the five-op posterior program (BUILDPLAN M4.8).
 
@@ -132,6 +179,10 @@ class CastleCamParams(BaseModel):
     # The everyday multi-tool case: a small tool clears the hinge pockets, the
     # bulk tool does relief / eyewires / perimeter.
     op_tools: dict[str, str] = Field(default_factory=dict)
+
+    # Program zero / G54 work datum (BUILDPLAN M6.2). Default = stock-box
+    # lower-left, top face — what a maker touches off on the blank.
+    program_zero: ProgramZero = Field(default_factory=ProgramZero)
 
     def tool_for_op(self, op_name: str) -> str:
         """The tool assigned to `op_name`, falling back to the global tool."""

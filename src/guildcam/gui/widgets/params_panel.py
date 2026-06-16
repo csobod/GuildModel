@@ -38,7 +38,7 @@ from guildcam.gui import material_store
 from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
     CastleCamParams, CastleParams, FootingFillet, FootingSchedule,
-    POSTERIOR_OPS, StockDefinition, ZoneThicknesses,
+    POSTERIOR_OPS, ProgramZero, StockDefinition, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -392,8 +392,77 @@ class ParamsPanel(QTabWidget):
 
     def _build_cam_tab(self, lay: QVBoxLayout) -> None:
         self._build_machine_tool_group(lay)
+        self._build_program_zero_group(lay)
         self._build_strategy_group(lay)
         self._build_cam_group(lay)
+
+    # mapping between schema literals and the combo display order
+    _PZ_MODE = [("stock_box", "Stock box"), ("fixture", "Fixture (design frame)")]
+    _PZ_X = [("left", "Left"), ("center", "Center"), ("right", "Right")]
+    _PZ_Y = [("bottom", "Bottom"), ("center", "Center"), ("top", "Top")]
+    _PZ_Z = [("top", "Top face"), ("bottom", "Bottom face (anterior)")]
+
+    def _build_program_zero_group(self, lay: QVBoxLayout) -> None:
+        """Where the program's G54 work zero lands (BUILDPLAN M6.2)."""
+        d = ProgramZero()
+        grp = QGroupBox("Program Zero  (G54 work datum)")
+        grp.setToolTip(
+            "Where you touch off work zero. 'Stock box' zeroes to a corner/centre "
+            "of the blank and its top or bottom face — what a maker sets on the "
+            "stock. 'Fixture' keeps the design frame (blank centre, anterior). "
+            "A post-time offset only — the 3D model and cut simulation are "
+            "unaffected."
+        )
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        def _combo(pairs, current):
+            cb = QComboBox()
+            for _key, label in pairs:
+                cb.addItem(label)
+            cb.setCurrentIndex([k for k, _ in pairs].index(current))
+            cb.currentIndexChanged.connect(self.cam_changed)
+            return cb
+
+        self.pz_mode = _combo(self._PZ_MODE, d.mode)
+        self.pz_x = _combo(self._PZ_X, d.x_ref)
+        self.pz_y = _combo(self._PZ_Y, d.y_ref)
+        self.pz_z = _combo(self._PZ_Z, d.z_ref)
+        self.pz_mode.currentIndexChanged.connect(self._sync_program_zero_enabled)
+        form.addRow("Zero mode:", self.pz_mode)
+        form.addRow("X datum:", self.pz_x)
+        form.addRow("Y datum:", self.pz_y)
+        form.addRow("Z datum:", self.pz_z)
+        lay.addWidget(grp)
+        self._sync_program_zero_enabled()
+
+    def _sync_program_zero_enabled(self) -> None:
+        """The X/Y/Z datum pickers only apply in stock-box mode."""
+        stock_box = self._PZ_MODE[self.pz_mode.currentIndex()][0] == "stock_box"
+        for cb in (self.pz_x, self.pz_y, self.pz_z):
+            cb.setEnabled(stock_box)
+
+    def _program_zero(self) -> ProgramZero:
+        return ProgramZero(
+            mode=self._PZ_MODE[self.pz_mode.currentIndex()][0],
+            x_ref=self._PZ_X[self.pz_x.currentIndex()][0],
+            y_ref=self._PZ_Y[self.pz_y.currentIndex()][0],
+            z_ref=self._PZ_Z[self.pz_z.currentIndex()][0],
+        )
+
+    def _set_program_zero(self, pz: ProgramZero) -> None:
+        for cb, pairs, val in (
+            (self.pz_mode, self._PZ_MODE, pz.mode),
+            (self.pz_x, self._PZ_X, pz.x_ref),
+            (self.pz_y, self._PZ_Y, pz.y_ref),
+            (self.pz_z, self._PZ_Z, pz.z_ref),
+        ):
+            keys = [k for k, _ in pairs]
+            if val in keys:
+                cb.blockSignals(True)
+                cb.setCurrentIndex(keys.index(val))
+                cb.blockSignals(False)
+        self._sync_program_zero_enabled()
 
     def _build_machine_tool_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Machine & Tool")
@@ -671,6 +740,7 @@ class ParamsPanel(QTabWidget):
             tool_name=self.cam_tool.currentText(),
             machine_name=machine_name,
             op_tools=op_tools,
+            program_zero=self._program_zero(),
             relief_stepover_mm=self.relief_stepover.value(),
             contour_stepdown_mm=self.contour_stepdown.value(),
             rough_axial_stock_mm=self.rough_axial_stock.value(),
@@ -693,6 +763,7 @@ class ParamsPanel(QTabWidget):
             cb.blockSignals(False)
         if cp.machine_name in self._machine_names:
             self.machine.setCurrentIndex(self._machine_names.index(cp.machine_name))
+        self._set_program_zero(cp.program_zero)
         self.relief_stepover.setValue(cp.relief_stepover_mm)
         self.contour_stepdown.setValue(cp.contour_stepdown_mm)
         self.rough_axial_stock.setValue(cp.rough_axial_stock_mm)
