@@ -603,6 +603,9 @@ _OP_STRATEGIES = {
     "Perimeter": "Contour 2D (outside) · onion skin",
     "Engraving": "Engrave · trace at depth",
     "Temple Profile": "Contour 2D (outside) · onion skin",
+    "Drill Holes": "Peck drill · G83 full-retract",
+    "Forming Profile": "Scribe · lens-interior footprint at depth",
+    "Block Profile": "Contour 2D (outside) · onion skin",
 }
 
 
@@ -709,6 +712,8 @@ def write_castle_program(
     tool_settings: dict | None = None,
     tool_change_mode: str = "m0",
     contour_op_names: set | None = None,
+    drill_op_names: set | None = None,
+    peck_depth_mm: float = 1.5,
 ) -> None:
     """Emit the ops into a single GRBL program (the castle's five ops, or any
     op list — e.g. a temple's engrave + profile, BUILDPLAN M6.3).
@@ -729,6 +734,7 @@ def write_castle_program(
     single-tool, exactly as before.
     """
     contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Perimeter"}
+    drill_ops = drill_op_names or set()
     post.header(side)
     current: str | None = None
     if tool_settings:
@@ -743,6 +749,13 @@ def write_castle_program(
             post.tool_change(tool_settings[nm], mode=tool_change_mode)
             current = nm
         post.comment(f"--- {op.name} ---")
+        if op.name in drill_ops:
+            # each path is a hole, stored as [(x, y, z_top), (x, y, z_bottom)]
+            for path in op.paths:
+                (x, y, z_top), (_, _, z_bottom) = path[0], path[-1]
+                post.peck_drill(x, y, z_top, z_bottom, peck_depth_mm)
+            post.safe_retract()
+            continue
         ramp = contour_stepdown_mm if op.name in contour_ops else 0.0
         for path in op.paths:
             post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp,

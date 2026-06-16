@@ -23,6 +23,21 @@ acetate:
     profile: flat_3175
     groove: ball_1mm
 
+acetal:
+  display_name: "Acetal (POM)"
+  notes: "White Delrin / acetal — base-curve forming blocks (M6.4). Machines clean and rigid; tougher than acetate, so a touch slower."
+  spindle_rpm: 12000
+  feed_rate_mmpm: 600
+  plunge_rate_mmpm: 200
+  max_doc_mm: 2.0
+  relief_stepover_mm: 0.9
+  contour_stepdown_mm: 2.0
+  rough_axial_stock_mm: 1.5
+  recommended_tools:
+    relief: flat_3175
+    profile: flat_3175
+    groove: ball_1mm
+
 horn:
   display_name: "Horn"
   notes: "Natural horn. Brittle and variable — use conservative settings. Inspect each blank."

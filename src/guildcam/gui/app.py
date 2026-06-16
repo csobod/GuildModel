@@ -227,6 +227,9 @@ class GCodeWorker(_ProgressWorker):
         self.engraving = list(engraving)     # ENGRAVING curves (M6.3 temples)
         self.temple = temple                 # TempleParams | None
         self.is_temple = is_temple
+        self.block_lens = None               # a LENS interior (M6.4 base-curve block)
+        self.block = None                    # BaseCurveBlockParams | None
+        self.is_block = False
         # .gcam artifacts (filled by the castle path on success)
         self.programs: dict = {}
         self.machine_dump = None
@@ -567,6 +570,139 @@ class GCodeWorker(_ProgressWorker):
         }
         self.finished.emit(summary, rows)
 
+    def _generate_block(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
+        """Base-curve forming block (BUILDPLAN M6.4): peck-drill 3 mounting holes,
+        scribe the lens-interior footprint, profile-cut the acetal blank — one
+        tool change (drill → bulk), posted through the shared multi-tool machinery
+        and program-zero offset."""
+        import yaml
+        from guildcam.core.cam.block_ops import (
+            BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
+        )
+        from guildcam.core.cam.castle_ops import (
+            CastleCamParams, build_tool_settings, count_tool_changes,
+            fixture_clearance_violations, op_summaries, resolve_tool, write_castle_program,
+        )
+        from guildcam.core.cam.cuttime import MachineDynamics, estimate_program, format_report
+        from guildcam.core.post.grbl import GRBLPost
+        from guildcam.core.post.machine import lint_program, load_machine_profile
+        from guildcam.core.project.schema import BaseCurveBlockParams
+
+        cam = self.cam_params or CastleCamParams()
+        block = self.block or BaseCurveBlockParams()
+        machine = load_machine_profile(cam.machine_name, config_dir)
+        mat = mats_cfg.get(block.material, mats_cfg.get("acetate"))
+        self.progress.emit(
+            f"[gcode] Base-curve block · Machine: {machine.display_name} · "
+            f"material {block.material} · drill {block.drill_tool}"
+        )
+
+        ops = generate_block_program(self.block_lens, block, tools_cfg, cam)
+        for op in ops:
+            zmin, zmax = op.z_range()
+            self.progress.emit(
+                f"[gcode]   {op.name}: {len(op.paths)} paths, "
+                f"Z {zmin:.2f}..{zmax:.2f} · {op.tool_name}"
+            )
+
+        tool_settings, ts_warns = build_tool_settings(
+            ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
+            default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
+            machine=machine)
+        for w in ts_warns:
+            self.progress.emit(f"[gcode] tool: {w}")
+        n_changes = count_tool_changes(ops)
+        self.progress.emit(
+            f"[gcode] {', '.join(f'T{s.number} {n}' for n, s in tool_settings.items())} "
+            f"· {n_changes} tool change(s) ({machine.tool_change_mode.upper()})"
+        )
+
+        # contour stepdown clamped to the acetal / machine depth-of-cut
+        stepdown = min(cam.contour_stepdown_mm, machine.max_doc_mm,
+                       mat.get("max_doc_mm", cam.contour_stepdown_mm))
+
+        bstock = block.stock()
+        work_offset = cam.program_zero.work_offset(bstock)
+        datum = cam.program_zero.datum_world(bstock)
+        self.progress.emit(
+            f"[gcode] Program zero: {cam.program_zero.label()} · "
+            f"offset ({work_offset[0]:+.2f}, {work_offset[1]:+.2f}, {work_offset[2]:+.2f}) mm"
+        )
+
+        with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
+            fixture = yaml.safe_load(fh)
+        zone = block.fixture_zone if block.fixture_zone in fixture.get("blank_zones", {}) else "bc_template_right"
+        profile_r = resolve_tool(block.profile_tool, tools_cfg)["radius_mm"]
+        violations = fixture_clearance_violations(ops, fixture, profile_r, blank=zone)
+        for v in violations:
+            self.progress.emit(f"[gcode] WARNING: {v}")
+
+        first_ts = tool_settings[ops[0].tool_name]
+        post = GRBLPost(
+            job_name="base_curve_block", material=block.material,
+            tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
+            feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
+            safe_z_mm=block.blank_thickness_mm + cam.safe_z_clearance_mm,
+            work_offset=work_offset,
+        )
+        self._progress("Writing block program", 0.9)
+        write_castle_program(
+            ops, post, side="Base-Curve Block", arc_tol_mm=cam.arc_tolerance_mm,
+            contour_stepdown_mm=stepdown, contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
+            contour_op_names=BLOCK_CONTOUR_OPS, drill_op_names=BLOCK_DRILL_OPS,
+            peck_depth_mm=block.peck_depth_mm)
+        text = post.to_string()
+        self.progress.emit(f"[gcode] base_curve_block.nc generated ({len(text):,} bytes)")
+
+        machine_warnings = lint_program(text, machine)
+        for w in machine_warnings:
+            self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        report = estimate_program(text, MachineDynamics.from_profile(machine),
+                                  tool_change_seconds=machine.tool_change_seconds)
+        self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
+        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+
+        summary = ("Base-curve forming block (drill + forming scribe + profile) "
+                   "generated and stored in the project.\nSave the project (Ctrl+S) "
+                   "or File ▸ Export G-code for a standalone .nc.")
+        summary += (f"\n\nMachine: {machine.display_name} · {block.material}"
+                    f"\nProgram zero: {cam.program_zero.label()}"
+                    f"\n{block.hole_count} × M4 holes ({block.hole_arrangement}, "
+                    f"{block.hole_spacing_mm:.0f} mm, Ø{block.hole_diameter_mm:.1f}); "
+                    f"{n_changes} tool change — {report.total_seconds / 60:.1f} min")
+        if violations:
+            summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
+        if machine_warnings:
+            summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
+
+        self.programs = {"base_curve_block.nc": text}
+        self.machine_dump = machine.model_dump()
+        self.setup_dict = {
+            "component": "base_curve_block",
+            "material": block.material,
+            "machine": machine.display_name,
+            "blank_mm": [block.blank_length_mm, block.blank_width_mm, block.blank_thickness_mm],
+            "drill_tool": block.drill_tool,
+            "hole_count": block.hole_count,
+            "hole_arrangement": block.hole_arrangement,
+            "hole_spacing_mm": block.hole_spacing_mm,
+            "hole_diameter_mm": block.hole_diameter_mm,
+            "program_zero": cam.program_zero.label(),
+            "work_offset_mm": [round(v, 3) for v in work_offset],
+            "datum_world_mm": [round(v, 3) for v in datum],
+            "tools": [
+                {"number": s.number, "name": n, "diameter_mm": s.diameter_mm,
+                 "spindle_rpm": s.spindle_rpm, "feed_rate_mmpm": s.feed_rate_mmpm}
+                for n, s in tool_settings.items()
+            ],
+            "n_tool_changes": n_changes,
+            "est_cut_min": round(report.cutting_only_seconds / 60, 2),
+            "est_total_min": round(report.total_seconds / 60, 2),
+            "ops": rows,
+        }
+        self.finished.emit(summary, rows)
+
     def _generate(self) -> None:
         import yaml
         from guildcam.core.cam.profile import profile_cut
@@ -579,6 +715,11 @@ class GCodeWorker(_ProgressWorker):
             tools_cfg = yaml.safe_load(f)
         with open(config_dir / "materials.yaml", encoding="utf-8") as f:
             mats_cfg = yaml.safe_load(f)
+
+        # ---- Base-curve block path: drill + forming scribe + profile (M6.4) ----
+        if self.is_block:
+            self._generate_block(tools_cfg, mats_cfg, config_dir)
+            return
 
         # ---- Temple path: engrave + profile (M6.3) ----
         if self.is_temple:
@@ -1218,6 +1359,13 @@ class MainWindow(QMainWindow):
         self._act_export_nc.setEnabled(False)
         self._act_export_nc.triggered.connect(self._on_export_nc)
 
+        self._act_block = QAction("Generate Base-Curve Block", self)
+        self._act_block.setToolTip(
+            "Generate the heat-forming block from the frame's lens interior "
+            "(acetal blank + 3 M4 mounting holes)")
+        self._act_block.setEnabled(False)
+        self._act_block.triggered.connect(self._on_generate_block)
+
         self._act_view2d = QAction("2D Outline", self, checkable=True)
         self._act_view2d.setChecked(True)
         self._act_view2d.setToolTip("2D outline view")
@@ -1299,6 +1447,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_build)
         file_menu.addAction(self._act_gcode)
+        file_menu.addAction(self._act_block)
         file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
         file_menu.addSeparator()
@@ -1716,6 +1865,8 @@ class MainWindow(QMainWindow):
         matched = self._partition is not None and self._partition.matched
         self.preview3d.set_stage_enabled(matched)
         self._act_simulate.setEnabled(matched)
+        # The base-curve block is generated from a lens interior (M6.4).
+        self._act_block.setEnabled(self._lens_od is not None)
         self._stage = "pockets"
         self.preview3d.set_stage(self._stage)
         self._stage_cache.clear()
@@ -2054,6 +2205,42 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._gcode_worker.cancel)
         self._gcode_thread.start()
 
+    def _on_generate_block(self) -> None:
+        """Generate the base-curve forming block from the loaded frame's lens
+        interior (BUILDPLAN M6.4) — its own program, folded into the .gcam."""
+        if self._lens_od is None:
+            QMessageBox.warning(
+                self, "No lens",
+                "Load a frame DXF with a LENS layer before generating a "
+                "base-curve forming block.")
+            return
+        self._act_block.setEnabled(False)
+        self.append_log("[gcode] Generating the base-curve forming block from the lens interior.")
+
+        worker = GCodeWorker(
+            outline=self._outline_poly, castle=self.params.castle_params(),
+            params=self._collect_gcode_params(), cam_params=self.params.cam_params())
+        worker.block_lens = self._lens_od
+        worker.block = self.params.block_params()
+        worker.is_block = True
+        self._gcode_worker = worker
+
+        self._gcode_thread = QThread()
+        worker.moveToThread(self._gcode_thread)
+        self._gcode_thread.started.connect(worker.run)
+        worker.progress.connect(self.append_log)
+        worker.finished.connect(self._on_gcode_finished)
+        worker.error.connect(self._on_gcode_error)
+        worker.cancelled.connect(self._on_gcode_cancelled)
+        worker.finished.connect(self._gcode_thread.quit)
+        worker.error.connect(self._gcode_thread.quit)
+        worker.cancelled.connect(self._gcode_thread.quit)
+
+        dlg = self._open_progress("Generating base-curve block")
+        worker.stage.connect(self._on_stage)
+        dlg.canceled.connect(worker.cancel)
+        self._gcode_thread.start()
+
     def _collect_gcode_params(self) -> dict:
         p = self.params
         return {
@@ -2096,6 +2283,7 @@ class MainWindow(QMainWindow):
         self._close_progress()
         self.append_log("[gcode] Done.")
         self._act_gcode.setEnabled(True)
+        self._act_block.setEnabled(self._lens_od is not None)
         self.status_lbl.setText("G-code ready")
         # Capture the program + setup for the .gcam container (M5.1). A new
         # program supersedes any stale cut report.
@@ -2119,12 +2307,14 @@ class MainWindow(QMainWindow):
         self._close_progress()
         self.append_log("[gcode ERROR]\n" + tb)
         self._act_gcode.setEnabled(True)
+        self._act_block.setEnabled(self._lens_od is not None)
         self.status_lbl.setText("G-code generation failed — see log")
 
     def _on_gcode_cancelled(self) -> None:
         self._close_progress()
         self.append_log("[gcode] Cancelled.")
         self._act_gcode.setEnabled(True)
+        self._act_block.setEnabled(self._lens_od is not None)
         self.status_lbl.setText("G-code cancelled")
 
     def _on_export_nc(self) -> None:
@@ -2243,7 +2433,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.6.3 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.6.4 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",

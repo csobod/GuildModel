@@ -253,6 +253,67 @@ class TempleParams(BaseModel):
         )
 
 
+class BaseCurveBlockParams(BaseModel):
+    """An auto-generated heat-forming holding block (BUILDPLAN M6.4).
+
+    Cut from an acetal blank straight off the frame DXF: the block top carries the
+    eyewire-interior (LENS) footprint as the forming reference, the blank outline
+    is profile-cut to release it, and three M4 mounting holes bolt it to a jig.
+    The block is flat in v1 — the 3D base-curve surface stays metadata (§5); the
+    forming feature is a contour scribe of the lens interior marking its footprint.
+
+    Defaults confirmed with the user 2026-06-16: **in-line** holes at **10 mm**
+    pitch, **M4 clearance (≈4.5 mm)** — a bolt passes through the block into a
+    tapped jig below. Arrangement and drill Ø stay parameters.
+    """
+    blank_length_mm: float = 65.0
+    blank_width_mm: float = 65.0
+    blank_thickness_mm: float = 6.35       # 1/4"
+    material: str = "acetal"
+
+    # forming reference (the lens-interior footprint, scribed on the top face)
+    forming_depth_mm: float = 1.0
+    forming_tool: str = "flat_3175"
+
+    # block outline through-cut
+    profile_tool: str = "flat_3175"
+    onion_skin_mm: float = 0.4
+    hand_finishing_allowance_mm: float = 0.1
+
+    # mounting holes
+    hole_count: int = 3
+    hole_spacing_mm: float = 10.0          # pitch between adjacent holes
+    hole_diameter_mm: float = 4.5          # M4 clearance (tapped ≈ 3.3)
+    hole_arrangement: Literal["inline", "triangle"] = "inline"
+    drill_tool: str = "drill_m4_clear"
+    peck_depth_mm: float = 1.5             # per-peck plunge (GRBL has no G83)
+    drill_breakthrough_mm: float = 1.0     # drill this far past the bottom face
+
+    fixture_zone: str = "bc_template_right"
+
+    def stock(self) -> "StockDefinition":
+        return StockDefinition(
+            blank_length_mm=self.blank_length_mm,
+            blank_width_mm=self.blank_width_mm,
+            blank_thickness_mm=self.blank_thickness_mm,
+            pad_block_length_mm=0.0, pad_block_width_mm=0.0,
+            pad_block_thickness_mm=0.0,
+        )
+
+    def hole_centers(self) -> list[tuple[float, float]]:
+        """Mounting-hole centers in the block frame (centred on the origin)."""
+        n = self.hole_count
+        s = self.hole_spacing_mm
+        if self.hole_arrangement == "triangle" and n == 3:
+            # equilateral triangle, side = spacing, centroid at the origin
+            h = s * (3 ** 0.5) / 2.0
+            cy = h / 3.0
+            return [(-s / 2.0, -cy), (s / 2.0, -cy), (0.0, h - cy)]
+        # in-line, centred: pitch = spacing along x
+        x0 = -(n - 1) * s / 2.0
+        return [(x0 + i * s, 0.0) for i in range(n)]
+
+
 class MachineProfile(BaseModel):
     """A GRBL-family machine's capabilities (BUILDPLAN M4.8 task 3).
 
@@ -353,4 +414,5 @@ class ProjectSchema(BaseModel):
     cam: CAMSettings = Field(default_factory=CAMSettings)
     cam_params: CastleCamParams = Field(default_factory=CastleCamParams)
     temple: TempleParams = Field(default_factory=TempleParams)   # BUILDPLAN M6.3
+    base_curve_block: BaseCurveBlockParams = Field(default_factory=BaseCurveBlockParams)  # M6.4
     machine: MachineRef = Field(default_factory=MachineRef)

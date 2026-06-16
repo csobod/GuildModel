@@ -60,6 +60,19 @@ flat_2mm:
   max_doc_mm: 1.5
   notes: "Hinge pockets and tight internal radii (multi-tool jobs, M6.1)."
 
+drill_m4_clear:
+  display_name: "4.5 mm Drill (M4 clearance)"
+  type: flat
+  diameter_mm: 4.5
+  radius_mm: 2.25
+  corner_radius_mm: 0.0
+  flutes: 2
+  feed_rate_mmpm: 150.0
+  plunge_rate_mmpm: 80.0
+  spindle_rpm: 6000
+  max_doc_mm: 2.0
+  notes: "M4 clearance drilling for base-curve block mounting holes (M6.4)."
+
 flat_3mm:
   display_name: "3 mm Flat End Mill"
   type: flat

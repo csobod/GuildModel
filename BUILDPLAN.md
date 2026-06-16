@@ -16,7 +16,17 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-16, **M6.3 temples-with-engraving tagged `v0.6.3`** — a temple posts as Engraving → Temple Profile with one tool change (engrave bit → bulk tool), detected on import (outline, no lenses), through the M6.1 multi-tool post + M6.2 program-zero. After M6.1 multi-tool (`v0.6.1`) and M6.2 stock-box zero (`v0.6.2`; default program-zero now center/center/bottom = blank-center/anterior = zero offset). Suite 175 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.4 base-curve forming blocks)*
+## Status snapshot *(2026-06-16, **M6.4 base-curve-forming-blocks tagged `v0.6.4`** — File ▸ Generate Base-Curve Block makes an acetal block from the frame's lens interior: Drill Holes (3× M4 in-line, 10 mm, Ø4.5 clearance, G83 peck) → Forming Profile (lens-footprint scribe) → Block Profile (65×65 through-cut), one tool change (drill→bulk) via M6.1. After M6.1 multi-tool, M6.2 stock-box zero (default program-zero center/center/bottom), M6.3 temples. Suite 186 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.5 worktable layout & nesting)*
+
+> **M6.4 — base-curve forming blocks (`v0.6.4`):** `core/cam/block_ops.py`
+> `generate_block_program` → Drill Holes + Forming Profile + Block Profile from a
+> frame LENS interior (centred on a 65×65×6.35 acetal blank). 3 M4 mounting holes
+> (in-line/10 mm/Ø4.5, user-confirmed) peck-drilled via new `GRBLPost.peck_drill`
+> (G83); `write_castle_program` gained `drill_op_names`/`peck_depth_mm`. One tool
+> change drill→bulk (M6.1); `drill_m4_clear` tool + `acetal` material shipped.
+> File ▸ Generate Base-Curve Block (`GCodeWorker` `is_block`) → its own
+> `base_curve_block.nc` in the `.gcam`. Block flat in v1 (3D base curve still
+> metadata); block STL/preview deferred to M6.5. Suite **186** (+11).
 
 > **M6.3 — temples with engraving (`v0.6.3`):** `core/cam/temple_ops.py`
 > (`generate_temple_program` → Engraving + Temple Profile ops; `TempleParams` on
@@ -1290,27 +1300,46 @@ ENGRAVING passes**, and the engraving needs a tool change (depends on M6.1).
    order + one posted/linted tool change; engraving emitted at constant depth;
    ENGRAVING-layer DXF intake; `TempleParams` `.gcam` round-trip.
 
-### M6.4 — Base-curve forming blocks (v0.6.4)
+### M6.4 — Base-curve forming blocks (v0.6.4) — ✅ DONE 2026-06-16
+
+> **Done 2026-06-16 (`v0.6.4`).** A base-curve forming block is generated
+> straight off the frame's lens interior as **Drill Holes → Forming Profile →
+> Block Profile**, with one tool change (drill → bulk) through the shared
+> multi-tool post (M6.1) and program-zero (M6.2). File ▸ **Generate Base-Curve
+> Block** (enabled once a frame with a LENS is loaded) produces its own
+> `base_curve_block.nc`, folded into the `.gcam`. Suite **186 green** (+11
+> `tests/test_block_m64.py`). *Hole spec confirmed with the user 2026-06-16:
+> **in-line, 10 mm pitch, M4 clearance ≈4.5 mm** (a bolt passes through the block
+> into a tapped jig); arrangement + Ø stay parameters. The block is flat in v1 —
+> the 3D base-curve surface stays metadata (§5), so the forming feature is a
+> contour scribe of the lens footprint; STL/preview of the block is deferred to
+> M6.5's component rendering.*
 
 Pulled forward: auto-generate the post-cut heat-forming holding block straight
 from the frame DXF.
 
-1. **Block geometry from the DXF**: take the **interior shape of the eyewires**
-   (the LENS interiors, posterior) as the block's top profile — the surface the
-   frame front is formed over. Default blank: **acetal, 1/4" (6.35 mm) thick,
-   65 × 65 mm** (editable like the stock model).
-2. **Mounting holes**: **three M4 drill holes spaced 10 mm apart** (default).
-   Arrangement (in-line vs. triangle) and drill Ø (M4 clearance ≈ 4.5 mm vs.
-   tapped ≈ 3.3 mm) are parameters. **OPEN: confirm the canonical arrangement +
-   drill spec against a reference block before locking the default.**
-3. **CAM**: profile-cut the 65 × 65 outline + the eyewire-interior contour/pocket
-   + drill the 3 holes (peck-drill or helical-bore per tool), in acetal feeds
-   (add an acetal-block entry to `materials.yaml`). Likely a drill tool change
-   (M6.1).
-4. UI/output: a "Generate base-curve block" action → its own program (and a
-   component for the M6.5 bed); STL/preview of the block.
-5. Tests: block outline = blank size; top profile tracks the lens interior;
-   3 holes at spec spacing/Ø; program sims clean.
+1. ✅ **Block geometry from the DXF** (`core/cam/block_ops.py`): the LENS interior
+   is centred (bbox) on the blank and scribed onto the top face as the
+   **Forming Profile** (the forming footprint, at `thickness − forming_depth`).
+   Default blank: **acetal, 1/4" (6.35 mm), 65 × 65 mm** (`BaseCurveBlockParams`,
+   editable). The blank outline is the **Block Profile** through-cut (onion skin).
+2. ✅ **Mounting holes**: `hole_centers()` lays out **three M4 holes, in-line at
+   10 mm pitch** (default) or an equilateral triangle; **Ø 4.5 mm (M4 clearance)**.
+   Peck-drilled (`GRBLPost.peck_drill`, G83 full-retract — GRBL has no canned
+   cycle) from the top face through a `drill_breakthrough_mm` past the bottom.
+3. ✅ **CAM**: `generate_block_program` orders Drill (rigid) → Forming scribe →
+   Block Profile (release), drilling with **`drill_m4_clear`** (4.5 mm) and the
+   bulk tool for the rest — one tool change via M6.1. `write_castle_program`
+   gained `drill_op_names` + `peck_depth_mm`. Acetal feeds: a new **`acetal`**
+   entry in `materials.yaml`; stepdown clamped to its DOC.
+4. ✅ **UI/output**: File ▸ **Generate Base-Curve Block** (`GCodeWorker`
+   `is_block` branch) → `base_curve_block.nc` + a `component: base_curve_block`
+   setup sheet, folded into the `.gcam`. The forming/profile (bulk) tools follow
+   the CAM Tool selector; full per-component UI + the block STL/preview are M6.5.
+5. ✅ Tests (`tests/test_block_m64.py`, +11): block outline = blank size; the
+   forming profile tracks + centres the lens interior; 3 in-line holes at
+   10 mm / Ø4.5 drilled through; the G83 peck cycle + the drill→bulk tool change
+   post and lint clean; triangle layout; `.gcam` round-trip.
 
 ### M6.5 — Custom worktable layout & multi-part nesting (v0.6.5)
 
@@ -1341,8 +1370,8 @@ CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
       — `v0.6.2`
 - [x] Temples cut with ENGRAVING passes + the engraving tool change (M6.3)
       — `v0.6.3`
-- [ ] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
-      holes, acetal blank) (M6.4)
+- [x] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
+      holes, acetal blank) (M6.4) — `v0.6.4`
 - [ ] Multiple components placed on a custom bed and cut in one program (M6.5)
 - [ ] Full suite green; sub-milestones tagged `v0.6.1` … `v0.6.5`
 
@@ -1434,7 +1463,7 @@ the 2026-06-15 M6 replan and are no longer listed here.)
 
 # Reference
 
-## Module status (as of 2026-06-16, M6.3 complete)
+## Module status (as of 2026-06-16, M6.4 complete)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -1453,27 +1482,28 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `relief/pocket.py` | ⚠️ | No inward tool-radius offset (caller pre-offsets); M3 hinge op wraps it |
 | `relief/hinge.py` | ✅ | CHA catalog machinery — v1 uses HINGE-layer + depth instead; kept for post-1.0 |
 | `relief/heightfield.py` | ✅ | Grid container; two-level stock constructor lives in `castle.py` |
-| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %); **per-op tools** — `CamOp.tool`, `generate_castle_program(tools_cfg=)`, `relief_ops(fine_tool, rough_tool)`, `reach_warnings`/`analyze_program_reach`, `build_tool_settings`/`count_tool_changes` (M6.1); **`write_castle_program(contour_op_names=)`** so non-castle programs reuse the post (M6.3) |
+| `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %); **per-op tools** — `CamOp.tool`, `generate_castle_program(tools_cfg=)`, `relief_ops(fine_tool, rough_tool)`, `reach_warnings`/`analyze_program_reach`, `build_tool_settings`/`count_tool_changes` (M6.1); **`write_castle_program(contour_op_names=)`** so non-castle programs reuse the post (M6.3); **`drill_op_names`/`peck_depth_mm`** for peck-drill ops (M6.4) |
 | `cam/temple_ops.py` | ✅ | **New (M6.3)** — temple component CAM: `generate_temple_program` (Engraving at `thickness−depth` + Temple Profile outline through-cut), `engrave_op` / `temple_profile_op`, `TEMPLE_CONTOUR_OPS`; one tool change (engrave bit → bulk) via the M6.1 post |
+| `cam/block_ops.py` | ✅ | **New (M6.4)** — base-curve forming block: `generate_block_program` (Drill Holes + Forming Profile scribe + Block Profile), `drill_holes_op` / `forming_profile_op` / `block_profile_op` / `center_on_origin`, `BLOCK_DRILL_OPS` / `BLOCK_CONTOUR_OPS`; drill→bulk tool change |
 | `cam/cuttime.py` | ✅ | **New (M4.8)** — GRBL cut-time model: assumption-free cutting-only + accel-aware GRBL-planner cycle estimate; `format_report`; `MachineDynamics.from_profile`; drove the 1.95×→0.87× gap close; **tool-change count + dwell → `total_seconds`** (M6.1) |
 | `core/sim/` | ✅ | **New (M5)** — geometric cut simulation: `toolsim.py` (`ToolProfile` flat/ball/toroid + `achieved_floor` Z-buffer), `paths.py` (cutting paths from posted program or CamOps), `report.py` (`verify` → completeness/gouge `CutReport`); the machined-result verifier that caught the relief incompleteness; **multi-tool** `achieved_floor_grouped` + `cutting_paths_from_program_grouped` (per-move tool profiles) (M6.1) |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
 | `cam/profile.py` `pocketing.py` | ✅ | pyclipper offsets/cascade; castle_ops uses the pocketing cascade |
 | `cam/tabs.py` | ✅ | Correct, but **retired for frame fronts** (onion skin instead); stays available |
-| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1); **`work_offset`** — program-zero datum applied to every emitted coordinate, arc I/J untouched (M6.2) |
+| `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1); **`work_offset`** — program-zero datum applied to every emitted coordinate, arc I/J untouched (M6.2); **`peck_drill`** (G83 full-retract) (M6.4) |
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3); **`BaseCurveBlockParams` (hole_centers/stock) on `ProjectSchema.base_curve_block`** (M6.4) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
-| `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1); **`engrave_vbit` engraving tool; `temple_right`/`temple_left` fixture zones** (M6.3) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3) |
+| `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1); **`engrave_vbit` engraving tool; `temple_right`/`temple_left` fixture zones** (M6.3); **`drill_m4_clear` (4.5 mm) drill; `acetal` material** (M6.4) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3); **File ▸ Generate Base-Curve Block + `GCodeWorker._generate_block` + `block_params()`** (M6.4) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **175 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + program-zero 12 + **temple 12**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.3 per-op-tool/change-block/reach/datum-offset/temple-engrave gates) |
+| `tests/` | ✅ | **186 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + program-zero 12 + temple 12 + **base-curve block 11**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.4 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill gates) |
 
 ## Dependency list (v1 — unchanged)
 

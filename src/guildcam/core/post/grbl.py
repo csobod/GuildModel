@@ -154,6 +154,29 @@ class GRBLPost:
     def plunge(self, z: float) -> None:
         self.feed(z=z, feed=self.plunge_rate_mmpm)
 
+    def peck_drill(
+        self, x: float, y: float, z_top: float, z_bottom: float,
+        peck_depth: float, approach_mm: float = 1.0,
+    ) -> None:
+        """Peck-drill a hole at (x, y) from z_top down to z_bottom (BUILDPLAN
+        M6.4). GRBL has no canned cycle, so this is an explicit G83 full-retract
+        peck: plunge `peck_depth`, rapid out to clear chips, rapid back to just
+        above the cut, repeat. The work offset is applied by rapid/feed."""
+        approach = z_top + approach_mm
+        self.safe_retract()
+        self.rapid(x=x, y=y)
+        self.rapid(z=approach)
+        z = z_top
+        first = True
+        while z > z_bottom + 1e-9:
+            z_next = max(z_bottom, z - peck_depth)
+            if not first:
+                self.rapid(z=z + 0.3)            # rapid down to just above last peck
+            self.feed(z=z_next, feed=self.plunge_rate_mmpm)
+            self.rapid(z=approach)               # full retract to clear chips
+            z = z_next
+            first = False
+
     def safe_retract(self) -> None:
         self.rapid(z=self.safe_z_mm)
 

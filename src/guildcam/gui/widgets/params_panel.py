@@ -37,8 +37,9 @@ from guildcam.gui.style import theme
 from guildcam.gui import material_store
 from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
-    CastleCamParams, CastleParams, FootingFillet, FootingSchedule,
-    POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams, ZoneThicknesses,
+    BaseCurveBlockParams, CastleCamParams, CastleParams, FootingFillet,
+    FootingSchedule, POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams,
+    ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -780,6 +781,14 @@ class ParamsPanel(QTabWidget):
         component UI lands."""
         return TempleParams().model_copy(
             update={"profile_tool": self.cam_tool.currentText()})
+
+    def block_params(self) -> BaseCurveBlockParams:
+        """Base-curve forming-block params (BUILDPLAN M6.4). The forming/profile
+        (bulk) tools follow the CAM tab's Tool selector; the rest are defaults
+        (in-line M4 holes) until the M6.5 component UI lands."""
+        tool = self.cam_tool.currentText()
+        return BaseCurveBlockParams().model_copy(
+            update={"forming_tool": tool, "profile_tool": tool})
 
     # ------------------------------------------------------------------ material
 
