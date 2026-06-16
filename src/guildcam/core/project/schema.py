@@ -358,6 +358,28 @@ class MachineProfile(BaseModel):
     notes: str = ""
 
 
+class ComponentPlacement(BaseModel):
+    """One component placed on the worktable bed (BUILDPLAN M6.5).
+
+    `kind` selects the program (frame front / temple / base-curve block); the
+    part is generated in its own design frame, then translated by (x_mm, y_mm)
+    (and optionally rotated) onto the bed — by default the centre of its
+    `fixture_zone`. Positions are in machine/bed coordinates.
+    """
+    kind: Literal["frame_front", "temple", "base_curve_block"]
+    label: str = ""
+    fixture_zone: str = "front"
+    x_mm: float = 0.0
+    y_mm: float = 0.0
+    rotation_deg: float = 0.0
+
+
+class BedLayout(BaseModel):
+    """A multi-part worktable layout cut in one program (BUILDPLAN M6.5)."""
+    fixture: str = "guild_cnc"
+    placements: list[ComponentPlacement] = Field(default_factory=list)
+
+
 class MachineRef(BaseModel):
     name: str = "guild_cnc"
     preset_file: str = "machines/guild_cnc.yaml"
@@ -415,4 +437,5 @@ class ProjectSchema(BaseModel):
     cam_params: CastleCamParams = Field(default_factory=CastleCamParams)
     temple: TempleParams = Field(default_factory=TempleParams)   # BUILDPLAN M6.3
     base_curve_block: BaseCurveBlockParams = Field(default_factory=BaseCurveBlockParams)  # M6.4
+    bed_layout: BedLayout = Field(default_factory=BedLayout)      # BUILDPLAN M6.5
     machine: MachineRef = Field(default_factory=MachineRef)

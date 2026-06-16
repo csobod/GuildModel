@@ -16,7 +16,19 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-16, **M6.4 base-curve-forming-blocks tagged `v0.6.4`** — File ▸ Generate Base-Curve Block makes an acetal block from the frame's lens interior: Drill Holes (3× M4 in-line, 10 mm, Ø4.5 clearance, G83 peck) → Forming Profile (lens-footprint scribe) → Block Profile (65×65 through-cut), one tool change (drill→bulk) via M6.1. After M6.1 multi-tool, M6.2 stock-box zero (default program-zero center/center/bottom), M6.3 temples. Suite 186 green. Roadmap: M6 = "Expanded CAM operations" (✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → M6.5 worktable nesting), hardware round-trip M7, two-sided M8, packaging/v1.0.0 M9; next M6.5 worktable layout & nesting)*
+## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap: hardware round-trip M7 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M8, packaging/v1.0.0 M9; next M7 hardware round-trip)*
+
+> **M6.5 — worktable layout & nesting (`v0.6.5`):** `core/cam/layout.py` —
+> `build_bed_program` places each part on its fixture zone (`place_ops_at_zone`,
+> bbox-centred auto-pack), prefixes op names, and `schedule_bed_ops` orders ops
+> across parts to minimise tool changes (front-load special tools, respect each
+> part's internal order). `bed_clearance_violations` checks the whole layout
+> (drill ops exempt — the block's M4 holes are drilled at the bc-template
+> mounting screws on purpose). `BedLayout`/`ComponentPlacement` on
+> `ProjectSchema.bed_layout`. File ▸ Generate Worktable Program (`GCodeWorker`
+> `is_worktable`) → one `worktable.nc` (frame + block), lint + cut-time over the
+> bed, folded into the `.gcam`. Interactive layout editor + bed render deferred.
+> Suite **197** (+11). **M6 complete.**
 
 > **M6.4 — base-curve forming blocks (`v0.6.4`):** `core/cam/block_ops.py`
 > `generate_block_program` → Drill Holes + Forming Profile + Block Profile from a
@@ -1341,27 +1353,51 @@ from the frame DXF.
    10 mm / Ø4.5 drilled through; the G83 peck cycle + the drill→bulk tool change
    post and lint clean; triangle layout; `.gcam` round-trip.
 
-### M6.5 — Custom worktable layout & multi-part nesting (v0.6.5)
+### M6.5 — Custom worktable layout & multi-part nesting (v0.6.5) — ✅ DONE 2026-06-16
+
+> **Done 2026-06-16 (`v0.6.5`) — M6 complete.** File ▸ **Generate Worktable
+> Program** cuts the frame front **and** its base-curve block in **one** program:
+> each part is generated in its own design frame, auto-packed onto its fixture
+> zone, and the whole bed is scheduled to **minimise tool changes** (the demo
+> 2-part bed posts with exactly **one** change — drill front-loaded, then all
+> bulk). Suite **197 green** (+11 `tests/test_layout_m65.py`). *Trimmed: the
+> interactive layout editor + the 2D bed preview render (a machine-coords
+> workspace, distinct from the frame-centric design canvas) — placements are
+> auto-packed and reported in the setup sheet + log; the bed sim render is left
+> with them. The combined program is gated quantitatively by lint + the
+> bed-clearance check + cut-time over the whole bed.*
 
 Cut several components — frame front(s), temples, base-curve block(s) — in **one
-CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
+CNC program** on the bed. Builds on all of M6.1–M6.4.
 
-1. **Bed model**: a configurable worktable (size, origin, keep-out/screw zones —
-   generalizes `config/fixtures/guild_cnc.yaml` beyond the single six-zone
-   blank), saved as a fixture profile.
-2. **Layout workspace**: place component instances on the bed (position/rotate,
-   optional simple auto-pack), each carrying its own stock + ops + tools.
-   Collision/keep-out + reach checks against the bed.
-3. **Combined post**: one program running the placed parts, ordered to
-   **minimize tool changes across the whole bed** (group by tool, M6.1), each
-   part offset to its bed position (built on the M6.2 transform), with the
-   fixture clearance check over the full layout.
-4. **`.gcam` extension**: the container holds the bed layout + per-component
-   sources/programs (a multi-stock project — anticipates the post-1.0 `.gdraw`
-   multi-workspace intake).
-5. Sim + cut-time over the whole bed; readiness/lint gate the combined program.
-6. Tests: a 2-part bed posts one program with correct per-part offsets + grouped
-   tool changes; clearance over the layout; round-trips.
+1. ✅ **Bed model**: the **fixture is the bed** — `config/fixtures/guild_cnc.yaml`
+   already carries the six blank zones + hold-down screws; `zone_center()` reads a
+   part's zone, the screws are the keep-outs.
+2. ✅ **Layout** (`core/cam/layout.py`): `place_ops_at_zone` rotates (about
+   origin) + translates each part so its bbox centre lands on its zone centre
+   (simple auto-pack); `transform_ops` is the rigid placement transform.
+   `bed_clearance_violations` checks every placed cutting point against the screw
+   keep-outs over the whole layout — **drill ops are exempt** (the base-curve
+   block's M4 holes are drilled *at* the bc-template screws on purpose — they are
+   its mounting bolts; a test asserts the exemption does real work).
+3. ✅ **Combined post**: `schedule_bed_ops` orders ops across parts to minimise
+   tool changes — greedy stay-on-tool, and on a change pick the ready tool with
+   the fewest remaining ops (front-loads drill/engrave, batches the bulk),
+   **respecting each part's internal op order** (a part isn't profiled before it's
+   drilled). `build_bed_program` places + prefixes op names per part + collects
+   the through-cut / drill name sets, and `write_castle_program` posts the
+   combined list (one program, fixture clearance over the full bed).
+4. ✅ **`.gcam`**: `BedLayout` (+ `ComponentPlacement`) on `ProjectSchema.bed_layout`
+   round-trips the bed; the combined `worktable.nc` is stored in the container.
+5. ✅ **Cut-time + lint over the bed**: `estimate_program` on the combined `.nc`
+   (incl. the change dwell); `lint_program` gates it; the program folds into the
+   `.gcam` (the readiness light goes green). *(Full geometric bed sim render
+   deferred with the layout editor.)*
+6. ✅ Tests (`tests/test_layout_m65.py`, +11): transform + zone placement; the
+   scheduler minimises changes **and** preserves precedence (incl. a conflicting
+   tool-order case); the demo 2-part bed posts one program with one change, lints
+   clean, clears the layout (drills exempt), and cut-time covers the bed;
+   `BedLayout` `.gcam` round-trip.
 
 ### M6 exit criteria
 - [x] Per-operation tool assignment with posted, linted tool-change blocks +
@@ -1372,8 +1408,9 @@ CNC program** on a user-defined bed. Builds on all of M6.1–M6.4.
       — `v0.6.3`
 - [x] Base-curve block auto-generated from the DXF (eyewire interior + 3× M4
       holes, acetal blank) (M6.4) — `v0.6.4`
-- [ ] Multiple components placed on a custom bed and cut in one program (M6.5)
-- [ ] Full suite green; sub-milestones tagged `v0.6.1` … `v0.6.5`
+- [x] Multiple components placed on a custom bed and cut in one program (M6.5)
+      — `v0.6.5`
+- [x] Full suite green; sub-milestones tagged `v0.6.1` … `v0.6.5` (197 tests)
 
 ## M7 — Hardware round-trip (v0.7.0) · *the only gate that cuts acetate*
 
@@ -1463,7 +1500,7 @@ the 2026-06-15 M6 replan and are no longer listed here.)
 
 # Reference
 
-## Module status (as of 2026-06-16, M6.4 complete)
+## Module status (as of 2026-06-16, M6 complete — M6.5)
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -1485,6 +1522,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `cam/castle_ops.py` | ✅ | The five-op posterior program (M3); gated against the reference NC; `op_summaries()` setup sheet (M4); contour-parallel relief + ring-major eyewires (M4.7); relief stepover 0.9 + ramp-angle param + `CastleCamParams` from schema (M4.8); **rim-band clearing in `relief_ops`** so the finish pass reaches every rim (M5 — uncut 13.7 %→0.05 %); **per-op tools** — `CamOp.tool`, `generate_castle_program(tools_cfg=)`, `relief_ops(fine_tool, rough_tool)`, `reach_warnings`/`analyze_program_reach`, `build_tool_settings`/`count_tool_changes` (M6.1); **`write_castle_program(contour_op_names=)`** so non-castle programs reuse the post (M6.3); **`drill_op_names`/`peck_depth_mm`** for peck-drill ops (M6.4) |
 | `cam/temple_ops.py` | ✅ | **New (M6.3)** — temple component CAM: `generate_temple_program` (Engraving at `thickness−depth` + Temple Profile outline through-cut), `engrave_op` / `temple_profile_op`, `TEMPLE_CONTOUR_OPS`; one tool change (engrave bit → bulk) via the M6.1 post |
 | `cam/block_ops.py` | ✅ | **New (M6.4)** — base-curve forming block: `generate_block_program` (Drill Holes + Forming Profile scribe + Block Profile), `drill_holes_op` / `forming_profile_op` / `block_profile_op` / `center_on_origin`, `BLOCK_DRILL_OPS` / `BLOCK_CONTOUR_OPS`; drill→bulk tool change |
+| `cam/layout.py` | ✅ | **New (M6.5)** — worktable nesting: `build_bed_program` (place parts on fixture zones, prefix names, schedule), `transform_ops` / `place_ops_at_zone` / `zone_center`, `schedule_bed_ops` (precedence-aware tool-change minimiser), `bed_clearance_violations` (drill-exempt); the bed is the fixture |
 | `cam/cuttime.py` | ✅ | **New (M4.8)** — GRBL cut-time model: assumption-free cutting-only + accel-aware GRBL-planner cycle estimate; `format_report`; `MachineDynamics.from_profile`; drove the 1.95×→0.87× gap close; **tool-change count + dwell → `total_seconds`** (M6.1) |
 | `core/sim/` | ✅ | **New (M5)** — geometric cut simulation: `toolsim.py` (`ToolProfile` flat/ball/toroid + `achieved_floor` Z-buffer), `paths.py` (cutting paths from posted program or CamOps), `report.py` (`verify` → completeness/gouge `CutReport`); the machined-result verifier that caught the relief incompleteness; **multi-tool** `achieved_floor_grouped` + `cutting_paths_from_program_grouped` (per-move tool profiles) (M6.1) |
 | `cam/dropcutter.py` | ✅ | grey-dilation ball/flat/toroid; CLS feeds the relief ops |
@@ -1494,16 +1532,16 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
 | `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
-| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3); **`BaseCurveBlockParams` (hole_centers/stock) on `ProjectSchema.base_curve_block`** (M6.4) |
+| `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3); **`BaseCurveBlockParams` (hole_centers/stock) on `ProjectSchema.base_curve_block`** (M6.4); **`BedLayout`/`ComponentPlacement` on `ProjectSchema.bed_layout`** (M6.5) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1); **`engrave_vbit` engraving tool; `temple_right`/`temple_left` fixture zones** (M6.3); **`drill_m4_clear` (4.5 mm) drill; `acetal` material** (M6.4) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3); **File ▸ Generate Base-Curve Block + `GCodeWorker._generate_block` + `block_params()`** (M6.4) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3); **File ▸ Generate Base-Curve Block + `GCodeWorker._generate_block` + `block_params()`** (M6.4); **File ▸ Generate Worktable Program + `GCodeWorker._generate_worktable` (auto-pack frame + block, combined post, bed clearance)** (M6.5) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **186 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + program-zero 12 + temple 12 + **base-curve block 11**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.4 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill gates) |
+| `tests/` | ✅ | **197 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + program-zero 12 + temple 12 + base-curve block 11 + **worktable 11**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.5 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill/bed-schedule gates) |
 
 ## Dependency list (v1 — unchanged)
 
