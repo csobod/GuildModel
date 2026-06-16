@@ -215,6 +215,7 @@ class GCodeWorker(_ProgressWorker):
     def __init__(
         self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
+        engraving=(), temple=None, is_temple=False,
     ) -> None:
         super().__init__()
         self.outline = outline
@@ -223,6 +224,9 @@ class GCodeWorker(_ProgressWorker):
         self.cam_params = cam_params
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
+        self.engraving = list(engraving)     # ENGRAVING curves (M6.3 temples)
+        self.temple = temple                 # TempleParams | None
+        self.is_temple = is_temple
         # .gcam artifacts (filled by the castle path on success)
         self.programs: dict = {}
         self.machine_dump = None
@@ -436,6 +440,133 @@ class GCodeWorker(_ProgressWorker):
             })
         self.finished.emit(summary, rows)
 
+    def _generate_temple(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
+        """Temple program (BUILDPLAN M6.3): engrave the ENGRAVING curves at depth
+        with a small tool, then profile-cut the outline with the bulk tool — one
+        tool change between them, posted through the same multi-tool machinery and
+        program-zero offset as the frame front."""
+        import yaml
+        from guildcam.core.cam.castle_ops import (
+            CastleCamParams, build_tool_settings, count_tool_changes,
+            fixture_clearance_violations, op_summaries, resolve_tool, write_castle_program,
+        )
+        from guildcam.core.cam.cuttime import MachineDynamics, estimate_program, format_report
+        from guildcam.core.cam.temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
+        from guildcam.core.post.grbl import GRBLPost
+        from guildcam.core.post.machine import lint_program, load_machine_profile
+        from guildcam.core.project.schema import TempleParams
+
+        p = self.params
+        cam = self.cam_params or CastleCamParams()
+        temple = self.temple or TempleParams()
+        machine = load_machine_profile(cam.machine_name, config_dir)
+        mat_key = p["material_name"].split()[0].lower()
+        mat = mats_cfg.get(mat_key, mats_cfg["acetate"])
+        self.progress.emit(
+            f"[gcode] Temple · Machine: {machine.display_name} · "
+            f"engrave {temple.engrave_tool} → profile {temple.profile_tool}"
+        )
+
+        ops = generate_temple_program(self.outline, self.engraving, temple, tools_cfg, cam)
+        for op in ops:
+            zmin, zmax = op.z_range()
+            self.progress.emit(
+                f"[gcode]   {op.name}: {len(op.paths)} paths, "
+                f"Z {zmin:.2f}..{zmax:.2f} · {op.tool_name}"
+            )
+
+        tool_settings, ts_warns = build_tool_settings(
+            ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
+            default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
+            machine=machine)
+        for w in ts_warns:
+            self.progress.emit(f"[gcode] tool: {w}")
+        n_changes = count_tool_changes(ops)
+        self.progress.emit(
+            f"[gcode] {', '.join(f'T{s.number} {n}' for n, s in tool_settings.items())} "
+            f"· {n_changes} tool change(s) ({machine.tool_change_mode.upper()})"
+        )
+
+        # program zero from the temple blank box
+        tstock = temple.stock()
+        work_offset = cam.program_zero.work_offset(tstock)
+        datum = cam.program_zero.datum_world(tstock)
+        self.progress.emit(
+            f"[gcode] Program zero: {cam.program_zero.label()} · "
+            f"offset ({work_offset[0]:+.2f}, {work_offset[1]:+.2f}, {work_offset[2]:+.2f}) mm"
+        )
+
+        with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
+            fixture = yaml.safe_load(fh)
+        zone = temple.fixture_zone if temple.fixture_zone in fixture.get("blank_zones", {}) else "temple_right"
+        profile_r = resolve_tool(temple.profile_tool, tools_cfg)["radius_mm"]
+        violations = fixture_clearance_violations(ops, fixture, profile_r, blank=zone)
+        for v in violations:
+            self.progress.emit(f"[gcode] WARNING: {v}")
+
+        first_ts = tool_settings[ops[0].tool_name]
+        post = GRBLPost(
+            job_name="temple_cut", material=p["material_name"],
+            tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
+            feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
+            safe_z_mm=temple.blank_thickness_mm + cam.safe_z_clearance_mm,
+            work_offset=work_offset,
+        )
+        self._progress("Writing temple program", 0.9)
+        write_castle_program(
+            ops, post, side="Temple", arc_tol_mm=cam.arc_tolerance_mm,
+            contour_stepdown_mm=cam.contour_stepdown_mm,
+            contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
+            contour_op_names=TEMPLE_CONTOUR_OPS)
+        text = post.to_string()
+        self.progress.emit(f"[gcode] temple_cut.nc generated ({len(text):,} bytes)")
+
+        machine_warnings = lint_program(text, machine)
+        for w in machine_warnings:
+            self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        report = estimate_program(text, MachineDynamics.from_profile(machine),
+                                  tool_change_seconds=machine.tool_change_seconds)
+        self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
+        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+
+        summary = ("Temple program (engrave + profile) generated and stored in the "
+                   "project.\nSave the project (Ctrl+S) or File ▸ Export G-code for a "
+                   "standalone .nc.")
+        summary += (f"\n\nMachine: {machine.display_name}"
+                    f"\nProgram zero: {cam.program_zero.label()}"
+                    f"\nTools: {len(tool_settings)} ({n_changes} change) — "
+                    f"{report.total_seconds / 60:.1f} min incl. changes")
+        if violations:
+            summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
+        if machine_warnings:
+            summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
+
+        self.programs = {"temple_cut.nc": text}
+        self.machine_dump = machine.model_dump()
+        self.setup_dict = {
+            "component": "temple",
+            "material": p["material_name"],
+            "machine": machine.display_name,
+            "engrave_tool": temple.engrave_tool,
+            "profile_tool": temple.profile_tool,
+            "engrave_depth_mm": temple.engrave_depth_mm,
+            "onion_skin_mm": temple.onion_skin_mm,
+            "program_zero": cam.program_zero.label(),
+            "work_offset_mm": [round(v, 3) for v in work_offset],
+            "datum_world_mm": [round(v, 3) for v in datum],
+            "tools": [
+                {"number": s.number, "name": n, "diameter_mm": s.diameter_mm,
+                 "spindle_rpm": s.spindle_rpm, "feed_rate_mmpm": s.feed_rate_mmpm}
+                for n, s in tool_settings.items()
+            ],
+            "n_tool_changes": n_changes,
+            "est_cut_min": round(report.cutting_only_seconds / 60, 2),
+            "est_total_min": round(report.total_seconds / 60, 2),
+            "ops": rows,
+        }
+        self.finished.emit(summary, rows)
+
     def _generate(self) -> None:
         import yaml
         from guildcam.core.cam.profile import profile_cut
@@ -448,6 +579,11 @@ class GCodeWorker(_ProgressWorker):
             tools_cfg = yaml.safe_load(f)
         with open(config_dir / "materials.yaml", encoding="utf-8") as f:
             mats_cfg = yaml.safe_load(f)
+
+        # ---- Temple path: engrave + profile (M6.3) ----
+        if self.is_temple:
+            self._generate_temple(tools_cfg, mats_cfg, config_dir)
+            return
 
         # ---- Castle path: the five-operation posterior program (M3) ----
         if self.partition is not None and self.partition.matched:
@@ -920,6 +1056,8 @@ class MainWindow(QMainWindow):
         self._lens_os = None
         self._partition = None
         self._hinge_polys = []
+        self._engraving_curves = []      # ENGRAVING layer polylines (M6.3 temples)
+        self._is_temple = False          # outline + no lenses => temple component
 
         # .gcam project state (M5.1): the source DXF bytes, the current project
         # file, and the artifacts that go into the container (the last generated
@@ -1526,6 +1664,8 @@ class MainWindow(QMainWindow):
         self._lens_os = None
         self._partition = None
         self._hinge_polys = []
+        self._engraving_curves = list(layers.get("ENGRAVING", []))
+        self._is_temple = False
 
         outline_curves = layers.get("OUTLINE", [])
         if outline_curves:
@@ -1536,6 +1676,16 @@ class MainWindow(QMainWindow):
             points_to_polygon(c) for c in lens_curves if len(c) >= 3
         ]
         valid_lens = [p for p in lens_polys if p.is_valid and p.area > 1.0]
+
+        # A temple component is an outline with no lenses (no castle relief) —
+        # it gets the engrave + profile program instead (BUILDPLAN M6.3).
+        self._is_temple = self._outline_poly is not None and len(valid_lens) == 0
+        if self._is_temple:
+            self.append_log(
+                f"[temple] Temple component: outline + "
+                f"{len(self._engraving_curves)} engraving curve(s) — "
+                f"engrave + profile program on Generate G-code."
+            )
         if len(valid_lens) >= 2:
             sorted_lens = sorted(valid_lens, key=lambda p: p.centroid.x)
             self._lens_od = sorted_lens[1]   # posterior coords: OD on +x
@@ -1884,6 +2034,9 @@ class MainWindow(QMainWindow):
             partition=self._partition,
             hinge_polys=self._hinge_polys,
             cam_params=self.params.cam_params(),
+            engraving=self._engraving_curves,
+            temple=self.params.temple_params(),
+            is_temple=self._is_temple,
         )
         self._gcode_thread = QThread()
         self._gcode_worker.moveToThread(self._gcode_thread)
@@ -2090,7 +2243,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.6.2 — pre-release<br><br>"
+            "<b>GuildCAM</b> v0.6.3 — pre-release<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
             "GPLv3 — see LICENSE for details.",

@@ -601,6 +601,8 @@ _OP_STRATEGIES = {
     "Fine Relief": "Raster drop-cutter",
     "Eyewires": "Contour 2D (inside) · onion skin",
     "Perimeter": "Contour 2D (outside) · onion skin",
+    "Engraving": "Engrave · trace at depth",
+    "Temple Profile": "Contour 2D (outside) · onion skin",
 }
 
 
@@ -706,8 +708,14 @@ def write_castle_program(
     contour_ramp_angle_deg: float = _DEFAULT_CAM.contour_ramp_angle_deg,
     tool_settings: dict | None = None,
     tool_change_mode: str = "m0",
+    contour_op_names: set | None = None,
 ) -> None:
-    """Emit the five ops into a single GRBL program.
+    """Emit the ops into a single GRBL program (the castle's five ops, or any
+    op list — e.g. a temple's engrave + profile, BUILDPLAN M6.3).
+
+    `contour_op_names` are the through-cut ops that get the partial-lap ramped
+    lead-in (default the castle's Eyewires / Perimeter); every other op is emitted
+    as plain plunge-and-feed polylines (relief rasters, engraving strokes).
 
     arc_tol_mm > 0 fits G2/G3 arcs to the curved passes (smooth motion, smaller
     files). The through-cut contours (Eyewires / Perimeter) get a partial-lap
@@ -720,7 +728,7 @@ def write_castle_program(
     same-tool ops naturally grouped. When `tool_settings` is None the program is
     single-tool, exactly as before.
     """
-    contour_ops = {"Eyewires", "Perimeter"}
+    contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Perimeter"}
     post.header(side)
     current: str | None = None
     if tool_settings:

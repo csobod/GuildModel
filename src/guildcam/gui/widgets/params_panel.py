@@ -38,7 +38,7 @@ from guildcam.gui import material_store
 from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
     CastleCamParams, CastleParams, FootingFillet, FootingSchedule,
-    POSTERIOR_OPS, ProgramZero, StockDefinition, ZoneThicknesses,
+    POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -773,6 +773,13 @@ class ParamsPanel(QTabWidget):
         self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)
         self.spindle_override.setValue(cp.spindle_rpm or 0)
         self.safe_z_clearance.setValue(cp.safe_z_clearance_mm)
+
+    def temple_params(self) -> TempleParams:
+        """Temple component params (BUILDPLAN M6.3). The profile (bulk) tool
+        follows the CAM tab's Tool selector; the rest are defaults until the M6.5
+        component UI lands."""
+        return TempleParams().model_copy(
+            update={"profile_tool": self.cam_tool.currentText()})
 
     # ------------------------------------------------------------------ material
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "guildcam"
-version = "0.6.2"
+version = "0.6.3"
 description = "Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

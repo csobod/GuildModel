@@ -129,9 +129,9 @@ class ProgramZero(BaseModel):
     spans x ∈ [-L/2, L/2], y ∈ [-W/2, W/2], z ∈ [0, blank_thickness].
     """
     mode: Literal["fixture", "stock_box"] = "stock_box"
-    x_ref: Literal["left", "center", "right"] = "left"
-    y_ref: Literal["bottom", "center", "top"] = "bottom"
-    z_ref: Literal["top", "bottom"] = "top"
+    x_ref: Literal["left", "center", "right"] = "center"
+    y_ref: Literal["bottom", "center", "top"] = "center"
+    z_ref: Literal["top", "bottom"] = "bottom"
 
     def datum_world(self, stock: "StockDefinition") -> tuple[float, float, float]:
         """The datum point in design-frame (world) coordinates."""
@@ -181,7 +181,9 @@ class CastleCamParams(BaseModel):
     op_tools: dict[str, str] = Field(default_factory=dict)
 
     # Program zero / G54 work datum (BUILDPLAN M6.2). Default = stock-box
-    # lower-left, top face — what a maker touches off on the blank.
+    # center/center, bottom (anterior) face — i.e. the blank center, which is the
+    # design-frame origin (a zero offset); pick a corner + top face to touch off
+    # there instead.
     program_zero: ProgramZero = Field(default_factory=ProgramZero)
 
     def tool_for_op(self, op_name: str) -> str:
@@ -216,6 +218,39 @@ class CastleCamParams(BaseModel):
     plunge_rate_mmpm: float | None = None
     spindle_rpm: int | None = None
     safe_z_clearance_mm: float = 5.0       # rapid clearance above the stock top
+
+
+class TempleParams(BaseModel):
+    """A temple component: a flat outline cut plus engraving (BUILDPLAN M6.3).
+
+    Unlike the frame front there is no castle relief — a temple is a flat blank
+    that gets shallow ENGRAVING grooves on its top face and an OUTLINE through-cut
+    (onion skin, like the perimeter). The engraving uses a small tool and the
+    profile a larger one, so the program carries one tool change (M6.1). The blank
+    box (assumed centred on the design origin, like the frame blank) feeds the
+    program-zero offset and the safe-Z; defaults match the `temple_right` fixture
+    zone (170 × 30 × 4 mm).
+    """
+    blank_length_mm: float = 170.0
+    blank_width_mm: float = 30.0
+    blank_thickness_mm: float = 4.0
+    engrave_depth_mm: float = 0.3          # groove depth below the top face
+    engrave_tool: str = "engrave_vbit"     # small tool for the ENGRAVING passes
+    profile_tool: str = "flat_3175"        # outline through-cut tool
+    onion_skin_mm: float = 0.4             # axial stock left under the profile
+    hand_finishing_allowance_mm: float = 0.1
+    fixture_zone: str = "temple_right"     # fixture blank zone (clearance check)
+
+    def stock(self) -> "StockDefinition":
+        """A single-level StockDefinition for the blank (no pad block) — used for
+        the program-zero datum and the safe-Z height."""
+        return StockDefinition(
+            blank_length_mm=self.blank_length_mm,
+            blank_width_mm=self.blank_width_mm,
+            blank_thickness_mm=self.blank_thickness_mm,
+            pad_block_length_mm=0.0, pad_block_width_mm=0.0,
+            pad_block_thickness_mm=0.0,
+        )
 
 
 class MachineProfile(BaseModel):
@@ -317,4 +352,5 @@ class ProjectSchema(BaseModel):
     forming: FormingMetadata = Field(default_factory=FormingMetadata)
     cam: CAMSettings = Field(default_factory=CAMSettings)
     cam_params: CastleCamParams = Field(default_factory=CastleCamParams)
+    temple: TempleParams = Field(default_factory=TempleParams)   # BUILDPLAN M6.3
     machine: MachineRef = Field(default_factory=MachineRef)

@@ -27,10 +27,12 @@ TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
 # ------------------------------------------------------------------ offset math
 
-def test_default_is_stock_box_lower_left_top():
+def test_default_is_stock_box_center_bottom():
     pz = ProgramZero()
     assert pz.mode == "stock_box"
-    assert (pz.x_ref, pz.y_ref, pz.z_ref) == ("left", "bottom", "top")
+    assert (pz.x_ref, pz.y_ref, pz.z_ref) == ("center", "center", "bottom")
+    # center/center/bottom == the blank centre, anterior face -> zero offset
+    assert pz.work_offset(StockDefinition()) == (0.0, 0.0, 0.0)
 
 
 def test_work_offset_for_each_datum():
@@ -65,8 +67,9 @@ def test_datum_world_corners():
 
 
 def test_label_names_the_datum():
-    assert "lower-left" in ProgramZero().label()
-    assert "top face" in ProgramZero().label()
+    assert "lower-left" in ProgramZero(x_ref="left", y_ref="bottom").label()
+    assert "top face" in ProgramZero(z_ref="top").label()
+    assert "center" in ProgramZero().label()                     # the new default
     assert "Fixture" in ProgramZero(mode="fixture").label()
 
 
@@ -145,7 +148,7 @@ def _posted(ops, castle, offset):
 
 def test_stock_box_zero_lands_part_in_positive_quadrant(demo_ops):
     castle, ops = demo_ops
-    off = ProgramZero().work_offset(castle.stock)     # lower-left/top
+    off = ProgramZero(x_ref="left", y_ref="bottom", z_ref="top").work_offset(castle.stock)
     text = _posted(ops, castle, off)
     xs, ys = [], []
     for ln in text.splitlines():
@@ -164,7 +167,7 @@ def test_stock_box_zero_lands_part_in_positive_quadrant(demo_ops):
 def test_offset_is_pure_translation_vs_fixture(demo_ops):
     """The cut shape is identical to fixture mode — only translated."""
     castle, ops = demo_ops
-    off = ProgramZero().work_offset(castle.stock)
+    off = ProgramZero(x_ref="left", y_ref="bottom", z_ref="top").work_offset(castle.stock)
     fix = _posted(ops, castle, (0.0, 0.0, 0.0))
     box = _posted(ops, castle, off)
 
