@@ -32,7 +32,11 @@ real stock — and nothing else.
 > `playback_step_changed`, which best-effort selects the matching row in the M7.11
 > Toolpaths inspector. Whole-bed playback (the bed sim) stays the static final view
 > for now. 10 new headless tests (monotonicity, op-boundary mapping, final ==
-> full sweep, profile resolution). Next: **M7.13** measure + 3D section.
+> full sweep, profile resolution). **Next (planned, user-approved 2026-06-22):
+> M7.12.1–.3** — the *volumetric* revisit: render the stock as a solid block carved
+> in-place by a moving tool/holder (not the floor sheet), and a bed sim that flags
+> hold-down collisions. Keeps this snapshot core + the M7.11 2D overlay. Then
+> **M7.13** measure + 3D section.
 >
 > **2026-06-21 — M7.11 DONE (`v0.7.11`, 314 tests):** *see what the program cuts.*
 > Cluster 2 (control/visibility) opens. `DxfCanvas` gains a per-op **toolpath overlay**
@@ -2083,6 +2087,85 @@ pattern that fixed it.
 4. **Tests**: the snapshot sequence is monotonic (material only ever removed); the
    slider maps to op boundaries. Tag `v0.7.12`.
 
+---
+
+## M7.12.1–.3 — Volumetric cut simulation (the M7.12 revisit) · *watch the stock disappear*
+
+> **2026-06-22 — planned (user-approved direction).** M7.12 shipped the headless
+> per-op snapshot core (`core/sim/playback.py`) + a scrubber, but it renders the
+> **achieved-floor *sheet*** lurching op-by-op — not a solid block of stock being
+> eaten by a moving tool. This three-phase arc revisits **only the rendering &
+> animation**; the M7.12 headless snapshot core is **retained**, and the M7.11
+> **2D DXF toolpath overlay is preserved untouched** (and strengthened with a synced
+> cursor). It supersedes the floor-sheet render, not the engine.
+>
+> **Why this stays in Python / heightfields (no new paradigm):** our parts are
+> single-side **2.5D** relief milling — *no undercuts* — so a single-Z-dexel (=
+> heightfield with a solid body) is geometrically exact for the cut result, matching
+> the project's "heightfields + polygons, no CAD kernel" principle (§6). The
+> compute is vectorised numpy; rendering is GPU via VTK with **in-place point-Z
+> updates** (fixed grid topology) — so smooth animation is a rendering-strategy
+> change, not a language change. Reference model: dexel material-removal sim, as in
+> CAMotics (the open-source 3-axis G-code analog). Numbered `.1/.2/.3` (PEP 440
+> `0.7.12.1`…) so the downstream M7.13–M7.16 plan is undisturbed.
+>
+> **Purpose (user, 2026-06-22):** a beautiful, accurate *preview for judgment* — does
+> the cut match intent, and will the tool **or its holder** slam into a hold-down? —
+> not a substitute for a real air-cut.
+
+### M7.12.1 — The block, carved in place (`v0.7.12.1`) · *solid stock + animated removal*
+
+1. **Remaining-stock heightfield** (`core/sim`): start from the real two-level stock
+   (blank + pad block) as the initial solid top; sweep the densified cutting moves,
+   lowering each column under the tool footprint by the existing tool drop profile.
+   Generalise the M7.12 `simulate_steps` to **arbitrary cut-fraction checkpoints**
+   (fine move-batch granularity), with the op boundaries kept as labelled timeline
+   markers. Monotone by construction; final frame == the M7.12 achieved floor.
+2. **Closed-solid mesh** (`Viewer3D`): render the stock as a **block** — top
+   heightfield + an outer skirt down to the anterior face. Through-cuts (fully
+   consumed columns) open as holes via **cell-blanking** (degenerate/masked quads)
+   so the mesh **topology is fixed** — the precondition for in-place animation.
+   Interior pocket walls are a later fidelity dial (v1 already reads as a carved block).
+3. **In-place animated removal**: triangulate the grid **once**; each frame overwrite
+   only the points' Z + the blank-cell mask and mark modified — VTK redraws on the
+   GPU (the fix for the M7.12 lurch, which rebuilt the whole mesh per op). A real
+   continuous timeline (play/pause + slider); the M7.12 op-scrubber becomes the
+   coarse op-marker layer on the same timeline.
+4. **2D↔3D sync (preserve + strengthen the M7.11 overlay)**: a marker rides the 2D
+   toolpath at the same path position as the 3D cut cursor, so the literal path (2D)
+   and its physical result (3D) animate together. **The 2D overlay itself is unchanged.**
+5. **Tests**: remaining-stock floor monotone + final == M7.12 floor (same min-Z);
+   cell-blank mask == the through-cut mask; the point/topology buffer length is
+   constant across frames. Tag `v0.7.12.1`.
+
+### M7.12.2 — The cutter you can see (`v0.7.12.2`) · *tool, shank, holder*
+
+1. **Tool-body mesh** per `ToolProfile` (flat cylinder / ball / V-cone) + **shank** +
+   a simple **collet/holder** cylinder, sized from the M7.8/M7.9 stick-out / shank /
+   flute-length fields. Parked at the cut cursor and advancing along the densified
+   path as the timeline plays.
+2. **Reach/holder read-out**: the holder height above the stock makes stick-out and a
+   holder-into-stock dive legible at a glance (ties to the M7.9 depth-reach warning).
+3. **Tests**: the tool mesh matches the profile section (radius / included angle); the
+   cursor maps to path arc-length at a given timeline fraction. Tag `v0.7.12.2`.
+
+### M7.12.3 — Bed simulation & hold-down collision (`v0.7.12.3`) · *will it slam into a clamp?*
+
+> Brings the volumetric removal to the whole-bed sim (deferred in M7.7 / M7.12) and
+> answers the maker's safety question: does the tool **or its holder** foul a hold-down?
+
+1. **Volumetric bed sim**: composite the per-component remaining-stock heightfields
+   onto one machine-coords bed grid (reusing `core/sim/bed.py`), animated with the
+   same in-place renderer.
+2. **Hold-downs as solids**: render the worktable `KEEP_OUT` zones (screws / clamps)
+   as 3D bodies on the bed at their stock height.
+3. **Fouling highlight**: as the tool + holder sweep, flag (red) any frame where the
+   **tool or holder** enters a keep-out — the 3D companion to the existing
+   `worktable_clearance_violations` (tip-only today; this adds the holder body),
+   with a per-collision marker + jump-to-frame.
+4. **Tests**: a known clamp-fouling job flags ≥1 frame, a clear job flags none; the
+   holder-radius check generalises the tip check. Tag `v0.7.12.3`.
+
 ### M7.13 — Measure/inspect & 3D section view (v0.7.13) · *verify before you cut*
 
 1. **2D measure tools** on `DxfCanvas`: point-to-point distance, angle, and a
@@ -2149,6 +2232,9 @@ tools M7.8).
 - [x] Feeds & speeds / chip-load calculator tying tools↔materials (M7.10)
 - [x] Toolpath overlay + per-op inspector on the design canvas (M7.11)
 - [x] Cut-simulation playback scrubber (M7.12)
+- [ ] Volumetric stock removal — solid block carved in-place + synced 2D cursor (M7.12.1)
+- [ ] Visible tool + shank + holder following the path (M7.12.2)
+- [ ] Bed sim with hold-down (tool **and holder**) collision highlight (M7.12.3)
 - [ ] On-canvas measure + 3D section view (M7.13)
 - [ ] Job/validation inspector panel consolidating all warnings (M7.14)
 - [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
