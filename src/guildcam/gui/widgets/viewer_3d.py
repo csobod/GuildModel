@@ -26,9 +26,9 @@ import numpy as np
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QPushButton,
-    QButtonGroup, QFrame, QLabel, QCheckBox, QSizePolicy,
+    QButtonGroup, QFrame, QLabel, QCheckBox, QSizePolicy, QSlider,
 )
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
 
 from guildcam.gui.style import theme
 from guildcam.gui import icons as icons_mod
@@ -56,6 +56,7 @@ class Viewer3D(QWidget):
     """
 
     stage_changed = Signal(str)   # relief.castle.CASTLE_STAGES value (model mode)
+    playback_step_changed = Signal(int, str)   # op index, op label (sim scrubber, M7.12)
 
     # the teaching stepper (model mode): (label, stage value, icon, tooltip)
     _STAGE_BUTTONS = [
@@ -130,6 +131,14 @@ class Viewer3D(QWidget):
         # sim-mode scene cache
         self._report = None
         self._sim_mesh = None                     # pv.PolyData (cut floor)
+        self._sim_inside = None                   # bool grid: body cells (triangulation mask)
+
+        # playback scrubber (BUILDPLAN M7.12)
+        self._snapshots: list = []                # core.sim.FloorSnapshot, per op
+        self._play_idx = 0
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(450)
+        self._play_timer.timeout.connect(self._advance_play)
 
     # ------------------------------------------------------------------ toolbar build
 
@@ -174,6 +183,22 @@ class Viewer3D(QWidget):
         self._chk_uncut.toggled.connect(self._refresh_colors)
         self._chk_gouge.toggled.connect(self._refresh_colors)
         lay.addWidget(self._chk_uncut); lay.addWidget(self._chk_gouge)
+
+        # ---- playback scrubber (BUILDPLAN M7.12) — hidden until snapshots set ----
+        self._play_btn = QPushButton("▶"); self._play_btn.setFixedSize(24, 22)
+        self._play_btn.setToolTip("Play / pause the cut, op by op")
+        self._play_btn.clicked.connect(self._toggle_play)
+        self._scrub = QSlider(Qt.Orientation.Horizontal)
+        self._scrub.setToolTip("Scrub the cut to any op boundary")
+        self._scrub.setMinimumWidth(120)
+        self._scrub.valueChanged.connect(self._on_scrub)
+        self._step_label = QLabel(""); self._step_label.setObjectName("hintLabel")
+        self._step_label.setMinimumWidth(96)
+        lay.addSpacing(8)
+        lay.addWidget(self._play_btn); lay.addWidget(self._scrub, 1)
+        lay.addWidget(self._step_label)
+        for wdg in (self._play_btn, self._scrub, self._step_label):
+            wdg.setVisible(False)
 
         lay.addStretch()
         self._badge = QLabel(""); self._badge.setObjectName("hintLabel")
@@ -409,8 +434,11 @@ class Viewer3D(QWidget):
 
     def show_report(self, report) -> None:
         """Cache a core.sim.CutReport as the sim scene and draw it if sim mode is
-        current (matches the old CutSimView API)."""
+        current (matches the old CutSimView API). Resets any playback scrubber —
+        a fresh report (e.g. the whole-bed sim) has no per-op sequence until
+        ``set_playback`` provides one."""
         self._report = report
+        self._reset_playback()
         status = report.status()
         text, color = _BADGE.get(status, ("", "#888"))
         c = report.completeness
@@ -418,17 +446,20 @@ class Viewer3D(QWidget):
         self._badge.setStyleSheet(f"color: {color}; font-weight: 600;")
         if not self._ensure_plotter():
             return
-        self._build_sim_mesh(report)
+        self._sim_inside = np.isfinite(report.target)
+        self._sim_mesh = self._floor_polydata(report.floor)
         if self._mode == "sim":
             self._render_sim(reset_camera=True)
 
-    def _build_sim_mesh(self, report) -> None:
+    def _floor_polydata(self, floor):
+        """Triangulate an achieved-floor grid into a pv.PolyData (body cells only),
+        using the cached `report.origin/resolution` + the inside mask. Shared by the
+        final report and every playback snapshot (BUILDPLAN M7.12)."""
         import pyvista as pv
-        floor = report.floor
-        inside = np.isfinite(report.target)
+        inside = self._sim_inside
         rows, cols = floor.shape
-        ox, oy = report.origin
-        res = report.resolution
+        ox, oy = self._report.origin
+        res = self._report.resolution
         xs = ox + np.arange(cols) * res
         ys = oy + np.arange(rows) * res
         X, Y = np.meshgrid(xs, ys)
@@ -443,7 +474,7 @@ class Viewer3D(QWidget):
         a, b, c2, d = c00.ravel()[q], c10.ravel()[q], c11.ravel()[q], c01.ravel()[q]
         tris[0::2] = np.column_stack([np.full(a.shape, 3), a, b, c2])
         tris[1::2] = np.column_stack([np.full(a.shape, 3), a, c2, d])
-        self._sim_mesh = pv.PolyData(pts, tris.ravel())
+        return pv.PolyData(pts, tris.ravel())
 
     def _render_sim(self, reset_camera: bool) -> None:
         # Like _render_model: a bare mode switch never creates the GL context.
@@ -477,8 +508,95 @@ class Viewer3D(QWidget):
         if (self._plotter is None or self._mode != "sim"
                 or self._sim_mesh is None or self._report is None):
             return
+        # While scrubbed back into the cut, the neutral floor surface is shown — a
+        # colour toggle only applies to the final verified frame.
+        if self._snapshots and self._play_idx < len(self._snapshots) - 1:
+            return
         self._apply_sim_colors()
         self._safe_render()
+
+    # ------------------------------------------------------------------ playback (M7.12)
+
+    def set_playback(self, snapshots: list) -> None:
+        """Drive the scrubber from a per-op snapshot sequence (BUILDPLAN M7.12).
+
+        Each snapshot is a `core.sim.FloorSnapshot` (cumulative achieved floor after
+        one op). The slider/play button appear; the cursor rests on the last frame
+        (== the final verified report). An empty sequence hides the scrubber."""
+        self._reset_playback()
+        if not snapshots or self._report is None:
+            return
+        self._snapshots = list(snapshots)
+        last = len(self._snapshots) - 1
+        self._play_idx = last
+        self._scrub.blockSignals(True)
+        self._scrub.setRange(0, last)
+        self._scrub.setValue(last)
+        self._scrub.blockSignals(False)
+        for wdg in (self._play_btn, self._scrub, self._step_label):
+            wdg.setVisible(True)
+        self._update_step_label()
+
+    def _reset_playback(self) -> None:
+        self._play_timer.stop()
+        self._snapshots = []
+        self._play_idx = 0
+        self._play_btn.setText("▶")
+        for wdg in (self._play_btn, self._scrub, self._step_label):
+            wdg.setVisible(False)
+
+    def _update_step_label(self) -> None:
+        if not self._snapshots:
+            self._step_label.setText("")
+            return
+        snap = self._snapshots[self._play_idx]
+        self._step_label.setText(f"{self._play_idx + 1}/{len(self._snapshots)} · {snap.label}")
+
+    def _on_scrub(self, idx: int) -> None:
+        if not self._snapshots:
+            return
+        self._play_idx = max(0, min(idx, len(self._snapshots) - 1))
+        self._render_snapshot(self._play_idx)
+        self._update_step_label()
+        snap = self._snapshots[self._play_idx]
+        self.playback_step_changed.emit(snap.op_index, snap.label)
+
+    def _render_snapshot(self, idx: int) -> None:
+        """Draw the cut as of op `idx`: the final frame shows the colour-verified
+        report; earlier frames show the neutral floor surface building up."""
+        if self._plotter is None or self._report is None or not self._snapshots:
+            return
+        last = len(self._snapshots) - 1
+        if idx >= last:
+            # the finished cut == the verified report (uncut/gouge colours)
+            self._sim_mesh = self._floor_polydata(self._report.floor)
+            self._apply_sim_colors()
+        else:
+            mesh = self._floor_polydata(self._snapshots[idx].floor)
+            self._plotter.clear()
+            self._plotter.add_mesh(
+                mesh, color=self._palette.mesh_surface, smooth_shading=False,
+                show_edges=False, lighting=True)
+        self._safe_render()
+
+    def _toggle_play(self) -> None:
+        if not self._snapshots:
+            return
+        if self._play_timer.isActive():
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+            return
+        if self._play_idx >= len(self._snapshots) - 1:
+            self._scrub.setValue(0)               # replay from the start
+        self._play_btn.setText("▮▮")
+        self._play_timer.start()
+
+    def _advance_play(self) -> None:
+        if not self._snapshots or self._play_idx >= len(self._snapshots) - 1:
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+            return
+        self._scrub.setValue(self._play_idx + 1)   # → _on_scrub renders + emits
 
     # ------------------------------------------------------------------ clear
 

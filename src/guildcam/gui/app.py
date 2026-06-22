@@ -1087,7 +1087,7 @@ class SimWorker(_ProgressWorker):
     simulation catches both strategy and post-processing defects before cutting.
     """
 
-    finished = Signal(object, object)   # core.sim.CutReport, summary lines
+    finished = Signal(object, object, object)   # CutReport, summary lines, FloorSnapshot[]
     progress = Signal(str)
     error = Signal(str)
 
@@ -1114,6 +1114,7 @@ class SimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor, achieved_floor_grouped,
                 cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
+                simulate_steps, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1175,7 +1176,15 @@ class SimWorker(_ProgressWorker):
             report = verify(
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=self.partition)
-            self.finished.emit(report, report.summary_lines())
+
+            # Per-op snapshots for the playback scrubber (M7.12): re-sweep the ops
+            # one at a time (each op carries its own tool), capturing the cumulative
+            # floor after each. Monotonic; the last frame matches the full sweep.
+            self._progress("Building playback", 0.96)
+            snaps = simulate_steps(
+                steps_from_ops(ops, ToolProfile.from_tool(tool)),
+                f.origin, f.z.shape, f.resolution, init_z)
+            self.finished.emit(report, report.summary_lines(), snaps)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -1190,7 +1199,7 @@ class FlatSimWorker(_ProgressWorker):
     against the target — reusing the castle sim's `achieved_floor`/`verify`.
     """
 
-    finished = Signal(object, object)   # core.sim.CutReport, summary lines
+    finished = Signal(object, object, object)   # CutReport, summary lines, FloorSnapshot[]
     progress = Signal(str)
     error = Signal(str)
 
@@ -1227,6 +1236,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor_grouped,
                 cutting_paths_from_program_grouped, verify,
+                simulate_steps, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1289,7 +1299,13 @@ class FlatSimWorker(_ProgressWorker):
             report = verify(
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=None)
-            self.finished.emit(report, report.summary_lines())
+
+            # Per-op snapshots for the playback scrubber (M7.12).
+            self._progress("Building playback", 0.96)
+            snaps = simulate_steps(
+                steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
+                f.origin, f.z.shape, f.resolution, init_z)
+            self.finished.emit(report, report.summary_lines(), snaps)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -3225,6 +3241,7 @@ class MainWindow(QMainWindow):
         self.params.zone_hovered.connect(self._on_zone_hover)
         self.params.cam_changed.connect(self._on_cam_changed)
         self.view3d.stage_changed.connect(self._on_stage_changed)
+        self.view3d.playback_step_changed.connect(self._on_playback_step)
 
         # Restore persisted material + CAM params (machine / tool / strategy /
         # feeds). Set the material first (without repopulating), then apply the
@@ -4053,9 +4070,10 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._sim_worker.cancel)
         self._sim_thread.start()
 
-    def _on_sim_finished(self, report, lines) -> None:
+    def _on_sim_finished(self, report, lines, snaps=None) -> None:
         self._close_progress()
         self.view3d.show_report(report)
+        self.view3d.set_playback(snaps or [])     # per-op scrubber (M7.12)
         for line in lines:
             self.append_log("[sim] " + line)
         self.status_lbl.setText({
@@ -4313,6 +4331,22 @@ class MainWindow(QMainWindow):
             cell = self._toolpath_table.item(items[0].row(), 0)
             name = cell.data(Qt.ItemDataRole.UserRole) if cell else None
         self.canvas.set_toolpath_highlight(name)
+
+    def _on_playback_step(self, op_index: int, label: str) -> None:
+        """Sync the M7.11 toolpath inspector to the scrubber cursor (M7.12): when
+        the Toolpaths table lists the op now being cut, select its row (which
+        highlights it on the 2D overlay). Best-effort — the table is only populated
+        after Generate, so a sim-only session simply shows the viewer's step label."""
+        t = getattr(self, "_toolpath_table", None)
+        if t is None or t.rowCount() == 0:
+            return
+        selected_rows = {i.row() for i in t.selectedItems()}
+        for r in range(t.rowCount()):
+            cell = t.item(r, 0)
+            if cell is not None and cell.data(Qt.ItemDataRole.UserRole) == label:
+                if r not in selected_rows:
+                    t.selectRow(r)
+                return
 
     def _clear_toolpath_overlay(self) -> None:
         """Drop the 2D toolpath overlay + inspector (a new component or a stale

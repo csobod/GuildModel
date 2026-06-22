@@ -20,6 +20,20 @@ real stock — and nothing else.
 
 ## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap (2026-06-18 reorientation replan): **M7 reorientation** — one `.gdraw` → a multi-component project (frame front + both temples + a per-lens base-curve template), per-component 3D workspace tabs, an interactive worktable from a tagged bed DXF, role-matched auto-nesting, and combined-or-per-component G-code (`v0.7.1`–`v0.7.6`) — then hardware round-trip M8 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M9, rename-decision + packaging/v1.0.0 M10. **M7.1 project model ✅ DONE (`v0.7.1`) + M7.2 `.gdraw` intake ✅ DONE (`v0.7.2`, 233 tests — reader + File ▸ Open Model + the component notebook: a tab per component, tab-switch rebinds the active component) + M7.3 per-component notebook ✅ DONE (`v0.7.3`, 234 tests — component tabs + kind-aware editable param dock (Temple/Base Curve tabs) + per-component param persistence) + M7.4 interactive worktable ✅ DONE (`v0.7.4`, 247 tests — `Worktable`/`WorktableZone`/`BedRole` model in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine coords; `from_fixture_dict`/`to_fixture_dict` load the Guild `guild_cnc.yaml` as the default bed and bridge back onto the M6.5 layout machinery unchanged); `core/cam/worktable.py` reads a bed DXF → `polygonize`d regions, `default_worktable`, `.bed` YAML I/O; GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords `BedCanvas` — import a bed DXF / load the Guild bed, click a region, tag its role (frame-front / temple R-L / base-curve R-L / keep-out); persisted in the `.gcam`) + M7.5 per-component 3D models ✅ DONE (`v0.7.5`, 258 tests — `core/relief/flat.py` reuses the castle mesher for flat parts: temple = outline extruded 4 mm + HINGE blind pockets + ENGRAVING grooves, snapped hinge-end to the blank + a visual injected-core bar; base-curve block = the lens shape cut from a 70×70×4.7625 acetal blank, 3 M4 through-holes (2026-06-19: CAM simplified to Drill Holes + Block Profile=lens-shape cut, forming scribe + box cut dropped); GUI `FlatMeshWorker` + Build-3D enabled per kind); next: M7.6 role-matched auto-nesting onto the tagged bed (+ polygon keep-outs, bed render/nudge), then M7.7 combined/per-component G-code**)*
 
+> **2026-06-22 — M7.12 DONE (`v0.7.12`, 324 tests):** *watch the cut.* The
+> twice-deferred cut-sim playback scrubber. New headless `core/sim/playback.py`
+> (`simulate_steps` accumulates the tool-profile Z-buffer op by op, snapshotting the
+> cumulative achieved floor after each — monotonic by construction, last frame ==
+> the full sweep; `steps_from_ops` resolves each op's profile from its own tool).
+> `SimWorker`/`FlatSimWorker` emit the per-op snapshots alongside the report;
+> `Viewer3D` sim mode gains a **scrubber** (play/pause + timeline slider + a
+> `k/n · op` step label) that re-renders the cut building up — neutral floor while
+> scrubbed back, the colour-verified report at the final frame — and emits
+> `playback_step_changed`, which best-effort selects the matching row in the M7.11
+> Toolpaths inspector. Whole-bed playback (the bed sim) stays the static final view
+> for now. 10 new headless tests (monotonicity, op-boundary mapping, final ==
+> full sweep, profile resolution). Next: **M7.13** measure + 3D section.
+>
 > **2026-06-21 — M7.11 DONE (`v0.7.11`, 314 tests):** *see what the program cuts.*
 > Cluster 2 (control/visibility) opens. `DxfCanvas` gains a per-op **toolpath overlay**
 > (colour-coded paths over the 2D design, dashed rapids, per-op visibility +
@@ -2134,7 +2148,7 @@ tools M7.8).
 - [x] Live tool visualizer; real V-bit type; depth/stickout reach warnings (M7.9)
 - [x] Feeds & speeds / chip-load calculator tying tools↔materials (M7.10)
 - [x] Toolpath overlay + per-op inspector on the design canvas (M7.11)
-- [ ] Cut-simulation playback scrubber (M7.12)
+- [x] Cut-simulation playback scrubber (M7.12)
 - [ ] On-canvas measure + 3D section view (M7.13)
 - [ ] Job/validation inspector panel consolidating all warnings (M7.14)
 - [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
