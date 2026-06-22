@@ -2,9 +2,11 @@
 
 A focused, open-source CAM application for acetate / horn eyewear manufacture.
 Built on Python + PySide6 (Qt 6) over a headless, scriptable `core/`. Single
-purpose: take a GuildDraw DXF, build the posterior relief of a frame front the
-way a maker actually models it, generate the two-sided GRBL programs for the
-Guild CNC, and prove the result on real stock — and nothing else.
+purpose: take a GuildDraw model (a `.gdraw`, or a per-component DXF), build the
+posterior relief of the frame front the way a maker actually models it — together
+with its temples and a base-curve forming template per lens — nest them on the
+worktable, generate the GRBL program(s) for the Guild CNC, and prove the result on
+real stock — and nothing else.
 
 > **This document is the v1.0 roadmap.** The original spike-era build plan
 > (Sessions 1–6, M0 pipeline) is archived verbatim at
@@ -16,7 +18,84 @@ Guild CNC, and prove the result on real stock — and nothing else.
 
 ---
 
-## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap: hardware round-trip M7 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M8, packaging/v1.0.0 M9; next M7 hardware round-trip)*
+## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap (2026-06-18 reorientation replan): **M7 reorientation** — one `.gdraw` → a multi-component project (frame front + both temples + a per-lens base-curve template), per-component 3D workspace tabs, an interactive worktable from a tagged bed DXF, role-matched auto-nesting, and combined-or-per-component G-code (`v0.7.1`–`v0.7.6`) — then hardware round-trip M8 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M9, rename-decision + packaging/v1.0.0 M10. **M7.1 project model ✅ DONE (`v0.7.1`) + M7.2 `.gdraw` intake ✅ DONE (`v0.7.2`, 233 tests — reader + File ▸ Open Model + the component notebook: a tab per component, tab-switch rebinds the active component) + M7.3 per-component notebook ✅ DONE (`v0.7.3`, 234 tests — component tabs + kind-aware editable param dock (Temple/Base Curve tabs) + per-component param persistence) + M7.4 interactive worktable ✅ DONE (`v0.7.4`, 247 tests — `Worktable`/`WorktableZone`/`BedRole` model in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine coords; `from_fixture_dict`/`to_fixture_dict` load the Guild `guild_cnc.yaml` as the default bed and bridge back onto the M6.5 layout machinery unchanged); `core/cam/worktable.py` reads a bed DXF → `polygonize`d regions, `default_worktable`, `.bed` YAML I/O; GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords `BedCanvas` — import a bed DXF / load the Guild bed, click a region, tag its role (frame-front / temple R-L / base-curve R-L / keep-out); persisted in the `.gcam`) + M7.5 per-component 3D models ✅ DONE (`v0.7.5`, 258 tests — `core/relief/flat.py` reuses the castle mesher for flat parts: temple = outline extruded 4 mm + HINGE blind pockets + ENGRAVING grooves, snapped hinge-end to the blank + a visual injected-core bar; base-curve block = the lens shape cut from a 70×70×4.7625 acetal blank, 3 M4 through-holes (2026-06-19: CAM simplified to Drill Holes + Block Profile=lens-shape cut, forming scribe + box cut dropped); GUI `FlatMeshWorker` + Build-3D enabled per kind); next: M7.6 role-matched auto-nesting onto the tagged bed (+ polygon keep-outs, bed render/nudge), then M7.7 combined/per-component G-code**)*
+
+> **2026-06-21 — M7.11 DONE (`v0.7.11`, 314 tests):** *see what the program cuts.*
+> Cluster 2 (control/visibility) opens. `DxfCanvas` gains a per-op **toolpath overlay**
+> (colour-coded paths over the 2D design, dashed rapids, per-op visibility +
+> highlight); `GCodeWorker` emits an `op_overlay` for castle/temple/block. A new
+> **Toolpaths** bottom dock (tabbed with the Log) lists each op (checkbox / tool /
+> Z-floor / length / time, totals in the title) — checkbox toggles the overlay,
+> selection highlights it. On Generate the overlay draws + the view flips to 2D; a
+> CAM/design change or tab switch clears it. Next: **M7.12** cut-sim playback scrubber.
+
+> **2026-06-21 — M7.10 DONE (`v0.7.10`, 311 tests):** the feeds & speeds / chip-load
+> calculator. Headless `core/cam/feeds.py` (chip load = feed/(rpm·flutes); surface
+> speed = π·D·rpm; the inverse; window status); a per-material chip-load window in
+> `materials.yaml`; a CAM-tab **Chip load** read-out (chip load + surface speed + a
+> green/amber/red badge vs the window) that re-derives on every CAM change. Ties the
+> M7.8 tool library (flutes/Ø) to the material store (feeds/rpm). Next: **M7.11**
+> toolpath overlay + per-op inspector.
+
+> **2026-06-21 — M7.9 DONE (`v0.7.9`, 304 tests):** *see the cutter.* (a) A real
+> **V-bit** `ToolProfile` (cone drop profile `dz = d/tan(half)`, groove width =
+> 2·depth·tan(half)); `engrave_vbit` migrated from a faked 0.5 mm flat to a 0.5 mm 30°
+> V-bit (engrave toolpath unchanged). (b) A live **tool visualizer**
+> (`gui/widgets/tool_view.py`, QPainter 2D section — flat/ball/toroid/V-bit + shank)
+> in the Preferences ▸ Tools editor. (c) **Depth/stickout reach**
+> (`depth_reach_warnings`) — warns when an op cuts deeper than its tool's flute
+> length, wired into the G-code log beside the width reach. Next: **M7.10** feeds &
+> speeds / chip-load calculator.
+
+> **2026-06-21 — M7.8 DONE (`v0.7.8`, 297 tests):** the tool library — first of the
+> M7.8–M7.16 Tooling & control UX block. The tool table graduates from a hand-edited
+> `config/tools.yaml` to a **managed library**: new headless `core/cam/tooling.py`
+> `ToolSpec` (typed, radius derived, +flute-length / shank / number / vbit fields,
+> back-compat read) + `gui/tool_store.py` (clones `material_store`: shipped merged
+> with `~/.guildcam/tools.yaml`; add/override/delete-tombstone/reset/import/export) +
+> a **Preferences ▸ Tools** tab (list + edit form + Add/Duplicate/Delete/Reset/
+> Import/Export). Every tool combo sources from the store and refreshes on close;
+> `build_tool_settings` honours an explicit spec tool number (stable T-numbers,
+> back-compat). Next: **M7.9** tool visualizer + the real V-bit `ToolProfile` +
+> depth/stickout reach.
+
+> **2026-06-20 — M7.7 COMPLETE → M7 COMPLETE (`v0.7.7`, 284 tests).** Two parts.
+> **(a) Combined worktable program:** `core/cam/layout.py` `build_nest_program(nest)`
+> folds an M7.6 `BedNest` (placed on the user-tagged `Worktable`, possibly nudged)
+> into **one** scheduled `worktable.nc` — per-placement op-name prefixing + the M6.5
+> precedence-aware tool-change minimiser over the whole bed (op copies renamed, so
+> the nest render is untouched; `count_tool_changes` shared with `build_bed_program`;
+> the M6.5 fixture path unchanged). GUI **Generate Worktable Program** button posts
+> it (lint + polygon clearance + cut-time, drill-at-screw exempt), stores
+> `worktable.nc` + a `component: worktable` setup sheet, enables Export G-code, folds
+> into an open single-DXF `.gcam`. **(b) Whole-bed cut-sim render:** new headless
+> `core/sim/bed.py` — `simulate_component(spec)` builds each placed part's relief +
+> posted program and sweeps the tools → its achieved floor / target (reusing the M5
+> machinery), and `composite_bed_report(comps, work_area)` stamps them onto **one
+> machine-coords bed grid** and `verify`s completeness/gouge across the bed (valid
+> because nested parts are disjoint and the combined program is the per-component ops
+> reordered → an order-independent min). GUI `BedSimWorker` + a **Simulate Bed**
+> button render the whole bed in the 3D cut-sim view (Uncut/Gouge overlays). Per-
+> component Generate/Simulate unchanged. **M7 reorientation is complete.** Next is the
+> planned **M7.8–M7.16** UX block.
+
+> **2026-06-20 UX & control replan (planned, `v0.7.8`–`v0.7.16`):** a new
+> **M7.8–M7.16 "Tooling & control UX"** block lands between the reorientation
+> (M7) and the hardware gate (M8) — so the maker can *drive* GuildCAM, not just
+> generate from it. Cluster one is a Fusion-style **tool library**: a managed,
+> visual, validated tool table that supersedes the hand-edited `tools.yaml` — a
+> tool store + **Preferences ▸ Tools** tab (M7.8), a live **tool visualizer** +
+> a real **V-bit** type + depth/stickout reach (M7.9), and a **feeds & speeds /
+> chip-load calculator** tying tools↔materials (M7.10). Cluster two is
+> control/visibility: a **toolpath overlay + per-op inspector** (M7.11), the
+> twice-deferred **cut-sim playback scrubber** (M7.12), on-canvas **measure +
+> 3D section** tools (M7.13), and a **job/validation inspector** panel that says
+> what's blocking green (M7.14). Cluster three is workflow personalization:
+> customizable **hotkeys & toolbar** (the GuildDraw-parity Settings tabs, M7.15)
+> and saveable **frame-style parameter presets** (M7.16). Mostly UI over engines
+> that already exist (the material store M4.9, `ToolProfile` M5,
+> `op_summaries`/`cuttime` M4.8, the bed toolpath render M7.6). See the M7.8
+> head. (M7.7 completes M7 first.)
 
 > **M6.5 — worktable layout & nesting (`v0.6.5`):** `core/cam/layout.py` —
 > `build_bed_program` places each part on its fixture zone (`place_ops_at_zone`,
@@ -319,6 +398,19 @@ arbitrary meshes, B-rep modeling, adaptive/roughing strategies. (Multi-tool was
 a spike-era non-goal — **lifted in M6**, since the 2 mm-pocket → 3.175 mm-bulk
 job is everyday production.)
 
+**M7 (2026-06-18 reorientation replan) re-architects the *product* around the
+whole eyewear model.** Where M1–M6 cut one component from one DXF, M7 takes a
+single **`.gdraw`** (which already holds the frame front + temple right + temple
+left in one file) and builds them — plus a base-curve forming template per lens —
+as separate components, each in its own 3D workspace tab, then **auto-nests them
+onto a user-defined worktable** (imported as a DXF, its zones tagged by role:
+frame-front stock, temple R/L, base-curve R/L, keep-out) and posts **one combined
+bed program or separate per-component programs**. This keeps both modes of work the
+shop needs: individual models, and a custom bed for a run on the Guild CNC. It is
+mostly re-architecture over the M6 engines (§ M7 head); the geometry core and the
+non-goals above are unchanged. The product may be **renamed GuildModel** to match
+this whole-model framing — decided before release (M10).
+
 ## 2. Design ethos — the castle
 
 This is the concept the user teaches frame makers, and it is how GuildCAM must
@@ -373,9 +465,29 @@ Layer vocabulary and treatment:
 | `BRIDGE` | absent | Reserved (angled bridge cutaway — post-1.0) |
 | `ENGRAVING` | absent (temples only) | **Engrave passes on temples (M6.3)** — traced at depth with a small tool |
 
+### 3.1 `.gdraw` direct intake — the primary multi-component path (M7.2)
+
+From M7 the **primary** project intake is a single GuildDraw **`.gdraw`**: a ZIP of
+`manifest.json` + `front.svg` + `temple_r.svg` + `temple_l.svg` + `hinge.svg` (each
+an SVG in GuildDraw's metadata dialect). One file yields the whole model:
+
+| Workspace | Layers | GuildCAM component |
+|---|---|---|
+| `front` | OUTLINE, LENS, SCULPT, HINGE, REF | **frame_front** — the castle pipeline above |
+| `temple_r` / `temple_l` | OUTLINE, ENGRAVING, SCULPT, HINGE, REF | **temple_right / temple_left** — profile + engraving (M6.3) |
+| `hinge` | HINGE, REF | front hinge-pocket geometry (standalone hinge reserved) |
+| *(derived)* | front LENS interiors + `forming.apical_radius_mm` | **base_curve_right / base_curve_left** — one forming template per lens (M6.4 ×2) |
+
+Each workspace also carries `forming` (`apical_radius_mm` = base curve,
+`bridge_angle_deg`), the bridge `mirror` axis (the asymmetry signal), and per-layer
+visibility. The **same posterior-flip / closure / units rules as the DXF contract
+apply**, so both intake paths produce identical downstream geometry (round-trip
+gated in M7.2). The DXF contract above remains the per-component and worktable-bed
+path; it is frozen and unchanged.
+
 **Open contract question (carried from GuildDraw M9):** asymmetric frames —
-two distinct LENS entities vs. symmetric mirror. Resolve during M5 hardware
-validation.
+two distinct LENS entities vs. symmetric mirror. The `.gdraw` `mirror` axis is the
+signal (M7.2); resolved for real during M8 hardware validation.
 
 ## 4. Reference workflow (the behavioural spec)
 
@@ -403,9 +515,14 @@ end-to-end and is the acceptance target for M1–M3. Summary:
 ## 5. Machine & fixture contract
 
 - Guild CNC, GRBL post. Work area 300 × 200 mm, origin lower-left, Y+ up.
-- Fixture is known and fixed: `config/fixtures/guild_cnc.yaml` (six blank
-  zones, 24 hold-down screw circles r = 5 mm to avoid, flip axis
-  x = 201.146 mm for two-sided work, nosepad sub-zone 6 + 4 mm).
+- Fixture / worktable: through M6 the bed is fixed —
+  `config/fixtures/guild_cnc.yaml` (six blank zones, 24 hold-down screw circles
+  r = 5 mm to avoid, flip axis x = 201.146 mm for two-sided work, nosepad sub-zone
+  6 + 4 mm). **M7.4 generalises this to a user-defined worktable** imported from a
+  bed DXF, with enclosed regions tagged by role (frame-front / temple R-L /
+  base-curve R-L / keep-out); the Guild fixture becomes the built-in **default**
+  bed, expressed in the same `Worktable` model so the M6.5 nesting machinery is
+  unchanged.
 - Two-file output is the default (back program / front+profile program);
   single-file with `M0` pause is an advanced option.
 - Forming parameters (base curve, pantoscopic tilt, wrap) remain metadata
@@ -427,17 +544,29 @@ end-to-end and is the acceptance target for M1–M3. Summary:
 
 # Road to 1.0
 
-Seven milestones. Each is small enough to finish in one or two sessions, ends
-in a working app, and gets a version bump + git commit. Order matters: the
-geometry core is validated against the demo STL before any CAM is rewritten,
-and CAM is validated against the demo NC before any UI is built, because every
-later milestone builds on trusting the layer beneath it.
+Ten milestones (M1–M10), several with lettered sub-milestones. Each sub-milestone
+is small enough to finish in one or two sessions, ends in a working app, and gets a
+version bump + git commit. Order matters: the geometry core is validated against the
+demo STL before any CAM is rewritten, and CAM is validated against the demo NC
+before any UI is built, because every later milestone builds on trusting the layer
+beneath it.
 
 > **2026-06-11 replan:** the spike's M0–M6 series (archive) is superseded.
 > The Demo Project teardown showed the posterior is built as **zones +
 > footing fillets** (the castle), not a distance-based scallop, and through-
 > cuts use an onion skin, not tabs. The roadmap below rebuilds the relief and
 > CAM layers around that ground truth, frame front only.
+
+> **2026-06-18 reorientation replan (M7):** M1–M6 proved a single-component
+> engine (one DXF → one program). **M7 re-architects the product around the whole
+> eyewear model** — a single `.gdraw` → frame front + both temples + a base-curve
+> template per lens, each in its own 3D workspace tab, auto-nested onto a
+> user-defined worktable (a tagged bed DXF) and posted as one combined bed program
+> *or* separate per-component programs. **Reorient first, then hardware-validate**
+> (M8): the reorientation is the road to release. It reuses the M6 engines — see
+> the M7 head for the full plan. (`.gdraw` direct intake graduates from post-1.0
+> backlog #3 into M7.2; the old M7/M8/M9 — hardware / two-sided / packaging —
+> shift to M8/M9/M10; the product may be renamed **GuildModel**, decided in M10.)
 
 ## M1 — Foundation & castle regions (v0.1.0) · *the towers get their ground plan* — ✅ DONE 2026-06-11
 
@@ -1182,11 +1311,11 @@ forces/feeds-physics); CAMotics stays a useful external cross-check.
 ## M6 — Expanded CAM operations (v0.6.x) · *beyond the single-tool frame front*
 
 > **2026-06-15 replan.** The original single-milestone M6 (hardware round-trip)
-> is now **M7**; this M6 is the block of "real shop" CAM the maker needs before
+> is now **M7** (renumbered **M8** by the 2026-06-18 reorientation); this M6 is the block of "real shop" CAM the maker needs before
 > a hardware gate is worth running. It deliberately widens the M1–M5 scope
 > (single-tool, frame-front-only) — see §1. Sub-milestones ship in order, each a
 > version bump; M6.1 (multi-tool) is foundational and the others build on it.
-> Hardware validation (M7) then exercises the whole expanded op set in one pass.
+> Hardware validation (M8) then exercises the whole expanded op set in one pass.
 > No standalone `v0.6.0`: the first deliverable is M6.1 / `v0.6.1`.
 
 ### M6.1 — Multi-tool jobs & per-operation tool assignment (v0.6.1) — ✅ DONE 2026-06-15
@@ -1264,7 +1393,7 @@ was implicitly zeroed to the design/fixture frame.
    translated; the simulator posts at offset 0 so completeness is independent of
    where zero is set.
 3. ✅ **Fixture mode retained**: `mode="fixture"` is the identity offset (the
-   current design-frame behaviour, needed for the two-sided flip axis in M8);
+   current design-frame behaviour, needed for the two-sided flip axis in M9);
    stock-box is the new default for single-setup jobs. Persisted in
    `CastleCamParams.program_zero` and the `.gcam` (round-trip tested).
 4. ✅ Tests (`tests/test_program_zero_m62.py`, +12): each datum's offset; the
@@ -1412,13 +1541,617 @@ CNC program** on the bed. Builds on all of M6.1–M6.4.
       — `v0.6.5`
 - [x] Full suite green; sub-milestones tagged `v0.6.1` … `v0.6.5` (197 tests)
 
-## M7 — Hardware round-trip (v0.7.0) · *the only gate that cuts acetate*
+## M7 — Reorientation: the whole-model project & the worktable (v0.7.x) · *one .gdraw in, a nested bed out*
 
-> Was M6; now validates the full M6 op set on real stock, not just the frame front.
+> **2026-06-18 reorientation replan.** M1–M6 built a trustworthy single-component
+> engine: one GuildDraw **DXF** in → one frame front (or one temple, or one
+> base-curve block) → one program. M7 re-architects the **product** around the way
+> the shop actually works — a whole eyewear **model** at once: frame front + temple
+> right + temple left + a base-curve forming template per lens, imported in a
+> single **`.gdraw`**, each built in its own 3D workspace tab, then auto-nested onto
+> a **user-defined worktable** (imported as a DXF, its zones tagged by role) and cut
+> either as **one combined bed program** or as **separate per-component programs**.
+> That is the flexibility the Guild CNC launch needs: individual models for a
+> one-off front or a pair of temples, and a custom bed for a full run.
+>
+> Almost every *engine* this needs already exists from M6 — multi-tool posting
+> (M6.1), program zero (M6.2), the temple (M6.3) and base-curve-block (M6.4)
+> generators, and the precedence-aware nesting scheduler (M6.5). M7 is therefore
+> mostly **re-architecture, not new geometry**: a multi-component project model, a
+> `.gdraw` reader, a per-component tabbed UI, an interactive bed that generalises
+> the fixed `guild_cnc.yaml` fixture, and a generalised nest/post over that bed.
+> The §6 engineering principles hold throughout (core never imports gui;
+> heightfields + polygons; no OpenCASCADE). Sub-milestones ship in order, each a
+> version bump; **M7.1 (the project model) is foundational** and the rest build on
+> it. The product name stays **GuildCAM** through M7 — the GuildCAM→GuildModel
+> decision is resolved before release in **M10**. Hardware validation (M8) then cuts
+> the reoriented multi-component bed on real stock.
 
-1. Cut the demo frame front on the Guild CNC from the GuildDraw DXF using the
-   M1–M5 output: hinge pockets → relief → eyewires → perimeter, onion skin,
-   release by hand, compare against the Fusion-cut reference part.
+### M7.1 — The multi-component project model (v0.7.1) — ✅ DONE 2026-06-18
+
+> **Done 2026-06-18 (`v0.7.1`; 216 tests green, +19 `tests/test_project_m71.py`).**
+> `ComponentKind` (frame_front / temple_right / temple_left / base_curve_right /
+> base_curve_left) + the `Component` model (kind → its `castle` / `temple` /
+> `base_curve_block` param, default-built with the kind's fixture zone; `params()`
+> / `for_kind()` / `fixture_zone()`) + kind↔label/zone/param-field helpers, all in
+> `project/schema.py`. `ProjectSchema.components: list[Component]` with
+> `component(kind)` / `components_of_kind` / `frame_front` / `add_component`
+> (id-uniquifying) accessors and **`ensure_components()`** — the legacy migration
+> (empty → one `frame_front` from the flat `castle` / `forming` / `source_file`);
+> `load_gcam` calls it, so an M5.1–M6.5 `.gcam` reopens as a one-component project.
+> New **`core/cam/component.py`** `build_component_ops` dispatches a Component + its
+> prepared geometry to the M3/M6 generator and returns a `ComponentProgram` (ops +
+> contour/drill op-name sets + stock + fixture zone) that maps straight onto M6.5's
+> `BedPart` for the bed program (M7.6). The flat single-component fields and all
+> M1–M6 paths are byte-unchanged (the 197 prior tests stay green). *Deferred to its
+> consumer:* the physical `.gcam` `components/<id>/program/*.nc` tree lands with
+> per-component generation (M7.3) / the bed program (M7.6) — until a component
+> carries its own program there is nothing to write into the tree; the schema-level
+> `components` already round-trips through `project.json`.
+
+The schema spine. Today `ProjectSchema` is one component (`source_file` = one DXF,
+one `castle` / `temple` / `base_curve_block`). M7.1 makes a project an **ordered
+list of `Component`s**.
+
+1. **`Component` model** (`project/schema.py`): a stable `id` + `label`, a `kind` —
+   the shared enum **`frame_front` / `temple_right` / `temple_left` /
+   `base_curve_right` / `base_curve_left`** (defined once here, reused by the bed
+   roles in M7.4 and the nest match in M7.5) — its layer-keyed source geometry, its
+   per-kind params (`CastleParams` for the front, `TempleParams` for temples,
+   `BaseCurveBlockParams` for the templates), its `FormingMetadata` (base curve,
+   bridge angle), and its generated program / setup / cut-report.
+2. **`ProjectSchema.components: list[Component]`** supersedes the flat
+   `castle` / `temple` / `base_curve_block` / `source_file` fields (kept as
+   deprecated shims that read the first matching component, so nothing downstream
+   breaks in one commit). `cam_params` / `machine` / the worktable stay
+   project-level.
+3. **The generators become per-component**: `generate_castle_program`,
+   `generate_temple_program`, `generate_block_program` already take their params +
+   geometry — wrap each as "build the program for one `Component`" with no change to
+   the geometry/CAM. The M2 (STL) / M3 (NC) / M5 (completeness) gates run **per
+   component** and stay green.
+4. **`.gcam` grows to N components**: `core/project/gcam.py` gains a
+   `components/<id>/` tree (geometry, `program/*.nc`, `setup.json`,
+   `cut_report.json`) under the existing manifest + per-file SHA-256; a
+   single-component `.gcam` from M5.1–M6.5 **loads as a one-component (frame_front)
+   project** (migration tested). `extract_handoff` exports the chosen component(s).
+5. **Tests**: a project round-trips N components; the legacy single-DXF / single
+   `.gcam` upgrades cleanly; per-component gates green; the kind↔params binding is
+   total. Tag `v0.7.1`.
+
+### M7.2 — `.gdraw` direct intake (v0.7.2) — ✅ DONE 2026-06-18
+
+> **Done 2026-06-18 (`v0.7.2`; 233 tests green, +12 `tests/test_gdraw_m72.py`
+> reader, +5 `tests/test_components_m73.py` notebook).** `core/io_import/gdraw.py` parses each workspace's
+> `<metadata>` JSON (the *authoritative* geometry, not the rendered `<path>`
+> d-strings), flattens line / spline (adaptive cubic Bézier) / circle / arc curves
+> to the **same layer-keyed point lists `import_dxf` yields**, and applies the
+> single net scene→posterior transform **(x, y) → (-x, -y)** (GuildDraw's Y-down
+> scene → DXF Y-negate → GuildCAM X-flip — one flip point, like `import_dxf`).
+> `read_gdraw` → `GdrawDocument` (the four workspaces + forming + mirror; plain
+> `.svg` = a single front; legacy `temple.svg` compat; the entity-expansion guard).
+> `build_project_from_gdraw` → `GdrawProject` assembles the multi-component
+> `ProjectSchema` — frame front, both temples (`enabled=False` when a workspace has
+> no OUTLINE), and **one base-curve template per front LENS** (split right/left by
+> centroid x, OD on +x) — each paired with its layer geometry. `FormingMetadata`
+> gained `apical_radius_mm` / `bridge_angle_deg` to carry the `.gdraw` forming
+> losslessly. **File ▸ Open Model (`Ctrl+Shift+O`) is wired** (with the M7.3
+> component notebook): a `.gdraw` loads as a tab per component (Frame Front /
+> Temple R / Temple L / Base Curve R / L — empty workspaces shown disabled), and
+> switching tabs rebinds the active component. `v0.7.2` bumped.
+
+> Pulls **post-1.0 backlog #3** into the core and makes it the **primary** project
+> intake. One `.gdraw` → a fully populated multi-component project.
+
+A `.gdraw` is a ZIP of `manifest.json` + `front.svg` + `temple_r.svg` +
+`temple_l.svg` + `hinge.svg`, each an SVG in GuildDraw's metadata dialect carrying
+its `curves` (line/spline/circle/arc with cubic nodes), per-layer visibility, the
+bridge `mirror` axis, and **`forming` (`apical_radius_mm` = the base curve,
+`bridge_angle_deg`)**.
+
+1. **`io_import/gdraw.py`**: read the ZIP and map each workspace + its layers into
+   project Components, applying the **same posterior flip, closure, and units rules
+   as the frozen DXF contract (§3)** so everything downstream is identical:
+   - `front.svg` → a **`frame_front`** Component (OUTLINE→perimeter, LENS→eyewires,
+     SCULPT→zone cuts, HINGE→pockets, REF ignored), carrying its `forming`.
+   - `temple_r.svg` / `temple_l.svg` → **`temple_right` / `temple_left`**
+     (OUTLINE→profile, ENGRAVING→engrave passes, incl. `TextObject` outlines).
+   - **Derived**: two **`base_curve_*`** Components from the front's two LENS
+     interiors, each formed to the front's base curve (`apical_radius_mm`) —
+     generalising M6.4 from one block to **one per lens** (user-confirmed
+     2026-06-18); the block carries its lens footprint + per-lens mounting holes.
+   - `hinge.svg` → the front's hinge-pocket geometry (standalone hinge workspace
+     reserved).
+2. **Curve → polygon mapping**: a tested reader for GuildDraw's `Curve`
+   serialization (cubic-spline nodes, `data-layer` groups, circle/arc params) → the
+   same internal layer-keyed polygons the DXF path yields. The dormant
+   `io_import/svg.py` (npoint bug) is either fixed to this dialect or retired for
+   the fresh reader (decide in-milestone; the M9 SVG-intake follow-up converges
+   here).
+3. **Asymmetry**: the front's `mirror` axis tells us whether LENS/HINGE/SCULPT are
+   mirrored or two distinct entities — the data that resolves the §3 asymmetric-lens
+   contract question (closed for real in M8 hardware).
+4. **Round-trip gate**: a `.gdraw` exported from GuildDraw yields the same
+   Components (within tol) as importing the per-workspace DXFs GuildDraw would
+   export from the same document — the §3 contract is preserved across both paths.
+   DXF intake stays for single-component jobs and worktable beds.
+5. File ▸ **Open Model** (`.gdraw`) populates every component tab (M7.3). Tag
+   `v0.7.2`.
+
+### M7.3 — Per-component 3D workspaces (v0.7.3) — ✅ DONE 2026-06-18
+
+> **Done 2026-06-18 (234 tests; the notebook landed in `v0.7.2`, the kind-aware
+> dock in `v0.7.3`).** The component **notebook** is in:
+> a `QTabBar` over the existing shared view stack (`gui/app.py` `_build_ui`), one
+> tab per component, driven by a new Qt-free `gui/component_workspace.py`
+> (`ComponentWorkspace` + `derive_workspace` + `build_workspaces_from_gdraw`, so the
+> intake is unit-tested without Qt). On a tab switch `_activate_workspace` persists
+> the current component's artifacts and **swaps the `self._*` working set** to the
+> selected one (`_sync` / `_load_active_geometry` / `_apply_workspace_to_ui`) — so
+> all the M1–M6 build/generate/simulate code operates on the active component
+> transparently (one live set of VTK views, not five — the planned trade). Per-kind
+> actions enable correctly (castle build/sim only for a matched frame; Generate for
+> frame/temple; base-curve block for a lens). A plain DXF is a one-tab project (no
+> behaviour change). Verified by an offscreen `MainWindow` smoke test.
+> The **kind-aware param dock** (`v0.7.3`) completes it: `ParamsPanel` gained
+> editable **Temple** and **Base Curve** tabs and `set_component_kind()` shows only
+> the tabs that apply (Castle/Stock for a frame, Temple for a temple, Base Curve for
+> a base-curve template; Frame + CAM always). Each component **owns its** `castle` /
+> `temple` / `block` params — pulled from the dock on switch-away and pushed back on
+> activation (signals blocked so it never spurious-rebuilds), so edits persist
+> per-tab (smoke-tested). A plain-DXF frame keeps `None` params so its prefs-restored
+> dock is left untouched.
+
+GUI re-architecture, core untouched. The single centre-stack + right dock become a
+**component notebook** — one workspace tab per Component, mirroring GuildDraw's
+tabbed workspaces.
+
+1. **Component tabs**: **Frame Front · Temple Right · Temple Left · Base Curve R ·
+   Base Curve L**, each with its own **2D Outline / 3D Model / Cut Sim** views and
+   its own param dock (Castle/Stock/CAM for the front; Temple params for temples;
+   Block params for the base-curve templates). The Worktable tab (M7.4) is the final
+   peer tab.
+2. **Active-component actions**: Build 3D, Simulate, and per-component Generate act
+   on the active tab's component; the existing `Preview3D` / `CutSimView` / params
+   widgets are re-bound to the active component on tab switch (one live set — keeps
+   memory bounded vs. five concurrent VTK views; note the trade in code).
+3. **Readiness** aggregates across components (grey→red→yellow→green reflects the
+   whole model: imported → all built → all programmed-and-stored).
+4. Empty or unedited components (e.g. a `.gdraw` with no temples) show disabled, not
+   errored. Tag `v0.7.3`.
+
+### M7.4 — The Worktable workspace: an interactive bed from DXF (v0.7.4) ✅ DONE
+
+> ✅ **DONE (`v0.7.4`, 247 tests).** `Worktable` / `WorktableZone` / `BedRole` model
+> in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine
+> coordinates); `from_fixture_dict` / `to_fixture_dict` load `guild_cnc.yaml` as the
+> built-in default bed **and bridge back onto the M6.5 layout machinery unchanged**
+> (the existing nesting/clearance re-pass through the new model). `core/cam/worktable.py`
+> reads a bed DXF → `polygonize`d regions, plus `default_worktable` and `.bed` YAML
+> I/O. GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords
+> `BedCanvas` — import a bed DXF or load the Guild bed, click a region, tag its role;
+> persisted in the `.gcam`. (Deferred to M7.5: role-matched auto-nesting onto the
+> tagged zones + polygon keep-out clearance + bed render/nudge.)
+
+> Generalises the fixed `config/fixtures/guild_cnc.yaml` (6 named blank zones + 24
+> screw circles) into a **user-defined bed** drawn in CAD. The YAML fixture becomes
+> a built-in **default** bed, expressed in the same model so the M6.5 machinery
+> keeps working.
+
+A new top-level **Worktable** tab (peer of the component tabs), in machine
+coordinates.
+
+1. **Import a bed DXF** and render it on a machine-coords canvas (a sibling of
+   `DxfCanvas`). `polygonize` its closed loops into candidate regions (the same
+   shapely partition `geometry/regions.py` uses on the frame).
+2. **Select & tag zones**: the maker clicks an enclosed region and assigns a
+   **role** — **frame-front stock / temple-right / temple-left / base-curve-right /
+   base-curve-left / keep-out**. Keep-outs are the hold-downs (circles = screws, but
+   any enclosed region qualifies). Multiple zones may share a role (right + left
+   temples as their own zones; several fronts for a run).
+3. **`Worktable` model** (`project/schema.py`, supersedes the fixture-name coupling
+   in `BedLayout`): role-tagged **zone polygons** + **keep-out polygons**, in machine
+   coordinates. `config/fixtures/guild_cnc.yaml` loads into this model (its blank
+   zones → role zones, its screw circles → keep-out polygons) as the default bed.
+4. **Persist** the worktable in the project `.gcam` and optionally as a reusable
+   `.bed` (YAML) for a shop's standard fixtures.
+5. **Tests**: DXF → polygonized regions; tag/untag round-trips; the Guild fixture
+   loads into a `Worktable` equivalent to today's zones/screws (the M6.5 layout
+   tests re-pass through the new model). Tag `v0.7.4`.
+
+### M7.5 — Per-component 3D models (v0.7.5) ✅ DONE
+
+> ✅ **DONE (`v0.7.5`, 258 tests).** Each component workspace now builds its own
+> watertight solid (a prerequisite the maker called out before nesting: "we need
+> the 3D models before we lay them out on the worktable"). The frame had a 3D model;
+> temples and base-curve blocks did not. New `core/relief/flat.py` builds the same
+> heightfield structure the castle mesher consumes, so `build_castle_mesh` is reused
+> verbatim:
+>
+> * **Temple** — the OUTLINE extruded to the 4 mm blank; HINGE polys carved as blind
+>   pockets (floor = thickness − `hinge_pocket_depth_mm`, default 1 mm); ENGRAVING
+>   curves (buffered to the engrave tool) as 0.3 mm grooves. Optionally **snapped so
+>   the hinge/butt end registers to one end of the 170 × 30 × 4 mm blank** (the
+>   injected metal core runs the temple's length); the core is drawn as a 3D
+>   **visual reference** (2 mm × ~135 mm bar from the hinge end) — not machined.
+> * **Base-curve block** — the **lens shape** (cut from a 70 × 70 × 4.7625 mm /
+>   3/16″ acetal blank), centred; the three M4 holes as real **through-holes** (mask
+>   exclusions, like the frame's lens openings → genus-3 solid). The block *is* the
+>   lens shape — it holds the eyewire on the base-curve press. (2026-06-19: the CAM
+>   is just **Drill Holes + Block Profile** — the lens exterior cut free like a frame
+>   outline; the earlier forming-scribe + box cut were dropped, "no other cuts.")
+>
+> GUI: `FlatMeshWorker` + `_start_mesh_build` dispatch by component kind; Build 3D
+> enabled for temples (outline) and blocks (lens); the towers/walls/footing stepper
+> stays off for flat parts; `Preview3D.show_mesh` guards the (frame-only) pad ghost
+> and draws the temple core-guide bar. `BaseCurveBlockParams` → 70 × 70 × 4.7625;
+> `TempleParams` gains `hinge_pocket_depth_mm` + `snap_to_blank_end` + core-guide
+> dims. (Temple/block STL export + live param-rebuild deferred — Build-on-demand for
+> now.)
+
+### M7.6 — Auto-nest the model onto the worktable (v0.7.6) — ✅ DONE 2026-06-20
+
+> ✅ **DONE (`v0.7.6`, 273 tests, +9 `tests/test_nest_m76.py`).** The M6.5 nesting
+> machinery is generalised onto the user-tagged `Worktable`: `place_ops_at_polygon_zone`
+> + `nest_components_on_worktable` match each built component to a zone whose ROLE
+> matches its kind (`frame_front` → a frame-front zone, …), pack several of one kind
+> across several same-role zones (bottom-left first), and leave a kind with no free
+> matching zone `unplaced`. `worktable_clearance_violations` generalises the circular
+> screw check to **arbitrary keep-out polygons** (a screw keeps its exact circle via
+> `radius_mm`), retaining the base-curve drill-at-screw exemption. GUI: a **Nest
+> Components** button on the Worktable panel runs a background `NestWorker` (reuses the
+> per-component generators — frame relief + temple/block ops), `BedCanvas` draws each
+> placement's footprint/toolpaths over its zone (red on a keep-out collision), and a
+> left-drag **nudges** a footprint with live clearance re-check (no regeneration).
+> (.gcam persistence of the nest + the combined post is M7.7.)
+
+1. **Role-matched placement** (`core/cam/layout.py`, generalised): place each built
+   Component on a zone whose **role matches its kind** (`frame_front` → a
+   frame-front zone, `temple_right` → a temple-right zone, …). Reuse
+   `place_ops_at_zone` (bbox-centre auto-pack + optional rotation); zones now come
+   from the tagged DXF, not YAML.
+2. **Polygon keep-outs**: generalise `bed_clearance_violations` from circular screws
+   to **arbitrary keep-out polygons** (circle = a special case) — every placed
+   cutting point tested against the tagged regions + tool radius; the drill-at-screw
+   exemption (base-curve mounting holes) is retained.
+3. **Bed render + manual nudge**: draw each component's footprint/toolpaths on its
+   zone in the Worktable tab, shade keep-outs, flag collisions live; allow dragging a
+   component within/over zones (the deferred M6.5 editor). Several components of one
+   kind nest across several same-role zones.
+4. **Tests**: kind↔role nesting; a keep-out *polygon* (not just a circle) catches a
+   collision; multi-front batching; the demo bed nests front + two base-curve
+   templates + two temples clear. Tag `v0.7.6`.
+
+### M7.7 — Combined & per-component G-code from the bed (v0.7.7) — ✅ DONE 2026-06-20 — **M7 COMPLETE**
+
+> ✅ **DONE (`v0.7.7`, 284 tests, +6 `tests/test_worktable_program_m77.py` +5
+> `tests/test_bed_sim_m77.py`).** The output half of the reorientation — "individual
+> models **or** a custom bed" — is live, end to end including the whole-bed sim.
+> **Combined program:** `core/cam/layout.py` `build_nest_program(nest)` combines an
+> M7.6 `BedNest` (already placed on the user-tagged `Worktable`, possibly nudged) into
+> **one** scheduled `worktable.nc`: it prefixes each placement's op names, collects the
+> through-cut / drill name sets from the prefixed names, and runs the M6.5
+> precedence-aware tool-change minimiser (`schedule_bed_ops`) over the whole bed — op
+> *copies* are renamed so the nest's own ops (the bed render) are untouched
+> (`count_tool_changes` shared with `build_bed_program`; the fixture path unchanged).
+> GUI **Generate Worktable Program** posts the nest (`build_tool_settings` →
+> `write_castle_program` → `lint_program` + `worktable_clearance_violations`
+> drill-exempt + `estimate_program`), stores `worktable.nc` + a `component: worktable`
+> setup sheet, enables Export G-code, folds into an open single-DXF `.gcam`.
+> **Whole-bed sim:** new headless `core/sim/bed.py` — `simulate_component(spec)` builds
+> each placed part's relief + posted program and sweeps the tools → its achieved floor
+> / target (reusing the M5 machinery), and `composite_bed_report(comps, work_area)`
+> stamps them onto **one machine-coords bed grid** at their placement offsets and
+> `verify`s completeness/gouge across the whole bed (geometrically equal to simming the
+> combined program: nested parts are disjoint and the achieved floor is an
+> order-independent min). GUI `BedSimWorker` + a **Simulate Bed** button render the bed
+> in the 3D cut-sim view (Uncut/Gouge overlays). Per-component Generate/Simulate
+> unchanged.
+
+1. ✅ **One worktable program** for the whole bed: `build_nest_program` (the
+   `Worktable` + multi-component generalisation of `build_bed_program`) places (via
+   the M7.6 nest), prefixes, and runs the M6.5 precedence-aware tool-change scheduler
+   over every component's ops → one `worktable.nc`, folded into the `.gcam`.
+2. ✅ **Per-component programs**: each component tab's **Generate** still emits that
+   component alone (front; a temple; a base-curve block) — the existing per-component
+   post, byte-unchanged. The Worktable tab adds **Generate Worktable Program**.
+3. ✅ **Whole-bed verification**: lint + polygon-bed-clearance + cut-time over the bed
+   gate the combined program, readiness greens on the chosen output stored to the
+   `.gcam`, **and the cut simulator renders the entire bed** (`core/sim/bed.py`
+   `simulate_component` + `composite_bed_report`; GUI `BedSimWorker` + **Simulate
+   Bed**) — the multi-component verifier deferred from M6.3/M6.5, now delivered.
+4. ✅ **Tests**: the combined bed posts one program (scheduler minimises changes
+   across the real demo bed, lints clean, clears the keep-outs with drills exempt,
+   cut-time counts the change dwell), names are prefixed/classified, precedence is
+   preserved, the nest's own ops are not mutated, and the GUI Generate-Worktable path
+   stores `worktable.nc` + the setup sheet; per-component posts stay byte-unchanged;
+   the bed sim composites placements onto one grid + reports completeness (uncut cells
+   in the right bed region) + a block reaches its flat top + the GUI `BedSimWorker`
+   smoke. `v0.7.7` tagged — **M7 complete.**
+
+### M7 exit criteria
+- [x] A project is N role-typed components; `.gcam` round-trips them; legacy
+      single-component projects upgrade cleanly (M7.1)
+- [x] One `.gdraw` imports the whole model — front, both temples, both base-curve
+      templates — preserving the §3 contract (M7.2)
+- [x] Per-component workspace tabs (incl. separate Temple R / Temple L), each with
+      2D/3D/Sim + params (M7.3)
+- [x] A worktable imported from DXF with user-tagged role zones + keep-outs; the
+      Guild fixture as the default bed (M7.4)
+- [x] Each component builds its own watertight 3D solid — temple (extrude + hinge
+      pockets + engraving + core guide) and base-curve block (70×70×4.7625, scribe +
+      through-holes) (M7.5)
+- [x] Components auto-nest by role onto the bed, polygon keep-outs enforced,
+      interactive nudge + bed render (M7.6)
+- [x] One combined worktable program **or** separate per-component programs, both
+      gated by lint + polygon clearance + cut-time, plus the whole-bed geometric
+      cut-sim render (M7.7) — **M7 complete**
+- [x] Full suite green (284); sub-milestones tagged `v0.7.1` … `v0.7.7`
+
+## M7.8–M7.16 — Tooling & control UX (v0.7.8–v0.7.16) · *the maker's instrument panel*
+
+> **2026-06-20 UX & control replan.** M1–M7 built a trustworthy engine and the
+> multi-component product; this themed block — slotted **after the reorientation
+> (M7) and before the hardware gate (M8)** — turns GuildCAM into an instrument the
+> maker can *drive*, not just a generator. Nine sub-milestones in the `v0.7.x`
+> line, each a version bump and a working app, in three clusters:
+>
+> 1. **A Fusion-style tool library** — the tool table graduates from a
+>    hand-edited `tools.yaml` (the one place the UI still tells the maker to "edit
+>    the YAML") into a **managed, visual, validated** library: a store + Settings
+>    tab (M7.8), a live cross-section **visualizer** + a real **V-bit** type +
+>    depth/stickout reach (M7.9), and a **feeds & speeds / chip-load calculator**
+>    (M7.10).
+> 2. **A control/visibility layer** — **see** the toolpaths (M7.11), **scrub** the
+>    cut (M7.12), **measure & section** the model (M7.13), and read every warning in
+>    **one place** (M7.14).
+> 3. **Workflow personalization** — customizable **hotkeys & toolbar** (the
+>    GuildDraw-parity Settings tabs the `PrefsDialog` left room for, M7.15) and
+>    saveable **frame-style parameter presets** (recall a house style in one click,
+>    M7.16).
+>
+> It is mostly **UI over a thin tool model**, not new geometry: it reuses the
+> material store (M4.9), `ToolProfile` (M5), `op_summaries`/`cuttime` (M4.8), and
+> the bed toolpath render (M7.6). The §6 principles hold throughout (core never
+> imports gui; the calculators and the tool model are headless). The tool library
+> is deliberately placed **before M8** so it is exercised on the real hardware cut.
+> M7.7 finishes the reorientation first; the product name stays **GuildCAM**
+> through this block (the rename decision is still M10).
+
+### M7.8 — Tool library & the tool model (v0.7.8) · *stop editing YAML* — ✅ DONE 2026-06-21
+
+> ✅ **DONE (`v0.7.8`, 297 tests, +13 `tests/test_tooling_m78.py`).** The tool table
+> is now a managed library, not a hand-edited file. New headless **`core/cam/tooling.py`
+> `ToolSpec`** (pydantic) — `type` flat/ball/toroid/**vbit**, diameter (radius
+> *derived* = dia/2), corner radius, included angle, flutes, **flute length**, shank,
+> a stable **tool number**, optional per-tool feeds/DOC, notes — with `from_dict`
+> (back-compat read of the shipped YAML) / `to_tool_dict` (the exact dict every
+> consumer reads) / `to_yaml`. New **`gui/tool_store.py`** clones `material_store`:
+> shipped `config/tools.yaml` merged with a user library in `~/.guildcam/tools.yaml`
+> — `effective()` / `spec` / `save_tool` / `delete_tool` (tombstone a shipped tool) /
+> `reset_tool` / `import_library` / `export_library` / `replace_user`. **Preferences ▸
+> Tools** tab: a tool list + edit form with **Add / Duplicate / Delete / Reset to
+> shipped / Import… / Export…**, staged and committed on OK. Every tool combo (the
+> global Tool, per-op tools, temple/block tools) now sources from the store via
+> `_tool_names()` / `_tools_cfg()` and refreshes when Preferences closes; the "edit
+> the YAML" hint is gone. `build_tool_settings` honours an explicit spec `number`
+> (stable T-numbers), auto-assigning the rest — shipped tools carry none, so the post
+> is byte-unchanged. *(Live visualizer + the real V-bit ToolProfile = M7.9; the
+> setup-sheet tool table already emits per-tool numbers via `build_tool_settings`.)*
+
+The CAM tab said *"Add tools by editing config/tools.yaml"* — the only app surface
+where the maker dropped to a text editor. The material store (M4.9) is the proven
+pattern that fixed it.
+
+1. **Typed tool model** (`core`): promote `tools.yaml` entries to a `ToolSpec`
+   (pydantic) — `type` (flat / ball / toroid / **vbit**), diameter, corner radius,
+   **flute length / usable depth**, shank diameter, flutes, optional per-tool
+   feeds/DOC, a stable **tool number**, display name, notes. Reads the existing
+   `tools.yaml` back-compat (every new field optional, defaulted from geometry).
+2. **`gui/tool_store.py`** modeled line-for-line on `gui/material_store.py`:
+   shipped `config/tools.yaml` merged with user edits + user-added tools in
+   `~/.guildcam/tools.yaml`; `effective()` / `add` / `save_override` / `delete` /
+   `reset_tool` / `reset_all`; the shipped file is never written.
+3. **Preferences ▸ Tools tab** (the Materials tab is the template): a tool list
+   with **add / duplicate / edit / delete / reset-to-shipped**. The per-op tool
+   combos and the material `recommended_tools` hints source from the store, not the
+   raw file; the "edit the YAML" hint is removed.
+4. **Stable tool numbering + tool-table emission**: tool numbers come from the
+   spec (user-assignable), not first-appearance; the setup sheet + the NC header
+   get a **tool list block** (T#, geometry, feeds) the operator reads when loading
+   the job.
+5. **Import/export** a library file (the `.bed` worktable precedent) so a shop can
+   share its standard tools.
+6. **Tests**: store merge/override/add/delete/reset round-trips; `tools.yaml`
+   back-compat; T-number stability across a job; the setup-sheet tool table; the
+   active tool set round-trips through prefs + `.gcam`. Tag `v0.7.8`.
+
+### M7.9 — Tool visualizer, the V-bit type & reach/stickout (v0.7.9) · *see the cutter* — ✅ DONE 2026-06-21
+
+> ✅ **DONE (`v0.7.9`, 304 tests, +7 `tests/test_tool_vis_m79.py`).** Three parts.
+> **(a) Real V-bit:** `core/sim/toolsim.py` `ToolProfile` gains a `vbit` kind +
+> `included_angle_deg` — a cone drop profile `dz = d / tan(half-angle)`, so a groove
+> width = 2·depth·tan(half). `engrave_vbit` migrates from a faked 0.5 mm "flat" to a
+> 0.5 mm 30° V-bit (engrave toolpath unchanged — it's a trace — only the sim section
+> sharpens). **(b) Visualizer:** new `gui/widgets/tool_view.py` `ToolView` — a QPainter
+> 2D cross-section (flat / ball / toroid corner / V-bit cone + shank), theme-aware,
+> redrawn live in the Preferences ▸ Tools editor as fields change (a third splitter
+> pane beside the form). **(c) Depth/stickout reach:** `castle_ops.depth_reach_warnings`
+> + `DepthReachWarning` warn when an op's cut depth (stock top → deepest Z) exceeds the
+> tool's `flute_length_mm` — the depth-axis sibling of the width `reach_warnings`;
+> wired into the G-code log alongside the reach warnings (shipped tools declare no
+> flute length, so nothing new fires until a reach is filled in). *(Deferred niceties:
+> the list-thumbnail + combo hover-preview — the editor preview is the headline; the
+> V-carving drop-cutter for relief stays post-1.0, the drop-cutter only sees flat/ball/
+> toroid.)*
+
+1. **`vbit` tool type**: a real `ToolProfile` variant with an **included angle**
+   (tip → diameter), so the engrave bit stops being a faked 0.5 mm "flat"; the
+   drop-cutter / sim groove width becomes f(depth, angle). `engrave_vbit` migrates
+   to it.
+2. **Tool visualizer** (`gui/widgets/tool_view.py`): a QPainter 2D cross-section
+   that redraws live from the spec (diameter, corner radius, flute length, V-angle,
+   shank) — the Preferences ▸ Tools editor preview, a thumbnail in the tool list,
+   and a hover-preview on the per-op tool combos. (A small 3D via the existing
+   `Viewer3D` is optional — defer if the 2D section reads clearly.)
+3. **Depth reach / stickout**: extend `reach_warnings` / `analyze_program_reach`
+   with usable-depth checking — warn when an op's max cut depth exceeds the tool's
+   flute length (the depth-axis sibling of the existing width check); surfaced in
+   the G-code log and the M7.14 inspector.
+4. **Tests**: vbit profile geometry + groove-width sim; the visualizer renders each
+   tool type headless (non-empty pixmap / Qt-skip); depth-reach warns when flute <
+   depth and stays quiet when it fits. Tag `v0.7.9`.
+
+### M7.10 — Feeds & speeds / chip-load calculator (v0.7.10) · *the material sets the feeds; the maker checks the chip* — ✅ DONE 2026-06-21
+
+> ✅ **DONE (`v0.7.10`, 311 tests, +7 `tests/test_feeds_m710.py`).** New headless
+> **`core/cam/feeds.py`**: `chip_load_mm = feed/(rpm·flutes)`,
+> `surface_speed_m_per_min = π·D·rpm`, `feed_from_chip_load_mmpm` (the inverse), and
+> `chip_load_status` (low / ok / high / unknown vs a window). `materials.yaml` gains a
+> per-material **chip-load window** (`chip_load_min_mm` / `chip_load_max_mm`: acetate
+> 0.02–0.15, acetal 0.03–0.18, horn 0.01–0.08). The CAM tab gains a **Chip load**
+> read-out group (below Feeds & Speeds): the implied chip load + surface speed for the
+> active tool (flutes/Ø from the M7.8 store) + feed/spindle + material, with a
+> coloured badge (green in-window / amber light-rubbing / red heavy). It re-derives on
+> every `cam_changed` (tool / feed / spindle / material) and after the M7.8 tool-list
+> refresh. *(Skipped: the optional "set feed from chip load" action — the read-out is
+> the surface; the maker adjusts feed/RPM to land in the green.)*
+
+1. **Headless calculator** (`core/cam/feeds.py`): chip load = feed / (rpm ×
+   flutes); surface speed = π × d × rpm; the inverse (feed from a target chip
+   load). Pure functions, unit-tested — no new persistence.
+2. **CAM-tab read-out**: show the implied chip load + surface speed for the active
+   op/tool/material, with an **out-of-range badge** (a per-material chip-load window
+   added to `materials.yaml`); an optional "set feed from chip load" action.
+3. Ties the **tool library** (flutes / diameter) to the **material store** (feeds /
+   rpm) — the relationship is surfaced, not duplicated.
+4. **Tests**: chip-load / surface-speed math; the inverse; range flagging across
+   acetate / acetal / horn. Tag `v0.7.10`.
+
+### M7.11 — Toolpath overlay & per-op inspector (v0.7.11) · *see what the program cuts* — ✅ DONE 2026-06-21
+
+> ✅ **DONE (`v0.7.11`, 314 tests, +3 `tests/test_toolpath_m711.py`).** Generation is
+> no longer an opaque "Generate → log text". **`DxfCanvas`** gains a toolpath overlay
+> (`set_toolpaths` / `set_toolpath_visible` / `set_toolpath_highlight` /
+> `clear_toolpaths` + `_draw_toolpaths`) — each op's cutting paths drawn over the 2D
+> design in design mm, colour-coded per op, with faint dashed rapid connectors and a
+> thicker highlighted op. `GCodeWorker` attaches an `op_overlay` (per-op `(x, y)`
+> paths) in the castle / temple / block branches (`_op_overlay`); the worktable keeps
+> its bed render. A new **Toolpaths** bottom dock (tabbed with the Log, View ▸
+> Toolpaths toggle) holds a per-op table — Op (checkbox) / Tool / Z-floor / length /
+> est. time — built from `op_summaries()`, with the totals in the dock title;
+> unchecking an op hides its overlay, selecting a row highlights it. On a per-component
+> Generate the overlay draws, the inspector fills, the dock shows, and the view flips
+> to 2D; a CAM/design change or a component-tab switch clears it (stale-guard). *(The
+> worktable bed already had its M7.6 render; per-component is the new surface.)*
+
+1. **Toolpath overlay** on the per-component `DxfCanvas`: draw each op's cutting
+   path, color-coded by op, rapids dashed — reusing the M7.6 bed-render path
+   drawing on the design canvas.
+2. **Op inspector**: a per-op list from `op_summaries()` + `cuttime` — op, tool,
+   strategy, Z-floor, cut length, cut time — with a per-op **visibility toggle** and
+   a total; selecting an op highlights its toolpath.
+3. **Tests**: the overlay builds from a generated program; the op table matches
+   `op_summaries` / `cuttime`; toggles drive visibility. Tag `v0.7.11`.
+
+### M7.12 — Cut-simulation playback scrubber (v0.7.12) · *watch the cut*
+
+> The per-op playback scrubber was trimmed from **M5** (task 4) and again from
+> **M7.7**. Built here.
+
+1. **Per-step removal snapshots**: extend `core/sim` to expose the achieved floor
+   at op (and optionally move) boundaries — a sequence the GUI can step through.
+   Geometric Z-buffer only, no physics.
+2. **Scrubber UI** in the Cut Simulation view: a timeline slider + play/pause that
+   advances the rendered cut piece op-by-op; the M7.11 op inspector syncs to the
+   cursor.
+3. Whole-bed playback rides on M7.7's bed sim when a worktable program is loaded.
+4. **Tests**: the snapshot sequence is monotonic (material only ever removed); the
+   slider maps to op boundaries. Tag `v0.7.12`.
+
+### M7.13 — Measure/inspect & 3D section view (v0.7.13) · *verify before you cut*
+
+1. **2D measure tools** on `DxfCanvas`: point-to-point distance, angle, and a
+   caliper read-out (verify lens opening, DBL, hinge spacing) — a small measure
+   mode that snaps to curve points.
+2. **3D section plane** on `Preview3D` / `Viewer3D`: a movable cutting plane that
+   slices the model so the maker can inspect terrace heights and footing depths —
+   directly serving the castle teaching ethos (§2).
+3. **Tests**: distance / angle math; the section produces a valid cross-section
+   polyline at a given plane. Tag `v0.7.13`.
+
+### M7.14 — Job & validation inspector panel (v0.7.14) · *what's blocking green?*
+
+1. **One dockable panel** that aggregates every check the engine already produces —
+   tool reach (width + depth), bed / worktable clearance, machine lint, cut
+   completeness / gouge — each a severity-tagged, navigable row (click → highlight
+   on the relevant canvas / view).
+2. **Ties to the readiness dot** (M5.2): the dot says ready / not-ready, the panel
+   says *why*; generating and simulating refresh it.
+3. **Tests**: the panel collects each warning type from a known-bad job and is
+   empty on a clean one. Tag `v0.7.14`.
+
+### M7.15 — Hotkeys & toolbar customization (v0.7.15) · *make it yours*
+
+GuildDraw's `SettingsDialog` already has **Toolbar** and **Hotkeys** tabs; GuildCAM's
+`PrefsDialog` (M4.5) deliberately left room for them but only ever shipped General.
+Close the parity gap — the maker who lives in both apps gets one muscle-memory.
+
+1. **Hotkeys tab**: an editable shortcut table over the existing actions (Open / Build
+   3D / Generate / Export / Simulate / view toggles / Worktable / Nest …), persisted in
+   `~/.guildcam/prefs.json` (the `prefs.py` DEFAULTS-merge pattern) and applied to the
+   `QAction`s at startup; per-binding **reset-to-default** + a conflict warning. Port
+   GuildDraw's hotkeys-tab UX where it fits.
+2. **Toolbar tab**: choose which actions appear on the left icon toolbar and their
+   order (the toolbar is already built from a known action list in `app.py`); persisted
+   and rebuilt on apply. Defaults reproduce today's toolbar exactly.
+3. **Tests**: a custom binding round-trips through prefs and rebinds the action; a
+   conflict is detected; a hidden/reordered toolbar restores from prefs; reset returns
+   the shipped defaults. Tag `v0.7.15`.
+
+### M7.16 — Frame-style parameter presets (v0.7.16) · *recall a house style in one click*
+
+The castle params (Towers / Walls / Footing / Stock) define a frame's *style*; a shop
+makes many frames in a handful of house styles. Save and recall a whole `CastleParams`
+set as a named preset — the third use of the now-familiar store pattern (materials M4.9,
+tools M7.8).
+
+1. **`gui/style_store.py`** (the material/tool store pattern): named **frame-style**
+   presets — a full `CastleParams` snapshot (zone heights, footing schedule, stock,
+   onion skin, allowance) — shipped defaults (at least the Demo reference as "Guild
+   demo") merged with user presets in `~/.guildcam/frame_styles.yaml`.
+2. **Castle/Stock tab control**: a preset combo + **Save as preset… / Update / Delete**;
+   selecting a preset loads it into the dock (one live rebuild, like material apply);
+   editing then saving offers to update or fork it. Presets are project-independent
+   (they seed a new frame); the `.gcam` still stores the frame's actual params.
+3. **Tests**: save → list → load round-trips a full `CastleParams`; shipped presets are
+   never written; a loaded preset drives the preview; delete/reset behave. Tag `v0.7.16`.
+
+### M7.8–M7.16 exit criteria
+- [x] Managed tool library — add/edit/delete/reset in Settings (shipped + override
+      store), no hand-editing `tools.yaml`, stable T-numbers + setup-sheet tool
+      table (M7.8)
+- [x] Live tool visualizer; real V-bit type; depth/stickout reach warnings (M7.9)
+- [x] Feeds & speeds / chip-load calculator tying tools↔materials (M7.10)
+- [x] Toolpath overlay + per-op inspector on the design canvas (M7.11)
+- [ ] Cut-simulation playback scrubber (M7.12)
+- [ ] On-canvas measure + 3D section view (M7.13)
+- [ ] Job/validation inspector panel consolidating all warnings (M7.14)
+- [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
+- [ ] Saveable frame-style parameter presets (M7.16)
+- [ ] Full suite green; sub-milestones tagged `v0.7.8` … `v0.7.16`
+
+## M8 — Hardware round-trip (v0.8.0) · *the only gate that cuts acetate*
+
+> Was M7 (and M6 before the 2026-06-15 replan); now validates the **reoriented,
+> multi-component** flow on real stock — a whole `.gdraw` model nested on the
+> worktable — not just a single frame front.
+
+1. Cut the demo model on the Guild CNC **from a single `.gdraw`** through the
+   reoriented flow — import → per-component build → worktable nest → combined bed
+   program — covering the frame front (hinge pockets → relief → eyewires →
+   perimeter, onion skin) plus its temples and base-curve templates; release by
+   hand, compare against the Fusion-cut reference part.
 2. Verify: plateau heights (calipers), pocket fit of a catalog hinge, lens
    opening size after the 0.1 mm allowance is hand-finished, skin release
    behaviour, total cycle time vs ~10 min reference.
@@ -1430,7 +2163,7 @@ CNC program** on the bed. Builds on all of M6.1–M6.4.
    tag GuildDraw `v1.0.0` when this milestone passes.
 6. Findings feed fixes; milestone ends when the cut parts are accepted.
 
-## M8 — Two-sided workflow & export polish (v0.8.0)
+## M9 — Two-sided workflow & export polish (v0.9.0)
 
 > Project save/load + the archive bundle moved to **M5.1** (the `.gcam`
 > container). What remains here is the two-sided cut and the leftover exports.
@@ -1444,15 +2177,28 @@ CNC program** on the bed. Builds on all of M6.1–M6.4.
 3. SVG intake npoint bug: fix or formally drop SVG import for v1 (DXF is the
    contract; decide here, not silently).
 
-## M9 — Packaging, docs & release (v1.0.0)
+## M10 — Rename decision, packaging, docs & release (v1.0.0)
 
-1. PyInstaller → Windows installer (Inno Setup); frozen-build smoke test.
-2. User guide: castle ethos chapter (§2 expanded with the stage-stepper
-   walkthrough), zone/SCULPT drawing guidance for GuildDraw, parameter
-   reference, fixture/stock setup, hand-finishing notes; cut-simulation
-   verification chapter; **M6 chapters — multi-tool setup, stock-box zero,
-   temples + engraving, base-curve blocks, worktable layout/nesting**.
-3. README, NOTICE refresh, version stamp, tag `v1.0.0`.
+1. **Resolve GuildCAM → GuildModel** (the 2026-06-18 "decide later" gate). If
+   GuildModel is chosen, execute the rename in one pass — it is mechanical but
+   pervasive: the `guildcam` package + entry points, the `.gcam` extension (decide:
+   keep, or rename e.g. `.gmod`), the `~/.guildcam` prefs/materials dir, window
+   titles + about box, the installer, README/NOTICE, and these docs. If the name
+   stays GuildCAM, record the decision and skip the pass. Do this **before** the
+   build so the released artifact carries the final name.
+2. PyInstaller → Windows installer (Inno Setup); frozen-build smoke test.
+3. User guide: castle ethos chapter (§2 expanded with the stage-stepper
+   walkthrough), zone/SCULPT drawing guidance for GuildDraw, parameter reference,
+   fixture/stock setup, hand-finishing notes; cut-simulation verification chapter;
+   **M6 chapters — multi-tool setup, stock-box zero, temples + engraving,
+   base-curve blocks, worktable layout/nesting**; **M7 chapters — `.gdraw` model
+   intake, the per-component workspaces, and the interactive worktable (import a bed
+   DXF, tag role zones + keep-outs, nest, generate combined or per-component)**;
+   **M7.8–M7.16 chapters — the managed tool library + visualizer, the feeds &
+   speeds / chip-load calculator, the toolpath & cut-sim inspection tools, the
+   on-canvas measure / 3D section tools, and workflow personalization (custom
+   hotkeys/toolbar + frame-style presets)**.
+4. README, NOTICE refresh, version stamp, tag `v1.0.0`.
 
 ### 1.0 release criteria (definition of done)
 
@@ -1469,12 +2215,25 @@ CNC program** on the bed. Builds on all of M6.1–M6.4.
       gouge); relief reaches the whole surface like the control (M5)
 - [x] `.gcam` container round-trips the full project + carries the gSender-fork
       hand-off (M5.1); readiness traffic-light (M5.2)
-- [ ] Multi-tool jobs (per-op tool change), stock-box zero, temples + engraving,
+- [x] Multi-tool jobs (per-op tool change), stock-box zero, temples + engraving,
       auto base-curve blocks, and multi-part worktable layout (M6.1–M6.5)
-- [ ] **A physical frame front (+ the M6 op set) has been cut and accepted**
-      (M7 — also graduates GuildDraw to v1.0.0)
-- [ ] Two-sided back-side program + loose exports (M8)
-- [ ] Packaged Windows build + user guide with the castle + M6 chapters (M9)
+- [x] **Reoriented around the whole model**: one `.gdraw` → frame front + both
+      temples + per-lens base-curve templates as separate components (M7.1–M7.2),
+      per-component 3D workspace tabs (M7.3), an interactive worktable from a tagged
+      bed DXF (M7.4), per-component 3D solids (M7.5), role-matched auto-nesting with
+      polygon keep-outs (M7.6), and one combined bed program *or* separate
+      per-component programs + the whole-bed cut sim (M7.7) — **M7 complete**
+- [ ] **Tooling & control UX**: a managed tool library + live visualizer + feeds &
+      speeds calculator (M7.8–M7.10); toolpath overlay + op inspector, cut-sim
+      playback scrubber, measure / 3D section, and the job/validation inspector
+      panel (M7.11–M7.14); customizable hotkeys/toolbar + frame-style presets
+      (M7.15–M7.16)
+- [ ] **A physical model (+ the M6 op set) has been cut and accepted** — the
+      reoriented `.gdraw` → worktable flow on real stock (M8 — also graduates
+      GuildDraw to v1.0.0)
+- [ ] Two-sided back-side program + loose exports (M9)
+- [ ] GuildCAM→GuildModel rename decision resolved; packaged Windows build + user
+      guide with the castle + M6 + M7 chapters (M10)
 - [ ] Test suite green and run before every release build
 
 ---
@@ -1482,18 +2241,16 @@ CNC program** on the bed. Builds on all of M6.1–M6.4.
 # Post-1.0 backlog (do not build in v1)
 
 In rough priority order; the user supplies reference material per item as it
-arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by
-the 2026-06-15 M6 replan and are no longer listed here.)
+arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by the
+2026-06-15 M6 replan, and **`.gdraw` direct intake** — formerly item #3 — by the
+2026-06-18 M7 reorientation; none are listed here any longer.)
 
 1. **Lens patterns** — pattern cutting; OLGA `bevel_flank()` (dormant since
    the spike) likely returns here for lens grooves.
 2. BRIDGE angled cutaway (layer reserved in both apps).
-3. `.gdraw` direct intake (multi-workspace ZIP → multi-stock project) — the M6.5
-   bed layout already moves the `.gcam` toward multi-stock, so this is the intake
-   half.
-4. CHA hinge catalog placement UI (v1 drives pockets from the HINGE layer;
+3. CHA hinge catalog placement UI (v1 drives pockets from the HINGE layer;
    the catalog machinery in `relief/hinge.py` stays for this).
-5. STEP/B-rep export, adaptive strategies, macOS/Linux — unchanged from the
+4. STEP/B-rep export, adaptive strategies, macOS/Linux — unchanged from the
    spike's exclusion list.
 
 ---
@@ -1508,7 +2265,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 |---|---|---|
 | `core/layers.py` | ✅ | Single source of truth for layer names/styles (importers, validator, GUI all import it) |
 | `io_import/dxf.py` | ✅ | All 7 layers incl. SCULPT/ENGRAVING; `posterior=True` flip is the default (M1) |
-| `io_import/svg.py` | ⚠️ | npoint float-arg bug; decide fix-or-drop in M8 (export polish) |
+| `io_import/svg.py` | ⚠️ | npoint float-arg bug; the M7.2 `.gdraw` reader converges here (fix to GuildDraw's SVG dialect or retire); fix-or-drop decision in M9 (export polish) |
 | `io_import/normalize.py` `validate.py` | ✅ | close-if-nearly-closed; OUTLINE+2×LENS checks |
 | `geometry/boxing.py` | ✅ | ISO 8624 from lens polygons, MRP-based ED |
 | `geometry/regions.py` | ✅ | `partition_zones` + auto-label + `ZoneEdge` naming (M1); demo DXF: 9 zones, 10 canonical edges |
@@ -1531,7 +2288,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `post/grbl.py` | ✅ | ramped pocket laps + `arc()` G2/G3 + arc-fit (M4.7); **partial-lap ramp lead-in** for through-cuts (M4.8); **`ToolSetting` + `apply_tool`/`tool_change`** (M0/M6 change blocks) + multi-tool `write_castle_program` (M6.1); **`work_offset`** — program-zero datum applied to every emitted coordinate, arc I/J untouched (M6.2); **`peck_drill`** (G83 full-retract) (M6.4) |
 | `post/arcfit.py` | ✅ | greedy least-squares circle fit, polyline → G2/G3 arcs (constant-Z runs only); GRBL-valid radius agreement (M4.7) |
 | `post/machine.py` | ✅ | **New (M4.8)** — load/list `MachineProfile`s, `apply_machine_limits` (clamp feed/plunge/spindle/DOC, linearize arcs), `lint_program` (envelope/feed/spindle/arc checks) |
-| `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M6 |
+| `mesh/twosided.py` `stl_export.py` | ⚠️ | Superseded by `build_castle_mesh` for frame fronts; review/retire in M9 (export polish) |
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3); **`BaseCurveBlockParams` (hole_centers/stock) on `ProjectSchema.base_curve_block`** (M6.4); **`BedLayout`/`ComponentPlacement` on `ProjectSchema.bed_layout`** (M6.5) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1); **`engrave_vbit` engraving tool; `temple_right`/`temple_left` fixture zones** (M6.3); **`drill_m4_clear` (4.5 mm) drill; `acetal` material** (M6.4) |

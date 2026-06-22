@@ -174,6 +174,9 @@ def load_gcam(path, verify: bool = True) -> GcamBundle:
             project = ProjectSchema.model_validate_json(zf.read(_PROJECT).decode("utf-8"))
         except Exception as exc:
             raise GcamError(f"invalid project.json: {exc}") from exc
+        # A legacy single-component .gcam (M5.1–M6.5) has no `components`; migrate
+        # it to a one-component (frame_front) project on load (BUILDPLAN M7.1).
+        project.ensure_components()
 
         programs = {
             n[len(_PROGRAM_DIR) + 1:]: zf.read(n).decode("utf-8")

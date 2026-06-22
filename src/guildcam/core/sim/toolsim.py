@@ -15,6 +15,7 @@ So a tool whose tip is at ``z`` removes material down to ``z + dz(d)`` at offset
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -25,9 +26,10 @@ Point3 = tuple[float, float, float]
 
 @dataclass(frozen=True)
 class ToolProfile:
-    kind: str = "flat"            # flat | ball | toroid
+    kind: str = "flat"            # flat | ball | toroid | vbit
     radius_mm: float = 1.5875
     corner_radius_mm: float = 0.0  # toroid corner radius (0 = flat/ball)
+    included_angle_deg: float = 0.0  # vbit tip (included) angle
 
     @classmethod
     def from_tool(cls, tool: dict) -> "ToolProfile":
@@ -35,6 +37,7 @@ class ToolProfile:
             kind=tool.get("type", "flat"),
             radius_mm=tool["radius_mm"],
             corner_radius_mm=tool.get("corner_radius_mm", 0.0) or 0.0,
+            included_angle_deg=tool.get("included_angle_deg", 0.0) or 0.0,
         )
 
     def kernel(self, resolution: float):
@@ -57,6 +60,11 @@ class ToolProfile:
                 dd <= Rf, 0.0,
                 rc - np.sqrt(np.maximum(0.0, rc * rc - (dd - Rf) ** 2)),
             )
+        elif self.kind == "vbit" and self.included_angle_deg > 0:
+            # a cone: the surface rises dz = d / tan(half-angle) above the tip, so
+            # the groove width = 2·depth·tan(half-angle) (engraving / V-carving).
+            t = math.tan(math.radians(self.included_angle_deg / 2.0))
+            dz = dd / t if t > 1e-9 else np.zeros_like(dd)
         else:                      # flat (and toroid with rc=0)
             dz = np.zeros_like(dd)
         return di, dj, dz.astype(np.float64)
@@ -145,7 +153,8 @@ def achieved_floor_grouped(
     kernels: dict = {}
 
     def _kern(prof: ToolProfile):
-        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm)
+        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm,
+               prof.included_angle_deg)
         if key not in kernels:
             kernels[key] = prof.kernel(resolution)
         return kernels[key]

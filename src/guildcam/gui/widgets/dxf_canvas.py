@@ -47,6 +47,12 @@ class DxfCanvas(QWidget):
         self._program_zero_xy: Optional[tuple[float, float]] = None
         self._program_zero_label: str = ""
 
+        # toolpath overlay (BUILDPLAN M7.11): per-op cutting paths drawn over the
+        # design, colour-coded, with per-op visibility + a highlighted op.
+        self._toolpaths: list[dict] = []          # [{name, paths:[[(x,y)..]..], color}]
+        self._tp_visible: dict[str, bool] = {}
+        self._tp_highlight: Optional[str] = None
+
         # view transform: world_to_screen = point * scale + offset
         self._scale: float = 5.0       # px / mm
         self._offset: QPointF = QPointF(0.0, 0.0)
@@ -89,6 +95,30 @@ class DxfCanvas(QWidget):
         it. The toolpaths stay in the design frame — this is just a datum hint."""
         self._program_zero_xy = xy
         self._program_zero_label = label
+        self.update()
+
+    def set_toolpaths(self, ops: list[dict]) -> None:
+        """Show a generated program's cutting paths over the design (M7.11).
+
+        `ops`: ``[{"name": str, "paths": [[(x, y), ...], ...], "color": "#hex"}]`` in
+        design (canvas) mm. All ops start visible; the highlight clears."""
+        self._toolpaths = list(ops)
+        self._tp_visible = {op["name"]: True for op in self._toolpaths}
+        self._tp_highlight = None
+        self.update()
+
+    def set_toolpath_visible(self, name: str, visible: bool) -> None:
+        self._tp_visible[name] = visible
+        self.update()
+
+    def set_toolpath_highlight(self, name: str | None) -> None:
+        self._tp_highlight = name
+        self.update()
+
+    def clear_toolpaths(self) -> None:
+        self._toolpaths = []
+        self._tp_visible = {}
+        self._tp_highlight = None
         self.update()
 
     def set_zone_highlight(
@@ -163,6 +193,7 @@ class DxfCanvas(QWidget):
         self._draw_grid(painter)
         self._draw_stock(painter)
         self._draw_layers(painter)
+        self._draw_toolpaths(painter)
         self._draw_zone_highlight(painter)
         self._draw_program_zero(painter)
         self._draw_scale_bar(painter)
@@ -297,6 +328,35 @@ class DxfCanvas(QWidget):
                             int(sc.x()), int(sc.y()) - r,
                             int(sc.x()), int(sc.y()) + r,
                         )
+
+    def _draw_toolpaths(self, painter: QPainter) -> None:
+        """Per-op cutting paths over the design, colour-coded; the rapids between
+        successive paths are faint dashed connectors (BUILDPLAN M7.11)."""
+        if not self._toolpaths:
+            return
+        for op in self._toolpaths:
+            name = op.get("name", "")
+            if not self._tp_visible.get(name, True):
+                continue
+            color = QColor(op.get("color") or self._palette.annotation)
+            hi = (name == self._tp_highlight)
+            pen = QPen(color, 2.6 if hi else 1.3)
+            pen.setCosmetic(True)
+            rapid = QPen(QColor(color.red(), color.green(), color.blue(), 80),
+                         0.8, Qt.PenStyle.DashLine)
+            rapid.setCosmetic(True)
+            prev_end: Optional[QPointF] = None
+            for path in op.get("paths", []):
+                if len(path) < 1:
+                    continue
+                pts = [self._world_to_screen(x, y) for x, y in path]
+                if prev_end is not None:
+                    painter.setPen(rapid)
+                    painter.drawLine(prev_end, pts[0])
+                painter.setPen(pen)
+                for i in range(len(pts) - 1):
+                    painter.drawLine(pts[i], pts[i + 1])
+                prev_end = pts[-1]
 
     def _draw_scale_bar(self, painter: QPainter) -> None:
         """10 mm scale bar in the bottom-right corner."""

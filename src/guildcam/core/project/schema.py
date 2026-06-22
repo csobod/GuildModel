@@ -1,10 +1,11 @@
 """Pydantic schema for .guildcam project files (JSON under the hood)."""
 from __future__ import annotations
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BoxingParams(BaseModel):
@@ -234,12 +235,23 @@ class TempleParams(BaseModel):
     blank_length_mm: float = 170.0
     blank_width_mm: float = 30.0
     blank_thickness_mm: float = 4.0
+    hinge_pocket_depth_mm: float = 1.0     # HINGE pocket floor below the top face
     engrave_depth_mm: float = 0.3          # groove depth below the top face
     engrave_tool: str = "engrave_vbit"     # small tool for the ENGRAVING passes
+    hinge_tool: str = "flat_2mm"           # endmill that clears the HINGE pockets
     profile_tool: str = "flat_3175"        # outline through-cut tool
     onion_skin_mm: float = 0.4             # axial stock left under the profile
     hand_finishing_allowance_mm: float = 0.1
     fixture_zone: str = "temple_right"     # fixture blank zone (clearance check)
+
+    # Snap the temple to one end of the blank so the injected metal core (a wire
+    # set into the blank along its length) runs through the whole temple — the
+    # HINGE/butt end registers to a short edge of the 170 mm blank (BUILDPLAN M7).
+    snap_to_blank_end: bool = True
+    # The injected core is a 3D *visual reference* only (not machined): a bar this
+    # wide and long, laid along the temple's long axis from the hinge end.
+    core_guide_width_mm: float = 2.0
+    core_guide_length_mm: float = 135.0
 
     def stock(self) -> "StockDefinition":
         """A single-level StockDefinition for the blank (no pad block) — used for
@@ -254,28 +266,24 @@ class TempleParams(BaseModel):
 
 
 class BaseCurveBlockParams(BaseModel):
-    """An auto-generated heat-forming holding block (BUILDPLAN M6.4).
+    """An auto-generated base-curve holding block (BUILDPLAN M6.4).
 
-    Cut from an acetal blank straight off the frame DXF: the block top carries the
-    eyewire-interior (LENS) footprint as the forming reference, the blank outline
-    is profile-cut to release it, and three M4 mounting holes bolt it to a jig.
-    The block is flat in v1 — the 3D base-curve surface stays metadata (§5); the
-    forming feature is a contour scribe of the lens interior marking its footprint.
+    Cut from an acetal blank straight off the frame DXF: the **lens exterior shape**
+    is profile-cut free from the blank and three M4 mounting holes bolt it to a jig.
+    The block is the lens shape — it sits on the base-curve press and holds the
+    eyewire so the frame doesn't distort while thermoforming. There is no other cut:
+    just the holes and the lens-shape release (confirmed with the user 2026-06-19).
 
     Defaults confirmed with the user 2026-06-16: **in-line** holes at **10 mm**
     pitch, **M4 clearance (≈4.5 mm)** — a bolt passes through the block into a
     tapped jig below. Arrangement and drill Ø stay parameters.
     """
-    blank_length_mm: float = 65.0
-    blank_width_mm: float = 65.0
-    blank_thickness_mm: float = 6.35       # 1/4"
+    blank_length_mm: float = 70.0
+    blank_width_mm: float = 70.0
+    blank_thickness_mm: float = 4.7625     # 3/16"
     material: str = "acetal"
 
-    # forming reference (the lens-interior footprint, scribed on the top face)
-    forming_depth_mm: float = 1.0
-    forming_tool: str = "flat_3175"
-
-    # block outline through-cut
+    # lens-shape through-cut (the lens exterior, profile-cut free like a frame outline)
     profile_tool: str = "flat_3175"
     onion_skin_mm: float = 0.4
     hand_finishing_allowance_mm: float = 0.1
@@ -386,10 +394,17 @@ class MachineRef(BaseModel):
 
 
 class FormingMetadata(BaseModel):
-    """Recorded for archive; NOT machined in v1. Heat-forming is post-cutting."""
-    base_curve: float = 0.0          # diopters
+    """Recorded for archive; NOT machined in v1. Heat-forming is post-cutting.
+
+    `apical_radius_mm` and `bridge_angle_deg` carry the GuildDraw `.gdraw` forming
+    values losslessly (BUILDPLAN M7.2). The base-curve template is flat in v1, so
+    the apical radius is metadata for now — the 3D forming surface is post-1.0.
+    """
+    base_curve: float = 0.0          # diopters (optical convention)
     pantoscopic_tilt_deg: float = 0.0
     face_form_wrap_deg: float = 0.0
+    apical_radius_mm: float = 0.0    # base-curve forming radius, from the .gdraw
+    bridge_angle_deg: float = 0.0    # bridge / face-form angle, from the .gdraw
 
 
 class MaterialRef(BaseModel):
@@ -421,6 +436,395 @@ class CAMSettings(BaseModel):
     fixture: FixtureRef = Field(default_factory=FixtureRef)
 
 
+class ComponentKind(str, Enum):
+    """The role-typed parts of a complete eyewear model (BUILDPLAN M7.1).
+
+    One shared enum used by the project model (this file), the worktable bed
+    roles (M7.4) and the role-matched nesting (M7.5). A canonical project carries
+    one of each; a custom-bed run may carry several of a kind.
+    """
+    FRAME_FRONT = "frame_front"
+    TEMPLE_RIGHT = "temple_right"
+    TEMPLE_LEFT = "temple_left"
+    BASE_CURVE_RIGHT = "base_curve_right"
+    BASE_CURVE_LEFT = "base_curve_left"
+
+
+# Kind → presentation label (the component tab / bed-zone title, M7.3/M7.4).
+_COMPONENT_LABELS: dict[ComponentKind, str] = {
+    ComponentKind.FRAME_FRONT: "Frame Front",
+    ComponentKind.TEMPLE_RIGHT: "Temple Right",
+    ComponentKind.TEMPLE_LEFT: "Temple Left",
+    ComponentKind.BASE_CURVE_RIGHT: "Base Curve R",
+    ComponentKind.BASE_CURVE_LEFT: "Base Curve L",
+}
+
+# Kind → default fixture/bed zone name (config/fixtures/guild_cnc.yaml; M7.4/M7.5).
+_COMPONENT_FIXTURE_ZONES: dict[ComponentKind, str] = {
+    ComponentKind.FRAME_FRONT: "front",
+    ComponentKind.TEMPLE_RIGHT: "temple_right",
+    ComponentKind.TEMPLE_LEFT: "temple_left",
+    ComponentKind.BASE_CURVE_RIGHT: "bc_template_right",
+    ComponentKind.BASE_CURVE_LEFT: "bc_template_left",
+}
+
+# Kind → the ProjectSchema/Component param field that drives its CAM.
+_COMPONENT_PARAM_FIELD: dict[ComponentKind, str] = {
+    ComponentKind.FRAME_FRONT: "castle",
+    ComponentKind.TEMPLE_RIGHT: "temple",
+    ComponentKind.TEMPLE_LEFT: "temple",
+    ComponentKind.BASE_CURVE_RIGHT: "base_curve_block",
+    ComponentKind.BASE_CURVE_LEFT: "base_curve_block",
+}
+
+
+def component_label(kind: ComponentKind) -> str:
+    """The human label for a kind (the component tab / bed-zone title)."""
+    return _COMPONENT_LABELS[ComponentKind(kind)]
+
+
+def component_fixture_zone(kind: ComponentKind) -> str:
+    """The default fixture/bed zone a kind nests onto (the bed *role*, M7.5)."""
+    return _COMPONENT_FIXTURE_ZONES[ComponentKind(kind)]
+
+
+def component_param_field(kind: ComponentKind) -> str:
+    """Which of castle / temple / base_curve_block drives this kind's CAM."""
+    return _COMPONENT_PARAM_FIELD[ComponentKind(kind)]
+
+
+def lens_side(kind: ComponentKind) -> Literal["right", "left"] | None:
+    """For a base-curve template, which lens it is built from; else None."""
+    return {
+        ComponentKind.BASE_CURVE_RIGHT: "right",
+        ComponentKind.BASE_CURVE_LEFT: "left",
+    }.get(ComponentKind(kind))
+
+
+# ── Worktable (the interactive bed, BUILDPLAN M7.4) ──────────────────────────
+
+class BedRole(str, Enum):
+    """The role a tagged worktable zone plays (BUILDPLAN M7.4).
+
+    The five placement roles match `ComponentKind` value-for-value, so
+    `BedRole(kind.value)` maps a built component to the zone that holds it.
+    `KEEP_OUT` marks a hold-down the cutter must avoid (a screw is a circle, but
+    any enclosed region qualifies); `UNASSIGNED` is a freshly polygonized region
+    the maker has not tagged yet.
+    """
+    UNASSIGNED = "unassigned"
+    FRAME_FRONT = "frame_front"
+    TEMPLE_RIGHT = "temple_right"
+    TEMPLE_LEFT = "temple_left"
+    BASE_CURVE_RIGHT = "base_curve_right"
+    BASE_CURVE_LEFT = "base_curve_left"
+    KEEP_OUT = "keep_out"
+
+
+_BED_ROLE_LABELS: dict[BedRole, str] = {
+    BedRole.UNASSIGNED: "Untagged",
+    BedRole.FRAME_FRONT: "Frame Front",
+    BedRole.TEMPLE_RIGHT: "Temple Right",
+    BedRole.TEMPLE_LEFT: "Temple Left",
+    BedRole.BASE_CURVE_RIGHT: "Base Curve R",
+    BedRole.BASE_CURVE_LEFT: "Base Curve L",
+    BedRole.KEEP_OUT: "Keep-out",
+}
+
+# Default fixture/bed zone key per role — the inverse of _COMPONENT_FIXTURE_ZONES,
+# used to load the YAML fixture into a Worktable and back (M7.4).
+_FIXTURE_ZONE_BY_ROLE: dict[BedRole, str] = {
+    BedRole.FRAME_FRONT: "front",
+    BedRole.TEMPLE_RIGHT: "temple_right",
+    BedRole.TEMPLE_LEFT: "temple_left",
+    BedRole.BASE_CURVE_RIGHT: "bc_template_right",
+    BedRole.BASE_CURVE_LEFT: "bc_template_left",
+}
+_ROLE_BY_FIXTURE_ZONE: dict[str, BedRole] = {
+    v: k for k, v in _FIXTURE_ZONE_BY_ROLE.items()
+}
+
+
+def bed_role_label(role: BedRole) -> str:
+    """The human label for a bed role (the tag-menu / zone title)."""
+    return _BED_ROLE_LABELS[BedRole(role)]
+
+
+def role_for_kind(kind: ComponentKind) -> BedRole:
+    """The bed role that holds a built component of `kind` (M7.5 nesting)."""
+    return BedRole(ComponentKind(kind).value)
+
+
+def kind_for_role(role: BedRole) -> ComponentKind | None:
+    """The component kind a placement role accepts (None for keep-out / untagged)."""
+    try:
+        return ComponentKind(BedRole(role).value)
+    except ValueError:
+        return None
+
+
+class WorktableZone(BaseModel):
+    """One tagged region on the worktable (BUILDPLAN M7.4).
+
+    A closed polygon in **machine coordinates** (origin lower-left, mm) plus the
+    `role` the maker assigned it. A placement role holds a built component; a
+    KEEP_OUT zone is a hold-down the cutter must avoid. `radius_mm` is set when the
+    region is a true circle (a screw) so the legacy circular-clearance check
+    round-trips exactly; `extra` carries any pass-through fixture keys
+    (`flip_axis_x_mm`, `nosepad_sub_zone`) so the default Guild bed is lossless.
+    """
+    id: str
+    role: BedRole = BedRole.UNASSIGNED
+    label: str = ""
+    polygon: list[tuple[float, float]] = Field(default_factory=list)
+    stock_thickness_mm: float | None = None
+    radius_mm: float | None = None
+    source: str = ""
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    def is_placement(self) -> bool:
+        """True for a role that holds a component (not untagged / keep-out)."""
+        return self.role not in (BedRole.UNASSIGNED, BedRole.KEEP_OUT)
+
+    def bbox(self) -> tuple[float, float, float, float]:
+        xs = [p[0] for p in self.polygon]
+        ys = [p[1] for p in self.polygon]
+        if not xs:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def width(self) -> float:
+        x0, _, x1, _ = self.bbox()
+        return x1 - x0
+
+    def height(self) -> float:
+        _, y0, _, y1 = self.bbox()
+        return y1 - y0
+
+    def center(self) -> tuple[float, float]:
+        """Vertex mean — the exact centre of a regular ring (a screw) and a
+        reasonable handle for any region."""
+        pts = self.polygon
+        if not pts:
+            return (0.0, 0.0)
+        n = len(pts)
+        return (sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n)
+
+    def bbox_center(self) -> tuple[float, float]:
+        x0, y0, x1, y1 = self.bbox()
+        return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
+    def area(self) -> float:
+        """Shoelace area of the ring (mm²); 0 for a degenerate region."""
+        pts = self.polygon
+        if len(pts) < 3:
+            return 0.0
+        s = 0.0
+        for i in range(len(pts)):
+            x0, y0 = pts[i]
+            x1, y1 = pts[(i + 1) % len(pts)]
+            s += x0 * y1 - x1 * y0
+        return abs(s) / 2.0
+
+
+class Worktable(BaseModel):
+    """A user-defined cutting bed (BUILDPLAN M7.4).
+
+    Supersedes the fixture-name coupling in `BedLayout`: rather than naming a YAML
+    fixture, the bed *is* a set of role-tagged zone polygons + keep-out polygons in
+    machine coordinates — drawn in CAD and imported from a DXF, or the built-in
+    Guild fixture via `from_fixture_dict`. The M6.5 layout machinery still consumes
+    a fixture dict, so `to_fixture_dict()` bridges this model onto it until M7.5
+    nests directly on the tagged zones.
+    """
+    name: str = "guild_cnc"
+    display_name: str = "Guild CNC (standard fixture)"
+    work_area_width_mm: float = 300.0
+    work_area_height_mm: float = 200.0
+    safe_z_mm: float = 5.0
+    max_z_mm: float = 80.0
+    zones: list[WorktableZone] = Field(default_factory=list)
+    source_dxf: str = ""
+
+    # ── accessors ────────────────────────────────────────────────────────────
+    def zone(self, zone_id: str) -> WorktableZone:
+        for z in self.zones:
+            if z.id == zone_id:
+                return z
+        raise KeyError(zone_id)
+
+    def zones_with_role(self, role: BedRole) -> list[WorktableZone]:
+        role = BedRole(role)
+        return [z for z in self.zones if z.role == role]
+
+    def placement_zones(self) -> list[WorktableZone]:
+        """Every tagged component-holding zone (not untagged / keep-out)."""
+        return [z for z in self.zones if z.is_placement()]
+
+    def keep_outs(self) -> list[WorktableZone]:
+        return self.zones_with_role(BedRole.KEEP_OUT)
+
+    def untagged(self) -> list[WorktableZone]:
+        return self.zones_with_role(BedRole.UNASSIGNED)
+
+    def zone_for_role(self, role: BedRole) -> WorktableZone | None:
+        zs = self.zones_with_role(role)
+        return zs[0] if zs else None
+
+    # ── tagging ──────────────────────────────────────────────────────────────
+    def set_role(self, zone_id: str, role: BedRole) -> WorktableZone:
+        """Tag (or re-tag) a zone; refresh its label if it was a role default."""
+        z = self.zone(zone_id)
+        role = BedRole(role)
+        if not z.label or z.label in _BED_ROLE_LABELS.values():
+            z.label = bed_role_label(role)
+        z.role = role
+        return z
+
+    # ── the M6.5 bridge ──────────────────────────────────────────────────────
+    def to_fixture_dict(self) -> dict:
+        """A fixture dict in the shape the M6.5 layout code consumes
+        (`blank_zones` + `hold_down_screws` + radius), so the existing nesting /
+        clearance machinery runs on this bed unchanged (BUILDPLAN M7.4)."""
+        blank_zones: dict[str, dict] = {}
+        for z in self.placement_zones():
+            x0, y0, x1, y1 = z.bbox()
+            entry: dict = {
+                "label": z.label or bed_role_label(z.role),
+                "role": z.role.value,
+                "x_mm": x0, "y_mm": y0,
+                "width_mm": x1 - x0, "height_mm": y1 - y0,
+            }
+            if z.stock_thickness_mm is not None:
+                entry["stock_thickness_mm"] = z.stock_thickness_mm
+            entry.update(z.extra)
+            blank_zones[z.id] = entry
+
+        keep = self.keep_outs()
+        screws = [{"x": z.center()[0], "y": z.center()[1]} for z in keep]
+        radii = [z.radius_mm for z in keep if z.radius_mm is not None]
+        radius = max(radii) if radii else (keep[0].width() / 2.0 if keep else 0.0)
+
+        return {
+            "display_name": self.display_name,
+            "work_area_width_mm": self.work_area_width_mm,
+            "work_area_height_mm": self.work_area_height_mm,
+            "safe_z_mm": self.safe_z_mm,
+            "max_z_mm": self.max_z_mm,
+            "blank_zones": blank_zones,
+            "hold_down_screws": screws,
+            "hold_down_screw_radius_mm": radius,
+        }
+
+    @classmethod
+    def from_fixture_dict(cls, fixture: dict, *, name: str = "guild_cnc",
+                          circle_segments: int = 48) -> "Worktable":
+        """Load a YAML fixture dict (config/fixtures/*.yaml) into a Worktable: each
+        blank zone becomes a role-tagged rectangle, each hold-down screw a KEEP_OUT
+        circle ring — the built-in default Guild bed (BUILDPLAN M7.4)."""
+        import math
+
+        zones: list[WorktableZone] = []
+        _passthrough = {"label", "x_mm", "y_mm", "width_mm", "height_mm",
+                        "stock_thickness_mm"}
+        for key, z in (fixture.get("blank_zones") or {}).items():
+            x, y = float(z["x_mm"]), float(z["y_mm"])
+            w, h = float(z["width_mm"]), float(z["height_mm"])
+            ring = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            role = _ROLE_BY_FIXTURE_ZONE.get(key, BedRole.UNASSIGNED)
+            extra = {k: v for k, v in z.items() if k not in _passthrough}
+            zones.append(WorktableZone(
+                id=key, role=role, label=z.get("label", bed_role_label(role)),
+                polygon=ring, stock_thickness_mm=z.get("stock_thickness_mm"),
+                source=f"fixture:{key}", extra=extra))
+
+        r = float(fixture.get("hold_down_screw_radius_mm", 5.0))
+        for i, s in enumerate(fixture.get("hold_down_screws") or []):
+            cx, cy = float(s["x"]), float(s["y"])
+            ring = [(cx + r * math.cos(2 * math.pi * k / circle_segments),
+                     cy + r * math.sin(2 * math.pi * k / circle_segments))
+                    for k in range(circle_segments)]
+            zones.append(WorktableZone(
+                id=f"screw_{i + 1}", role=BedRole.KEEP_OUT, label="Hold-down screw",
+                polygon=ring, radius_mm=r, source="fixture:screw"))
+
+        return cls(
+            name=name,
+            display_name=fixture.get("display_name", name),
+            work_area_width_mm=float(fixture.get("work_area_width_mm", 300.0)),
+            work_area_height_mm=float(fixture.get("work_area_height_mm", 200.0)),
+            safe_z_mm=float(fixture.get("safe_z_mm", 5.0)),
+            max_z_mm=float(fixture.get("max_z_mm", 80.0)),
+            zones=zones,
+        )
+
+
+class Component(BaseModel):
+    """One role-typed part of a project (BUILDPLAN M7.1).
+
+    Ties a `kind` to its per-kind parameters and provenance. Geometry is *not*
+    stored here — it is derived from the project's embedded source file(s) (the
+    DXF / `.gdraw`), matching the M1–M6 single-component pattern — so a Component
+    is the params + identity + generated-output record for one part. Exactly one
+    of `castle` / `temple` / `base_curve_block` is populated, selected by `kind`
+    (the param matching the kind is default-constructed if absent).
+    """
+    id: str
+    kind: ComponentKind
+    label: str = ""
+    enabled: bool = True
+
+    # per-kind parameters — exactly one populated, per `kind` (see params())
+    castle: CastleParams | None = None
+    temple: TempleParams | None = None
+    base_curve_block: BaseCurveBlockParams | None = None
+
+    forming: FormingMetadata = Field(default_factory=FormingMetadata)
+
+    # provenance
+    source_file: str = ""        # the DXF / .gdraw this component came from
+    source_workspace: str = ""   # .gdraw workspace (front/temple_r/temple_l/hinge), if any
+
+    # generated-output record (files under the .gcam components/<id>/ tree, M7.1)
+    program_files: list[str] = Field(default_factory=list)
+    has_program: bool = False
+
+    @model_validator(mode="after")
+    def _populate_kind_defaults(self) -> "Component":
+        """Make the model total for its kind: default-construct the matching
+        param if absent (with the kind's fixture zone), and fill the label."""
+        field = component_param_field(self.kind)
+        if getattr(self, field) is None:
+            if field == "castle":
+                setattr(self, field, CastleParams())
+            elif field == "temple":
+                setattr(self, field, TempleParams(
+                    fixture_zone=component_fixture_zone(self.kind)))
+            else:
+                setattr(self, field, BaseCurveBlockParams(
+                    fixture_zone=component_fixture_zone(self.kind)))
+        if not self.label:
+            self.label = component_label(self.kind)
+        return self
+
+    def params(self) -> CastleParams | TempleParams | BaseCurveBlockParams:
+        """The param model that drives this component's CAM (per `kind`)."""
+        return getattr(self, component_param_field(self.kind))
+
+    def fixture_zone(self) -> str:
+        """The component's own fixture zone, falling back to the kind default."""
+        p = self.params()
+        return getattr(p, "fixture_zone", None) or component_fixture_zone(self.kind)
+
+    @classmethod
+    def for_kind(cls, kind: ComponentKind, *, id: str | None = None,
+                 label: str | None = None, **kw) -> "Component":
+        """A default Component for `kind` (its matching param default-built)."""
+        kind = ComponentKind(kind)
+        return cls(id=id or kind.value, kind=kind,
+                   label=label or component_label(kind), **kw)
+
+
 class ProjectSchema(BaseModel):
     version: str = "0.1"
     created_at: datetime = Field(default_factory=datetime.now)
@@ -438,4 +842,54 @@ class ProjectSchema(BaseModel):
     temple: TempleParams = Field(default_factory=TempleParams)   # BUILDPLAN M6.3
     base_curve_block: BaseCurveBlockParams = Field(default_factory=BaseCurveBlockParams)  # M6.4
     bed_layout: BedLayout = Field(default_factory=BedLayout)      # BUILDPLAN M6.5
+    worktable: Worktable | None = None                           # BUILDPLAN M7.4
     machine: MachineRef = Field(default_factory=MachineRef)
+
+    # The multi-component model (BUILDPLAN M7.1). A project is an ordered list of
+    # role-typed components (frame front + temples + per-lens base-curve
+    # templates). Empty = a legacy single-component project; call
+    # `ensure_components()` to migrate it to a one-component (frame_front) project.
+    # The flat `castle` / `temple` / `base_curve_block` fields above remain for the
+    # M1–M6 single-component paths until they are migrated to read a component.
+    components: list[Component] = Field(default_factory=list)
+
+    def components_of_kind(self, kind: ComponentKind) -> list[Component]:
+        """Every component of `kind`, in project order."""
+        kind = ComponentKind(kind)
+        return [c for c in self.components if c.kind == kind]
+
+    def component(self, kind: ComponentKind) -> Component | None:
+        """The first component of `kind`, or None."""
+        comps = self.components_of_kind(kind)
+        return comps[0] if comps else None
+
+    def frame_front(self) -> Component | None:
+        return self.component(ComponentKind.FRAME_FRONT)
+
+    def add_component(self, comp: Component) -> Component:
+        """Append `comp`, making its id unique within the project."""
+        existing = {c.id for c in self.components}
+        if comp.id in existing:
+            base, n = comp.id, 2
+            while f"{base}_{n}" in existing:
+                n += 1
+            comp.id = f"{base}_{n}"
+        self.components.append(comp)
+        return comp
+
+    def ensure_components(self) -> "ProjectSchema":
+        """Migrate a legacy single-component project (BUILDPLAN M7.1).
+
+        If `components` is empty, synthesize one `frame_front` Component from the
+        flat `castle` / `forming` / `source_file` fields — so an M1–M6 `.gcam` or
+        project loads as a one-component project. Idempotent; returns self.
+        """
+        if not self.components:
+            self.components.append(Component(
+                id=ComponentKind.FRAME_FRONT.value,
+                kind=ComponentKind.FRAME_FRONT,
+                castle=self.castle,
+                forming=self.forming,
+                source_file=self.source_file,
+            ))
+        return self

@@ -119,7 +119,7 @@ def test_default_progress_is_none(demo):
 # ------------------------------------------------------------------ Part C — icons
 
 # Icons referenced literally by the GUI: gui/app.py's _icon_actions (toolbar)
-# + the 3D preview's camera presets (gui/widgets/preview_3d.py).
+# + the 3D viewer's camera presets (gui/widgets/viewer_3d.py).
 _ICON_NAMES = [
     "op-open-dxf", "op-build-3d", "op-gcode", "op-export-gcode", "op-export-stl",
     "view-2d", "view-3d", "op-fit", "toggle-log", "view-sidebar",

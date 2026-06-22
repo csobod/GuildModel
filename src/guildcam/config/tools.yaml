@@ -35,17 +35,19 @@ flat_3175:
   notes: "The Demo Project reference tool — entire posterior cut, one tool."
 
 engrave_vbit:
-  display_name: "0.5 mm Engraving Bit"
-  type: flat
+  display_name: "0.5 mm 30° Engraving V-bit"
+  type: vbit
   diameter_mm: 0.5
   radius_mm: 0.25
   corner_radius_mm: 0.0
+  included_angle_deg: 30.0      # groove width = 2·depth·tan(15°) (M7.9)
   flutes: 2
+  flute_length_mm: 6.0
   feed_rate_mmpm: 300.0
   plunge_rate_mmpm: 100.0
   spindle_rpm: 14000
   max_doc_mm: 0.5
-  notes: "Temple engraving — shallow text / logo grooves (M6.3)."
+  notes: "Temple engraving — shallow text / logo grooves; a true V-bit (M7.9)."
 
 flat_2mm:
   display_name: "2 mm Flat End Mill"

@@ -13,10 +13,12 @@ from .paths import (
     cutting_paths_from_ops,
 )
 from .report import Completeness, Gouge, CutReport, verify
+from .bed import ComponentSim, composite_bed_report, simulate_component
 
 __all__ = [
     "ToolProfile", "achieved_floor", "achieved_floor_grouped", "densify",
     "cutting_paths_from_program", "cutting_paths_from_program_grouped",
     "cutting_paths_from_ops",
     "Completeness", "Gouge", "CutReport", "verify",
+    "ComponentSim", "composite_bed_report", "simulate_component",
 ]

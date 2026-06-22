@@ -19,3 +19,6 @@ Thumbs.db
 # Local scratch
 *.tmp
 *.bak
+*.log
+# Generated CAM output in the Demo Project (the reference Demo Program.nc is tracked)
+Demo Project/GuildCAM Generated*.nc

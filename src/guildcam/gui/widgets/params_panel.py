@@ -37,9 +37,9 @@ from guildcam.gui.style import theme
 from guildcam.gui import material_store
 from guildcam.core.post.machine import available_machines
 from guildcam.core.project.schema import (
-    BaseCurveBlockParams, CastleCamParams, CastleParams, FootingFillet,
-    FootingSchedule, POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams,
-    ZoneThicknesses,
+    BaseCurveBlockParams, CastleCamParams, CastleParams, ComponentKind,
+    FootingFillet, FootingSchedule, POSTERIOR_OPS, ProgramZero, StockDefinition,
+    TempleParams, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -49,11 +49,16 @@ _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 
 def _tool_names() -> list[str]:
+    """Every tool in the effective library — shipped + the user's own (M7.8)."""
     try:
-        data = yaml.safe_load((_CONFIG_DIR / "tools.yaml").read_text(encoding="utf-8"))
-        return list(data.keys())
+        from guildcam.gui import tool_store
+        return tool_store.names() or ["flat_3175"]
     except Exception:
-        return ["flat_3175"]
+        try:
+            data = yaml.safe_load((_CONFIG_DIR / "tools.yaml").read_text(encoding="utf-8"))
+            return list(data.keys())
+        except Exception:
+            return ["flat_3175"]
 
 
 def _ro_field(value: str = "—") -> QLineEdit:
@@ -111,13 +116,38 @@ class ParamsPanel(QTabWidget):
         self.setMinimumWidth(300)
 
         self._partition = None    # CastlePartition from the last import
+        self._temple_fixture_zone = "temple_right"
+        self._block_fixture_zone = "bc_template_right"
+        self._block_material = "acetal"
 
         # Each tab is an independently scrolling column; no fixed width so the
-        # Footing label + spinbox-pair rows never clip at the right edge.
-        self.addTab(self._scroll_tab(self._build_frame_tab), "Frame")
-        self.addTab(self._scroll_tab(self._build_castle_tab), "Castle")
-        self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
-        self.addTab(self._scroll_tab(self._build_cam_tab), "CAM")
+        # Footing label + spinbox-pair rows never clip at the right edge. The
+        # Castle/Stock, Temple and Base Curve tabs are shown per active component
+        # kind (M7.3) — Frame + CAM apply to every component.
+        self._tab_frame = self.addTab(self._scroll_tab(self._build_frame_tab), "Frame")
+        self._tab_castle = self.addTab(self._scroll_tab(self._build_castle_tab), "Castle")
+        self._tab_stock = self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
+        self._tab_temple = self.addTab(self._scroll_tab(self._build_temple_tab), "Temple")
+        self._tab_block = self.addTab(self._scroll_tab(self._build_block_tab), "Base Curve")
+        self._tab_cam = self.addTab(self._scroll_tab(self._build_cam_tab), "CAM")
+        self.set_component_kind(ComponentKind.FRAME_FRONT)
+
+    # ------------------------------------------------------------ kind-aware tabs
+
+    def set_component_kind(self, kind) -> None:
+        """Show the tabs that apply to the active component's kind (M7.3):
+        Castle + Stock for a frame front, Temple for a temple, Base Curve for a
+        base-curve template; Frame + CAM are always shown."""
+        kind = ComponentKind(kind)
+        is_frame = kind == ComponentKind.FRAME_FRONT
+        is_temple = kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
+        is_block = kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT)
+        self.setTabVisible(self._tab_castle, is_frame)
+        self.setTabVisible(self._tab_stock, is_frame)
+        self.setTabVisible(self._tab_temple, is_temple)
+        self.setTabVisible(self._tab_block, is_block)
+        if not self.isTabVisible(self.currentIndex()):
+            self.setCurrentIndex(self._tab_frame)
 
     # ------------------------------------------------------------------ tab scaffold
 
@@ -336,6 +366,110 @@ class ParamsPanel(QTabWidget):
 
         lay.addWidget(grp)
 
+    # ------------------------------------------------------------------ Temple tab
+
+    def _build_temple_tab(self, lay: QVBoxLayout) -> None:
+        d = TempleParams()
+        grp = QGroupBox("Temple")
+        grp.setToolTip("A temple is a flat blank: shallow ENGRAVING grooves on the "
+                       "top face + an OUTLINE through-cut (onion skin, no castle).")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.temple_blank_length = _spinbox(d.blank_length_mm, 50.0, 300.0, step=1.0, decimals=1)
+        self.temple_blank_width = _spinbox(d.blank_width_mm, 8.0, 80.0, step=1.0, decimals=1)
+        self.temple_blank_thickness = _spinbox(d.blank_thickness_mm, 1.0, 12.0, step=0.5, decimals=1)
+        form.addRow("Blank length:", self.temple_blank_length)
+        form.addRow("Blank width:", self.temple_blank_width)
+        form.addRow("Blank thickness:", self.temple_blank_thickness)
+
+        self.temple_engrave_depth = _spinbox(d.engrave_depth_mm, 0.0, 3.0, step=0.05, decimals=2)
+        self.temple_engrave_depth.setToolTip("Groove depth below the top face.")
+        form.addRow("Engrave depth:", self.temple_engrave_depth)
+        self.temple_engrave_tool = QComboBox()
+        self.temple_engrave_tool.addItems(_tool_names())
+        self.temple_engrave_tool.setCurrentText(d.engrave_tool)
+        form.addRow("Engrave tool:", self.temple_engrave_tool)
+        self.temple_profile_tool = QComboBox()
+        self.temple_profile_tool.addItems(_tool_names())
+        self.temple_profile_tool.setCurrentText(d.profile_tool)
+        form.addRow("Profile tool:", self.temple_profile_tool)
+
+        self.temple_onion = _spinbox(d.onion_skin_mm, 0.0, 2.0, step=0.1, decimals=2)
+        form.addRow("Onion skin:", self.temple_onion)
+        self.temple_allowance = _spinbox(d.hand_finishing_allowance_mm, 0.0, 1.0, step=0.05, decimals=2)
+        form.addRow("Hand allowance:", self.temple_allowance)
+
+        for w in (self.temple_blank_length, self.temple_blank_width,
+                  self.temple_blank_thickness, self.temple_engrave_depth,
+                  self.temple_onion, self.temple_allowance):
+            w.valueChanged.connect(self.cam_changed)
+        self.temple_engrave_tool.currentIndexChanged.connect(self.cam_changed)
+        self.temple_profile_tool.currentIndexChanged.connect(self.cam_changed)
+        lay.addWidget(grp)
+
+    # ------------------------------------------------------------------ Base Curve tab
+
+    def _build_block_tab(self, lay: QVBoxLayout) -> None:
+        d = BaseCurveBlockParams()
+        grp = QGroupBox("Base-Curve Holding Block")
+        grp.setToolTip("Acetal holding block: the lens shape cut free from the blank, "
+                       "with M4 mounting holes — it holds the eyewire on the press.")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.block_blank_length = _spinbox(d.blank_length_mm, 30.0, 150.0, step=1.0, decimals=1)
+        self.block_blank_width = _spinbox(d.blank_width_mm, 30.0, 150.0, step=1.0, decimals=1)
+        # 4 decimals so imperial gauges round-trip exactly (3/16" = 4.7625 mm).
+        self.block_blank_thickness = _spinbox(d.blank_thickness_mm, 3.0, 20.0, step=0.0125, decimals=4)
+        form.addRow("Blank length:", self.block_blank_length)
+        form.addRow("Blank width:", self.block_blank_width)
+        form.addRow("Blank thickness:", self.block_blank_thickness)
+
+        self.block_profile_tool = QComboBox()
+        self.block_profile_tool.addItems(_tool_names())
+        self.block_profile_tool.setCurrentText(d.profile_tool)
+        form.addRow("Profile tool:", self.block_profile_tool)
+
+        self.block_onion = _spinbox(d.onion_skin_mm, 0.0, 2.0, step=0.1, decimals=2)
+        form.addRow("Onion skin:", self.block_onion)
+        self.block_allowance = _spinbox(d.hand_finishing_allowance_mm, 0.0, 1.0, step=0.05, decimals=2)
+        form.addRow("Hand allowance:", self.block_allowance)
+        lay.addWidget(grp)
+
+        hg = QGroupBox("Mounting holes  (M4 clearance)")
+        hf = QFormLayout(hg)
+        hf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.block_hole_count = QSpinBox()
+        self.block_hole_count.setRange(0, 6)
+        self.block_hole_count.setValue(d.hole_count)
+        hf.addRow("Hole count:", self.block_hole_count)
+        self.block_hole_spacing = _spinbox(d.hole_spacing_mm, 4.0, 40.0, step=1.0, decimals=1)
+        hf.addRow("Hole spacing:", self.block_hole_spacing)
+        self.block_hole_diameter = _spinbox(d.hole_diameter_mm, 1.0, 10.0, step=0.1, decimals=2)
+        hf.addRow("Hole Ø:", self.block_hole_diameter)
+        self.block_hole_arrangement = QComboBox()
+        self.block_hole_arrangement.addItems(["inline", "triangle"])
+        self.block_hole_arrangement.setCurrentText(d.hole_arrangement)
+        hf.addRow("Arrangement:", self.block_hole_arrangement)
+        self.block_drill_tool = QComboBox()
+        self.block_drill_tool.addItems(_tool_names())
+        self.block_drill_tool.setCurrentText(d.drill_tool)
+        hf.addRow("Drill tool:", self.block_drill_tool)
+        self.block_peck_depth = _spinbox(d.peck_depth_mm, 0.2, 5.0, step=0.1, decimals=2)
+        hf.addRow("Peck depth:", self.block_peck_depth)
+        self.block_breakthrough = _spinbox(d.drill_breakthrough_mm, 0.0, 5.0, step=0.1, decimals=2)
+        hf.addRow("Breakthrough:", self.block_breakthrough)
+        lay.addWidget(hg)
+
+        for w in (self.block_blank_length, self.block_blank_width,
+                  self.block_blank_thickness,
+                  self.block_onion, self.block_allowance, self.block_hole_spacing,
+                  self.block_hole_diameter, self.block_peck_depth, self.block_breakthrough):
+            w.valueChanged.connect(self.cam_changed)
+        self.block_hole_count.valueChanged.connect(self.cam_changed)
+        for cb in (self.block_profile_tool,
+                   self.block_hole_arrangement, self.block_drill_tool):
+            cb.currentIndexChanged.connect(self.cam_changed)
+
     # ------------------------------------------------------------------ zones
 
     def _build_zones_group(self, lay: QVBoxLayout) -> None:
@@ -396,6 +530,37 @@ class ParamsPanel(QTabWidget):
         self._build_program_zero_group(lay)
         self._build_strategy_group(lay)
         self._build_cam_group(lay)
+        # Keep the chip-load read-out live (M7.10): every CAM change re-derives it.
+        self.cam_changed.connect(self._update_chip_readout)
+        self._update_chip_readout()
+
+    def _update_chip_readout(self) -> None:
+        """Re-derive the chip load + surface speed for the active tool / feed /
+        spindle / material and flag it against the material's window (M7.10)."""
+        if not hasattr(self, "_chip_load_lbl"):
+            return
+        from guildcam.core.cam import feeds
+        from guildcam.gui import material_store, tool_store
+        mat = material_store.material(self.material.currentText())
+        tool = tool_store.spec(self.cam_tool.currentText())
+        feed = float(self.feed_override.value()) or float(mat.get("feed_rate_mmpm", 0) or 0)
+        spindle = float(self.spindle_override.value()) or float(mat.get("spindle_rpm", 0) or 0)
+        cl = feeds.chip_load_mm(feed, spindle, int(tool.flutes or 0))
+        vc = feeds.surface_speed_m_per_min(float(tool.diameter_mm or 0), spindle)
+        self._chip_load_lbl.setText(f"{cl:.4f} mm/tooth" if cl is not None else "—")
+        self._surface_speed_lbl.setText(f"{vc:.0f} m/min" if vc else "—")
+        status = feeds.chip_load_status(cl, mat.get("chip_load_min_mm"),
+                                        mat.get("chip_load_max_mm"))
+        text, color = {
+            "ok": ("✓ within the material's window", "#3a8c3a"),
+            "low": ("⚠ light cut — chip too thin (rubbing); raise feed or lower RPM",
+                    "#c08a00"),
+            "high": ("⚠ heavy cut — chip too thick; lower feed or raise RPM", "#c0392b"),
+            "unknown": ("", ""),
+        }[status]
+        self._chip_status_lbl.setText(text)
+        self._chip_status_lbl.setStyleSheet(
+            f"color: {color}; font-weight: 600;" if color else "")
 
     # mapping between schema literals and the combo display order
     _PZ_MODE = [("stock_box", "Stock box"), ("fixture", "Fixture (design frame)")]
@@ -487,7 +652,7 @@ class ParamsPanel(QTabWidget):
         self.cam_tool.setCurrentText("flat_3175")
         self.cam_tool.setToolTip(
             "Default tool for the posterior program; every op uses it unless "
-            "given its own tool below. Add tools by editing config/tools.yaml."
+            "given its own tool below. Manage tools in Preferences ▸ Tools."
         )
         form.addRow("Tool:", self.cam_tool)
         lay.addWidget(grp)
@@ -518,6 +683,34 @@ class ParamsPanel(QTabWidget):
             self.op_tool_combos[op] = cb
             form.addRow(f"{op}:", cb)
         lay.addWidget(grp)
+
+    def refresh_tool_lists(self) -> None:
+        """Repopulate every tool combo from the (possibly edited) library, keeping
+        the current selection where it still exists (BUILDPLAN M7.8 — called after
+        the Preferences ▸ Tools editor closes)."""
+        names = _tool_names()
+
+        def _repop(cb, *, sentinel: bool = False) -> None:
+            cur = cb.currentText()
+            cb.blockSignals(True)
+            cb.clear()
+            if sentinel:
+                cb.addItem(_SAME_AS_GLOBAL)
+            cb.addItems(names)
+            idx = cb.findText(cur)
+            cb.setCurrentIndex(idx if idx >= 0 else 0)
+            cb.blockSignals(False)
+
+        if hasattr(self, "cam_tool"):
+            _repop(self.cam_tool)
+        for cb in getattr(self, "op_tool_combos", {}).values():
+            _repop(cb, sentinel=True)
+        for attr in ("temple_engrave_tool", "temple_profile_tool",
+                     "block_profile_tool", "block_drill_tool"):
+            cb = getattr(self, attr, None)
+            if cb is not None:
+                _repop(cb)
+        self._update_chip_readout()         # a tool's flutes/Ø may have changed (M7.10)
 
     def _build_strategy_group(self, lay: QVBoxLayout) -> None:
         d = CastleCamParams()
@@ -579,6 +772,25 @@ class ParamsPanel(QTabWidget):
         of.addRow("Spindle override:", self.spindle_override)
         of.addRow("Safe-Z clearance:", self.safe_z_clearance)
         lay.addWidget(og)
+
+        # Chip-load / surface-speed read-out (BUILDPLAN M7.10): the relationship
+        # between the tool (flutes / diameter), the spindle, and the feed.
+        cg = QGroupBox("Chip load  (feed per tooth)")
+        cg.setToolTip(
+            "Chip load = feed ÷ (spindle × flutes); surface speed = π × Ø × spindle. "
+            "Green = within the material's window, amber = light (rubbing), "
+            "red = heavy (overloaded). Adjust feed/spindle above to land in range."
+        )
+        cf = QFormLayout(cg)
+        cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._chip_load_lbl = QLabel("—")
+        self._surface_speed_lbl = QLabel("—")
+        self._chip_status_lbl = QLabel("")
+        self._chip_status_lbl.setWordWrap(True)
+        cf.addRow("Chip load:", self._chip_load_lbl)
+        cf.addRow("Surface speed:", self._surface_speed_lbl)
+        cf.addRow(self._chip_status_lbl)
+        lay.addWidget(cg)
 
         for w in (self.relief_stepover, self.contour_stepdown, self.rough_axial_stock,
                   self.contour_ramp_angle, self.arc_tolerance, self.feed_override,
@@ -776,19 +988,80 @@ class ParamsPanel(QTabWidget):
         self.safe_z_clearance.setValue(cp.safe_z_clearance_mm)
 
     def temple_params(self) -> TempleParams:
-        """Temple component params (BUILDPLAN M6.3). The profile (bulk) tool
-        follows the CAM tab's Tool selector; the rest are defaults until the M6.5
-        component UI lands."""
-        return TempleParams().model_copy(
-            update={"profile_tool": self.cam_tool.currentText()})
+        """Temple component params from the Temple tab (BUILDPLAN M7.3)."""
+        return TempleParams(
+            blank_length_mm=self.temple_blank_length.value(),
+            blank_width_mm=self.temple_blank_width.value(),
+            blank_thickness_mm=self.temple_blank_thickness.value(),
+            engrave_depth_mm=self.temple_engrave_depth.value(),
+            engrave_tool=self.temple_engrave_tool.currentText(),
+            profile_tool=self.temple_profile_tool.currentText(),
+            onion_skin_mm=self.temple_onion.value(),
+            hand_finishing_allowance_mm=self.temple_allowance.value(),
+            fixture_zone=self._temple_fixture_zone,
+        )
+
+    def set_temple_params(self, t: TempleParams) -> None:
+        """Restore the Temple tab from a TempleParams (component activation)."""
+        self._temple_fixture_zone = t.fixture_zone
+        for sb, val in (
+            (self.temple_blank_length, t.blank_length_mm),
+            (self.temple_blank_width, t.blank_width_mm),
+            (self.temple_blank_thickness, t.blank_thickness_mm),
+            (self.temple_engrave_depth, t.engrave_depth_mm),
+            (self.temple_onion, t.onion_skin_mm),
+            (self.temple_allowance, t.hand_finishing_allowance_mm),
+        ):
+            sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
+        for cb, val in ((self.temple_engrave_tool, t.engrave_tool),
+                        (self.temple_profile_tool, t.profile_tool)):
+            if cb.findText(val) >= 0:
+                cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
 
     def block_params(self) -> BaseCurveBlockParams:
-        """Base-curve forming-block params (BUILDPLAN M6.4). The forming/profile
-        (bulk) tools follow the CAM tab's Tool selector; the rest are defaults
-        (in-line M4 holes) until the M6.5 component UI lands."""
-        tool = self.cam_tool.currentText()
-        return BaseCurveBlockParams().model_copy(
-            update={"forming_tool": tool, "profile_tool": tool})
+        """Base-curve forming-block params from the Base Curve tab (BUILDPLAN M7.3)."""
+        return BaseCurveBlockParams(
+            blank_length_mm=self.block_blank_length.value(),
+            blank_width_mm=self.block_blank_width.value(),
+            blank_thickness_mm=self.block_blank_thickness.value(),
+            material=self._block_material,
+            profile_tool=self.block_profile_tool.currentText(),
+            onion_skin_mm=self.block_onion.value(),
+            hand_finishing_allowance_mm=self.block_allowance.value(),
+            hole_count=self.block_hole_count.value(),
+            hole_spacing_mm=self.block_hole_spacing.value(),
+            hole_diameter_mm=self.block_hole_diameter.value(),
+            hole_arrangement=self.block_hole_arrangement.currentText(),
+            drill_tool=self.block_drill_tool.currentText(),
+            peck_depth_mm=self.block_peck_depth.value(),
+            drill_breakthrough_mm=self.block_breakthrough.value(),
+            fixture_zone=self._block_fixture_zone,
+        )
+
+    def set_block_params(self, b: BaseCurveBlockParams) -> None:
+        """Restore the Base Curve tab from a BaseCurveBlockParams (activation)."""
+        self._block_fixture_zone = b.fixture_zone
+        self._block_material = b.material
+        for sb, val in (
+            (self.block_blank_length, b.blank_length_mm),
+            (self.block_blank_width, b.blank_width_mm),
+            (self.block_blank_thickness, b.blank_thickness_mm),
+            (self.block_onion, b.onion_skin_mm),
+            (self.block_allowance, b.hand_finishing_allowance_mm),
+            (self.block_hole_spacing, b.hole_spacing_mm),
+            (self.block_hole_diameter, b.hole_diameter_mm),
+            (self.block_peck_depth, b.peck_depth_mm),
+            (self.block_breakthrough, b.drill_breakthrough_mm),
+        ):
+            sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
+        self.block_hole_count.blockSignals(True)
+        self.block_hole_count.setValue(b.hole_count)
+        self.block_hole_count.blockSignals(False)
+        for cb, val in ((self.block_profile_tool, b.profile_tool),
+                        (self.block_hole_arrangement, b.hole_arrangement),
+                        (self.block_drill_tool, b.drill_tool)):
+            if cb.findText(val) >= 0:
+                cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
 
     # ------------------------------------------------------------------ material
 

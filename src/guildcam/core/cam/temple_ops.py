@@ -1,23 +1,27 @@
-"""Temple component CAM: engraving + outline profile (BUILDPLAN M6.3).
+"""Temple component CAM: hinge pockets + engraving + outline profile (M6.3 / M7).
 
-A temple is a flat acetate blank — no castle relief. It gets:
+A temple is a flat acetate blank — no castle relief. It gets, in cut order:
 
-  1. **Engraving** — shallow grooves traced along the ENGRAVING curves at a set
+  1. **Hinge Pockets** — the HINGE polys milled to a blind floor (the same ramped
+     lap-entry pocketing the frame's hinges use) while the blank is still rigid.
+     Only emitted when the component carries HINGE geometry; the 3D model, the cut
+     sim, and the posted G-code all agree on the same recess (BUILDPLAN M7).
+  2. **Engraving** — shallow grooves traced along the ENGRAVING curves at a set
      depth below the top face, cut with a small tool (engraving bit) while the
      part is still held in the full blank.
-  2. **Temple Profile** — the OUTLINE through-cut with an onion skin (exactly the
+  3. **Temple Profile** — the OUTLINE through-cut with an onion skin (exactly the
      perimeter strategy), cut last to release the part, with the bulk tool.
 
-The two ops carry different tools, so the program posts one tool change between
-them (the multi-tool machinery from BUILDPLAN M6.1). Both ride the same GRBL post
-and program-zero offset as the frame front.
+The ops carry different tools, so the program posts a tool change between each
+(the multi-tool machinery from BUILDPLAN M6.1). All ride the same GRBL post and
+program-zero offset as the frame front.
 """
 from __future__ import annotations
 
 from shapely.geometry import Polygon
 
 from ..project.schema import CastleCamParams, TempleParams
-from .castle_ops import CamOp, _rdp, contour_op, resolve_tool
+from .castle_ops import CamOp, _rdp, contour_op, hinge_pocket_op, resolve_tool
 
 Point3 = tuple[float, float, float]
 
@@ -39,6 +43,27 @@ def engrave_op(
         pts: list[Point3] = [(float(x), float(y), float(depth_z)) for x, y in curve]
         if len(pts) >= 2:
             op.paths.append(_rdp(pts, simplify_tol_mm))
+    return op
+
+
+def temple_hinge_pocket_op(
+    hinge_polys: list[Polygon],
+    temple: TempleParams,
+    tools_cfg: dict,
+    params: CastleCamParams,
+) -> CamOp:
+    """Pocket each HINGE poly to ``thickness − hinge_pocket_depth`` with the same
+    ramped lap-entry pocketing the frame uses, cut with the temple's hinge tool.
+    The op may have no paths if every pocket is too small for the tool — the caller
+    drops it in that case."""
+    tool = resolve_tool(temple.hinge_tool, tools_cfg)
+    floor_z = temple.blank_thickness_mm - temple.hinge_pocket_depth_mm
+    op = hinge_pocket_op(
+        hinge_polys, floor_z,
+        start_z=temple.blank_thickness_mm + 0.5,
+        tool_radius_mm=tool["radius_mm"], params=params,
+    )
+    op.tool = tool
     return op
 
 
@@ -65,12 +90,16 @@ def generate_temple_program(
     temple: TempleParams,
     tools_cfg: dict,
     params: CastleCamParams | None = None,
+    hinge_polys: list[Polygon] = (),
 ) -> list[CamOp]:
-    """Engrave (if any ENGRAVING curves) then profile-cut the temple outline.
+    """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), then
+    profile-cut the temple outline.
 
-    Engraving is cut first while the blank is rigid; the profile releases the
-    part last. The engrave and profile tools come from `temple` (resolved from
-    `tools_cfg`) — when they differ the post emits a tool change between the ops.
+    The hinge pockets and engraving are cut first while the blank is rigid; the
+    profile releases the part last. Each op's tool comes from `temple` (resolved
+    from `tools_cfg`) — when they differ the post emits a tool change between ops.
+    `hinge_polys` defaults to empty, so a temple with no HINGE geometry posts the
+    historical engrave→profile program unchanged.
     """
     params = params or CastleCamParams()
     profile_tool = resolve_tool(temple.profile_tool, tools_cfg)
@@ -80,7 +109,13 @@ def generate_temple_program(
     skin_z = temple.onion_skin_mm
     engrave_z = temple.blank_thickness_mm - temple.engrave_depth_mm
 
+    hinges = [p for p in hinge_polys if p is not None and not p.is_empty]
+
     ops: list[CamOp] = []
+    if hinges:
+        hinge_op = temple_hinge_pocket_op(hinges, temple, tools_cfg, params)
+        if hinge_op.paths:                 # skip when the pockets can't admit the tool
+            ops.append(hinge_op)
     if engraving_curves:
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
                               params.simplify_tol_mm))

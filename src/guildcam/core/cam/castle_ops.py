@@ -514,6 +514,47 @@ def analyze_program_reach(
     return reach_warnings(features, tools_cfg)
 
 
+@dataclass
+class DepthReachWarning:
+    """An op that cuts deeper than its tool's usable flute length (BUILDPLAN M7.9)."""
+    op_name: str
+    tool_name: str
+    flute_length_mm: float
+    cut_depth_mm: float
+
+    def message(self) -> str:
+        return (f"{self.op_name}: cut depth {self.cut_depth_mm:.1f} mm exceeds "
+                f"{self.tool_name}'s {self.flute_length_mm:.1f} mm flute length — "
+                f"the shank would rub (use a longer tool or a shallower pass)")
+
+
+def depth_reach_warnings(
+    ops: list[CamOp], stock_top_mm: float,
+) -> list[DepthReachWarning]:
+    """Warn when an op's deepest cut drops further below the stock top than its
+    tool's flute length allows — the depth-axis sibling of `reach_warnings` (M7.9).
+
+    Only tools that declare a `flute_length_mm` (> 0) are checked, so shipped jobs
+    raise nothing new until a tool's reach is filled in.
+    """
+    out: list[DepthReachWarning] = []
+    for op in ops:
+        t = op.tool
+        if not t:
+            continue
+        flute = float(t.get("flute_length_mm") or 0.0)
+        if flute <= 0:
+            continue
+        zmin, _zmax = op.z_range()
+        if not math.isfinite(zmin):
+            continue
+        depth = stock_top_mm - zmin
+        if depth > flute + 1e-6:
+            out.append(DepthReachWarning(
+                op.name, t.get("name", "tool"), flute, depth))
+    return out
+
+
 # ------------------------------------------------------------------ program assembly
 
 def generate_castle_program(
@@ -604,7 +645,6 @@ _OP_STRATEGIES = {
     "Engraving": "Engrave · trace at depth",
     "Temple Profile": "Contour 2D (outside) · onion skin",
     "Drill Holes": "Peck drill · G83 full-retract",
-    "Forming Profile": "Scribe · lens-interior footprint at depth",
     "Block Profile": "Contour 2D (outside) · onion skin",
 }
 
@@ -669,12 +709,21 @@ def build_tool_settings(
     settings: dict[str, ToolSetting] = {}
     warnings: list[str] = []
     number = 0
+    used: set[int] = set()
     for op in ops:
         nm = op.tool_name
         if nm is None or nm in settings:
             continue
-        number += 1
         t = op.tool or tools_cfg.get(nm, {})
+        # Stable T-number from the tool spec when set (M7.8); else the next free
+        # number by machining order — shipped tools carry none, so unchanged.
+        n = int(t.get("number") or 0)
+        if n <= 0 or n in used:
+            number += 1
+            while number in used:
+                number += 1
+            n = number
+        used.add(n)
         feed = t.get("feed_rate_mmpm") or default_feed
         plunge = t.get("plunge_rate_mmpm") or default_plunge
         spindle = t.get("spindle_rpm") or default_spindle
@@ -695,7 +744,7 @@ def build_tool_settings(
                 spindle = machine.min_spindle_rpm
         diameter = float(t.get("diameter_mm", 2.0 * t.get("radius_mm", 1.0)))
         settings[nm] = ToolSetting(
-            number=number, name=nm, diameter_mm=diameter,
+            number=n, name=nm, diameter_mm=diameter,
             feed_rate_mmpm=float(feed), plunge_rate_mmpm=float(plunge),
             spindle_rpm=int(round(spindle)),
         )

@@ -18,6 +18,8 @@ acetate:
   relief_stepover_mm: 0.9       # matches the Fusion Scallop coverage
   contour_stepdown_mm: 2.5
   rough_axial_stock_mm: 2.0
+  chip_load_min_mm: 0.02        # feed-per-tooth window (M7.10); below = rubbing
+  chip_load_max_mm: 0.15        # above = overloaded
   recommended_tools:
     relief: flat_3175
     profile: flat_3175
@@ -33,6 +35,8 @@ acetal:
   relief_stepover_mm: 0.9
   contour_stepdown_mm: 2.0
   rough_axial_stock_mm: 1.5
+  chip_load_min_mm: 0.03        # tougher than acetate — a slightly thicker chip
+  chip_load_max_mm: 0.18
   recommended_tools:
     relief: flat_3175
     profile: flat_3175
@@ -48,6 +52,8 @@ horn:
   relief_stepover_mm: 0.6       # finer + shallower: horn is brittle
   contour_stepdown_mm: 0.8
   rough_axial_stock_mm: 1.0
+  chip_load_min_mm: 0.01        # brittle — keep the chip thin
+  chip_load_max_mm: 0.08
   recommended_tools:
     relief: ball_2mm
     profile: flat_3mm

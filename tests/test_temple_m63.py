@@ -82,6 +82,37 @@ def test_no_engraving_yields_profile_only():
     assert count_tool_changes(ops) == 0
 
 
+# a hinge recess near the +x end of the bar, well clear of the engraving strokes
+HINGE = [Polygon([(55, -3), (65, -3), (65, 3), (55, 3)])]
+
+
+def test_temple_hinge_pockets_emitted_when_present():
+    ops = generate_temple_program(OUTLINE, ENGRAVING, TempleParams(), TOOLS, hinge_polys=HINGE)
+    assert [op.name for op in ops] == ["Hinge Pockets", "Engraving", "Temple Profile"]
+    hp = ops[0]
+    assert hp.tool_name == "flat_2mm"            # the temple's hinge tool
+    zmin, zmax = hp.z_range()
+    assert zmin == pytest.approx(3.0)            # 4.0 thickness − 1.0 pocket depth
+    assert zmax == pytest.approx(4.5)            # ramp entry begins above the blank top
+    assert count_tool_changes(ops) == 2          # flat_2mm → engrave_vbit → flat_3175
+
+
+def test_temple_without_hinge_is_unchanged():
+    ops = generate_temple_program(OUTLINE, ENGRAVING, TempleParams(), TOOLS, hinge_polys=[])
+    assert [op.name for op in ops] == ["Engraving", "Temple Profile"]
+
+
+def test_temple_hinge_pocket_posts_and_lints():
+    ops = generate_temple_program(OUTLINE, ENGRAVING, TempleParams(), TOOLS, hinge_polys=HINGE)
+    machine = MachineProfile()
+    _, text = _post_temple(ops, machine)
+    assert text.count("Tool Change") == 2
+    # the pocket is milled first (Z3.0000 floor) — before the first tool change
+    head = text.split("Tool Change")[0]
+    assert "Z3.0000" in head
+    assert lint_program(text, machine) == []
+
+
 def test_profile_envelope_top_to_onion_skin():
     t = TempleParams(blank_thickness_mm=4.0, onion_skin_mm=0.4)
     ops = generate_temple_program(OUTLINE, ENGRAVING, t, TOOLS)

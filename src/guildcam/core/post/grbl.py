@@ -162,6 +162,11 @@ class GRBLPost:
         M6.4). GRBL has no canned cycle, so this is an explicit G83 full-retract
         peck: plunge `peck_depth`, rapid out to clear chips, rapid back to just
         above the cut, repeat. The work offset is applied by rapid/feed."""
+        # A non-positive peck depth would never advance the loop below — guard the
+        # primitive (the schema/UI floor it, but a hand-edited project must not
+        # hang the worker): drill the hole in one full-depth plunge instead.
+        if peck_depth <= 1e-9:
+            peck_depth = max(z_top - z_bottom, 1e-9)
         approach = z_top + approach_mm
         self.safe_retract()
         self.rapid(x=x, y=y)
