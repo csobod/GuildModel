@@ -3071,8 +3071,8 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        # the expanding spacer separates the view modes (above) from the bottom
-        # utility group (Fit + dock toggles) — no extra separator needed
+        tb.addSeparator()                 # views | utilities (Fit + dock toggles)
+        # the spacer pushes the utility group to the far end (bottom when docked left)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         tb.addWidget(spacer)
@@ -3109,9 +3109,9 @@ class MainWindow(QMainWindow):
             return
         colour = "#d9ad4a" if self._dark_mode else "#a87b2c"
         if tb.orientation() == Qt.Orientation.Horizontal:
-            size = "width: 3px; margin: 6px 11px;"      # vertical line, padded left/right
+            size = "width: 2px; margin: 3px 5px;"       # vertical line, padded left/right
         else:
-            size = "height: 3px; margin: 11px 6px;"     # horizontal line, padded top/bot
+            size = "height: 2px; margin: 5px 3px;"      # horizontal line, padded top/bot
         tb.setStyleSheet(
             f"QToolBar::separator {{ background: {colour}; {size} border-radius: 1px; }}")
 
