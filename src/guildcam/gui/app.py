@@ -2219,7 +2219,12 @@ class MainWindow(QMainWindow):
         self.params = ParamsPanel()
         self._right_dock = QDockWidget("Parameters", self)
         self._right_dock.setObjectName("paramsDock")
-        self._right_dock.setWidget(self.params)
+        # Context-aware sidebar: component params on a component tab, the worktable
+        # controls on the Worktable tab — both in the same dock (BUILDPLAN M7.12).
+        self._dock_stack = QStackedWidget()
+        self._dock_stack.addWidget(self.params)              # 0 — component params
+        self._dock_stack.addWidget(self._worktable_panel)    # 1 — worktable controls
+        self._right_dock.setWidget(self._dock_stack)
         self._right_dock.setTitleBarWidget(QWidget())   # hide the title bar
         self._right_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
@@ -2291,10 +2296,12 @@ class MainWindow(QMainWindow):
         self.bed_canvas.component_nudged.connect(self._on_component_nudged)
         h.addWidget(self.bed_canvas, 1)
 
-        panel = QWidget()
-        panel.setObjectName("worktablePanel")
-        panel.setFixedWidth(252)
-        v = QVBoxLayout(panel)
+        # The worktable controls live in the right dock (the sidebar), so they're
+        # available across the bed's 2D + Simulation views — a context-aware sidebar
+        # (BUILDPLAN M7.12). The central page is just the bed canvas.
+        self._worktable_panel = QWidget()
+        self._worktable_panel.setObjectName("worktablePanel")
+        v = QVBoxLayout(self._worktable_panel)
         v.setContentsMargins(10, 10, 10, 10)
         v.setSpacing(8)
 
@@ -2383,8 +2390,7 @@ class MainWindow(QMainWindow):
         self._bed_sim_hint.setObjectName("mutedSmallLabel")
         self._bed_sim_hint.setWordWrap(True)
         v.addWidget(self._bed_sim_hint)
-
-        h.addWidget(panel)
+        v.addStretch(0)
         return page
 
     def _ensure_worktable(self):
@@ -2413,7 +2419,8 @@ class MainWindow(QMainWindow):
         self._refresh_worktable_panel()
         if self._nest is not None:                 # re-show a prior nest (M7.6)
             self._refresh_nest_render()
-        self._right_dock.setVisible(False)        # the bed has its own side panel
+        self._dock_stack.setCurrentIndex(1)       # worktable controls in the sidebar
+        self._right_dock.setVisible(self._act_sidebar.isChecked())
         self._switch_view(self._current_view)     # bed canvas, or the bed sim if cached
         self.status_lbl.setText(f"Worktable — {self._worktable.display_name}")
 
@@ -3654,7 +3661,8 @@ class MainWindow(QMainWindow):
         ws = self._workspaces[index]
         self._load_active_geometry(ws)
         self._apply_workspace_to_ui(ws)
-        # Leaving the Worktable tab → restore the params dock to the sidebar toggle.
+        # Component params in the sidebar; honour the user's sidebar toggle.
+        self._dock_stack.setCurrentIndex(0)
         self._right_dock.setVisible(self._act_sidebar.isChecked())
         if self.component_tabs.currentIndex() != index:
             self.component_tabs.blockSignals(True)
