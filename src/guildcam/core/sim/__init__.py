@@ -14,7 +14,9 @@ from .paths import (
 )
 from .report import Completeness, Gouge, CutReport, verify
 from .bed import ComponentSim, composite_bed_report, simulate_component
-from .playback import FloorSnapshot, simulate_steps, steps_from_ops
+from .playback import (
+    FloorSnapshot, RemovalPlayback, simulate_removal, simulate_steps, steps_from_ops,
+)
 
 __all__ = [
     "ToolProfile", "achieved_floor", "achieved_floor_grouped", "densify",
@@ -22,5 +24,6 @@ __all__ = [
     "cutting_paths_from_ops",
     "Completeness", "Gouge", "CutReport", "verify",
     "ComponentSim", "composite_bed_report", "simulate_component",
-    "FloorSnapshot", "simulate_steps", "steps_from_ops",
+    "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
+    "steps_from_ops",
 ]

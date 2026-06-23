@@ -84,12 +84,17 @@ def densify(path: list[Point3], spacing: float) -> np.ndarray:
     return np.asarray(out)
 
 
-def _stamp_path(floor, path, kernel, origin, resolution, shape, spacing) -> None:
-    """Stamp one cutting path's tool sweep into `floor` (in place, min-Z)."""
+def _stamp_points(floor, P, kernel, origin, resolution, shape) -> None:
+    """Stamp pre-densified tool positions ``P`` (N×3) into ``floor`` (in place,
+    min-Z). The per-position kernel disc/profile is broadcast and ``np.minimum``-
+    reduced. Shared by `_stamp_path` and the M7.12.1 removal playback (which stamps
+    sub-path batches for fine-grained frames)."""
+    P = np.asarray(P, dtype=np.float64)
+    if P.size == 0:
+        return
     di, dj, dz = kernel
     ox, oy = origin
     rows, cols = shape
-    P = densify(path, spacing) if len(path) > 1 else np.asarray(path, float)
     ci = np.round((P[:, 0] - ox) / resolution).astype(np.intp)
     ri = np.round((P[:, 1] - oy) / resolution).astype(np.intp)
     z = P[:, 2]
@@ -98,6 +103,12 @@ def _stamp_path(floor, path, kernel, origin, resolution, shape, spacing) -> None
     zz = (z[:, None] + dz[None, :]).ravel()
     ok = (cc >= 0) & (cc < cols) & (rr >= 0) & (rr < rows)
     np.minimum.at(floor, (rr[ok], cc[ok]), zz[ok])
+
+
+def _stamp_path(floor, path, kernel, origin, resolution, shape, spacing) -> None:
+    """Stamp one cutting path's tool sweep into `floor` (in place, min-Z)."""
+    P = densify(path, spacing) if len(path) > 1 else np.asarray(path, float)
+    _stamp_points(floor, P, kernel, origin, resolution, shape)
 
 
 def achieved_floor(

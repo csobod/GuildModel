@@ -13,12 +13,13 @@ frame agrees with the headline report (geometric Z-buffer only, no physics).
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
 
-from .toolsim import ToolProfile, _stamp_path
+from .toolsim import ToolProfile, _stamp_path, _stamp_points, densify
 
 Point3 = tuple[float, float, float]
 
@@ -101,3 +102,116 @@ def simulate_steps(
         if progress is not None:
             progress((i + 1) / n)
     return snaps
+
+
+# ------------------------------------------------------------------ M7.12.1 remaining-stock
+
+@dataclass
+class RemovalPlayback:
+    """A fine-grained remaining-stock animation (BUILDPLAN M7.12.1).
+
+    ``frames[k]`` is the remaining-stock top (a heightfield, independent copies)
+    after the k-th timeline step — the uncut block ``stock_top`` progressively
+    carved down to the finished part. Monotone (material only ever removed), so the
+    GUI can scrub freely; the last frame is the fully-cut result. Each op always
+    ends on a frame, so ``op_boundaries[j]`` is the frame index where op
+    ``op_labels[j]`` finishes — the M7.12 op-scrubber rides this same timeline.
+    """
+    frames: list                      # list[np.ndarray] — remaining stock per frame
+    frame_labels: list                # op label being cut at each frame
+    op_labels: list                   # one label per op, in cut order
+    op_boundaries: list               # frame index at each op's end (len == op_labels)
+    stock_top: np.ndarray = field(repr=False)
+    origin: tuple = (0.0, 0.0)
+    resolution: float = 0.3
+
+    @property
+    def n_frames(self) -> int:
+        return len(self.frames)
+
+
+def simulate_removal(
+    steps: list[Step],
+    stock_top: np.ndarray,
+    origin: tuple[float, float],
+    resolution: float,
+    *,
+    frames: int = 60,
+    point_spacing: float | None = None,
+    progress: Callable[[float], None] | None = None,
+) -> RemovalPlayback:
+    """Animate the remaining stock being carved at ~`frames` timeline steps (M7.12.1).
+
+    Unlike :func:`simulate_steps` (one snapshot per op, from a uniform ``init_z``),
+    this starts from the real ``stock_top`` heightfield and snapshots at fine
+    move-batch granularity — the uncut block progressively reduced. Every op ends on
+    a frame (so ``op_boundaries`` indexes ``frames``); ``pending`` resets per op, so
+    batches never straddle an op boundary. Material is only ever removed
+    (``np.minimum``), so the sequence is monotone and the last frame is the full cut.
+    """
+    stock_top = np.asarray(stock_top, dtype=np.float64)
+    shape = stock_top.shape
+    spacing = point_spacing or resolution
+    floor = stock_top.copy()
+
+    kernels: dict = {}
+
+    def _kern(prof: ToolProfile):
+        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm,
+               prof.included_angle_deg)
+        if key not in kernels:
+            kernels[key] = prof.kernel(resolution)
+        return kernels[key]
+
+    # Pre-densify each op's paths into one positions array (so frames can stamp
+    # sub-path batches) + count the total tool positions for the batch size.
+    op_runs: list = []                # (label, kernel, positions N×3)
+    total = 0
+    for label, prof, paths in steps:
+        chunks = [densify(p, spacing) for p in paths if len(p) >= 1]
+        P = np.vstack(chunks) if chunks else np.empty((0, 3), dtype=np.float64)
+        op_runs.append((label, _kern(prof), P))
+        total += len(P)
+
+    frames_out: list = []
+    frame_labels: list = []
+    op_labels: list = []
+    op_boundaries: list = []
+
+    if total == 0:                    # nothing to cut — a single uncut frame
+        frames_out.append(floor.copy())
+        frame_labels.append(op_runs[0][0] if op_runs else "")
+        for label, _, _ in op_runs:
+            op_labels.append(label)
+            op_boundaries.append(0)
+        if progress is not None:
+            progress(1.0)
+        return RemovalPlayback(frames_out, frame_labels, op_labels, op_boundaries,
+                               stock_top, tuple(origin), resolution)
+
+    batch = max(1, math.ceil(total / max(1, frames)))
+    pending = 0
+    for label, kern, P in op_runs:
+        op_labels.append(label)
+        i, M = 0, len(P)
+        while i < M:
+            take = int(min(batch - pending, M - i))
+            _stamp_points(floor, P[i:i + take], kern, origin, resolution, shape)
+            i += take
+            pending += take
+            if pending >= batch:
+                frames_out.append(floor.copy())
+                frame_labels.append(label)
+                pending = 0
+        # Force a frame at the op boundary (remainder pending, or an empty op) so
+        # op markers always align to a frame and pending resets between ops.
+        if pending > 0 or M == 0:
+            frames_out.append(floor.copy())
+            frame_labels.append(label)
+            pending = 0
+        op_boundaries.append(len(frames_out) - 1)
+        if progress is not None:
+            progress(len(op_labels) / max(1, len(op_runs)))
+
+    return RemovalPlayback(frames_out, frame_labels, op_labels, op_boundaries,
+                           stock_top, tuple(origin), resolution)
