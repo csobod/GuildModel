@@ -1209,7 +1209,7 @@ class SimWorker(_ProgressWorker):
                 origin=f.origin, shape=f.z.shape)
             removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(tool)),
-                stock_hf.z, f.origin, f.resolution, frames=80)
+                stock_hf.z, f.origin, f.resolution, frames=110)
             removal.op_tool_geom = _op_tool_geom(ops, tool)
             self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
@@ -1333,7 +1333,7 @@ class FlatSimWorker(_ProgressWorker):
             stock_top = np.full(f.z.shape, float(top_z), dtype=float)
             removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
-                stock_top, f.origin, f.resolution, frames=80)
+                stock_top, f.origin, f.resolution, frames=110)
             removal.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
@@ -1487,7 +1487,7 @@ class BedSimWorker(_ProgressWorker):
 
             self._progress("Compositing the bed", 0.96)
             report = composite_bed_report(comps, self.work_area, resolution=self.resolution)
-            removal = simulate_bed_removal(bed_parts, resolution=self.resolution, frames=60)
+            removal = simulate_bed_removal(bed_parts, resolution=self.resolution, frames=100)
             removal.op_tool_geom = geom
             self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
@@ -2810,6 +2810,13 @@ class MainWindow(QMainWindow):
                 self.append_log(
                     f"[bed-sim] ⚠ the tool or its holder passes over a hold-down on "
                     f"{ncol} frame(s) — check clearance (highlighted red in the 3D view).")
+                # Robust warning up front (the per-frame pause needs you to press play).
+                QTimer.singleShot(0, lambda n=ncol: QMessageBox.warning(
+                    self, "Hold-down collision",
+                    f"The tool or its holder reaches a hold-down on {n} frame(s) of this "
+                    "bed cut (flagged on the badge; the tool turns red there).\n\n"
+                    "Play or scrub the Simulation to see where, then reposition the part, "
+                    "raise the hold-down height, or adjust the toolpath before cutting."))
         self._bed_report = report                 # cache for instant Sim re-toggle (M7.12)
         self._bed_removal = removal
         self.view3d.show_report(report)           # badge
@@ -4550,12 +4557,14 @@ class MainWindow(QMainWindow):
         if self._bed_removal is not None and frame < len(self._bed_removal.frame_labels):
             label = self._bed_removal.frame_labels[frame]
         self.status_lbl.setText("Cut paused — hold-down collision")
-        QMessageBox.warning(
+        # Defer the modal out of the play-timer/signal callback — a QMessageBox shown
+        # from inside a timer tick can be swallowed (so it never appeared).
+        QTimer.singleShot(0, lambda: QMessageBox.warning(
             self, "Hold-down collision",
             "The tool or its holder reaches a hold-down at this point in the cut "
             f"({label}) — the simulation paused here (the tool is red).\n\n"
             "Reposition the part on the bed, raise the hold-down height if it's set "
-            "too low, or adjust the toolpath before cutting. Press play to continue.")
+            "too low, or adjust the toolpath before cutting. Press play to continue."))
 
     def _clear_toolpath_overlay(self) -> None:
         """Drop the 2D toolpath overlay + inspector (a new component or a stale

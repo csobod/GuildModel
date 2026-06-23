@@ -143,7 +143,7 @@ class Viewer3D(QWidget):
         self._tool_op = None                       # op whose tool is currently built
         self._play_idx = 0
         self._play_timer = QTimer(self)
-        self._play_timer.setInterval(120)         # ~8 fps timeline (fine frames)
+        self._play_timer.setInterval(55)          # ~18 fps timeline (in-place updates keep up)
         self._play_timer.timeout.connect(self._advance_play)
 
     # ------------------------------------------------------------------ toolbar build
@@ -561,6 +561,11 @@ class Viewer3D(QWidget):
         self._scrub.blockSignals(False)
         for wdg in (self._play_btn, self._scrub, self._step_label):
             wdg.setVisible(True)
+        # Surface a hold-down collision count on the badge (M7.12.3).
+        ncol = sum(1 for f in playback.collision_frames if f)
+        if ncol:
+            self._badge.setText(f"⚠  {ncol} hold-down collision frame(s)")
+            self._badge.setStyleSheet("color: #c0392b; font-weight: 600;")
         if self._mode == "sim":
             self._render_removal_frame(last, reset_camera=True)
         self._update_step_label()
@@ -656,10 +661,13 @@ class Viewer3D(QWidget):
         (the bottom layer at z=0 and the walls stay fixed)."""
         if self._plotter is None or self._removal is None or self._removal_grid is None:
             return
-        pts = self._removal_grid.points
-        pts[self._removal_n:, 2] = self._removal.frames[idx].ravel(order="C")
-        self._removal_grid.points = pts           # reassign → marks modified
-        self._removal_grid["colors"] = self._elev_colors(pts[:, 2], self._removal_zmax)
+        # Update the carved top layer IN PLACE (no full `points =` reassignment — that
+        # rebuilt the VTK pipeline every frame, the stutter/glitch). Modifying the
+        # points view bumps the grid's MTime, so the next render shows the new Z.
+        self._removal_grid.points[self._removal_n:, 2] = \
+            self._removal.frames[idx].ravel(order="C")
+        self._removal_grid["colors"] = self._elev_colors(
+            self._removal_grid.points[:, 2], self._removal_zmax)
         self._update_cut_tool(idx)
         if reset_camera:
             self._plotter.reset_camera(render=False)
