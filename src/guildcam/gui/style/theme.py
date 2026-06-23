@@ -46,7 +46,7 @@ QToolButton:checked, QPushButton:checked { background-color: #1f1f1f; color: #ff
 QToolButton:disabled, QPushButton:disabled {
     background-color: #f4dfae; border-color: #b89c5e; color: #a08c58;
 }
-QToolBar::separator { background: #d4a840; width: 1px; margin: 4px 3px; }
+QToolBar::separator { background: #d4a840; height: 2px; margin: 7px 5px; }
 QStatusBar {
     background-color: #ffd580;
     border-top: 1px solid #d4a840;
@@ -193,7 +193,7 @@ QToolButton:checked, QPushButton:checked { background-color: #d4cfc0; color: #1a
 QToolButton:disabled, QPushButton:disabled {
     background-color: #222222; border-color: #3a3328; color: #6a6558;
 }
-QToolBar::separator { background: #554433; width: 1px; margin: 4px 3px; }
+QToolBar::separator { background: #554433; height: 2px; margin: 7px 5px; }
 QStatusBar {
     background-color: #1a1a1a;
     border-top: 1px solid #554433;

@@ -3053,20 +3053,20 @@ class MainWindow(QMainWindow):
         self._act_toolpaths.toggled.connect(self._toolpath_dock.setVisible)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
-        tb.addAction(self._act_open)
+        # Input: open a GuildDraw .gdraw model (the primary M7 intake; DXF is on the
+        # File menu). Then the build/output group, then the three view modes.
+        tb.addAction(self._act_open_model)
         tb.addSeparator()
         tb.addAction(self._act_build)
         tb.addAction(self._act_gcode)
         tb.addAction(self._act_export_nc)
         tb.addAction(self._act_export)
         tb.addSeparator()
-        # the three view modes (2D / 3D / Simulation) — the Worktable is reached via
-        # its tab, so the old Worktable toolbar button is gone (Ctrl+B / View menu keep it)
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        tb.addSeparator()                 # close the view-modes block
-        # spacer — view modes above; utilities (fit + dock toggles) grouped below
+        # the expanding spacer separates the view modes (above) from the bottom
+        # utility group (Fit + dock toggles) — no extra separator needed
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         tb.addWidget(spacer)
@@ -3077,7 +3077,8 @@ class MainWindow(QMainWindow):
         # (action, icon-name) for the runtime recolor hook (text fallback if
         # the SVG is missing). op-fit / view-sidebar are reused from GuildDraw.
         self._icon_actions = [
-            (self._act_open, "op-open-dxf"),
+            (self._act_open_model, "op-open-dxf"),   # toolbar: open a .gdraw model
+            (self._act_open, "op-open-dxf"),         # File menu: open a DXF
             (self._act_build, "op-build-3d"),
             (self._act_gcode, "op-gcode"),
             (self._act_export_nc, "op-export-gcode"),
