@@ -2152,6 +2152,7 @@ class MainWindow(QMainWindow):
         self.params.set_dark_mode(dark)
         self.readiness.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
+        self._style_toolbar_separators()          # re-tint for the new theme
 
     def _on_toggle_dark_mode(self, dark: bool) -> None:
         self._apply_dark_mode(dark)
@@ -2944,6 +2945,11 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(20, 20))
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, tb)
         self._toolbar = tb
+        # A horizontal toolbar's separators are vertical (thickness = width); a vertical
+        # toolbar's are horizontal (thickness = height). One static QSS rule can't serve
+        # both, so we restyle live whenever the toolbar is re-docked (restoreState may
+        # move it from the default left edge to the top).
+        tb.orientationChanged.connect(lambda *_: self._style_toolbar_separators())
 
         self._act_open = QAction("Open DXF", self)
         self._act_open.setShortcut(QKeySequence.StandardKey.Open)
@@ -3091,6 +3097,23 @@ class MainWindow(QMainWindow):
             (self._act_log, "toggle-log"),
             (self._act_sidebar, "view-sidebar"),
         ]
+        self._style_toolbar_separators()          # initial (default-left) orientation
+
+    def _style_toolbar_separators(self) -> None:
+        """Bold, well-spaced separators that group the toolbar buttons, applied on the
+        correct axis for the current dock orientation (BUILDPLAN M7.12 UI). Re-run on
+        re-dock + theme change. A brighter amber on dark / deeper amber on light keeps
+        them clearly visible against either toolbar background."""
+        tb = getattr(self, "_toolbar", None)
+        if tb is None:
+            return
+        colour = "#d9ad4a" if self._dark_mode else "#a87b2c"
+        if tb.orientation() == Qt.Orientation.Horizontal:
+            size = "width: 3px; margin: 6px 11px;"      # vertical line, padded left/right
+        else:
+            size = "height: 3px; margin: 11px 6px;"     # horizontal line, padded top/bot
+        tb.setStyleSheet(
+            f"QToolBar::separator {{ background: {colour}; {size} border-radius: 1px; }}")
 
     # ------------------------------------------------------------------ menu
 
@@ -3154,6 +3177,7 @@ class MainWindow(QMainWindow):
             self.restoreState(QByteArray.fromBase64(state.encode()))
             self._act_sidebar.setChecked(self._right_dock.isVisible())
             self._act_log.setChecked(self._log_dock.isVisible())
+        self._style_toolbar_separators()          # match the restored dock orientation
 
     def _save_window_state(self) -> None:
         self._prefs["main_window_geometry"] = bytes(
