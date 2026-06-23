@@ -253,9 +253,12 @@ class Viewer3D(QWidget):
             return False
 
     def _safe_render(self) -> None:
-        """Render only when this widget is the visible stack page. Rendering a
-        hidden QtInteractor throws `wglMakeCurrent: handle invalid`."""
-        if self._plotter is not None and not self.isHidden():
+        """Render only when this widget is the visible, non-zero-size stack page.
+        Rendering a hidden or zero-size QtInteractor throws `wglMakeCurrent: handle
+        invalid` / an incomplete-framebuffer error (e.g. a play tick during a view
+        switch, minimise, or teardown)."""
+        if (self._plotter is not None and not self.isHidden()
+                and self.width() > 1 and self.height() > 1):
             try:
                 self._plotter.render()
             except Exception:
@@ -266,6 +269,15 @@ class Viewer3D(QWidget):
         context while hidden (the first frame after a view switch is otherwise blank)."""
         super().showEvent(event)
         self._safe_render()
+
+    def hideEvent(self, event) -> None:
+        """Pause playback when the viewer leaves the screen (a view switch / minimise
+        / close): animating an invisible viewport renders into a zero-size buffer
+        (incomplete-framebuffer noise) and wastes cycles."""
+        if self._play_timer.isActive():
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+        super().hideEvent(event)
 
     # ------------------------------------------------------------------ mode
 
