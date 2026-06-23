@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QSpinBox, QSplitter,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize
-from PySide6.QtGui import QAction, QKeySequence, QColor
+from PySide6.QtGui import QAction, QKeySequence, QColor, QFontDatabase
 
 from guildcam.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildcam.gui import prefs as prefs_mod
@@ -2206,6 +2206,13 @@ class MainWindow(QMainWindow):
         self.component_tabs.setDrawBase(True)
         self.component_tabs.setVisible(False)
         self.component_tabs.currentChanged.connect(self._on_component_tab_changed)
+        # Bold, monospaced tab labels in the user's system fixed-width font so the
+        # component tabs are crisp and apparent. A widget-level stylesheet overrides
+        # the theme's global Inter font per-property while keeping its tab colours.
+        _mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.component_tabs.setStyleSheet(
+            f'QTabBar::tab {{ font-family: "{_mono.family()}"; '
+            f'font-weight: bold; font-size: 13px; }}')
 
         central = QWidget()
         cv = QVBoxLayout(central)
@@ -2996,15 +3003,16 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_export_nc)
         tb.addAction(self._act_export)
         tb.addSeparator()
+        # the three view modes (2D / 3D / Simulation) — the Worktable is reached via
+        # its tab, so the old Worktable toolbar button is gone (Ctrl+B / View menu keep it)
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        tb.addAction(self._act_show_worktable)
-        tb.addAction(self._act_fit)
-        # push the dock toggles to the bottom of the vertical strip
+        # spacer — view modes above; utilities (fit + dock toggles) grouped below
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         tb.addWidget(spacer)
+        tb.addAction(self._act_fit)
         tb.addAction(self._act_log)
         tb.addAction(self._act_sidebar)
 
