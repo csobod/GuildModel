@@ -3071,11 +3071,13 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        tb.addSeparator()                 # views | utilities (Fit + dock toggles)
-        # the spacer pushes the utility group to the far end (bottom when docked left)
+        # spacer first (pushes the utilities to the far end / bottom-when-left), THEN the
+        # separator — so the divider hugs the utility group and its padding matches the
+        # other separators (the spacer between them was making this one look uneven)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         tb.addWidget(spacer)
+        tb.addSeparator()                 # views | utilities (Fit + dock toggles)
         tb.addAction(self._act_fit)
         tb.addAction(self._act_log)
         tb.addAction(self._act_sidebar)
@@ -3100,18 +3102,18 @@ class MainWindow(QMainWindow):
         self._style_toolbar_separators()          # initial (default-left) orientation
 
     def _style_toolbar_separators(self) -> None:
-        """Bold, well-spaced separators that group the toolbar buttons, applied on the
+        """Thin, well-spaced separators that group the toolbar buttons, applied on the
         correct axis for the current dock orientation (BUILDPLAN M7.12 UI). Re-run on
-        re-dock + theme change. A brighter amber on dark / deeper amber on light keeps
-        them clearly visible against either toolbar background."""
+        re-dock + theme change. Charcoal on light / a darker amber on dark keeps them
+        subtle but well-defined against either toolbar background."""
         tb = getattr(self, "_toolbar", None)
         if tb is None:
             return
-        colour = "#d9ad4a" if self._dark_mode else "#a87b2c"
+        colour = "#8d7030" if self._dark_mode else "#383838"
         if tb.orientation() == Qt.Orientation.Horizontal:
-            size = "width: 2px; margin: 3px 5px;"       # vertical line, padded left/right
+            size = "width: 1px; margin: 3px 5px;"       # vertical line, padded left/right
         else:
-            size = "height: 2px; margin: 5px 3px;"      # horizontal line, padded top/bot
+            size = "height: 1px; margin: 5px 3px;"      # horizontal line, padded top/bot
         tb.setStyleSheet(
             f"QToolBar::separator {{ background: {colour}; {size} border-radius: 1px; }}")
 
