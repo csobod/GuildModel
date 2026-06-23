@@ -232,9 +232,46 @@ def simulate_bed_removal(
             bed_stock[r0:r1, c0:c1],
             p.stock_top[sr0:sr0 + (r1 - r0), sc0:sc0 + (c1 - c0)])
 
-    all_steps = [s for p in parts for s in p.steps]
+    all_steps = _schedule_step_order(parts)
     return simulate_removal(all_steps, bed_stock, (bed_ox, bed_oy), resolution,
                             frames=frames)
+
+
+def _schedule_step_order(parts: list) -> list:
+    """Order every part's steps to minimise tool changes — the same greedy strategy
+    as `cam.layout.schedule_bed_ops` (BUILDPLAN M6.5), keyed by the tool **profile**:
+    stay on the current tool while any ready step needs it, else switch to the ready
+    tool with the fewest remaining steps (front-loading the rare tools), keeping each
+    part's internal order. So the bed SIM plays in the tool-grouped order the
+    worktable.nc actually runs — all same-tool ops at once — not part by part.
+    """
+    def key(step):                      # step = (label, ToolProfile, paths)
+        p = step[1]
+        return (p.kind, round(p.radius_mm, 4), round(p.corner_radius_mm, 4),
+                round(p.included_angle_deg, 4))
+
+    seqs = [list(p.steps) for p in parts]
+    pointers = [0] * len(seqs)
+    remaining: dict = {}
+    for s in seqs:
+        for st in s:
+            remaining[key(st)] = remaining.get(key(st), 0) + 1
+
+    out: list = []
+    current = None
+    while any(pointers[i] < len(seqs[i]) for i in range(len(seqs))):
+        rdy = [(i, seqs[i][pointers[i]])
+               for i in range(len(seqs)) if pointers[i] < len(seqs[i])]
+        same = [(i, st) for i, st in rdy if key(st) == current]
+        if same:
+            i, st = same[0]
+        else:
+            current = min({key(st) for _, st in rdy}, key=lambda t: remaining.get(t, 0))
+            i, st = next((i, st) for i, st in rdy if key(st) == current)
+        out.append(st)
+        remaining[key(st)] -= 1
+        pointers[i] += 1
+    return out
 
 
 def bed_collision_frames(

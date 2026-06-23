@@ -198,6 +198,27 @@ def test_bed_removal_empty():
     assert pb.n_frames == 1
 
 
+def test_bed_removal_groups_ops_by_tool():
+    """The bed sim plays in the tool-grouped order the worktable.nc runs — every
+    same-tool op at once (all hinges, then all bodies), not part by part."""
+    from guildcam.core.sim.bed import BedRemovalPart, simulate_bed_removal
+    small = ToolProfile(kind="flat", radius_mm=1.0)        # 2 mm hinge tool
+    big = ToolProfile(kind="flat", radius_mm=1.5875)       # 3.175 mm bulk tool
+
+    def part(label, x):
+        steps = [(f"{label}·Hinge", small, [[(x + 1, 1.0, 3.0), (x + 4, 1.0, 3.0)]]),
+                 (f"{label}·Body", big, [[(x + 1, 3.0, 2.0), (x + 4, 3.0, 2.0)]])]
+        return BedRemovalPart(steps, np.full((20, 20), 5.0), (0.0, 0.0), x, 0.0)
+
+    parts = [part("A", 0.0), part("B", 20.0), part("C", 40.0)]
+    pb = simulate_bed_removal(parts, resolution=0.5, frames=40)
+    labels = pb.op_labels
+    hinge = [i for i, l in enumerate(labels) if "Hinge" in l]
+    body = [i for i, l in enumerate(labels) if "Body" in l]
+    assert len(hinge) == 3 and len(body) == 3
+    assert max(hinge) < min(body)                          # all hinges before all bodies
+
+
 def test_tool_envelope():
     from guildcam.core.sim.playback import tool_envelope
     cut_r, holder_r = tool_envelope({"radius_mm": 1.5875, "shank_diameter_mm": 6.0})
