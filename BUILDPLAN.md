@@ -2157,7 +2157,16 @@ pattern that fixed it.
    cell-blank mask == the through-cut mask; the point/topology buffer length is
    constant across frames. Tag `v0.7.12.1`.
 
-### M7.12.2 — The cutter you can see (`v0.7.12.2`) · *tool, shank, holder*
+### M7.12.2 — The cutter you can see (`v0.7.12.2`) · *tool, shank, holder* — ✅ DONE 2026-06-23
+
+> **DONE (`v0.7.12.2`).** The removal core records the tool (x,y,z) at every frame
+> (`RemovalPlayback.frame_cursors`) + an optional per-op tool-geometry map; `Viewer3D`
+> builds a cutter (flat cylinder / ball / V-cone per `ToolProfile`) + shank +
+> collet/holder, moves it to the cut cursor each frame (`SetPosition`), and rebuilds
+> the mesh only when the op (tool) changes. `tool_profile_dims` is the shared source
+> of truth for the mesh + the M7.12.3 collision envelope. Verified on-screen.
+
+
 
 1. **Tool-body mesh** per `ToolProfile` (flat cylinder / ball / V-cone) + **shank** +
    a simple **collet/holder** cylinder, sized from the M7.8/M7.9 stick-out / shank /
@@ -2168,10 +2177,36 @@ pattern that fixed it.
 3. **Tests**: the tool mesh matches the profile section (radius / included angle); the
    cursor maps to path arc-length at a given timeline fraction. Tag `v0.7.12.2`.
 
-### M7.12.3 — Bed simulation & hold-down collision (`v0.7.12.3`) · *will it slam into a clamp?*
+### M7.12.3 — Bed simulation & hold-down collision (`v0.7.12.3`) · *will it slam into a clamp?* — ✅ DONE 2026-06-23
 
-> Brings the volumetric removal to the whole-bed sim (deferred in M7.7 / M7.12) and
-> answers the maker's safety question: does the tool **or its holder** foul a hold-down?
+> **DONE (`v0.7.12.3`, 345 tests).** The volumetric block on the whole bed +
+> hold-down collision + a round of UX work that landed alongside it:
+> - **Volumetric bed sim** (`core/sim/bed.py` `simulate_bed_removal`): stamps each
+>   placed part's stock onto ONE cropped machine-coord grid and carves the combined
+>   steps **in the program's tool-grouped order** (`_schedule_step_order`, matching
+>   `schedule_bed_ops` — all same-tool ops at once, not part by part).
+> - **Hold-down collision**: keep-outs render as red posts at a settable
+>   **hold-down height** (`Worktable.hold_down_height_mm`, a Worktable-panel spinbox);
+>   a **Z-aware** check (`bed_collision_frames` + `tool_radius_below`) flags a frame
+>   only where the tool is low enough to actually foul a hold-down, so the tool turns
+>   red, the badge shows the count, and play **pauses with a pop-up** (deferred via
+>   `singleShot` so it reliably presents) + a finish-time summary. The height also
+>   raises the worktable program's rapid safe-Z so the post clears the hold-downs.
+> - **Unified tab/view model**: the toolbar's **2D / 3D / Simulation** toggles are the
+>   single view axis; `_switch_view` always re-renders the active tab's content (no
+>   more stale-view flash, content pushed before the page is shown). The Simulation
+>   toggle drives the component cut-sim or, on the Worktable tab, the bed sim — the
+>   separate "Simulate Bed" / "Worktable" buttons are gone; sims are cached so
+>   toggling back is instant.
+> - **Context-aware sidebar**: the right dock holds component params on a component
+>   tab and the worktable controls on the Worktable tab (available across the bed's
+>   2D + Sim views).
+> - **Smoother playback**: the carved block updates the top layer's Z **in place**
+>   (no per-frame points reassignment / pipeline rebuild), ~18 fps, more frames.
+> Whole-bed playback (deferred in M7.7 / M7.12) is delivered here. Some residual
+> step-jump remains (discrete frames) — a future polish.
+
+
 
 1. **Volumetric bed sim**: composite the per-component remaining-stock heightfields
    onto one machine-coords bed grid (reusing `core/sim/bed.py`), animated with the
@@ -2252,8 +2287,9 @@ tools M7.8).
 - [x] Toolpath overlay + per-op inspector on the design canvas (M7.11)
 - [x] Cut-simulation playback scrubber (M7.12)
 - [x] Volumetric stock removal — solid block carved in-place, coloured by elevation (M7.12.1)
-- [ ] Visible tool + shank + holder following the path (M7.12.2)
-- [ ] Bed sim with hold-down (tool **and holder**) collision highlight (M7.12.3)
+- [x] Visible tool + shank + holder following the path (M7.12.2)
+- [x] Bed sim with hold-down (tool **and holder**) collision highlight + Z-aware height (M7.12.3)
+- [x] Unified 2D/3D/Sim view model + context-aware sidebar (M7.12.3)
 - [ ] On-canvas measure + 3D section view (M7.13)
 - [ ] Job/validation inspector panel consolidating all warnings (M7.14)
 - [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
