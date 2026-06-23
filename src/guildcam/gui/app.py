@@ -3352,21 +3352,25 @@ class MainWindow(QMainWindow):
         / (no 3D) / bed cut-sim. `run=True` (an explicit Sim-toggle click) starts the
         sim when no fresh result is cached; a passive switch (tab change, build done)
         falls back to 2D rather than auto-running an expensive sim."""
+        # Push the viewer's content BEFORE making its page current: while the page is
+        # hidden the renders are skipped (no framebuffer error), so the showEvent on
+        # `setCurrentIndex` draws the new content directly — no one-frame flash of the
+        # previous component's view (BUILDPLAN M7.12).
         if self._on_worktable_tab():
             if view == 2 and self._show_bed_sim(run):
-                self.stack.setCurrentIndex(1)
                 self.view3d.set_mode("sim")
+                self.stack.setCurrentIndex(1)
             else:                                 # 2D bed (3D N/A on the bed)
                 view = 0
                 self.stack.setCurrentIndex(self._worktable_page_index)
         else:
             if view == 1:
-                self.stack.setCurrentIndex(1)
                 self.view3d.set_mode("model")
                 self._show_active_3d()            # re-push the active component's mesh
-            elif view == 2 and self._show_component_sim(run):
                 self.stack.setCurrentIndex(1)
+            elif view == 2 and self._show_component_sim(run):
                 self.view3d.set_mode("sim")
+                self.stack.setCurrentIndex(1)
             else:
                 view = 0
                 self.stack.setCurrentIndex(0)
