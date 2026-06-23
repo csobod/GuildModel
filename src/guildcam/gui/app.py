@@ -2108,11 +2108,20 @@ class MainWindow(QMainWindow):
         self._stage = "pockets"
         self._stage_cache: dict[str, object] = {}
 
-        # The last component view (0 = 2D, 1 = 3D, 2 = Sim) — persisted across
-        # component-tab switches so the chosen view follows you between components
-        # (the Worktable page is excluded). Build 3D builds *every* loaded component
-        # in one background worker (MultiMeshWorker).
-        self._last_component_view = 0
+        # The active view (0 = 2D, 1 = 3D, 2 = Sim) — the single axis the toolbar
+        # toggles drive, persisted across tab switches so the chosen view follows you
+        # (BUILDPLAN M7.12 unified tab/view model). Each tab maps the three views to
+        # its own content: a component → outline / mesh / cut-sim; the Worktable →
+        # bed canvas / (no 3D) / bed cut-sim. `_switch_view` is the single source of
+        # truth and always re-renders, so a (tab, view) combination is never stale.
+        self._current_view = 0
+        # Cached cut-sim results so toggling back to Sim is instant; re-run only when
+        # the design/CAM (component) or the nest (bed) changes. Active-component cache
+        # is cleared on a tab switch (it belonged to the part we left).
+        self._active_sim_removal = None
+        self._active_sim_report = None
+        self._bed_removal = None
+        self._bed_report = None
         self._active_core_guide = None
 
         # Debounce for live parametric rebuilds (every spinbox tick would
@@ -2165,6 +2174,12 @@ class MainWindow(QMainWindow):
         # The drawn toolpaths no longer match the design — clear the overlay (M7.11).
         if getattr(self, "_toolpath_table", None) is not None:
             self._clear_toolpath_overlay()
+        # The cached cut sim no longer matches the design/CAM — drop it so the Sim
+        # view re-runs (M7.12).
+        self._active_sim_removal = None
+        self._active_sim_report = None
+        if getattr(self, "_act_simulate", None) is not None:
+            self._update_view_toggles()
 
     # ------------------------------------------------------------------ layout
 
@@ -2342,13 +2357,15 @@ class MainWindow(QMainWindow):
         self._bed_gen_btn.clicked.connect(self._on_generate_worktable_nest)
         v.addWidget(self._bed_gen_btn)
 
-        self._bed_sim_btn = QPushButton("Simulate Bed")
-        self._bed_sim_btn.setToolTip(
-            "Simulate the whole nested bed's machined result and flag uncut / gouged "
-            "regions across every component (shown in the 3D cut-sim view).")
-        self._bed_sim_btn.setEnabled(False)
-        self._bed_sim_btn.clicked.connect(self._on_simulate_bed)
-        v.addWidget(self._bed_sim_btn)
+        # The bed cut-sim is driven by the Simulation view toggle (M7.12 unified
+        # tab/view model) — no separate button. A hint points the maker there; the
+        # Sim toggle enables once the bed is nested.
+        self._bed_sim_hint = QLabel(
+            "To simulate the bed, switch to the Simulation view "
+            "(enabled once components are nested).")
+        self._bed_sim_hint.setObjectName("mutedSmallLabel")
+        self._bed_sim_hint.setWordWrap(True)
+        v.addWidget(self._bed_sim_hint)
 
         h.addWidget(panel)
         return page
@@ -2367,7 +2384,8 @@ class MainWindow(QMainWindow):
         return self._worktable
 
     def _activate_worktable_tab(self) -> None:
-        """Show the bed page (stack index 3) and the worktable controls."""
+        """Show the Worktable bed. Its views map 2D → bed canvas, Sim → bed cut-sim
+        (3D is N/A); the unified `_switch_view` routes to the active view."""
         if 0 <= self._active_ws < len(self._workspaces):
             self._sync_active_workspace()        # persist the component we leave
         self._ensure_worktable()
@@ -2375,11 +2393,8 @@ class MainWindow(QMainWindow):
         self._refresh_worktable_panel()
         if self._nest is not None:                 # re-show a prior nest (M7.6)
             self._refresh_nest_render()
-        self.stack.setCurrentIndex(self._worktable_page_index)
         self._right_dock.setVisible(False)        # the bed has its own side panel
-        self.zoom_label.setVisible(False)
-        self._act_view2d.setChecked(False)
-        self._act_view3d.setChecked(False)
+        self._switch_view(self._current_view)     # bed canvas, or the bed sim if cached
         self.status_lbl.setText(f"Worktable — {self._worktable.display_name}")
 
     def _on_show_worktable(self) -> None:
@@ -2437,13 +2452,14 @@ class MainWindow(QMainWindow):
     def _clear_nest(self) -> None:
         self._nest = None
         self._nest_specs = None
+        self._bed_removal = None              # the bed sim no longer matches
+        self._bed_report = None
         if hasattr(self, "_bed_nest_status"):
             self._bed_nest_status.setText("")
         if hasattr(self, "_bed_gen_btn"):
             self._bed_gen_btn.setEnabled(False)
-        if hasattr(self, "_bed_sim_btn"):
-            self._bed_sim_btn.setEnabled(False)
         self.bed_canvas.clear_nest()
+        self._update_view_toggles()
 
     def _on_nest_components(self) -> None:
         """Generate each built component's program and auto-place it on a role-
@@ -2540,7 +2556,9 @@ class MainWindow(QMainWindow):
         self._bed_nest_status.setText("Nested: " + " · ".join(bits)
                                       + ".  Drag a footprint to nudge it.")
         self._bed_gen_btn.setEnabled(bool(self._nest.placements))
-        self._bed_sim_btn.setEnabled(bool(self._nest.placements))
+        self._bed_removal = None              # a (re)nest invalidates the cached bed sim
+        self._bed_report = None
+        self._update_view_toggles()           # refresh the Sim-view toggle availability
         self.status_lbl.setText(
             "Bed nested — " + ("all clear" if not all_viol
                                else f"{len(all_viol)} keep-out collision(s)"))
@@ -2698,21 +2716,17 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Worktable G-code ready")
         QMessageBox.information(self, "Worktable program", summary)
 
-    def _on_simulate_bed(self) -> None:
-        """Simulate the whole nested bed and show the cut result in the 3D cut-sim
-        view (BUILDPLAN M7.7). Reuses the per-component sim per placement, composited
-        onto one machine-coords bed grid."""
+    def _start_bed_sim(self) -> None:
+        """Run the whole nested bed's cut sim off-thread (driven by the Sim view on
+        the Worktable tab, BUILDPLAN M7.12). The Sim toggle is only enabled when the
+        bed is nested and the view is already in sim mode (the caller switched it)."""
         if self._nest is None or not self._nest.placements or not self._nest_specs:
-            QMessageBox.information(
-                self, "Nest first",
-                "Click Nest Components to place the model on the bed, then simulate it.")
             return
         if self._sim_thread is not None and self._sim_thread.isRunning():
             return
+        self.view3d.clear_sim()                   # no stale block while this runs
         self.status_lbl.setText("Simulating bed…")
-        self._bed_sim_btn.setEnabled(False)
         self.append_log("[bed-sim] Simulating the whole nested bed…")
-        self._switch_view(2)                 # show the 3D cut-sim viewer
 
         res = max(0.4, self._prefs["preview_resolution_mm"])
         self._sim_worker = BedSimWorker(
@@ -2737,9 +2751,11 @@ class MainWindow(QMainWindow):
 
     def _on_sim_bed_finished(self, report, lines, removal=None) -> None:
         self._close_progress()
+        self._bed_report = report                 # cache for instant Sim re-toggle (M7.12)
+        self._bed_removal = removal
         self.view3d.show_report(report)           # badge
         self.view3d.set_removal(removal)          # volumetric bed block (M7.12.3)
-        self._switch_view(2)
+        self._update_view_toggles()
         for line in lines:
             self.append_log("[bed-sim] " + line)
         self.status_lbl.setText({
@@ -2747,19 +2763,18 @@ class MainWindow(QMainWindow):
             "warn": "Bed simulated — review the flagged regions",
             "fail": "Bed incomplete — see the flagged regions",
         }.get(report.status(), "Bed simulated"))
-        self._bed_sim_btn.setEnabled(True)
 
     def _on_sim_bed_error(self, tb: str) -> None:
         self._close_progress()
         self.append_log("[bed-sim ERROR]\n" + tb)
         self.status_lbl.setText("Bed simulation failed — see log")
-        self._bed_sim_btn.setEnabled(True)
+        self._update_view_toggles()
 
     def _on_sim_bed_cancelled(self) -> None:
         self._close_progress()
         self.append_log("[bed-sim] Cancelled.")
         self.status_lbl.setText("Bed simulation cancelled")
-        self._bed_sim_btn.setEnabled(True)
+        self._update_view_toggles()
 
     def _on_save_bed(self) -> None:
         if self._worktable is None:
@@ -2933,12 +2948,16 @@ class MainWindow(QMainWindow):
         self._act_view3d.setToolTip("3D preview view")
         self._act_view3d.triggered.connect(lambda: self._switch_view(1))
 
-        self._act_simulate = QAction("Simulate Cut", self)
+        # The Simulation view — the third view toggle (2D / 3D / Sim). On a component
+        # it cut-sims that part; on the Worktable tab it cut-sims the whole bed.
+        # Disabled until there's something to simulate, guiding the maker (M7.12).
+        self._act_simulate = QAction("Simulation", self, checkable=True)
         self._act_simulate.setShortcut("Ctrl+Shift+S")
         self._act_simulate.setToolTip(
-            "Simulate the machined result and verify completeness  (Ctrl+Shift+S)")
+            "Simulation view — cut-simulate this component (or the whole bed on the "
+            "Worktable tab) and verify the result  (Ctrl+Shift+S)")
         self._act_simulate.setEnabled(False)
-        self._act_simulate.triggered.connect(self._on_simulate)
+        self._act_simulate.triggered.connect(lambda: self._switch_view(2, run=True))
 
         self._act_show_worktable = QAction("Worktable", self)
         self._act_show_worktable.setShortcut("Ctrl+B")
@@ -3312,27 +3331,83 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ view switch
 
-    def _switch_view(self, view: int) -> None:
-        """Show a component view: 0 = 2D outline, 1 = 3D model, 2 = cut sim.
+    def _on_worktable_tab(self) -> bool:
+        return (self._worktable_tab_index >= 0
+                and self.component_tabs.currentIndex() == self._worktable_tab_index)
 
-        Views 1 and 2 are two MODES of the single Viewer3D (stack page 1) — one VTK
-        window, never hidden when toggling between them (BUILDPLAN M7 VTK-context
-        fix). The Worktable bed is shown separately via `_activate_worktable_tab`."""
-        if view == 0:
-            self.stack.setCurrentIndex(0)
-        elif view == 1:
-            self.stack.setCurrentIndex(1)
-            self.view3d.set_mode("model")
-        elif view == 2:
-            self.stack.setCurrentIndex(1)
-            self.view3d.set_mode("sim")
+    def _component_sim_enabled(self) -> bool:
+        """The active component can be cut-simulated (a matched frame or a flat part)."""
+        matched = self._partition is not None and self._partition.matched
+        return matched or self._active_is_flat()
+
+    def _bed_sim_enabled(self) -> bool:
+        return self._nest is not None and bool(self._nest.placements)
+
+    def _switch_view(self, view: int, *, run: bool = False) -> None:
+        """Single source of truth for the central view. Renders `view`
+        (0 = 2D, 1 = 3D, 2 = Sim) for the ACTIVE tab and always re-pushes that tab's
+        content, so a (tab, view) combination is never stale (BUILDPLAN M7.12).
+
+        Tab mapping — a component: outline / mesh / cut-sim; the Worktable: bed canvas
+        / (no 3D) / bed cut-sim. `run=True` (an explicit Sim-toggle click) starts the
+        sim when no fresh result is cached; a passive switch (tab change, build done)
+        falls back to 2D rather than auto-running an expensive sim."""
+        if self._on_worktable_tab():
+            if view == 2 and self._show_bed_sim(run):
+                self.stack.setCurrentIndex(1)
+                self.view3d.set_mode("sim")
+            else:                                 # 2D bed (3D N/A on the bed)
+                view = 0
+                self.stack.setCurrentIndex(self._worktable_page_index)
         else:
-            return
-        self._act_view2d.setChecked(view == 0)
-        self._act_view3d.setChecked(view == 1)
-        self.zoom_label.setVisible(view == 0)
-        # Remember the component view so it follows tab switches.
-        self._last_component_view = view
+            if view == 1:
+                self.stack.setCurrentIndex(1)
+                self.view3d.set_mode("model")
+                self._show_active_3d()            # re-push the active component's mesh
+            elif view == 2 and self._show_component_sim(run):
+                self.stack.setCurrentIndex(1)
+                self.view3d.set_mode("sim")
+            else:
+                view = 0
+                self.stack.setCurrentIndex(0)
+        self._current_view = view
+        self._update_view_toggles()
+
+    def _update_view_toggles(self) -> None:
+        """Reflect the active view + per-tab availability on the toolbar toggles. The
+        Sim toggle disables when nothing's ready — guiding the user to load / build /
+        nest first; 3D disables on the Worktable (the bed has no model view)."""
+        on_wt = self._on_worktable_tab()
+        self._act_view2d.setChecked(self._current_view == 0)
+        self._act_view3d.setChecked(self._current_view == 1)
+        self._act_simulate.setChecked(self._current_view == 2)
+        self._act_view3d.setEnabled(not on_wt)
+        self._act_simulate.setEnabled(
+            self._bed_sim_enabled() if on_wt else self._component_sim_enabled())
+        self.zoom_label.setVisible(self._current_view == 0 and not on_wt)
+
+    def _show_component_sim(self, run: bool) -> bool:
+        """Show the active component's cut-sim — the cached result, or start it when
+        `run` and it's runnable. Returns True if the sim view should be shown."""
+        if self._active_sim_removal is not None:
+            self.view3d.show_report(self._active_sim_report)
+            self.view3d.set_removal(self._active_sim_removal)
+            return True
+        if run and self._component_sim_enabled():
+            self._start_component_sim()
+            return True
+        return False
+
+    def _show_bed_sim(self, run: bool) -> bool:
+        """Show the bed cut-sim — the cached result, or start it when `run`."""
+        if self._bed_removal is not None:
+            self.view3d.show_report(self._bed_report)
+            self.view3d.set_removal(self._bed_removal)
+            return True
+        if run and self._bed_sim_enabled():
+            self._start_bed_sim()
+            return True
+        return False
 
     # -------------------------------------------------------- active 3D preview
 
@@ -3496,21 +3571,11 @@ class MainWindow(QMainWindow):
             b = ws.boxing
             self.params.update_boxing(b.a, b.b, b.dbl, b.ed)
         self._update_stock_canvas()
-        # Persist the active view across the tab switch (M7 UX): keep the same
-        # 2D/3D view and reflect THIS component in it. Fall back to 2D when the
-        # chosen view has nothing to show for this component yet (its 3D not built;
-        # the cut sim is run per-component on demand, not cached across tabs).
-        view = self._last_component_view
-        if view == 1 and not self._has_active_3d():
-            view = 0
-        elif view == 2:
-            view = 0
-        # Switch the view FIRST so the 3D widget is the current (sized, visible)
-        # stack page before VTK renders into it — otherwise the framebuffer is
-        # zero-size and the render fails ("FRAMEBUFFER_INCOMPLETE_ATTACHMENT").
-        self._switch_view(view)
-        if view == 1:
-            self._show_active_3d()
+        # Re-apply the active view to THIS component, refreshing its content (the
+        # unified dispatch shows the mesh/sim or falls back to 2D when there's nothing
+        # to show yet, and never leaves a stale render). Switching the view also makes
+        # the 3D widget the current sized/visible stack page before VTK renders.
+        self._switch_view(self._current_view)
 
     def _activate_workspace(self, index: int) -> None:
         """Make component ``index`` active: persist the current one, swap the
@@ -3519,6 +3584,8 @@ class MainWindow(QMainWindow):
             return
         if 0 <= self._active_ws < len(self._workspaces) and self._active_ws != index:
             self._sync_active_workspace()
+            self._active_sim_removal = None       # the cut-sim cache was the part we left
+            self._active_sim_report = None
         self._active_ws = index
         ws = self._workspaces[index]
         self._load_active_geometry(ws)
@@ -4079,20 +4146,19 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ cut simulation
 
-    def _on_simulate(self) -> None:
+    def _start_component_sim(self) -> None:
+        """Run the active component's cut sim off-thread (driven by the Sim view,
+        BUILDPLAN M7.12). The Sim toggle is only enabled when runnable and the view
+        is already in sim mode (the caller switched it), so this just starts the work
+        and caches + shows the result on finish."""
         mode = self._flat_build_mode()
         if mode is None and not self._castle_ready():
-            QMessageBox.warning(
-                self, "Nothing to simulate",
-                "Open a frame with matched SCULPT zones, a temple, or a base-curve "
-                "block to simulate its cut.")
             return
         if self._sim_thread is not None and self._sim_thread.isRunning():
             return
+        self.view3d.clear_sim()                   # no stale block while this runs
         self.status_lbl.setText("Simulating cut…")
-        self._act_simulate.setEnabled(False)
         self.append_log(f"[sim] Simulating the machined result ({mode or 'frame'})…")
-        self._switch_view(2)
 
         res = self._prefs["preview_resolution_mm"]
         cam, mat = self.params.cam_params(), self.params.material_name()
@@ -4127,8 +4193,11 @@ class MainWindow(QMainWindow):
 
     def _on_sim_finished(self, report, lines, removal=None) -> None:
         self._close_progress()
+        self._active_sim_report = report          # cache for instant Sim re-toggle (M7.12)
+        self._active_sim_removal = removal
         self.view3d.show_report(report)           # badge + (bed) floor sheet fallback
         self.view3d.set_removal(removal)          # volumetric block scrubber (M7.12.1)
+        self._update_view_toggles()
         for line in lines:
             self.append_log("[sim] " + line)
         self.status_lbl.setText({
@@ -4148,19 +4217,18 @@ class MainWindow(QMainWindow):
         }
         if self._project_path is not None:
             self._save_gcam_to(self._project_path, announce=False)
-        self._act_simulate.setEnabled(True)
 
     def _on_sim_error(self, tb: str) -> None:
         self._close_progress()
         self.append_log("[sim ERROR]\n" + tb)
         self.status_lbl.setText("Simulation failed — see log")
-        self._act_simulate.setEnabled(True)
+        self._update_view_toggles()
 
     def _on_sim_cancelled(self) -> None:
         self._close_progress()
         self.append_log("[sim] Cancelled.")
         self.status_lbl.setText("Simulation cancelled")
-        self._act_simulate.setEnabled(True)
+        self._update_view_toggles()
 
     def _on_generate(self) -> None:
         if self._gcode_thread is not None and self._gcode_thread.isRunning():

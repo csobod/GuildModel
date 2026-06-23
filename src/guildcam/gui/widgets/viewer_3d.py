@@ -564,6 +564,17 @@ class Viewer3D(QWidget):
             self._render_removal_frame(last, reset_camera=True)
         self._update_step_label()
 
+    def clear_sim(self) -> None:
+        """Empty the sim scene — a new cut sim is starting, so no stale block/sheet
+        shows while the worker runs (BUILDPLAN M7.12)."""
+        self._reset_playback()
+        self._report = None
+        self._sim_mesh = None
+        self._sim_inside = None
+        if self._plotter is not None and self._mode == "sim":
+            self._plotter.clear()
+            self._safe_render()
+
     def _reset_playback(self) -> None:
         self._play_timer.stop()
         self._removal = None
