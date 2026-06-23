@@ -144,6 +144,34 @@ def test_frames_are_independent_copies():
     assert np.array_equal(pb.frames[0], snap0)
 
 
+def test_frame_cursors_track_the_tool():
+    """frame_cursors give the tool (x,y,z) at each frame — the moving tool (M7.12.2)."""
+    pb = simulate_removal(_steps(), _stock(), ORIGIN, RES, frames=25)
+    assert len(pb.frame_cursors) == pb.n_frames
+    assert all(len(c) == 3 for c in pb.frame_cursors)
+    assert all(np.all(np.isfinite(c)) for c in pb.frame_cursors)
+    # the final cursor is the end of the last op's last path (Perimeter → x=18,y=12,z=1)
+    assert np.allclose(pb.frame_cursors[-1], (18.0, 12.0, 1.0))
+    # every cursor's z is one of the cut depths the ops ran at
+    depths = {3.0, 2.0, 1.0}
+    assert all(round(c[2], 3) in depths for c in pb.frame_cursors)
+
+
+def test_empty_op_cursor_holds_previous_position():
+    steps = [("Cut", _flat(), [_hline(8.0, 2.0)]),
+             ("Skip", _flat(), [])]
+    pb = simulate_removal(steps, _stock(), ORIGIN, RES, frames=10)
+    # the empty op's boundary frame keeps the prior tool position (tool didn't move)
+    assert np.allclose(pb.frame_cursors[pb.op_boundaries[1]],
+                       pb.frame_cursors[pb.op_boundaries[0]])
+
+
+def test_empty_steps_cursor_is_nan():
+    pb = simulate_removal([], _stock(), ORIGIN, RES, frames=10)
+    assert len(pb.frame_cursors) == 1
+    assert np.all(np.isnan(pb.frame_cursors[0]))
+
+
 def test_steps_from_ops_feeds_removal():
     """The M7.12 steps_from_ops builder drives simulate_removal unchanged."""
     from guildcam.core.cam.castle_ops import CamOp

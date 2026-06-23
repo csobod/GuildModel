@@ -138,6 +138,8 @@ class Viewer3D(QWidget):
         self._removal_grid = None                 # pv.StructuredGrid (2-layer solid block)
         self._removal_n = 0                        # points per layer (top layer = [n:])
         self._removal_zmax = 1.0                   # stock height — fixes the elevation ramp
+        self._tool_actor = None                    # the moving cutter+holder (M7.12.2)
+        self._tool_op = None                       # op whose tool is currently built
         self._play_idx = 0
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(120)         # ~8 fps timeline (fine frames)
@@ -566,6 +568,8 @@ class Viewer3D(QWidget):
         self._play_timer.stop()
         self._removal = None
         self._removal_grid = None
+        self._tool_actor = None
+        self._tool_op = None
         self._play_idx = 0
         self._play_btn.setText("▶")
         self._chk_uncut.setVisible(True)
@@ -580,6 +584,8 @@ class Viewer3D(QWidget):
         top layer's Z is updated per frame (the bottom/walls stay put)."""
         import pyvista as pv
         self._plotter.clear()
+        self._tool_actor = None                   # cleared with the scene; rebuilt on next frame
+        self._tool_op = None
         rows, cols = pb.stock_top.shape
         ox, oy = pb.origin
         res = pb.resolution
@@ -631,9 +637,67 @@ class Viewer3D(QWidget):
         pts[self._removal_n:, 2] = self._removal.frames[idx].ravel(order="C")
         self._removal_grid.points = pts           # reassign → marks modified
         self._removal_grid["colors"] = self._elev_colors(pts[:, 2], self._removal_zmax)
+        self._update_cut_tool(idx)
         if reset_camera:
             self._plotter.reset_camera(render=False)
         self._safe_render()
+
+    def _update_cut_tool(self, idx: int) -> None:
+        """Place the cutter+holder at the tool position for frame `idx`, rebuilding
+        the tool mesh only when the op (and hence the tool) changes (M7.12.2)."""
+        cursors = self._removal.frame_cursors
+        cur = cursors[idx] if idx < len(cursors) else None
+        if cur is None or not np.all(np.isfinite(cur)):
+            if self._tool_actor is not None:
+                self._tool_actor.SetVisibility(False)
+            return
+        op = self._removal.frame_labels[idx]
+        if op != self._tool_op or self._tool_actor is None:
+            geom = self._removal.op_tool_geom.get(op)
+            self._tool_actor = self._plotter.add_mesh(
+                self._tool_mesh(geom), name="cuttool", color="#9aa0a6",
+                smooth_shading=True, specular=0.5, specular_power=20, lighting=True)
+            self._tool_op = op
+        self._tool_actor.SetVisibility(True)
+        self._tool_actor.SetPosition(float(cur[0]), float(cur[1]), float(cur[2]))
+
+    @staticmethod
+    def _tool_mesh(geom):
+        """A cutter (flat cylinder / ball / V-cone) + shank + collet/holder, tip at
+        the local origin pointing up +Z, sized from the op's tool geom (M7.12.2)."""
+        import math
+        import pyvista as pv
+        g = geom or {}
+        R = max(0.2, float(g.get("radius_mm", 1.5875)))
+        kind = g.get("type", "flat")
+        flute_h = float(g.get("flute_length_mm") or 0.0) or max(8.0, 4.0 * R)
+        shank_r = max(R, (float(g.get("shank_diameter_mm") or 0.0) / 2.0) or max(R, 3.0))
+        holder_r = max(shank_r * 2.2, 8.0)
+        shank_h = max(10.0, flute_h)
+        holder_h = 14.0
+        parts: list = []
+        if kind == "vbit" and (g.get("included_angle_deg") or 0) > 0:
+            half = math.radians(float(g["included_angle_deg"]) / 2.0)
+            cone_h = R / max(math.tan(half), 1e-3)
+            parts.append(pv.Cone(center=(0, 0, cone_h / 2.0), direction=(0, 0, -1.0),
+                                 height=cone_h, radius=R, resolution=28))
+            flute_top = cone_h
+        elif kind == "ball":
+            parts.append(pv.Sphere(radius=R, center=(0, 0, R),
+                                   theta_resolution=24, phi_resolution=24))
+            parts.append(pv.Cylinder(center=(0, 0, (R + flute_h) / 2.0), direction=(0, 0, 1),
+                                     radius=R, height=max(flute_h - R, 0.1), resolution=28))
+            flute_top = flute_h
+        else:                                     # flat / toroid
+            parts.append(pv.Cylinder(center=(0, 0, flute_h / 2.0), direction=(0, 0, 1),
+                                     radius=R, height=flute_h, resolution=28))
+            flute_top = flute_h
+        parts.append(pv.Cylinder(center=(0, 0, flute_top + shank_h / 2.0), direction=(0, 0, 1),
+                                 radius=shank_r, height=shank_h, resolution=24))
+        top = flute_top + shank_h
+        parts.append(pv.Cylinder(center=(0, 0, top + holder_h / 2.0), direction=(0, 0, 1),
+                                 radius=holder_r, height=holder_h, resolution=24))
+        return pv.merge(parts)
 
     @staticmethod
     def _elev_colors(z, zmax) -> np.ndarray:

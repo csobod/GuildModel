@@ -351,6 +351,28 @@ def _op_overlay(ops) -> list[dict]:
             for op in ops]
 
 
+def _op_tool_geom(ops, default_tool: dict | None) -> dict:
+    """Per-op tool geometry for the moving-tool render (BUILDPLAN M7.12.2): the
+    cutting shape (type / radius / V-angle) plus shank & flute length from the op's
+    tools.yaml entry (or the global default), keyed by op name to match
+    ``RemovalPlayback.frame_labels``."""
+    out: dict = {}
+    for op in ops:
+        t = op.tool or default_tool or {}
+        r = t.get("radius_mm")
+        if r is None:
+            d = t.get("diameter_mm")
+            r = (d / 2.0) if d else 1.5875
+        out[op.name] = {
+            "type": t.get("type", "flat"),
+            "radius_mm": float(r),
+            "included_angle_deg": float(t.get("included_angle_deg", 0.0) or 0.0),
+            "flute_length_mm": float(t.get("flute_length_mm", 0.0) or 0.0),
+            "shank_diameter_mm": float(t.get("shank_diameter_mm", 0.0) or 0.0),
+        }
+    return out
+
+
 # ------------------------------------------------------------------ G-code generation worker
 
 class GCodeWorker(_ProgressWorker):
@@ -1188,6 +1210,7 @@ class SimWorker(_ProgressWorker):
             removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(tool)),
                 stock_hf.z, f.origin, f.resolution, frames=80)
+            removal.op_tool_geom = _op_tool_geom(ops, tool)
             self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
             self.cancelled.emit()
@@ -1311,6 +1334,7 @@ class FlatSimWorker(_ProgressWorker):
             removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
                 stock_top, f.origin, f.resolution, frames=80)
+            removal.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
             self.cancelled.emit()

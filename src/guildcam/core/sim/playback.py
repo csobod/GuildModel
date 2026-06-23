@@ -124,6 +124,8 @@ class RemovalPlayback:
     stock_top: np.ndarray = field(repr=False)
     origin: tuple = (0.0, 0.0)
     resolution: float = 0.3
+    frame_cursors: list = field(default_factory=list)   # tool (x,y,z) at each frame (M7.12.2)
+    op_tool_geom: dict = field(default_factory=dict)     # op label → tool geom (M7.12.2; GUI fills)
 
     @property
     def n_frames(self) -> int:
@@ -177,20 +179,25 @@ def simulate_removal(
     frame_labels: list = []
     op_labels: list = []
     op_boundaries: list = []
+    frame_cursors: list = []          # tool (x,y,z) at each frame (the moving tool, M7.12.2)
+    nan3 = (float("nan"), float("nan"), float("nan"))
 
     if total == 0:                    # nothing to cut — a single uncut frame
         frames_out.append(floor.copy())
         frame_labels.append(op_runs[0][0] if op_runs else "")
+        frame_cursors.append(nan3)
         for label, _, _ in op_runs:
             op_labels.append(label)
             op_boundaries.append(0)
         if progress is not None:
             progress(1.0)
         return RemovalPlayback(frames_out, frame_labels, op_labels, op_boundaries,
-                               stock_top, tuple(origin), resolution)
+                               stock_top, tuple(origin), resolution,
+                               frame_cursors=frame_cursors)
 
     batch = max(1, math.ceil(total / max(1, frames)))
     pending = 0
+    cursor = nan3                     # last stamped tool position
     for label, kern, P in op_runs:
         op_labels.append(label)
         i, M = 0, len(P)
@@ -199,19 +206,23 @@ def simulate_removal(
             _stamp_points(floor, P[i:i + take], kern, origin, resolution, shape)
             i += take
             pending += take
+            cursor = (float(P[i - 1][0]), float(P[i - 1][1]), float(P[i - 1][2]))
             if pending >= batch:
                 frames_out.append(floor.copy())
                 frame_labels.append(label)
+                frame_cursors.append(cursor)
                 pending = 0
         # Force a frame at the op boundary (remainder pending, or an empty op) so
         # op markers always align to a frame and pending resets between ops.
         if pending > 0 or M == 0:
             frames_out.append(floor.copy())
             frame_labels.append(label)
+            frame_cursors.append(cursor)   # empty op keeps the previous position
             pending = 0
         op_boundaries.append(len(frames_out) - 1)
         if progress is not None:
             progress(len(op_labels) / max(1, len(op_runs)))
 
     return RemovalPlayback(frames_out, frame_labels, op_labels, op_boundaries,
-                           stock_top, tuple(origin), resolution)
+                           stock_top, tuple(origin), resolution,
+                           frame_cursors=frame_cursors)
