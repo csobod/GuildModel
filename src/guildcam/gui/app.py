@@ -3071,12 +3071,8 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        # spacer first (pushes the utilities to the far end / bottom-when-left), THEN the
-        # separator — so the divider hugs the utility group and its padding matches the
-        # other separators (the spacer between them was making this one look uneven)
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        tb.addWidget(spacer)
+        # No expanding spacer: the four groups sit contiguously so every separator has
+        # identical surrounding padding (the spacer was widening the gap at this one).
         tb.addSeparator()                 # views | utilities (Fit + dock toggles)
         tb.addAction(self._act_fit)
         tb.addAction(self._act_log)
@@ -3114,8 +3110,10 @@ class MainWindow(QMainWindow):
             size = "width: 1px; margin: 3px 5px;"       # vertical line, padded left/right
         else:
             size = "height: 1px; margin: 5px 3px;"      # horizontal line, padded top/bot
+        # No border-radius: on a 1 px line the rounded-corner anti-aliasing bleeds
+        # unevenly by sub-pixel position, making separators look progressively thicker.
         tb.setStyleSheet(
-            f"QToolBar::separator {{ background: {colour}; {size} border-radius: 1px; }}")
+            f"QToolBar::separator {{ background: {colour}; {size} }}")
 
     # ------------------------------------------------------------------ menu
 
