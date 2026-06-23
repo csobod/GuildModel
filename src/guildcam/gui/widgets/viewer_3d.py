@@ -141,9 +141,11 @@ class Viewer3D(QWidget):
         self._removal_zmax = 1.0                   # stock height — fixes the elevation ramp
         self._tool_actor = None                    # the moving cutter+holder (M7.12.2)
         self._tool_op = None                       # op whose tool is currently built
-        self._play_idx = 0
+        self._play_idx = 0                         # integer frame (slider / label / collision)
+        self._play_pos = 0.0                       # float playhead — interpolated between frames
+        self._play_speed = 1.0                     # frames advanced per tick
         self._play_timer = QTimer(self)
-        self._play_timer.setInterval(55)          # ~18 fps timeline (in-place updates keep up)
+        self._play_timer.setInterval(16)           # ~60 fps; the block is lerped between frames
         self._play_timer.timeout.connect(self._advance_play)
 
     # ------------------------------------------------------------------ toolbar build
@@ -554,6 +556,9 @@ class Viewer3D(QWidget):
         self._chk_gouge.setVisible(False)
         last = playback.n_frames - 1
         self._play_idx = last
+        self._play_pos = float(last)
+        # advance so the whole cut plays in ~5 s at 60 fps (slower if the render lags)
+        self._play_speed = max(0.2, playback.n_frames / 312.0)
         self._build_block_scene(playback)         # opaque carved top + stock envelope
         self._scrub.blockSignals(True)
         self._scrub.setRange(0, last)
@@ -588,6 +593,7 @@ class Viewer3D(QWidget):
         self._tool_actor = None
         self._tool_op = None
         self._play_idx = 0
+        self._play_pos = 0.0
         self._play_btn.setText("▶")
         self._chk_uncut.setVisible(True)
         self._chk_gouge.setVisible(True)
@@ -651,38 +657,61 @@ class Viewer3D(QWidget):
         if self._removal is None:
             return
         self._play_idx = max(0, min(idx, self._removal.n_frames - 1))
-        self._render_removal_frame(self._play_idx)
+        self._play_pos = float(self._play_idx)
+        self._render_at(self._play_pos)
         self._update_step_label()
         label = self._removal.frame_labels[self._play_idx]
         self.playback_step_changed.emit(self._play_idx, label)
 
     def _render_removal_frame(self, idx: int, reset_camera: bool = False) -> None:
-        """Carve the block to frame `idx` by updating only the top layer's Z in place
-        (the bottom layer at z=0 and the walls stay fixed)."""
+        self._render_at(float(idx), reset_camera=reset_camera)
+
+    def _render_at(self, pos: float, reset_camera: bool = False) -> None:
+        """Carve the block to the (fractional) playhead `pos`: the top layer's Z is
+        the LERP of the two bounding frames, updated in place (BUILDPLAN M7.12 smooth
+        playback). No full points reassignment, so the GPU just redraws."""
         if self._plotter is None or self._removal is None or self._removal_grid is None:
             return
-        # Update the carved top layer IN PLACE (no full `points =` reassignment — that
-        # rebuilt the VTK pipeline every frame, the stutter/glitch). Modifying the
-        # points view bumps the grid's MTime, so the next render shows the new Z.
-        self._removal_grid.points[self._removal_n:, 2] = \
-            self._removal.frames[idx].ravel(order="C")
+        last = self._removal.n_frames - 1
+        pos = max(0.0, min(pos, float(last)))
+        a = int(pos)
+        t = pos - a
+        b = min(a + 1, last)
+        if t > 1e-6 and b != a:
+            top = (self._removal.frames[a] * (1.0 - t)
+                   + self._removal.frames[b] * t).ravel(order="C")
+        else:
+            top = self._removal.frames[a].ravel(order="C")
+        self._removal_grid.points[self._removal_n:, 2] = top
         self._removal_grid["colors"] = self._elev_colors(
             self._removal_grid.points[:, 2], self._removal_zmax)
-        self._update_cut_tool(idx)
+        self._update_cut_tool_at(pos)
         if reset_camera:
             self._plotter.reset_camera(render=False)
         self._safe_render()
 
-    def _update_cut_tool(self, idx: int) -> None:
-        """Place the cutter+holder at the tool position for frame `idx`, rebuilding
-        the tool mesh only when the op (and hence the tool) changes (M7.12.2)."""
+    def _update_cut_tool_at(self, pos: float) -> None:
+        """Place the cutter+holder at the (interpolated) tool position for `pos`,
+        rebuilding the mesh only when the op changes; the tool slides between frame
+        cursors but snaps over a big jump (a rapid / op change) — M7.12.2."""
+        last = self._removal.n_frames - 1
+        a = int(pos)
+        t = pos - a
+        b = min(a + 1, last)
         cursors = self._removal.frame_cursors
-        cur = cursors[idx] if idx < len(cursors) else None
-        if cur is None or not np.all(np.isfinite(cur)):
+        ca = cursors[a] if a < len(cursors) else None
+        if ca is None or not np.all(np.isfinite(ca)):
             if self._tool_actor is not None:
                 self._tool_actor.SetVisibility(False)
             return
-        op = self._removal.frame_labels[idx]
+        cb = cursors[b] if b < len(cursors) else ca
+        if (t > 1e-6 and np.all(np.isfinite(cb))
+                and abs(cb[0] - ca[0]) + abs(cb[1] - ca[1]) < 8.0):
+            cur = (ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t,
+                   ca[2] + (cb[2] - ca[2]) * t)
+        else:
+            cur = ca
+        op = self._removal.frame_labels[a]
         if op != self._tool_op or self._tool_actor is None:
             geom = self._removal.op_tool_geom.get(op)
             self._tool_actor = self._plotter.add_mesh(
@@ -691,9 +720,8 @@ class Viewer3D(QWidget):
             self._tool_op = op
         self._tool_actor.SetVisibility(True)
         self._tool_actor.SetPosition(float(cur[0]), float(cur[1]), float(cur[2]))
-        # Turn the tool red on a hold-down collision frame (M7.12.3).
         cf = self._removal.collision_frames
-        collide = idx < len(cf) and cf[idx]
+        collide = a < len(cf) and cf[a]
         self._tool_actor.GetProperty().SetColor(
             *((0.85, 0.20, 0.18) if collide else (0.60, 0.63, 0.65)))
 
@@ -753,26 +781,38 @@ class Viewer3D(QWidget):
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
-        if self._play_idx >= self._removal.n_frames - 1:
-            self._scrub.setValue(0)               # replay from the uncut block
+        if self._play_pos >= self._removal.n_frames - 1:   # replay from the uncut block
+            self._play_idx = 0
+            self._play_pos = 0.0
+            self._scrub.blockSignals(True)
+            self._scrub.setValue(0)
+            self._scrub.blockSignals(False)
         self._play_btn.setText("▮▮")
         self._play_timer.start()
 
     def _advance_play(self) -> None:
-        if self._removal is None or self._play_idx >= self._removal.n_frames - 1:
+        last = self._removal.n_frames - 1 if self._removal is not None else 0
+        if self._removal is None or self._play_pos >= last:
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
         prev = self._play_idx
-        nxt = prev + 1
-        self._scrub.setValue(nxt)                  # → _on_scrub renders frame nxt + emits
-        # Pause + warn on the rising edge into a hold-down collision (so a run of
-        # collision frames warns once, and resuming plays through it) — M7.12.3.
-        cf = self._removal.collision_frames
-        if (nxt < len(cf) and cf[nxt]) and not (prev < len(cf) and cf[prev]):
-            self._play_timer.stop()
-            self._play_btn.setText("▶")
-            self.collision_paused.emit(nxt)
+        self._play_pos = min(self._play_pos + self._play_speed, float(last))
+        self._render_at(self._play_pos)            # interpolated — no slider round-trip
+        nxt = int(self._play_pos)
+        if nxt != prev:                            # crossed into a new integer frame
+            self._play_idx = nxt
+            self._scrub.blockSignals(True)
+            self._scrub.setValue(nxt)
+            self._scrub.blockSignals(False)
+            self._update_step_label()
+            self.playback_step_changed.emit(nxt, self._removal.frame_labels[nxt])
+            # Pause + warn on the rising edge into a hold-down collision (M7.12.3).
+            cf = self._removal.collision_frames
+            if (nxt < len(cf) and cf[nxt]) and not (prev < len(cf) and cf[prev]):
+                self._play_timer.stop()
+                self._play_btn.setText("▶")
+                self.collision_paused.emit(nxt)
 
     # ------------------------------------------------------------------ clear
 
