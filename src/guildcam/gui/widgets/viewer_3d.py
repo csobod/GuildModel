@@ -622,13 +622,24 @@ class Viewer3D(QWidget):
                                smooth_shading=True, show_edges=False, lighting=True,
                                specular=0.15, specular_power=12)
 
+        # Hold-downs (keep-outs) as red posts on the bed, so the maker sees the tool +
+        # holder pass relative to them (BUILDPLAN M7.12.3).
+        kh = max(self._removal_zmax, 8.0)
+        for cx, cy, kr in getattr(pb, "keep_outs", None) or []:
+            post = pv.Cylinder(center=(cx, cy, kh / 2.0), direction=(0, 0, 1),
+                               radius=kr, height=kh, resolution=24)
+            self._plotter.add_mesh(post, color="#c83c32", opacity=0.9,
+                                   smooth_shading=True)
+
     def _update_step_label(self) -> None:
         if self._removal is None:
             self._step_label.setText("")
             return
         label = self._removal.frame_labels[self._play_idx]
+        cf = self._removal.collision_frames
+        warn = "   ⚠ hold-down!" if (self._play_idx < len(cf) and cf[self._play_idx]) else ""
         self._step_label.setText(
-            f"{self._play_idx + 1}/{self._removal.n_frames} · {label}")
+            f"{self._play_idx + 1}/{self._removal.n_frames} · {label}{warn}")
 
     def _on_scrub(self, idx: int) -> None:
         if self._removal is None:
@@ -671,6 +682,11 @@ class Viewer3D(QWidget):
             self._tool_op = op
         self._tool_actor.SetVisibility(True)
         self._tool_actor.SetPosition(float(cur[0]), float(cur[1]), float(cur[2]))
+        # Turn the tool red on a hold-down collision frame (M7.12.3).
+        cf = self._removal.collision_frames
+        collide = idx < len(cf) and cf[idx]
+        self._tool_actor.GetProperty().SetColor(
+            *((0.85, 0.20, 0.18) if collide else (0.60, 0.63, 0.65)))
 
     @staticmethod
     def _tool_mesh(geom):

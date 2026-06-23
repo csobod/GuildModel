@@ -232,18 +232,24 @@ def test_open_drawing_rename_and_view_persistence(tmp_path, monkeypatch):
     assert by_kind[ComponentKind.BASE_CURVE_RIGHT] in targets
     assert by_kind[ComponentKind.BASE_CURVE_LEFT] in targets
 
-    # view tracking: 3D persists, the Worktable page doesn't overwrite it. The bed
-    # is shown outside _switch_view (its own page), so the remembered component view
-    # (3D) is untouched — and the merged viewer keeps 3D model + cut sim on one page.
+    # view tracking (unified model, M7.12): the active view is _current_view. 3D
+    # persists; entering the Worktable doesn't overwrite the remembered view; the
+    # merged viewer keeps 3D model + cut sim on one page (sim shown from a cached
+    # result, with the VTK calls stubbed).
+    win.view3d.show_report = lambda *a, **k: None
+    win.view3d.set_removal = lambda *a, **k: None
     win._activate_workspace(by_kind[ComponentKind.FRAME_FRONT])
     win._switch_view(1)
-    assert win._last_component_view == 1
+    assert win._current_view == 1
     assert win.stack.currentIndex() == 1 and win.view3d.mode() == "model"
-    win._switch_view(2)                                          # cut-sim mode, same VTK page
+    win._active_sim_report = object()                            # a cached cut sim …
+    win._active_sim_removal = object()
+    win._switch_view(2)                                          # … shown in sim mode, same page
     assert win.stack.currentIndex() == 1 and win.view3d.mode() == "sim"
+    win._active_sim_report = win._active_sim_removal = None
     win._switch_view(1)
     win.stack.setCurrentIndex(win._worktable_page_index)         # peek at the bed
-    assert win._last_component_view == 1                         # unchanged by the bed page
+    assert win._current_view == 1                                # unchanged by the bed page
 
     # a built mesh for the frame + a temple; none for the base-curve
     win._activate_workspace(by_kind[ComponentKind.FRAME_FRONT])

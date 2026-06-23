@@ -2751,6 +2751,23 @@ class MainWindow(QMainWindow):
 
     def _on_sim_bed_finished(self, report, lines, removal=None) -> None:
         self._close_progress()
+        # Hold-down collision check (M7.12.3): the tool/holder envelope vs the bed's
+        # keep-outs, flagged per frame and rendered on the bed.
+        if removal is not None and self._worktable is not None:
+            from guildcam.core.sim import bed_collision_frames
+            keep_outs = []
+            for z in self._worktable.keep_outs():
+                cx, cy = z.center()
+                r = z.radius_mm if z.radius_mm else max(z.width(), z.height()) / 2.0
+                keep_outs.append((cx, cy, float(r)))
+            removal.keep_outs = keep_outs
+            removal.collision_frames = bed_collision_frames(
+                removal.frame_cursors, removal.frame_labels, removal.op_tool_geom, keep_outs)
+            ncol = sum(1 for f in removal.collision_frames if f)
+            if ncol:
+                self.append_log(
+                    f"[bed-sim] ⚠ the tool or its holder passes over a hold-down on "
+                    f"{ncol} frame(s) — check clearance (highlighted red in the 3D view).")
         self._bed_report = report                 # cache for instant Sim re-toggle (M7.12)
         self._bed_removal = removal
         self.view3d.show_report(report)           # badge
@@ -3577,11 +3594,16 @@ class MainWindow(QMainWindow):
             b = ws.boxing
             self.params.update_boxing(b.a, b.b, b.dbl, b.ed)
         self._update_stock_canvas()
-        # Re-apply the active view to THIS component, refreshing its content (the
-        # unified dispatch shows the mesh/sim or falls back to 2D when there's nothing
-        # to show yet, and never leaves a stale render). Switching the view also makes
-        # the 3D widget the current sized/visible stack page before VTK renders.
-        self._switch_view(self._current_view)
+        # Re-apply the active view to THIS component, refreshing its content. On a
+        # passive tab switch, fall back to 2D when the chosen view has nothing to show
+        # for this component yet — an unbuilt 3D, or a Sim with no cached result — so
+        # we never flash an empty 3D / sim or auto-run an expensive sim.
+        view = self._current_view
+        if view == 1 and not self._has_active_3d():
+            view = 0
+        elif view == 2 and self._active_sim_removal is None:
+            view = 0
+        self._switch_view(view)
 
     def _activate_workspace(self, index: int) -> None:
         """Make component ``index`` active: persist the current one, swap the

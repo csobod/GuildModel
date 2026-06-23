@@ -126,10 +126,24 @@ class RemovalPlayback:
     resolution: float = 0.3
     frame_cursors: list = field(default_factory=list)   # tool (x,y,z) at each frame (M7.12.2)
     op_tool_geom: dict = field(default_factory=dict)     # op label → tool geom (M7.12.2; GUI fills)
+    keep_outs: list = field(default_factory=list)        # [(cx,cy,r)] machine coords (M7.12.3)
+    collision_frames: list = field(default_factory=list) # per-frame hold-down hit bool (M7.12.3)
 
     @property
     def n_frames(self) -> int:
         return len(self.frames)
+
+
+def tool_envelope(geom: dict) -> tuple[float, float]:
+    """(cutting radius, holder/collet radius) for a tool geom — the holder being the
+    widest part of the tool assembly (BUILDPLAN M7.12.2/.3). Kept in sync with the
+    moving-tool mesh (`Viewer3D._tool_mesh`) so the hold-down collision check uses
+    the same envelope that's drawn."""
+    g = geom or {}
+    R = max(0.2, float(g.get("radius_mm", 1.5875)))
+    shank_r = max(R, (float(g.get("shank_diameter_mm") or 0.0) / 2.0) or max(R, 3.0))
+    holder_r = max(shank_r * 2.2, 8.0)
+    return R, holder_r
 
 
 def simulate_removal(

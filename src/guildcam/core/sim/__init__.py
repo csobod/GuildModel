@@ -15,10 +15,11 @@ from .paths import (
 from .report import Completeness, Gouge, CutReport, verify
 from .playback import (
     FloorSnapshot, RemovalPlayback, simulate_removal, simulate_steps, steps_from_ops,
+    tool_envelope,
 )
 from .bed import (
-    BedRemovalPart, ComponentSim, composite_bed_report, simulate_bed_removal,
-    simulate_component,
+    BedRemovalPart, ComponentSim, bed_collision_frames, composite_bed_report,
+    simulate_bed_removal, simulate_component,
 )
 
 __all__ = [
@@ -27,7 +28,7 @@ __all__ = [
     "cutting_paths_from_ops",
     "Completeness", "Gouge", "CutReport", "verify",
     "ComponentSim", "composite_bed_report", "simulate_component",
-    "BedRemovalPart", "simulate_bed_removal",
+    "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
-    "steps_from_ops",
+    "steps_from_ops", "tool_envelope",
 ]

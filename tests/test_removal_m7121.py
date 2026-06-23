@@ -198,6 +198,34 @@ def test_bed_removal_empty():
     assert pb.n_frames == 1
 
 
+def test_tool_envelope():
+    from guildcam.core.sim.playback import tool_envelope
+    cut_r, holder_r = tool_envelope({"radius_mm": 1.5875, "shank_diameter_mm": 6.0})
+    assert cut_r == pytest.approx(1.5875)
+    assert holder_r >= 8.0 and holder_r > cut_r          # holder is the widest part
+    # a missing geom still yields a sane default envelope
+    assert tool_envelope(None)[1] >= 8.0
+
+
+def test_bed_collision_frames():
+    from guildcam.core.sim.bed import bed_collision_frames
+    geom = {"cut": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}   # holder_r ~ 8
+    # cursor 0 right on a keep-out; cursor 1 far away; cursor 2 NaN (no tool)
+    cursors = [(50.0, 50.0, 1.0), (5.0, 5.0, 1.0),
+               (float("nan"), float("nan"), float("nan"))]
+    labels = ["cut", "cut", "cut"]
+    keep_outs = [(52.0, 50.0, 5.0)]                       # screw r=5 at (52,50)
+    flags = bed_collision_frames(cursors, labels, geom, keep_outs)
+    assert flags == [True, False, False]                 # near hit; far clear; NaN clear
+
+
+def test_bed_collision_none_without_keepouts():
+    from guildcam.core.sim.bed import bed_collision_frames
+    cursors = [(10.0, 10.0, 1.0), (20.0, 20.0, 1.0)]
+    flags = bed_collision_frames(cursors, ["a", "a"], {}, [])
+    assert flags == [False, False]
+
+
 def test_steps_from_ops_feeds_removal():
     """The M7.12 steps_from_ops builder drives simulate_removal unchanged."""
     from guildcam.core.cam.castle_ops import CamOp
