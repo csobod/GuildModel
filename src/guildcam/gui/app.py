@@ -1423,7 +1423,7 @@ class BedSimWorker(_ProgressWorker):
     the whole worktable. Off-thread because each component rebuilds its relief; the
     report drives the shared 3D viewer's sim mode (Uncut / Gouge overlays)."""
 
-    finished = Signal(object, object)   # core.sim.CutReport, summary lines
+    finished = Signal(object, object, object)   # CutReport, summary lines, RemovalPlayback
     progress = Signal(str)
     error = Signal(str)
 
@@ -1439,10 +1439,12 @@ class BedSimWorker(_ProgressWorker):
 
     def run(self) -> None:
         try:
+            import numpy as np
             import yaml
             from guildcam.core.cam.castle_ops import CastleCamParams
             from guildcam.core.sim import (
-                ComponentSim, composite_bed_report, simulate_component,
+                BedRemovalPart, ComponentSim, ToolProfile, composite_bed_report,
+                simulate_bed_removal, simulate_component, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1452,6 +1454,8 @@ class BedSimWorker(_ProgressWorker):
             place = {pl.label: pl for pl in self.placements}
             specs = [s for s in self.specs if s["label"] in place]
             comps: list = []
+            bed_parts: list = []          # volumetric bed removal (M7.12.3)
+            geom: dict = {}
             n = max(len(specs), 1)
             for k, spec in enumerate(specs):
                 base = k / n
@@ -1463,9 +1467,29 @@ class BedSimWorker(_ProgressWorker):
                 pl = place[spec["label"]]
                 comps.append(ComponentSim(floor, target, inside, origin, res,
                                           dx=pl.dx, dy=pl.dy, label=pl.label, kind=pl.kind))
+
+                # bed removal part: this part's stock heightfield + machine-coord steps
+                mode = spec["mode"]
+                if mode == "castle":
+                    from guildcam.core.relief.castle import stock_top_heightfield
+                    stock_hf = stock_top_heightfield(
+                        spec["castle"].stock, resolution=res, origin=origin,
+                        shape=floor.shape).z
+                elif mode == "temple":
+                    stock_hf = np.full(floor.shape, float(spec["temple"].blank_thickness_mm))
+                else:
+                    stock_hf = np.full(floor.shape, float(spec["block"].blank_thickness_mm))
+                part_steps = [(f"{pl.label} · {lbl}", prof, paths)
+                              for (lbl, prof, paths) in steps_from_ops(pl.ops, ToolProfile())]
+                for op_lbl, gv in _op_tool_geom(pl.ops, None).items():
+                    geom[f"{pl.label} · {op_lbl}"] = gv
+                bed_parts.append(BedRemovalPart(part_steps, stock_hf, origin, pl.dx, pl.dy))
+
             self._progress("Compositing the bed", 0.96)
             report = composite_bed_report(comps, self.work_area, resolution=self.resolution)
-            self.finished.emit(report, report.summary_lines())
+            removal = simulate_bed_removal(bed_parts, resolution=self.resolution, frames=60)
+            removal.op_tool_geom = geom
+            self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -2711,9 +2735,10 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._sim_worker.cancel)
         self._sim_thread.start()
 
-    def _on_sim_bed_finished(self, report, lines) -> None:
+    def _on_sim_bed_finished(self, report, lines, removal=None) -> None:
         self._close_progress()
-        self.view3d.show_report(report)
+        self.view3d.show_report(report)           # badge
+        self.view3d.set_removal(removal)          # volumetric bed block (M7.12.3)
         self._switch_view(2)
         for line in lines:
             self.append_log("[bed-sim] " + line)

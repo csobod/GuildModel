@@ -172,6 +172,32 @@ def test_empty_steps_cursor_is_nan():
     assert np.all(np.isnan(pb.frame_cursors[0]))
 
 
+def test_bed_removal_two_disjoint_parts():
+    """The whole-bed volumetric removal (M7.12.3) stamps each part's stock onto one
+    cropped machine grid and carves the combined steps."""
+    from guildcam.core.sim.bed import BedRemovalPart, simulate_bed_removal
+    prof = _flat()
+    stock_a = np.full((20, 20), 5.0)          # 10×10 mm at 0.5
+    steps_a = [("A · cut", prof, [[(2.0, 5.0, 2.0), (8.0, 5.0, 2.0)]])]
+    stock_b = np.full((20, 20), 4.0)
+    steps_b = [("B · cut", prof, [[(32.0, 5.0, 1.0), (38.0, 5.0, 1.0)]])]
+    parts = [BedRemovalPart(steps_a, stock_a, (0.0, 0.0), 0.0, 0.0),
+             BedRemovalPart(steps_b, stock_b, (0.0, 0.0), 30.0, 0.0)]   # B 30 mm to the right
+    pb = simulate_bed_removal(parts, resolution=0.5, frames=30)
+    assert pb.stock_top.max() == pytest.approx(5.0)        # part A's blank
+    assert pb.origin[0] <= 0.0 and pb.origin[1] <= 0.0     # cropped corner (minus margin)
+    for prev, cur in zip(pb.frames, pb.frames[1:]):
+        assert np.all(cur <= prev + 1e-9)                  # monotone across both parts
+    assert pb.frames[-1].min() <= 1.0 + 1e-6              # part B cut to z=1
+    assert pb.op_labels == ["A · cut", "B · cut"]          # both parts' ops, in order
+
+
+def test_bed_removal_empty():
+    from guildcam.core.sim.bed import simulate_bed_removal
+    pb = simulate_bed_removal([], resolution=0.5)
+    assert pb.n_frames == 1
+
+
 def test_steps_from_ops_feeds_removal():
     """The M7.12 steps_from_ops builder drives simulate_removal unchanged."""
     from guildcam.core.cam.castle_ops import CamOp

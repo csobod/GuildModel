@@ -23,6 +23,7 @@ import numpy as np
 from .report import CutReport, verify
 from .toolsim import ToolProfile, achieved_floor_grouped
 from .paths import cutting_paths_from_program_grouped
+from .playback import RemovalPlayback, simulate_removal
 
 
 @dataclass
@@ -171,3 +172,66 @@ def composite_bed_report(
     floor = np.where(np.isfinite(bed_floor), bed_floor, 0.0)
     return verify(floor, bed_target, bed_inside, bed_origin, resolution,
                   partition=None, complete_tol_mm=complete_tol_mm)
+
+
+# ------------------------------------------------------------------ M7.12.3 bed removal
+
+@dataclass
+class BedRemovalPart:
+    """One placed part for the volumetric bed sim (BUILDPLAN M7.12.3): its
+    **machine-coordinate** cut steps (from the nest placement's ops) plus its stock
+    heightfield in the **design** grid and the placement offset onto the bed."""
+    steps: list                  # [(label, ToolProfile, paths in machine coords)]
+    stock_top: np.ndarray        # design-frame stock heightfield
+    origin: tuple                # design-frame origin of stock_top
+    dx: float = 0.0
+    dy: float = 0.0
+
+
+def simulate_bed_removal(
+    parts: list,
+    *,
+    resolution: float,
+    margin_mm: float = 8.0,
+    frames: int = 60,
+) -> RemovalPlayback:
+    """Volumetric removal for a whole nested bed (BUILDPLAN M7.12.3).
+
+    Stamps every part's stock onto ONE machine-coordinate grid — auto-cropped to
+    the parts' footprint + a margin, so an empty 300×200 bed costs no memory — then
+    carves the combined machine-coordinate steps part by part with
+    :func:`simulate_removal`. Parts are spatially disjoint, so the order-independent
+    per-cell min holds (the same argument as :func:`composite_bed_report`). The
+    returned playback's ``origin`` is the cropped bed corner, so the GUI renders the
+    block at the right machine position.
+    """
+    if not parts:
+        return simulate_removal([], np.zeros((1, 1)), (0.0, 0.0), resolution, frames=1)
+
+    x0s, y0s, x1s, y1s = [], [], [], []
+    for p in parts:
+        srows, scols = p.stock_top.shape
+        mx, my = p.origin[0] + p.dx, p.origin[1] + p.dy
+        x0s.append(mx); y0s.append(my)
+        x1s.append(mx + scols * resolution); y1s.append(my + srows * resolution)
+    bed_ox, bed_oy = min(x0s) - margin_mm, min(y0s) - margin_mm
+    cols = max(1, int(round((max(x1s) + margin_mm - bed_ox) / resolution)))
+    rows = max(1, int(round((max(y1s) + margin_mm - bed_oy) / resolution)))
+
+    bed_stock = np.zeros((rows, cols), dtype=np.float64)
+    for p in parts:
+        srows, scols = p.stock_top.shape
+        coff = int(round((p.origin[0] + p.dx - bed_ox) / resolution))
+        roff = int(round((p.origin[1] + p.dy - bed_oy) / resolution))
+        r0, c0 = max(0, roff), max(0, coff)
+        r1, c1 = min(rows, roff + srows), min(cols, coff + scols)
+        if r0 >= r1 or c0 >= c1:
+            continue
+        sr0, sc0 = r0 - roff, c0 - coff
+        bed_stock[r0:r1, c0:c1] = np.maximum(
+            bed_stock[r0:r1, c0:c1],
+            p.stock_top[sr0:sr0 + (r1 - r0), sc0:sc0 + (c1 - c0)])
+
+    all_steps = [s for p in parts for s in p.steps]
+    return simulate_removal(all_steps, bed_stock, (bed_ox, bed_oy), resolution,
+                            frames=frames)
