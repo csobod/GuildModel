@@ -133,11 +133,12 @@ class Viewer3D(QWidget):
         self._sim_mesh = None                     # pv.PolyData (cut floor)
         self._sim_inside = None                   # bool grid: body cells (triangulation mask)
 
-        # playback scrubber (BUILDPLAN M7.12)
-        self._snapshots: list = []                # core.sim.FloorSnapshot, per op
+        # playback scrubber — volumetric removal (BUILDPLAN M7.12.1, was M7.12 sheet)
+        self._removal = None                      # core.sim.RemovalPlayback
+        self._removal_grid = None                 # pv.StructuredGrid (carved top, in-place)
         self._play_idx = 0
         self._play_timer = QTimer(self)
-        self._play_timer.setInterval(450)
+        self._play_timer.setInterval(120)         # ~8 fps timeline (fine frames)
         self._play_timer.timeout.connect(self._advance_play)
 
     # ------------------------------------------------------------------ toolbar build
@@ -480,6 +481,13 @@ class Viewer3D(QWidget):
         # Like _render_model: a bare mode switch never creates the GL context.
         if self._plotter is None:
             return
+        # A removal playback (single-component) renders the volumetric block; a bare
+        # report (bed sim) renders the floor sheet. On a model→sim switch the plotter
+        # was cleared, so rebuild the block actors before re-carving to the cursor.
+        if self._removal is not None:
+            self._build_block_scene(self._removal)
+            self._render_removal_frame(self._play_idx, reset_camera=reset_camera)
+            return
         if self._sim_mesh is None or self._report is None:
             self._plotter.clear()
             self._safe_render()
@@ -504,95 +512,135 @@ class Viewer3D(QWidget):
                                smooth_shading=False, show_edges=False, lighting=True)
 
     def _refresh_colors(self) -> None:
-        """Uncut/Gouge toggle — only acts in sim mode with a report present."""
-        if (self._plotter is None or self._mode != "sim"
-                or self._sim_mesh is None or self._report is None):
-            return
-        # While scrubbed back into the cut, the neutral floor surface is shown — a
-        # colour toggle only applies to the final verified frame.
-        if self._snapshots and self._play_idx < len(self._snapshots) - 1:
+        """Uncut/Gouge toggle — the floor-sheet view (bed sim) only; the volumetric
+        block carries no uncut/gouge tint in v1."""
+        if (self._plotter is None or self._mode != "sim" or self._sim_mesh is None
+                or self._report is None or self._removal is not None):
             return
         self._apply_sim_colors()
         self._safe_render()
 
-    # ------------------------------------------------------------------ playback (M7.12)
+    # ------------------------------------------------------------------ removal playback (M7.12.1)
 
-    def set_playback(self, snapshots: list) -> None:
-        """Drive the scrubber from a per-op snapshot sequence (BUILDPLAN M7.12).
+    def set_removal(self, playback) -> None:
+        """Render the cut as a solid stock block carved frame by frame (M7.12.1).
 
-        Each snapshot is a `core.sim.FloorSnapshot` (cumulative achieved floor after
-        one op). The slider/play button appear; the cursor rests on the last frame
-        (== the final verified report). An empty sequence hides the scrubber."""
+        `playback` is a `core.sim.RemovalPlayback`: the remaining stock at fine
+        timeline steps. The block is built once; scrubbing/playing updates only the
+        carved top surface's Z in place (fixed topology → GPU-fast). Supersedes the
+        M7.12 floor-sheet scrubber for single-component sims. None/empty hides it."""
         self._reset_playback()
-        if not snapshots or self._report is None:
+        if playback is None or playback.n_frames == 0 or not self._ensure_plotter():
             return
-        self._snapshots = list(snapshots)
-        last = len(self._snapshots) - 1
+        self._removal = playback
+        self._chk_uncut.setVisible(False)         # the block has no uncut/gouge tint (v1)
+        self._chk_gouge.setVisible(False)
+        last = playback.n_frames - 1
         self._play_idx = last
+        self._build_block_scene(playback)         # opaque carved top + stock envelope
         self._scrub.blockSignals(True)
         self._scrub.setRange(0, last)
-        self._scrub.setValue(last)
+        self._scrub.setValue(last)                # rest on the finished part
         self._scrub.blockSignals(False)
         for wdg in (self._play_btn, self._scrub, self._step_label):
             wdg.setVisible(True)
+        if self._mode == "sim":
+            self._render_removal_frame(last, reset_camera=True)
         self._update_step_label()
 
     def _reset_playback(self) -> None:
         self._play_timer.stop()
-        self._snapshots = []
+        self._removal = None
+        self._removal_grid = None
         self._play_idx = 0
         self._play_btn.setText("▶")
+        self._chk_uncut.setVisible(True)
+        self._chk_gouge.setVisible(True)
         for wdg in (self._play_btn, self._scrub, self._step_label):
             wdg.setVisible(False)
 
+    def _build_block_scene(self, pb) -> None:
+        """Build the static stock envelope (walls + bottom) + the carved top surface
+        as an in-place-updatable structured grid (BUILDPLAN M7.12.1)."""
+        import pyvista as pv
+        self._plotter.clear()
+        rows, cols = pb.stock_top.shape
+        ox, oy = pb.origin
+        res = pb.resolution
+        xs = ox + np.arange(cols) * res
+        ys = oy + np.arange(rows) * res
+        X, Y = np.meshgrid(xs, ys)                # (rows, cols), C-order ravel below
+
+        # carved top surface — structured grid, points in C order, dims (cols, rows, 1)
+        grid = pv.StructuredGrid()
+        grid.points = np.column_stack([
+            X.ravel(order="C"), Y.ravel(order="C"),
+            pb.frames[self._play_idx].ravel(order="C")]).astype(np.float64)
+        grid.dimensions = (cols, rows, 1)
+        self._removal_grid = grid
+        self._plotter.add_mesh(grid, color=self._palette.mesh_surface,
+                               smooth_shading=False, show_edges=False, lighting=True,
+                               specular=0.2, specular_power=15)
+
+        # static stock envelope: bottom + 4 walls at the grid extent, blank height
+        xmin, xmax = float(xs[0]), float(xs[-1])
+        ymin, ymax = float(ys[0]), float(ys[-1])
+        ztop = float(np.median(pb.stock_top))     # the blank height (edge-uniform)
+        v = np.array([
+            [xmin, ymin, 0.0], [xmax, ymin, 0.0], [xmax, ymax, 0.0], [xmin, ymax, 0.0],
+            [xmin, ymin, ztop], [xmax, ymin, ztop], [xmax, ymax, ztop], [xmin, ymax, ztop],
+        ], dtype=np.float64)
+        faces = np.hstack([
+            [4, 0, 1, 2, 3],                      # bottom
+            [4, 0, 1, 5, 4], [4, 1, 2, 6, 5],     # front / right walls
+            [4, 2, 3, 7, 6], [4, 3, 0, 4, 7],     # back / left walls
+        ]).astype(np.int64)
+        self._plotter.add_mesh(pv.PolyData(v, faces),
+                               color=self._palette.stock_ghost, opacity=0.5,
+                               show_edges=False, lighting=True)
+
     def _update_step_label(self) -> None:
-        if not self._snapshots:
+        if self._removal is None:
             self._step_label.setText("")
             return
-        snap = self._snapshots[self._play_idx]
-        self._step_label.setText(f"{self._play_idx + 1}/{len(self._snapshots)} · {snap.label}")
+        label = self._removal.frame_labels[self._play_idx]
+        self._step_label.setText(
+            f"{self._play_idx + 1}/{self._removal.n_frames} · {label}")
 
     def _on_scrub(self, idx: int) -> None:
-        if not self._snapshots:
+        if self._removal is None:
             return
-        self._play_idx = max(0, min(idx, len(self._snapshots) - 1))
-        self._render_snapshot(self._play_idx)
+        self._play_idx = max(0, min(idx, self._removal.n_frames - 1))
+        self._render_removal_frame(self._play_idx)
         self._update_step_label()
-        snap = self._snapshots[self._play_idx]
-        self.playback_step_changed.emit(snap.op_index, snap.label)
+        label = self._removal.frame_labels[self._play_idx]
+        self.playback_step_changed.emit(self._play_idx, label)
 
-    def _render_snapshot(self, idx: int) -> None:
-        """Draw the cut as of op `idx`: the final frame shows the colour-verified
-        report; earlier frames show the neutral floor surface building up."""
-        if self._plotter is None or self._report is None or not self._snapshots:
+    def _render_removal_frame(self, idx: int, reset_camera: bool = False) -> None:
+        """Carve the block to frame `idx` by updating the top surface's Z in place."""
+        if self._plotter is None or self._removal is None or self._removal_grid is None:
             return
-        last = len(self._snapshots) - 1
-        if idx >= last:
-            # the finished cut == the verified report (uncut/gouge colours)
-            self._sim_mesh = self._floor_polydata(self._report.floor)
-            self._apply_sim_colors()
-        else:
-            mesh = self._floor_polydata(self._snapshots[idx].floor)
-            self._plotter.clear()
-            self._plotter.add_mesh(
-                mesh, color=self._palette.mesh_surface, smooth_shading=False,
-                show_edges=False, lighting=True)
+        pts = self._removal_grid.points
+        pts[:, 2] = self._removal.frames[idx].ravel(order="C")
+        self._removal_grid.points = pts           # reassign → marks modified
+        if reset_camera:
+            self._plotter.reset_camera(render=False)
         self._safe_render()
 
     def _toggle_play(self) -> None:
-        if not self._snapshots:
+        if self._removal is None:
             return
         if self._play_timer.isActive():
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
-        if self._play_idx >= len(self._snapshots) - 1:
-            self._scrub.setValue(0)               # replay from the start
+        if self._play_idx >= self._removal.n_frames - 1:
+            self._scrub.setValue(0)               # replay from the uncut block
         self._play_btn.setText("▮▮")
         self._play_timer.start()
 
     def _advance_play(self) -> None:
-        if not self._snapshots or self._play_idx >= len(self._snapshots) - 1:
+        if self._removal is None or self._play_idx >= self._removal.n_frames - 1:
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return

@@ -1105,7 +1105,9 @@ class SimWorker(_ProgressWorker):
         try:
             import numpy as np
             import yaml
-            from guildcam.core.relief.castle import build_castle_relief
+            from guildcam.core.relief.castle import (
+                build_castle_relief, stock_top_heightfield,
+            )
             from guildcam.core.cam.castle_ops import (
                 CastleCamParams, build_tool_settings, generate_castle_program,
                 write_castle_program,
@@ -1114,7 +1116,7 @@ class SimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor, achieved_floor_grouped,
                 cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
-                simulate_steps, steps_from_ops,
+                simulate_removal, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1177,14 +1179,16 @@ class SimWorker(_ProgressWorker):
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=self.partition)
 
-            # Per-op snapshots for the playback scrubber (M7.12): re-sweep the ops
-            # one at a time (each op carries its own tool), capturing the cumulative
-            # floor after each. Monotonic; the last frame matches the full sweep.
+            # Volumetric removal playback for the scrubber (M7.12.1): carve the real
+            # two-level stock op-by-op at fine granularity — the 3D block animates this.
             self._progress("Building playback", 0.96)
-            snaps = simulate_steps(
+            stock_hf = stock_top_heightfield(
+                self.castle.stock, resolution=f.resolution,
+                origin=f.origin, shape=f.z.shape)
+            removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(tool)),
-                f.origin, f.z.shape, f.resolution, init_z)
-            self.finished.emit(report, report.summary_lines(), snaps)
+                stock_hf.z, f.origin, f.resolution, frames=80)
+            self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -1236,7 +1240,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor_grouped,
                 cutting_paths_from_program_grouped, verify,
-                simulate_steps, steps_from_ops,
+                simulate_removal, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1300,12 +1304,14 @@ class FlatSimWorker(_ProgressWorker):
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=None)
 
-            # Per-op snapshots for the playback scrubber (M7.12).
+            # Volumetric removal playback for the scrubber (M7.12.1): single-level
+            # blank (temple / base-curve block) carved at fine granularity.
             self._progress("Building playback", 0.96)
-            snaps = simulate_steps(
+            stock_top = np.full(f.z.shape, float(top_z), dtype=float)
+            removal = simulate_removal(
                 steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
-                f.origin, f.z.shape, f.resolution, init_z)
-            self.finished.emit(report, report.summary_lines(), snaps)
+                stock_top, f.origin, f.resolution, frames=80)
+            self.finished.emit(report, report.summary_lines(), removal)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -4070,10 +4076,10 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._sim_worker.cancel)
         self._sim_thread.start()
 
-    def _on_sim_finished(self, report, lines, snaps=None) -> None:
+    def _on_sim_finished(self, report, lines, removal=None) -> None:
         self._close_progress()
-        self.view3d.show_report(report)
-        self.view3d.set_playback(snaps or [])     # per-op scrubber (M7.12)
+        self.view3d.show_report(report)           # badge + (bed) floor sheet fallback
+        self.view3d.set_removal(removal)          # volumetric block scrubber (M7.12.1)
         for line in lines:
             self.append_log("[sim] " + line)
         self.status_lbl.setText({
