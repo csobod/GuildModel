@@ -135,7 +135,8 @@ class Viewer3D(QWidget):
 
         # playback scrubber — volumetric removal (BUILDPLAN M7.12.1, was M7.12 sheet)
         self._removal = None                      # core.sim.RemovalPlayback
-        self._removal_grid = None                 # pv.StructuredGrid (carved top, in-place)
+        self._removal_grid = None                 # pv.StructuredGrid (2-layer solid block)
+        self._removal_n = 0                        # points per layer (top layer = [n:])
         self._play_idx = 0
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(120)         # ~8 fps timeline (fine frames)
@@ -572,8 +573,10 @@ class Viewer3D(QWidget):
             wdg.setVisible(False)
 
     def _build_block_scene(self, pb) -> None:
-        """Build the static stock envelope (walls + bottom) + the carved top surface
-        as an in-place-updatable structured grid (BUILDPLAN M7.12.1)."""
+        """Build the stock as ONE watertight opaque solid (BUILDPLAN M7.12.1): a
+        two-layer structured grid — a flat bottom at z=0 and the carved top — so VTK
+        renders a closed block (top + bottom + 4 walls), no translucency. Only the
+        top layer's Z is updated per frame (the bottom/walls stay put)."""
         import pyvista as pv
         self._plotter.clear()
         rows, cols = pb.stock_top.shape
@@ -582,34 +585,20 @@ class Viewer3D(QWidget):
         xs = ox + np.arange(cols) * res
         ys = oy + np.arange(rows) * res
         X, Y = np.meshgrid(xs, ys)                # (rows, cols), C-order ravel below
+        base = np.column_stack([X.ravel(order="C"), Y.ravel(order="C")])
+        n = rows * cols
+        self._removal_n = n
 
-        # carved top surface — structured grid, points in C order, dims (cols, rows, 1)
         grid = pv.StructuredGrid()
-        grid.points = np.column_stack([
-            X.ravel(order="C"), Y.ravel(order="C"),
-            pb.frames[self._play_idx].ravel(order="C")]).astype(np.float64)
-        grid.dimensions = (cols, rows, 1)
+        grid.points = np.vstack([
+            np.column_stack([base, np.zeros(n)]),                       # k=0 bottom @ z=0
+            np.column_stack([base, pb.frames[self._play_idx].ravel(order="C")]),  # k=1 top
+        ]).astype(np.float64)
+        grid.dimensions = (cols, rows, 2)
         self._removal_grid = grid
         self._plotter.add_mesh(grid, color=self._palette.mesh_surface,
                                smooth_shading=False, show_edges=False, lighting=True,
-                               specular=0.2, specular_power=15)
-
-        # static stock envelope: bottom + 4 walls at the grid extent, blank height
-        xmin, xmax = float(xs[0]), float(xs[-1])
-        ymin, ymax = float(ys[0]), float(ys[-1])
-        ztop = float(np.median(pb.stock_top))     # the blank height (edge-uniform)
-        v = np.array([
-            [xmin, ymin, 0.0], [xmax, ymin, 0.0], [xmax, ymax, 0.0], [xmin, ymax, 0.0],
-            [xmin, ymin, ztop], [xmax, ymin, ztop], [xmax, ymax, ztop], [xmin, ymax, ztop],
-        ], dtype=np.float64)
-        faces = np.hstack([
-            [4, 0, 1, 2, 3],                      # bottom
-            [4, 0, 1, 5, 4], [4, 1, 2, 6, 5],     # front / right walls
-            [4, 2, 3, 7, 6], [4, 3, 0, 4, 7],     # back / left walls
-        ]).astype(np.int64)
-        self._plotter.add_mesh(pv.PolyData(v, faces),
-                               color=self._palette.stock_ghost, opacity=0.5,
-                               show_edges=False, lighting=True)
+                               specular=0.25, specular_power=15)
 
     def _update_step_label(self) -> None:
         if self._removal is None:
@@ -629,11 +618,12 @@ class Viewer3D(QWidget):
         self.playback_step_changed.emit(self._play_idx, label)
 
     def _render_removal_frame(self, idx: int, reset_camera: bool = False) -> None:
-        """Carve the block to frame `idx` by updating the top surface's Z in place."""
+        """Carve the block to frame `idx` by updating only the top layer's Z in place
+        (the bottom layer at z=0 and the walls stay fixed)."""
         if self._plotter is None or self._removal is None or self._removal_grid is None:
             return
         pts = self._removal_grid.points
-        pts[:, 2] = self._removal.frames[idx].ravel(order="C")
+        pts[self._removal_n:, 2] = self._removal.frames[idx].ravel(order="C")
         self._removal_grid.points = pts           # reassign → marks modified
         if reset_camera:
             self._plotter.reset_camera(render=False)
