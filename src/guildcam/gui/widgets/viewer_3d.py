@@ -135,7 +135,8 @@ class Viewer3D(QWidget):
         self._sim_inside = None                   # bool grid: body cells (triangulation mask)
 
         # playback scrubber — volumetric removal (BUILDPLAN M7.12.1, was M7.12 sheet)
-        self._removal = None                      # core.sim.RemovalPlayback
+        self._plan = None                         # core.sim.RemovalPlan (positions)
+        self._floor = None                        # current remaining-stock heightfield
         self._removal_grid = None                 # pv.StructuredGrid (2-layer solid block)
         self._removal_n = 0                        # points per layer (top layer = [n:])
         self._removal_zmax = 1.0                   # stock height — fixes the elevation ramp
@@ -503,9 +504,9 @@ class Viewer3D(QWidget):
         # A removal playback (single-component) renders the volumetric block; a bare
         # report (bed sim) renders the floor sheet. On a model→sim switch the plotter
         # was cleared, so rebuild the block actors before re-carving to the cursor.
-        if self._removal is not None:
-            self._build_block_scene(self._removal)
-            self._render_removal_frame(self._play_idx, reset_camera=reset_camera)
+        if self._plan is not None:
+            self._build_block_scene(self._plan)
+            self._render_pos(self._play_pos, reset_camera=reset_camera)
             return
         if self._sim_mesh is None or self._report is None:
             self._plotter.clear()
@@ -534,45 +535,46 @@ class Viewer3D(QWidget):
         """Uncut/Gouge toggle — the floor-sheet view (bed sim) only; the volumetric
         block carries no uncut/gouge tint in v1."""
         if (self._plotter is None or self._mode != "sim" or self._sim_mesh is None
-                or self._report is None or self._removal is not None):
+                or self._report is None or self._plan is not None):
             return
         self._apply_sim_colors()
         self._safe_render()
 
     # ------------------------------------------------------------------ removal playback (M7.12.1)
 
-    def set_removal(self, playback) -> None:
-        """Render the cut as a solid stock block carved frame by frame (M7.12.1).
-
-        `playback` is a `core.sim.RemovalPlayback`: the remaining stock at fine
-        timeline steps. The block is built once; scrubbing/playing updates only the
-        carved top surface's Z in place (fixed topology → GPU-fast). Supersedes the
-        M7.12 floor-sheet scrubber for single-component sims. None/empty hides it."""
+    def set_plan(self, plan) -> None:
+        """Render the cut as a solid stock block carved along the exact toolpath
+        (BUILDPLAN M7.12). `plan` is a `core.sim.RemovalPlan` — the full densified
+        positions + sparse keyframes. Playing stamps the material **up to the tool's
+        position**, so the tool and the removal stay in sync; scrubbing recomputes the
+        floor from the nearest keyframe. None/empty hides the scrubber."""
         self._reset_playback()
-        if playback is None or playback.n_frames == 0 or not self._ensure_plotter():
+        if plan is None or plan.n_positions == 0 or not self._ensure_plotter():
             return
-        self._removal = playback
-        self._chk_uncut.setVisible(False)         # the block has no uncut/gouge tint (v1)
+        self._plan = plan
+        self._floor = plan.keyframes[-1][1].copy()    # the fully-cut floor (rest state)
+        self._chk_uncut.setVisible(False)             # the block has no uncut/gouge tint
         self._chk_gouge.setVisible(False)
-        last = playback.n_frames - 1
+        last = plan.n_positions
         self._play_idx = last
         self._play_pos = float(last)
-        # advance so the whole cut plays in ~5 s at 60 fps (slower if the render lags)
-        self._play_speed = max(0.2, playback.n_frames / 312.0)
-        self._build_block_scene(playback)         # opaque carved top + stock envelope
+        # advance so the whole cut plays in ~8 s at 60 fps (smoother + in sync)
+        self._play_speed = max(0.5, plan.n_positions / 480.0)
+        self._build_block_scene(plan)                 # opaque carved top + stock envelope
         self._scrub.blockSignals(True)
         self._scrub.setRange(0, last)
-        self._scrub.setValue(last)                # rest on the finished part
+        self._scrub.setValue(last)                    # rest on the finished part
         self._scrub.blockSignals(False)
         for wdg in (self._play_btn, self._scrub, self._step_label):
             wdg.setVisible(True)
         # Surface a hold-down collision count on the badge (M7.12.3).
-        ncol = sum(1 for f in playback.collision_frames if f)
+        cp = plan.collision_pos
+        ncol = int(cp.sum()) if cp is not None else 0
         if ncol:
-            self._badge.setText(f"⚠  {ncol} hold-down collision frame(s)")
+            self._badge.setText("⚠  tool fouls a hold-down")
             self._badge.setStyleSheet("color: #c0392b; font-weight: 600;")
         if self._mode == "sim":
-            self._render_removal_frame(last, reset_camera=True)
+            self._render_pos(self._play_pos, reset_camera=True)
         self._update_step_label()
 
     def clear_sim(self) -> None:
@@ -588,7 +590,8 @@ class Viewer3D(QWidget):
 
     def _reset_playback(self) -> None:
         self._play_timer.stop()
-        self._removal = None
+        self._plan = None
+        self._floor = None
         self._removal_grid = None
         self._tool_actor = None
         self._tool_op = None
@@ -622,7 +625,7 @@ class Viewer3D(QWidget):
         grid = pv.StructuredGrid()
         grid.points = np.vstack([
             np.column_stack([base, np.zeros(n)]),                       # k=0 bottom @ z=0
-            np.column_stack([base, pb.frames[self._play_idx].ravel(order="C")]),  # k=1 top
+            np.column_stack([base, self._floor.ravel(order="C")]),      # k=1 carved top
         ]).astype(np.float64)
         grid.dimensions = (cols, rows, 2)
         self._removal_grid = grid
@@ -644,45 +647,36 @@ class Viewer3D(QWidget):
                                    smooth_shading=True)
 
     def _update_step_label(self) -> None:
-        if self._removal is None:
+        if self._plan is None:
             self._step_label.setText("")
             return
-        label = self._removal.frame_labels[self._play_idx]
-        cf = self._removal.collision_frames
-        warn = "   ⚠ hold-down!" if (self._play_idx < len(cf) and cf[self._play_idx]) else ""
-        self._step_label.setText(
-            f"{self._play_idx + 1}/{self._removal.n_frames} · {label}{warn}")
+        i = max(0, min(self._play_idx, self._plan.n_positions))
+        pct = 100.0 * i / max(1, self._plan.n_positions)
+        label = self._plan.label_at(min(i, self._plan.n_positions - 1))
+        cp = self._plan.collision_pos
+        warn = ("   ⚠ hold-down!" if cp is not None and i < len(cp) and cp[i] else "")
+        self._step_label.setText(f"{pct:.0f}% · {label}{warn}")
 
     def _on_scrub(self, idx: int) -> None:
-        if self._removal is None:
+        if self._plan is None:
             return
-        self._play_idx = max(0, min(idx, self._removal.n_frames - 1))
+        from guildcam.core.sim.playback import plan_floor_to
+        self._play_idx = max(0, min(idx, self._plan.n_positions))
         self._play_pos = float(self._play_idx)
-        self._render_at(self._play_pos)
+        self._floor = plan_floor_to(self._plan, self._play_pos)   # recompute via keyframe
+        self._render_pos(self._play_pos)
         self._update_step_label()
-        label = self._removal.frame_labels[self._play_idx]
-        self.playback_step_changed.emit(self._play_idx, label)
+        self.playback_step_changed.emit(
+            min(self._play_idx, self._plan.n_positions - 1),
+            self._plan.label_at(min(self._play_idx, self._plan.n_positions - 1)))
 
-    def _render_removal_frame(self, idx: int, reset_camera: bool = False) -> None:
-        self._render_at(float(idx), reset_camera=reset_camera)
-
-    def _render_at(self, pos: float, reset_camera: bool = False) -> None:
-        """Carve the block to the (fractional) playhead `pos`: the top layer's Z is
-        the LERP of the two bounding frames, updated in place (BUILDPLAN M7.12 smooth
-        playback). No full points reassignment, so the GPU just redraws."""
-        if self._plotter is None or self._removal is None or self._removal_grid is None:
+    def _render_pos(self, pos: float, reset_camera: bool = False) -> None:
+        """Draw the block at the current floor (carved up to the playhead) + the tool
+        at its exact toolpath position (BUILDPLAN M7.12 — tool & removal in sync)."""
+        if (self._plotter is None or self._plan is None or self._removal_grid is None
+                or self._floor is None):
             return
-        last = self._removal.n_frames - 1
-        pos = max(0.0, min(pos, float(last)))
-        a = int(pos)
-        t = pos - a
-        b = min(a + 1, last)
-        if t > 1e-6 and b != a:
-            top = (self._removal.frames[a] * (1.0 - t)
-                   + self._removal.frames[b] * t).ravel(order="C")
-        else:
-            top = self._removal.frames[a].ravel(order="C")
-        self._removal_grid.points[self._removal_n:, 2] = top
+        self._removal_grid.points[self._removal_n:, 2] = self._floor.ravel(order="C")
         self._removal_grid["colors"] = self._elev_colors(
             self._removal_grid.points[:, 2], self._removal_zmax)
         self._update_cut_tool_at(pos)
@@ -691,37 +685,27 @@ class Viewer3D(QWidget):
         self._safe_render()
 
     def _update_cut_tool_at(self, pos: float) -> None:
-        """Place the cutter+holder at the (interpolated) tool position for `pos`,
-        rebuilding the mesh only when the op changes; the tool slides between frame
-        cursors but snaps over a big jump (a rapid / op change) — M7.12.2."""
-        last = self._removal.n_frames - 1
-        a = int(pos)
-        t = pos - a
-        b = min(a + 1, last)
-        cursors = self._removal.frame_cursors
-        ca = cursors[a] if a < len(cursors) else None
-        if ca is None or not np.all(np.isfinite(ca)):
+        """Place the cutter+holder exactly on the toolpath at the playhead `pos`,
+        rebuilding the mesh only when the op (and tool) changes — M7.12.2."""
+        plan = self._plan
+        m = plan.n_positions
+        i = max(0, min(int(pos), m - 1))
+        p = plan.positions[i]
+        if not np.all(np.isfinite(p)):
             if self._tool_actor is not None:
                 self._tool_actor.SetVisibility(False)
             return
-        cb = cursors[b] if b < len(cursors) else ca
-        if (t > 1e-6 and np.all(np.isfinite(cb))
-                and abs(cb[0] - ca[0]) + abs(cb[1] - ca[1]) < 8.0):
-            cur = (ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t,
-                   ca[2] + (cb[2] - ca[2]) * t)
-        else:
-            cur = ca
-        op = self._removal.frame_labels[a]
+        op = plan.label_at(i)
         if op != self._tool_op or self._tool_actor is None:
-            geom = self._removal.op_tool_geom.get(op)
+            geom = plan.op_tool_geom.get(op)
             self._tool_actor = self._plotter.add_mesh(
                 self._tool_mesh(geom), name="cuttool", color="#9aa0a6",
                 smooth_shading=True, specular=0.5, specular_power=20, lighting=True)
             self._tool_op = op
         self._tool_actor.SetVisibility(True)
-        self._tool_actor.SetPosition(float(cur[0]), float(cur[1]), float(cur[2]))
-        cf = self._removal.collision_frames
-        collide = a < len(cf) and cf[a]
+        self._tool_actor.SetPosition(float(p[0]), float(p[1]), float(p[2]))
+        cp = plan.collision_pos
+        collide = cp is not None and i < len(cp) and cp[i]
         self._tool_actor.GetProperty().SetColor(
             *((0.85, 0.20, 0.18) if collide else (0.60, 0.63, 0.65)))
 
@@ -774,45 +758,66 @@ class Viewer3D(QWidget):
         rgb = lo[None, :] + (hi - lo)[None, :] * t[:, None]
         return (rgb * 255.0).astype(np.uint8)
 
+    def _sync_progress(self, idx: int) -> None:
+        """Reflect the playhead on the slider + step label + inspector (no re-render)."""
+        m = self._plan.n_positions
+        self._play_idx = idx
+        self._scrub.blockSignals(True)
+        self._scrub.setValue(min(idx, m))
+        self._scrub.blockSignals(False)
+        self._update_step_label()
+        ni = min(idx, m - 1)
+        self.playback_step_changed.emit(ni, self._plan.label_at(ni))
+
     def _toggle_play(self) -> None:
-        if self._removal is None:
+        if self._plan is None:
             return
         if self._play_timer.isActive():
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
-        if self._play_pos >= self._removal.n_frames - 1:   # replay from the uncut block
+        if self._play_pos >= self._plan.n_positions:     # replay from the uncut block
             self._play_idx = 0
             self._play_pos = 0.0
+            self._floor = self._plan.stock_top.copy()
             self._scrub.blockSignals(True)
             self._scrub.setValue(0)
             self._scrub.blockSignals(False)
+            self._render_pos(0.0)
         self._play_btn.setText("▮▮")
         self._play_timer.start()
 
     def _advance_play(self) -> None:
-        last = self._removal.n_frames - 1 if self._removal is not None else 0
-        if self._removal is None or self._play_pos >= last:
+        from guildcam.core.sim.playback import plan_stamp_forward
+        plan = self._plan
+        m = plan.n_positions if plan is not None else 0
+        if plan is None or self._floor is None or self._play_pos >= m:
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
-        prev = self._play_idx
-        self._play_pos = min(self._play_pos + self._play_speed, float(last))
-        self._render_at(self._play_pos)            # interpolated — no slider round-trip
-        nxt = int(self._play_pos)
-        if nxt != prev:                            # crossed into a new integer frame
-            self._play_idx = nxt
-            self._scrub.blockSignals(True)
-            self._scrub.setValue(nxt)
-            self._scrub.blockSignals(False)
-            self._update_step_label()
-            self.playback_step_changed.emit(nxt, self._removal.frame_labels[nxt])
-            # Pause + warn on the rising edge into a hold-down collision (M7.12.3).
-            cf = self._removal.collision_frames
-            if (nxt < len(cf) and cf[nxt]) and not (prev < len(cf) and cf[prev]):
-                self._play_timer.stop()
-                self._play_btn.setText("▶")
-                self.collision_paused.emit(nxt)
+        old = int(self._play_pos)
+        target = min(self._play_pos + self._play_speed, float(m))
+        new = int(target)
+        # Pause + warn on the rising edge into a hold-down collision run (M7.12.3) —
+        # checks the whole [old, new) span so a fast jump can't skip past it.
+        cp = plan.collision_pos
+        if (cp is not None and new > old and cp[old:new].any()
+                and not (old > 0 and bool(cp[old - 1]))):
+            first = old + int(np.argmax(cp[old:new]))
+            plan_stamp_forward(plan, self._floor, old, first + 1)
+            self._play_pos = float(first + 1)
+            self._render_pos(self._play_pos)
+            self._sync_progress(first)
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+            self.collision_paused.emit(first)
+            return
+        if new > old:
+            plan_stamp_forward(plan, self._floor, old, new)    # incremental, in place
+        self._play_pos = target
+        self._render_pos(self._play_pos)
+        if new != self._play_idx:
+            self._sync_progress(min(new, m))
 
     # ------------------------------------------------------------------ clear
 

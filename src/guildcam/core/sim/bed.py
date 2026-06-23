@@ -23,7 +23,9 @@ import numpy as np
 from .report import CutReport, verify
 from .toolsim import ToolProfile, achieved_floor_grouped
 from .paths import cutting_paths_from_program_grouped
-from .playback import RemovalPlayback, simulate_removal, tool_radius_below
+from .playback import (
+    RemovalPlan, RemovalPlayback, build_removal_plan, simulate_removal, tool_radius_below,
+)
 
 
 @dataclass
@@ -207,7 +209,14 @@ def simulate_bed_removal(
     """
     if not parts:
         return simulate_removal([], np.zeros((1, 1)), (0.0, 0.0), resolution, frames=1)
+    bed_stock, bed_origin = _bed_stock(parts, resolution, margin_mm)
+    return simulate_removal(_schedule_step_order(parts), bed_stock, bed_origin,
+                            resolution, frames=frames)
 
+
+def _bed_stock(parts: list, resolution: float, margin_mm: float):
+    """The cropped bed stock heightfield + its machine-coord origin (shared by the
+    frame-based bed sim and the position-based plan)."""
     x0s, y0s, x1s, y1s = [], [], [], []
     for p in parts:
         srows, scols = p.stock_top.shape
@@ -231,10 +240,20 @@ def simulate_bed_removal(
         bed_stock[r0:r1, c0:c1] = np.maximum(
             bed_stock[r0:r1, c0:c1],
             p.stock_top[sr0:sr0 + (r1 - r0), sc0:sc0 + (c1 - c0)])
+    return bed_stock, (bed_ox, bed_oy)
 
-    all_steps = _schedule_step_order(parts)
-    return simulate_removal(all_steps, bed_stock, (bed_ox, bed_oy), resolution,
-                            frames=frames)
+
+def build_bed_removal_plan(
+    parts: list, *, resolution: float, margin_mm: float = 8.0, keyframes: int = 16,
+) -> RemovalPlan:
+    """Position-based whole-bed removal (BUILDPLAN M7.12): the cropped bed stock +
+    the scheduled (tool-grouped) steps as a `RemovalPlan`, so the GUI drives the tool
+    along its exact path in sync with the material removal."""
+    if not parts:
+        return build_removal_plan([], np.zeros((1, 1)), (0.0, 0.0), resolution)
+    bed_stock, bed_origin = _bed_stock(parts, resolution, margin_mm)
+    return build_removal_plan(_schedule_step_order(parts), bed_stock, bed_origin,
+                              resolution, keyframes=keyframes)
 
 
 def _schedule_step_order(parts: list) -> list:

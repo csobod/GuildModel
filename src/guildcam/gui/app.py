@@ -1138,7 +1138,7 @@ class SimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor, achieved_floor_grouped,
                 cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
-                simulate_removal, steps_from_ops,
+                build_removal_plan, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1201,17 +1201,17 @@ class SimWorker(_ProgressWorker):
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=self.partition)
 
-            # Volumetric removal playback for the scrubber (M7.12.1): carve the real
-            # two-level stock op-by-op at fine granularity — the 3D block animates this.
+            # Position-based removal plan (M7.12): the full toolpath + sparse
+            # keyframes — the 3D block carves along the path in sync with the tool.
             self._progress("Building playback", 0.96)
             stock_hf = stock_top_heightfield(
                 self.castle.stock, resolution=f.resolution,
                 origin=f.origin, shape=f.z.shape)
-            removal = simulate_removal(
+            plan = build_removal_plan(
                 steps_from_ops(ops, ToolProfile.from_tool(tool)),
-                stock_hf.z, f.origin, f.resolution, frames=110)
-            removal.op_tool_geom = _op_tool_geom(ops, tool)
-            self.finished.emit(report, report.summary_lines(), removal)
+                stock_hf.z, f.origin, f.resolution)
+            plan.op_tool_geom = _op_tool_geom(ops, tool)
+            self.finished.emit(report, report.summary_lines(), plan)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -1263,7 +1263,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildcam.core.sim import (
                 ToolProfile, achieved_floor_grouped,
                 cutting_paths_from_program_grouped, verify,
-                simulate_removal, steps_from_ops,
+                build_removal_plan, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1327,15 +1327,15 @@ class FlatSimWorker(_ProgressWorker):
                 floor, np.where(relief.inside, f.z, np.nan), relief.inside,
                 f.origin, f.resolution, partition=None)
 
-            # Volumetric removal playback for the scrubber (M7.12.1): single-level
-            # blank (temple / base-curve block) carved at fine granularity.
+            # Position-based removal plan (M7.12): single-level blank (temple /
+            # base-curve block) carved along the toolpath in sync with the tool.
             self._progress("Building playback", 0.96)
             stock_top = np.full(f.z.shape, float(top_z), dtype=float)
-            removal = simulate_removal(
+            plan = build_removal_plan(
                 steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
-                stock_top, f.origin, f.resolution, frames=110)
-            removal.op_tool_geom = _op_tool_geom(ops, fallback_tool)
-            self.finished.emit(report, report.summary_lines(), removal)
+                stock_top, f.origin, f.resolution)
+            plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
+            self.finished.emit(report, report.summary_lines(), plan)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -1443,8 +1443,8 @@ class BedSimWorker(_ProgressWorker):
             import yaml
             from guildcam.core.cam.castle_ops import CastleCamParams
             from guildcam.core.sim import (
-                BedRemovalPart, ComponentSim, ToolProfile, composite_bed_report,
-                simulate_bed_removal, simulate_component, steps_from_ops,
+                BedRemovalPart, ComponentSim, ToolProfile, build_bed_removal_plan,
+                composite_bed_report, simulate_component, steps_from_ops,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1487,9 +1487,9 @@ class BedSimWorker(_ProgressWorker):
 
             self._progress("Compositing the bed", 0.96)
             report = composite_bed_report(comps, self.work_area, resolution=self.resolution)
-            removal = simulate_bed_removal(bed_parts, resolution=self.resolution, frames=100)
-            removal.op_tool_geom = geom
-            self.finished.emit(report, report.summary_lines(), removal)
+            plan = build_bed_removal_plan(bed_parts, resolution=self.resolution)
+            plan.op_tool_geom = geom
+            self.finished.emit(report, report.summary_lines(), plan)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -2788,39 +2788,37 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._sim_worker.cancel)
         self._sim_thread.start()
 
-    def _on_sim_bed_finished(self, report, lines, removal=None) -> None:
+    def _on_sim_bed_finished(self, report, lines, plan=None) -> None:
         self._close_progress()
         # Hold-down collision check (M7.12.3): the tool/holder envelope vs the bed's
-        # keep-outs, flagged per frame and rendered on the bed.
-        if removal is not None and self._worktable is not None:
-            from guildcam.core.sim import bed_collision_frames
+        # keep-outs, flagged per toolpath position and rendered on the bed.
+        if plan is not None and self._worktable is not None:
+            from guildcam.core.sim import plan_collisions
             h = float(self._worktable.hold_down_height_mm)
             keep_outs = []
             for z in self._worktable.keep_outs():
                 cx, cy = z.center()
                 r = z.radius_mm if z.radius_mm else max(z.width(), z.height()) / 2.0
                 keep_outs.append((cx, cy, float(r)))
-            removal.keep_outs = keep_outs
-            removal.hold_down_height_mm = h
-            removal.collision_frames = bed_collision_frames(
-                removal.frame_cursors, removal.frame_labels, removal.op_tool_geom,
-                keep_outs, hold_down_height_mm=h)
-            ncol = sum(1 for f in removal.collision_frames if f)
+            plan.keep_outs = keep_outs
+            plan.hold_down_height_mm = h
+            plan.collision_pos = plan_collisions(plan, keep_outs, h)
+            ncol = int(plan.collision_pos.sum())
             if ncol:
                 self.append_log(
-                    f"[bed-sim] ⚠ the tool or its holder passes over a hold-down on "
-                    f"{ncol} frame(s) — check clearance (highlighted red in the 3D view).")
+                    "[bed-sim] ⚠ the tool or its holder passes over a hold-down — "
+                    "check clearance (highlighted red in the 3D view).")
                 # Robust warning up front (the per-frame pause needs you to press play).
-                QTimer.singleShot(0, lambda n=ncol: QMessageBox.warning(
+                QTimer.singleShot(0, lambda: QMessageBox.warning(
                     self, "Hold-down collision",
-                    f"The tool or its holder reaches a hold-down on {n} frame(s) of this "
-                    "bed cut (flagged on the badge; the tool turns red there).\n\n"
+                    "The tool or its holder reaches a hold-down during this bed cut "
+                    "(flagged on the badge; the tool turns red there).\n\n"
                     "Play or scrub the Simulation to see where, then reposition the part, "
                     "raise the hold-down height, or adjust the toolpath before cutting."))
         self._bed_report = report                 # cache for instant Sim re-toggle (M7.12)
-        self._bed_removal = removal
+        self._bed_removal = plan
         self.view3d.show_report(report)           # badge
-        self.view3d.set_removal(removal)          # volumetric bed block (M7.12.3)
+        self.view3d.set_plan(plan)                # volumetric bed block (M7.12.3)
         self._update_view_toggles()
         for line in lines:
             self.append_log("[bed-sim] " + line)
@@ -3464,7 +3462,7 @@ class MainWindow(QMainWindow):
         `run` and it's runnable. Returns True if the sim view should be shown."""
         if self._active_sim_removal is not None:
             self.view3d.show_report(self._active_sim_report)
-            self.view3d.set_removal(self._active_sim_removal)
+            self.view3d.set_plan(self._active_sim_removal)
             return True
         if run and self._component_sim_enabled():
             self._start_component_sim()
@@ -3475,7 +3473,7 @@ class MainWindow(QMainWindow):
         """Show the bed cut-sim — the cached result, or start it when `run`."""
         if self._bed_removal is not None:
             self.view3d.show_report(self._bed_report)
-            self.view3d.set_removal(self._bed_removal)
+            self.view3d.set_plan(self._bed_removal)
             return True
         if run and self._bed_sim_enabled():
             self._start_bed_sim()
@@ -4270,12 +4268,12 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._sim_worker.cancel)
         self._sim_thread.start()
 
-    def _on_sim_finished(self, report, lines, removal=None) -> None:
+    def _on_sim_finished(self, report, lines, plan=None) -> None:
         self._close_progress()
         self._active_sim_report = report          # cache for instant Sim re-toggle (M7.12)
-        self._active_sim_removal = removal
+        self._active_sim_removal = plan
         self.view3d.show_report(report)           # badge + (bed) floor sheet fallback
-        self.view3d.set_removal(removal)          # volumetric block scrubber (M7.12.1)
+        self.view3d.set_plan(plan)                # volumetric block, carved along the path
         self._update_view_toggles()
         for line in lines:
             self.append_log("[sim] " + line)
@@ -4554,8 +4552,8 @@ class MainWindow(QMainWindow):
         """Bed playback hit a hold-down — it paused on the collision frame; warn the
         maker (BUILDPLAN M7.12.3). Resuming plays through the rest of this run."""
         label = ""
-        if self._bed_removal is not None and frame < len(self._bed_removal.frame_labels):
-            label = self._bed_removal.frame_labels[frame]
+        if self._bed_removal is not None:
+            label = self._bed_removal.label_at(frame)
         self.status_lbl.setText("Cut paused — hold-down collision")
         # Defer the modal out of the play-timer/signal callback — a QMessageBox shown
         # from inside a timer tick can be swallowed (so it never appeared).

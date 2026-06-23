@@ -237,7 +237,7 @@ def test_open_drawing_rename_and_view_persistence(tmp_path, monkeypatch):
     # merged viewer keeps 3D model + cut sim on one page (sim shown from a cached
     # result, with the VTK calls stubbed).
     win.view3d.show_report = lambda *a, **k: None
-    win.view3d.set_removal = lambda *a, **k: None
+    win.view3d.set_plan = lambda *a, **k: None
     win._activate_workspace(by_kind[ComponentKind.FRAME_FRONT])
     win._switch_view(1)
     assert win._current_view == 1

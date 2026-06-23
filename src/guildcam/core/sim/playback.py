@@ -264,3 +264,174 @@ def simulate_removal(
     return RemovalPlayback(frames_out, frame_labels, op_labels, op_boundaries,
                            stock_top, tuple(origin), resolution,
                            frame_cursors=frame_cursors)
+
+
+# ------------------------------------------------------------------ M7.12 position plan
+#
+# The frame model above plays the cut as discrete batches — the block steps down a
+# chunk per frame and the tool teleports between batch-end cursors. The PLAN model
+# below keeps the *full densified toolpath* and a few sparse keyframes, so the GUI
+# can drive the tool along its exact path while stamping material **up to the tool's
+# position** — the tool and the material removal stay in sync, and the motion is as
+# fine as the toolpath itself.
+
+
+@dataclass
+class RemovalPlan:
+    """The full densified cut as a position list + sparse keyframes (BUILDPLAN M7.12).
+
+    ``positions`` (M×3) are every tool position in cut order; ``seg_bounds`` slices
+    them into same-tool segments (each with a stamp ``kernel`` + op ``label``).
+    ``keyframes`` are ``(position_index, floor_copy)`` snapshots for fast scrubbing.
+    The GUI keeps a running floor: forward play stamps ``positions[a:b]`` into it
+    (cheap), scrubbing recomputes from the nearest keyframe. The tool sits at
+    ``positions[i]`` — exactly where the material is being removed.
+    """
+    stock_top: np.ndarray = field(repr=False)
+    origin: tuple
+    resolution: float
+    positions: np.ndarray = field(repr=False)
+    seg_bounds: list                 # cumulative position counts, len = n_segments + 1
+    seg_kernel: list = field(repr=False)
+    seg_label: list
+    op_tool_geom: dict = field(default_factory=dict)
+    keyframes: list = field(default_factory=list, repr=False)
+    keep_outs: list = field(default_factory=list)
+    collision_pos: np.ndarray = field(default=None, repr=False)
+    hold_down_height_mm: float = 0.0
+
+    @property
+    def n_positions(self) -> int:
+        return len(self.positions)
+
+    @property
+    def shape(self):
+        return self.stock_top.shape
+
+    def seg_of(self, idx: int) -> int:
+        import bisect
+        s = bisect.bisect_right(self.seg_bounds, idx) - 1
+        return max(0, min(s, len(self.seg_label) - 1))
+
+    def label_at(self, idx: int) -> str:
+        return self.seg_label[self.seg_of(idx)] if self.seg_label else ""
+
+    def cursor_at(self, idx: int):
+        if self.n_positions == 0:
+            return None
+        i = max(0, min(int(idx), self.n_positions - 1))
+        p = self.positions[i]
+        return (float(p[0]), float(p[1]), float(p[2]))
+
+
+def build_removal_plan(
+    steps: list[Step],
+    stock_top: np.ndarray,
+    origin: tuple[float, float],
+    resolution: float,
+    *,
+    keyframes: int = 16,
+    point_spacing: float | None = None,
+) -> RemovalPlan:
+    """Densify `steps` into one ordered position list + sparse keyframes (M7.12)."""
+    stock_top = np.asarray(stock_top, dtype=np.float64)
+    shape = stock_top.shape
+    spacing = point_spacing or resolution
+    kernels: dict = {}
+
+    def _kern(prof: ToolProfile):
+        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm, prof.included_angle_deg)
+        if key not in kernels:
+            kernels[key] = prof.kernel(resolution)
+        return kernels[key]
+
+    seg_pos: list = []
+    seg_kernel: list = []
+    seg_label: list = []
+    for label, prof, paths in steps:
+        chunks = [densify(p, spacing) for p in paths if len(p) >= 1]
+        if not chunks:
+            continue
+        seg_pos.append(np.vstack(chunks))
+        seg_kernel.append(_kern(prof))
+        seg_label.append(label)
+
+    positions = np.vstack(seg_pos) if seg_pos else np.empty((0, 3))
+    seg_bounds = [0]
+    for P in seg_pos:
+        seg_bounds.append(seg_bounds[-1] + len(P))
+    total = len(positions)
+
+    floor = stock_top.copy()
+    keyframes_list = [(0, floor.copy())]
+    if total:
+        step = max(1, total // max(1, keyframes))
+        gidx, target = 0, step
+        for si, P in enumerate(seg_pos):
+            kern = seg_kernel[si]
+            i, n = 0, len(P)
+            while i < n:
+                take = max(1, min(n - i, target - gidx))
+                _stamp_points(floor, P[i:i + take], kern, origin, resolution, shape)
+                i += take
+                gidx += take
+                if gidx >= target and gidx < total:
+                    keyframes_list.append((gidx, floor.copy()))
+                    target += step
+        keyframes_list.append((total, floor.copy()))
+
+    return RemovalPlan(stock_top, tuple(origin), resolution, positions, seg_bounds,
+                       seg_kernel, seg_label, keyframes=keyframes_list)
+
+
+def plan_stamp_forward(plan: RemovalPlan, floor: np.ndarray, a: int, b: int) -> None:
+    """Stamp ``plan.positions[a:b]`` into ``floor`` in place (spanning segments)."""
+    a = max(0, int(a))
+    b = min(plan.n_positions, int(b))
+    if a >= b:
+        return
+    for si in range(len(plan.seg_label)):
+        s0, s1 = plan.seg_bounds[si], plan.seg_bounds[si + 1]
+        lo, hi = max(a, s0), min(b, s1)
+        if lo < hi:
+            _stamp_points(floor, plan.positions[lo:hi], plan.seg_kernel[si],
+                          plan.origin, plan.resolution, plan.shape)
+
+
+def plan_floor_to(plan: RemovalPlan, target: float) -> np.ndarray:
+    """A fresh floor stamped up to position `target`, from the nearest keyframe."""
+    target = max(0, min(int(round(target)), plan.n_positions))
+    kf_idx, kf_floor = plan.keyframes[0]
+    for ki, kfl in plan.keyframes:
+        if ki <= target:
+            kf_idx, kf_floor = ki, kfl
+        else:
+            break
+    floor = kf_floor.copy()
+    plan_stamp_forward(plan, floor, kf_idx, target)
+    return floor
+
+
+def plan_collisions(plan: RemovalPlan, keep_outs: list,
+                    hold_down_height_mm: float) -> np.ndarray:
+    """Per-position hold-down collision flags for the plan (BUILDPLAN M7.12.3) —
+    the position analogue of :func:`bed.bed_collision_frames`, Z-aware and vectorised
+    per segment."""
+    M = plan.n_positions
+    flags = np.zeros(M, dtype=bool)
+    if not keep_outs or M == 0:
+        return flags
+    for si in range(len(plan.seg_label)):
+        s0, s1 = plan.seg_bounds[si], plan.seg_bounds[si + 1]
+        P = plan.positions[s0:s1]
+        d = tool_profile_dims(plan.op_tool_geom.get(plan.seg_label[si]))
+        z = P[:, 2]
+        r = np.where(
+            z >= hold_down_height_mm, 0.0,
+            np.where(hold_down_height_mm <= z + d["flute_h"], d["R"],
+                     np.where(hold_down_height_mm <= z + d["flute_h"] + d["shank_h"],
+                              d["shank_r"], d["holder_r"])))
+        for cx, cy, kr in keep_outs:
+            dist2 = (P[:, 0] - cx) ** 2 + (P[:, 1] - cy) ** 2
+            flags[s0:s1] |= (r > 0) & (dist2 < (kr + r) ** 2)
+    return flags

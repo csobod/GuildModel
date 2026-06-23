@@ -219,6 +219,48 @@ def test_bed_removal_groups_ops_by_tool():
     assert max(hinge) < min(body)                          # all hinges before all bodies
 
 
+def test_removal_plan_positions_and_final():
+    from guildcam.core.sim.playback import build_removal_plan, plan_floor_to
+    steps, stock = _steps(), _stock(5.0)
+    plan = build_removal_plan(steps, stock, ORIGIN, RES, keyframes=4)
+    assert plan.n_positions > 0
+    assert len(plan.seg_label) == 3                       # one segment per op
+    final = plan.keyframes[-1][1]
+    assert np.array_equal(final, _full_removal(stock, steps))   # final == full sweep
+    assert np.array_equal(plan_floor_to(plan, plan.n_positions), final)
+
+
+def test_removal_plan_floor_to_monotone():
+    from guildcam.core.sim.playback import build_removal_plan, plan_floor_to
+    plan = build_removal_plan(_steps(), _stock(5.0), ORIGIN, RES, keyframes=4)
+    M = plan.n_positions
+    assert plan_floor_to(plan, 0).max() == pytest.approx(5.0)   # uncut at the start
+    prev = plan_floor_to(plan, 0)
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        cur = plan_floor_to(plan, frac * M)
+        assert np.all(cur <= prev + 1e-9)                # material only ever removed
+        prev = cur
+
+
+def test_removal_plan_cursor_on_path():
+    from guildcam.core.sim.playback import build_removal_plan
+    plan = build_removal_plan(_steps(), _stock(5.0), ORIGIN, RES)
+    # every cursor is exactly one of the plan's densified positions (on the path)
+    c = plan.cursor_at(plan.n_positions // 2)
+    assert np.allclose(c, plan.positions[plan.n_positions // 2])
+    assert plan.label_at(0) == "Rough"                   # first segment's op
+
+
+def test_plan_collisions_z_aware():
+    from guildcam.core.sim.playback import build_removal_plan, plan_collisions
+    steps = [("Hinge", _flat(), [[(48.0, 50.0, 1.0), (52.0, 50.0, 1.0)]])]
+    plan = build_removal_plan(steps, np.full((120, 120), 5.0), (0.0, 0.0), 0.5)
+    plan.op_tool_geom = {"Hinge": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}
+    ko = [(50.0, 50.0, 5.0)]
+    assert plan_collisions(plan, ko, hold_down_height_mm=4.0).any()    # tip below → hits
+    assert not plan_collisions(plan, ko, hold_down_height_mm=0.5).any()  # tip above → clears
+
+
 def test_tool_envelope():
     from guildcam.core.sim.playback import tool_envelope
     cut_r, holder_r = tool_envelope({"radius_mm": 1.5875, "shank_diameter_mm": 6.0})

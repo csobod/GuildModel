@@ -14,12 +14,13 @@ from .paths import (
 )
 from .report import Completeness, Gouge, CutReport, verify
 from .playback import (
-    FloorSnapshot, RemovalPlayback, simulate_removal, simulate_steps, steps_from_ops,
+    FloorSnapshot, RemovalPlan, RemovalPlayback, build_removal_plan, plan_collisions,
+    plan_floor_to, plan_stamp_forward, simulate_removal, simulate_steps, steps_from_ops,
     tool_envelope, tool_profile_dims, tool_radius_below,
 )
 from .bed import (
-    BedRemovalPart, ComponentSim, bed_collision_frames, composite_bed_report,
-    simulate_bed_removal, simulate_component,
+    BedRemovalPart, ComponentSim, bed_collision_frames, build_bed_removal_plan,
+    composite_bed_report, simulate_bed_removal, simulate_component,
 )
 
 __all__ = [
@@ -29,6 +30,9 @@ __all__ = [
     "Completeness", "Gouge", "CutReport", "verify",
     "ComponentSim", "composite_bed_report", "simulate_component",
     "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
+    "build_bed_removal_plan",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
     "steps_from_ops", "tool_envelope", "tool_profile_dims", "tool_radius_below",
+    "RemovalPlan", "build_removal_plan", "plan_floor_to", "plan_stamp_forward",
+    "plan_collisions",
 ]
