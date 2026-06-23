@@ -2113,7 +2113,26 @@ pattern that fixed it.
 > the cut match intent, and will the tool **or its holder** slam into a hold-down? —
 > not a substitute for a real air-cut.
 
-### M7.12.1 — The block, carved in place (`v0.7.12.1`) · *solid stock + animated removal*
+### M7.12.1 — The block, carved in place (`v0.7.12.1`) · *solid stock + animated removal* — ✅ DONE 2026-06-22
+
+> **DONE (`v0.7.12.1`, 335 tests).** `core/sim/playback.py` `simulate_removal` carves
+> the real stock heightfield at fine move-batch granularity (`RemovalPlayback`,
+> monotone, op boundaries aligned to frames; +11 tests). `Viewer3D` renders the
+> stock as **one watertight opaque solid** — a two-layer `pv.StructuredGrid` (flat
+> bottom + carved top) — animated by updating only the top layer's Z in place
+> (fixed topology → GPU-fast), driven by the timeline slider + play/pause. The
+> surface is **coloured by elevation** (dark-brown→amber ramp fixed to the stock
+> height) so cut depth reads at a glance and a region darkens as it's carved — the
+> on-screen win that made the result legible. Two rendering missteps fixed en route
+> (a translucent envelope that z-fought; a flat-amber slab with no depth contrast).
+> Playback pauses when the viewer is hidden (no incomplete-framebuffer noise).
+> **2D-cursor reframe:** the central view is a stacked widget (2D *or* 3D), so a
+> marker on the 2D path is invisible during 3D playback; the live 2D↔3D link is the
+> M7.11 **op-inspector sync** (the Toolpaths dock, visible beside the 3D view).
+> The literal 2D path marker is deferred — it only pays off in a future side-by-side
+> layout; the per-frame tool *position* is spent on the M7.12.2 moving tool instead.
+
+
 
 1. **Remaining-stock heightfield** (`core/sim`): start from the real two-level stock
    (blank + pad block) as the initial solid top; sweep the densified cutting moves,
@@ -2232,7 +2251,7 @@ tools M7.8).
 - [x] Feeds & speeds / chip-load calculator tying tools↔materials (M7.10)
 - [x] Toolpath overlay + per-op inspector on the design canvas (M7.11)
 - [x] Cut-simulation playback scrubber (M7.12)
-- [ ] Volumetric stock removal — solid block carved in-place + synced 2D cursor (M7.12.1)
+- [x] Volumetric stock removal — solid block carved in-place, coloured by elevation (M7.12.1)
 - [ ] Visible tool + shank + holder following the path (M7.12.2)
 - [ ] Bed sim with hold-down (tool **and holder**) collision highlight (M7.12.3)
 - [ ] On-canvas measure + 3D section view (M7.13)
