@@ -137,6 +137,7 @@ class Viewer3D(QWidget):
         self._removal = None                      # core.sim.RemovalPlayback
         self._removal_grid = None                 # pv.StructuredGrid (2-layer solid block)
         self._removal_n = 0                        # points per layer (top layer = [n:])
+        self._removal_zmax = 1.0                   # stock height — fixes the elevation ramp
         self._play_idx = 0
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(120)         # ~8 fps timeline (fine frames)
@@ -596,9 +597,13 @@ class Viewer3D(QWidget):
         ]).astype(np.float64)
         grid.dimensions = (cols, rows, 2)
         self._removal_grid = grid
-        self._plotter.add_mesh(grid, color=self._palette.mesh_surface,
-                               smooth_shading=False, show_edges=False, lighting=True,
-                               specular=0.25, specular_power=15)
+        self._removal_zmax = float(pb.stock_top.max())
+        # Colour by elevation so cut depth reads at a glance (deep = dark, uncut =
+        # bright); a fixed ramp means a region visibly darkens as it's carved away.
+        grid["colors"] = self._elev_colors(grid.points[:, 2], self._removal_zmax)
+        self._plotter.add_mesh(grid, scalars="colors", rgb=True,
+                               smooth_shading=True, show_edges=False, lighting=True,
+                               specular=0.15, specular_power=12)
 
     def _update_step_label(self) -> None:
         if self._removal is None:
@@ -625,9 +630,21 @@ class Viewer3D(QWidget):
         pts = self._removal_grid.points
         pts[self._removal_n:, 2] = self._removal.frames[idx].ravel(order="C")
         self._removal_grid.points = pts           # reassign → marks modified
+        self._removal_grid["colors"] = self._elev_colors(pts[:, 2], self._removal_zmax)
         if reset_camera:
             self._plotter.reset_camera(render=False)
         self._safe_render()
+
+    @staticmethod
+    def _elev_colors(z, zmax) -> np.ndarray:
+        """Per-vertex RGB on a dark-brown→amber elevation ramp (BUILDPLAN M7.12.1):
+        the lower (more deeply cut) a point, the darker — so depth reads as colour
+        and a carved region darkens as it drops. No matplotlib dependency."""
+        t = np.clip(z / max(float(zmax), 1e-6), 0.0, 1.0)
+        lo = np.array([0.13, 0.08, 0.04])         # deep cut / base — in shadow
+        hi = np.array([0.86, 0.69, 0.32])         # uncut top — amber
+        rgb = lo[None, :] + (hi - lo)[None, :] * t[:, None]
+        return (rgb * 255.0).astype(np.uint8)
 
     def _toggle_play(self) -> None:
         if self._removal is None:
