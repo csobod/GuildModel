@@ -226,6 +226,22 @@ def test_bed_collision_none_without_keepouts():
     assert flags == [False, False]
 
 
+def test_bed_collision_z_aware():
+    """The collision check is height-aware: a tip above the hold-down clears, a tip
+    below it collides, and a tall clamp the holder reaches flags at the holder radius."""
+    from guildcam.core.sim.bed import bed_collision_frames
+    geom = {"a": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}   # R=1, holder_r ≈ 8
+    ko = [(50.0, 50.0, 5.0)]                                     # screw r=5 at (50,50)
+    # tip directly over the screw but ABOVE a 4 mm hold-down → clears
+    assert bed_collision_frames([(50., 50., 6.0)], ["a"], geom, ko, hold_down_height_mm=4.0) == [False]
+    # tip below the hold-down top → collides
+    assert bed_collision_frames([(50., 50., 1.0)], ["a"], geom, ko, hold_down_height_mm=4.0) == [True]
+    # 11 mm away: only the flute (R=1) reaches a short hold-down (clear), but a tall
+    # clamp the holder (≈8) reaches flags
+    assert bed_collision_frames([(61., 50., 2.0)], ["a"], geom, ko, hold_down_height_mm=4.0) == [False]
+    assert bed_collision_frames([(61., 50., 2.0)], ["a"], geom, ko, hold_down_height_mm=30.0) == [True]
+
+
 def test_steps_from_ops_feeds_removal():
     """The M7.12 steps_from_ops builder drives simulate_removal unchanged."""
     from guildcam.core.cam.castle_ops import CamOp

@@ -643,6 +643,10 @@ class Worktable(BaseModel):
     work_area_height_mm: float = 200.0
     safe_z_mm: float = 5.0
     max_z_mm: float = 80.0
+    # Height of the hold-downs (screw heads / clamps) above the bed (z = 0). Drives
+    # the bed-sim collision check (the tool only fouls a hold-down it's low enough to
+    # reach) and the rapid safe-Z (rapids must clear the tallest hold-down) — M7.12.3.
+    hold_down_height_mm: float = 8.0
     zones: list[WorktableZone] = Field(default_factory=list)
     source_dxf: str = ""
 

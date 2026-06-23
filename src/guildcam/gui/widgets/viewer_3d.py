@@ -57,6 +57,7 @@ class Viewer3D(QWidget):
 
     stage_changed = Signal(str)   # relief.castle.CASTLE_STAGES value (model mode)
     playback_step_changed = Signal(int, str)   # op index, op label (sim scrubber, M7.12)
+    collision_paused = Signal(int)              # frame where play paused on a hold-down (M7.12.3)
 
     # the teaching stepper (model mode): (label, stage value, icon, tooltip)
     _STAGE_BUTTONS = [
@@ -622,9 +623,9 @@ class Viewer3D(QWidget):
                                smooth_shading=True, show_edges=False, lighting=True,
                                specular=0.15, specular_power=12)
 
-        # Hold-downs (keep-outs) as red posts on the bed, so the maker sees the tool +
-        # holder pass relative to them (BUILDPLAN M7.12.3).
-        kh = max(self._removal_zmax, 8.0)
+        # Hold-downs (keep-outs) as red posts on the bed at the set hold-down height,
+        # so the maker sees the tool + holder pass relative to them (BUILDPLAN M7.12.3).
+        kh = float(getattr(pb, "hold_down_height_mm", 0.0)) or max(self._removal_zmax, 8.0)
         for cx, cy, kr in getattr(pb, "keep_outs", None) or []:
             post = pv.Cylinder(center=(cx, cy, kh / 2.0), direction=(0, 0, 1),
                                radius=kr, height=kh, resolution=24)
@@ -754,7 +755,16 @@ class Viewer3D(QWidget):
             self._play_timer.stop()
             self._play_btn.setText("▶")
             return
-        self._scrub.setValue(self._play_idx + 1)   # → _on_scrub renders + emits
+        prev = self._play_idx
+        nxt = prev + 1
+        self._scrub.setValue(nxt)                  # → _on_scrub renders frame nxt + emits
+        # Pause + warn on the rising edge into a hold-down collision (so a run of
+        # collision frames warns once, and resuming plays through it) — M7.12.3.
+        cf = self._removal.collision_frames
+        if (nxt < len(cf) and cf[nxt]) and not (prev < len(cf) and cf[prev]):
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+            self.collision_paused.emit(nxt)
 
     # ------------------------------------------------------------------ clear
 

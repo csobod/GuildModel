@@ -2336,6 +2336,23 @@ class MainWindow(QMainWindow):
         v.addWidget(self._bed_counts)
 
         v.addSpacing(6)
+        hd_row = QHBoxLayout()
+        hd_row.addWidget(QLabel("Hold-down height:"))
+        self._bed_holddown_spin = QDoubleSpinBox()
+        self._bed_holddown_spin.setRange(0.0, 80.0)
+        self._bed_holddown_spin.setSingleStep(0.5)
+        self._bed_holddown_spin.setDecimals(1)
+        self._bed_holddown_spin.setSuffix(" mm")
+        self._bed_holddown_spin.setValue(8.0)
+        self._bed_holddown_spin.setToolTip(
+            "Height of the hold-downs (screw heads / clamps) above the bed. The bed "
+            "sim flags the tool only where it is low enough to foul them, and the "
+            "worktable program's rapids clear this height.")
+        self._bed_holddown_spin.valueChanged.connect(self._on_holddown_height_changed)
+        hd_row.addWidget(self._bed_holddown_spin)
+        v.addLayout(hd_row)
+
+        v.addSpacing(6)
         self._bed_nest_btn = QPushButton("Nest Components")
         self._bed_nest_btn.setToolTip(
             "Auto-place every built component on a zone whose role matches its kind, "
@@ -2390,6 +2407,9 @@ class MainWindow(QMainWindow):
             self._sync_active_workspace()        # persist the component we leave
         self._ensure_worktable()
         self.bed_canvas.set_worktable(self._worktable)
+        self._bed_holddown_spin.blockSignals(True)
+        self._bed_holddown_spin.setValue(self._worktable.hold_down_height_mm)
+        self._bed_holddown_spin.blockSignals(False)
         self._refresh_worktable_panel()
         if self._nest is not None:                 # re-show a prior nest (M7.6)
             self._refresh_nest_render()
@@ -2575,13 +2595,25 @@ class MainWindow(QMainWindow):
         self._refresh_nest_render()
 
     def _bed_safe_z(self, cam) -> float:
-        """Safe rapid height above the tallest stock on the bed."""
+        """Safe rapid height above the tallest obstacle on the bed — the tallest
+        stock OR the hold-downs (so rapids clear the screw heads / clamps, M7.12.3)."""
         tops: list[float] = []
         for pl in self._nest.placements:
             z = self._worktable.zone(pl.zone_id) if self._worktable else None
             if z is not None and z.stock_thickness_mm:
                 tops.append(float(z.stock_thickness_mm))
+        if self._worktable is not None:
+            tops.append(float(self._worktable.hold_down_height_mm))
         return (max(tops) if tops else 12.0) + cam.safe_z_clearance_mm
+
+    def _on_holddown_height_changed(self, val: float) -> None:
+        """Hold-down height edited — store it on the bed and drop the cached bed sim
+        (the collision check + the program's safe-Z depend on it, M7.12.3)."""
+        if self._worktable is not None:
+            self._worktable.hold_down_height_mm = float(val)
+        self._bed_removal = None
+        self._bed_report = None
+        self._update_view_toggles()
 
     def _on_generate_worktable_nest(self) -> None:
         """Post the whole nested bed as one ``worktable.nc`` (BUILDPLAN M7.7).
@@ -2755,14 +2787,17 @@ class MainWindow(QMainWindow):
         # keep-outs, flagged per frame and rendered on the bed.
         if removal is not None and self._worktable is not None:
             from guildcam.core.sim import bed_collision_frames
+            h = float(self._worktable.hold_down_height_mm)
             keep_outs = []
             for z in self._worktable.keep_outs():
                 cx, cy = z.center()
                 r = z.radius_mm if z.radius_mm else max(z.width(), z.height()) / 2.0
                 keep_outs.append((cx, cy, float(r)))
             removal.keep_outs = keep_outs
+            removal.hold_down_height_mm = h
             removal.collision_frames = bed_collision_frames(
-                removal.frame_cursors, removal.frame_labels, removal.op_tool_geom, keep_outs)
+                removal.frame_cursors, removal.frame_labels, removal.op_tool_geom,
+                keep_outs, hold_down_height_mm=h)
             ncol = sum(1 for f in removal.collision_frames if f)
             if ncol:
                 self.append_log(
@@ -3335,6 +3370,7 @@ class MainWindow(QMainWindow):
         self.params.cam_changed.connect(self._on_cam_changed)
         self.view3d.stage_changed.connect(self._on_stage_changed)
         self.view3d.playback_step_changed.connect(self._on_playback_step)
+        self.view3d.collision_paused.connect(self._on_collision_paused)
 
         # Restore persisted material + CAM params (machine / tool / strategy /
         # feeds). Set the material first (without repopulating), then apply the
@@ -4498,6 +4534,20 @@ class MainWindow(QMainWindow):
                 if r not in selected_rows:
                     t.selectRow(r)
                 return
+
+    def _on_collision_paused(self, frame: int) -> None:
+        """Bed playback hit a hold-down — it paused on the collision frame; warn the
+        maker (BUILDPLAN M7.12.3). Resuming plays through the rest of this run."""
+        label = ""
+        if self._bed_removal is not None and frame < len(self._bed_removal.frame_labels):
+            label = self._bed_removal.frame_labels[frame]
+        self.status_lbl.setText("Cut paused — hold-down collision")
+        QMessageBox.warning(
+            self, "Hold-down collision",
+            "The tool or its holder reaches a hold-down at this point in the cut "
+            f"({label}) — the simulation paused here (the tool is red).\n\n"
+            "Reposition the part on the bed, raise the hold-down height if it's set "
+            "too low, or adjust the toolpath before cutting. Press play to continue.")
 
     def _clear_toolpath_overlay(self) -> None:
         """Drop the 2D toolpath overlay + inspector (a new component or a stale

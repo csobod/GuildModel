@@ -128,22 +128,46 @@ class RemovalPlayback:
     op_tool_geom: dict = field(default_factory=dict)     # op label → tool geom (M7.12.2; GUI fills)
     keep_outs: list = field(default_factory=list)        # [(cx,cy,r)] machine coords (M7.12.3)
     collision_frames: list = field(default_factory=list) # per-frame hold-down hit bool (M7.12.3)
+    hold_down_height_mm: float = 0.0                      # hold-down post height (M7.12.3)
 
     @property
     def n_frames(self) -> int:
         return len(self.frames)
 
 
-def tool_envelope(geom: dict) -> tuple[float, float]:
-    """(cutting radius, holder/collet radius) for a tool geom — the holder being the
-    widest part of the tool assembly (BUILDPLAN M7.12.2/.3). Kept in sync with the
-    moving-tool mesh (`Viewer3D._tool_mesh`) so the hold-down collision check uses
-    the same envelope that's drawn."""
+def tool_profile_dims(geom: dict) -> dict:
+    """The cutter+shank+holder dimensions for a tool geom (BUILDPLAN M7.12.2/.3) —
+    the single source of truth shared by the moving-tool mesh (`Viewer3D._tool_mesh`)
+    and the hold-down collision check, so the drawn tool and the tested envelope
+    always agree. Local Z has the tip at 0: flute [0, flute_h] r=R, shank
+    [flute_h, +shank_h] r=shank_r, holder above r=holder_r."""
     g = geom or {}
     R = max(0.2, float(g.get("radius_mm", 1.5875)))
+    flute_h = float(g.get("flute_length_mm") or 0.0) or max(8.0, 4.0 * R)
     shank_r = max(R, (float(g.get("shank_diameter_mm") or 0.0) / 2.0) or max(R, 3.0))
     holder_r = max(shank_r * 2.2, 8.0)
-    return R, holder_r
+    return {"R": R, "flute_h": flute_h, "shank_r": shank_r, "holder_r": holder_r,
+            "shank_h": max(10.0, flute_h), "holder_h": 14.0}
+
+
+def tool_envelope(geom: dict) -> tuple[float, float]:
+    """(cutting radius, holder/collet radius) — the widest part of the tool."""
+    d = tool_profile_dims(geom)
+    return d["R"], d["holder_r"]
+
+
+def tool_radius_below(geom: dict, z_tip: float, height: float) -> float:
+    """The widest tool radius within the height band ``[z_tip, height]`` above the
+    bed (BUILDPLAN M7.12.3): the part of the tool low enough to foul a hold-down of
+    the given height. Returns 0 when the whole tool clears (tip at/above `height`)."""
+    if z_tip >= height:
+        return 0.0
+    d = tool_profile_dims(geom)
+    if height <= z_tip + d["flute_h"]:
+        return d["R"]
+    if height <= z_tip + d["flute_h"] + d["shank_h"]:
+        return d["shank_r"]
+    return d["holder_r"]
 
 
 def simulate_removal(

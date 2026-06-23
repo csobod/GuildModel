@@ -23,7 +23,7 @@ import numpy as np
 from .report import CutReport, verify
 from .toolsim import ToolProfile, achieved_floor_grouped
 from .paths import cutting_paths_from_program_grouped
-from .playback import RemovalPlayback, simulate_removal, tool_envelope
+from .playback import RemovalPlayback, simulate_removal, tool_radius_below
 
 
 @dataclass
@@ -242,28 +242,30 @@ def bed_collision_frames(
     frame_labels: list,
     op_tool_geom: dict,
     keep_outs: list,
+    hold_down_height_mm: float = 8.0,
 ) -> list[bool]:
     """Per-frame hold-down collision flags for the bed sim (BUILDPLAN M7.12.3).
 
-    `keep_outs` = ``[(cx, cy, radius)]`` in machine coordinates. A frame is flagged
-    when the tool assembly's widest part — the holder/collet — overlaps a keep-out
-    in XY, i.e. the tool axis at ``cursors[i]`` is within ``keep_out_radius +
-    holder_radius`` of a keep-out centre. Conservative (an XY footprint test, no
-    keep-out height), so it warns whenever the tool or its holder passes over a
-    hold-down; the 3D view shows the geometry so the maker can judge the clearance.
+    `keep_outs` = ``[(cx, cy, radius)]`` in machine coordinates, each a post rising
+    from the bed to `hold_down_height_mm`. A frame is flagged when the part of the
+    **tool** low enough to reach that post (the widest radius within
+    ``[tip_z, hold_down_height]``) overlaps the post in XY. So a tall holder won't
+    flag a low screw it passes well above, and a tip cutting down beside a screw
+    does — Z-aware, far less trigger-happy than a flat XY footprint.
     """
     flags: list[bool] = []
-    n = len(cursors)
-    for i in range(n):
+    for i in range(len(cursors)):
         cur = cursors[i]
         hit = False
         if cur is not None and cur[0] == cur[0] and cur[1] == cur[1]:   # finite (not NaN)
             label = frame_labels[i] if i < len(frame_labels) else None
-            _, holder_r = tool_envelope(op_tool_geom.get(label))
-            x, y = float(cur[0]), float(cur[1])
-            for cx, cy, kr in keep_outs:
-                if (x - cx) ** 2 + (y - cy) ** 2 < (kr + holder_r) ** 2:
-                    hit = True
-                    break
+            r = tool_radius_below(op_tool_geom.get(label), float(cur[2]),
+                                  hold_down_height_mm)
+            if r > 0.0:
+                x, y = float(cur[0]), float(cur[1])
+                for cx, cy, kr in keep_outs:
+                    if (x - cx) ** 2 + (y - cy) ** 2 < (kr + r) ** 2:
+                        hit = True
+                        break
         flags.append(hit)
     return flags

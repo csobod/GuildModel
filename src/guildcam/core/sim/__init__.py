@@ -15,7 +15,7 @@ from .paths import (
 from .report import Completeness, Gouge, CutReport, verify
 from .playback import (
     FloorSnapshot, RemovalPlayback, simulate_removal, simulate_steps, steps_from_ops,
-    tool_envelope,
+    tool_envelope, tool_profile_dims, tool_radius_below,
 )
 from .bed import (
     BedRemovalPart, ComponentSim, bed_collision_frames, composite_bed_report,
@@ -30,5 +30,5 @@ __all__ = [
     "ComponentSim", "composite_bed_report", "simulate_component",
     "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
-    "steps_from_ops", "tool_envelope",
+    "steps_from_ops", "tool_envelope", "tool_profile_dims", "tool_radius_below",
 ]
