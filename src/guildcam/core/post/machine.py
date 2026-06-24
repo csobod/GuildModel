@@ -11,6 +11,7 @@ any supported machine, or a clear, actionable warning when it cannot.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,6 +120,10 @@ def apply_machine_limits(
 # ------------------------------------------------------------------ linting
 
 _AXIS = re.compile(r"([XYZFS])\s*(-?\d*\.?\d+)")
+_IJ = re.compile(r"([IJ])\s*(-?\d*\.?\d+)")
+# Carbide Motion (and other strict GRBL senders) reject an arc whose start radius
+# (|I,J|) and end radius differ by more than a small tolerance.
+_ARC_ENDPOINT_TOL_MM = 0.002
 
 
 def lint_program(text: str, profile: MachineProfile) -> list[str]:
@@ -137,14 +142,25 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
     max_feed = 0.0
     spindles: list[float] = []
     has_arc = False
+    arc_mismatch = 0.0
 
     for raw in text.splitlines():
         s = raw.strip()
         if not s or s.startswith((";", "(")):
             continue
+        code = s.split(";")[0]
+        words = dict((m[0], float(m[1])) for m in _AXIS.findall(code))
         if s.startswith(("G2", "G3")) and not s[2:3].isdigit():
             has_arc = True
-        words = dict((m[0], float(m[1])) for m in _AXIS.findall(s.split(";")[0]))
+            # arc-endpoint consistency: |I,J| (start radius) vs end radius (M8). x/y
+            # still hold the arc's start here (updated below), so this is the chord.
+            ij = dict((m[0], float(m[1])) for m in _IJ.findall(code))
+            if (x is not None and y is not None and "I" in ij and "J" in ij
+                    and "X" in words and "Y" in words):
+                ccx, ccy = x + ij["I"], y + ij["J"]
+                start_r = math.hypot(ij["I"], ij["J"])
+                end_r = math.hypot(words["X"] - ccx, words["Y"] - ccy)
+                arc_mismatch = max(arc_mismatch, abs(start_r - end_r))
         if "X" in words:
             x = words["X"]; xs.append(x)
         if "Y" in words:
@@ -180,4 +196,9 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
             break
     if has_arc and not profile.supports_arcs:
         warns.append("G2/G3 arcs present but machine profile reports no arc support")
+    if arc_mismatch > _ARC_ENDPOINT_TOL_MM:
+        warns.append(
+            f"arc endpoint radius mismatch up to {arc_mismatch:.4f} mm — strict senders "
+            "(e.g. Carbide Motion) reject this as an 'Arc Endpoint Error'; regenerate the "
+            "program")
     return warns
