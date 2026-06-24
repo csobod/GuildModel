@@ -2238,16 +2238,24 @@ pattern that fixed it.
    cube yields the square-perimeter polyline, a miss → empty (`test_section_m713`).
    Tagged `v0.7.13`.
 
-### M7.14 — Job & validation inspector panel (v0.7.14) · *what's blocking green?*
+### M7.14 — Job & validation inspector panel (v0.7.14) · *what's blocking green?* — ✅ DONE 2026-06-23 (370 tests)
 
-1. **One dockable panel** that aggregates every check the engine already produces —
-   tool reach (width + depth), bed / worktable clearance, machine lint, cut
-   completeness / gouge — each a severity-tagged, navigable row (click → highlight
-   on the relevant canvas / view).
-2. **Ties to the readiness dot** (M5.2): the dot says ready / not-ready, the panel
-   says *why*; generating and simulating refresh it.
-3. **Tests**: the panel collects each warning type from a known-bad job and is
-   empty on a clean one. Tag `v0.7.14`.
+1. **One dockable panel** ✅ — `core/diagnostics.py` `Issue` + `collect_issues`
+   (pure, tested) fold every engine check — tool reach (width + depth), bed /
+   worktable clearance, machine lint, cut completeness / gouge, **and the M7.12.3
+   hold-down collisions** — into one severity-sorted list. `gui/widgets/inspector.py`
+   `InspectorPanel` (dock tabbed with the Log): colour-coded severity rows (✓ when
+   clean), a count badge in the dock title, click-to-navigate (highlight the op's
+   toolpath / open the Sim / open the Worktable / **scrub to the first collision** via
+   `Viewer3D.goto_first_collision`). Tab-aware: component tabs show the component job,
+   the Worktable tab shows the bed's clearance + collisions + lint.
+2. **Ties to the readiness dot** ✅ — the dot says ready / not-ready, the panel says
+   *why*; the `GCodeWorker` stashes reach/clearance/lint, the sim hands over its
+   `CutReport`, the bed sim its collisions — each refreshes the dock (inputs persist
+   per component via `workspace.diag`).
+3. **Tests** ✅ (`test_diagnostics_m714`): every category aggregates from a known-bad
+   job, a clean job is empty, severity sort + per-category targets + `severity_counts`.
+   Tagged `v0.7.14`.
 
 ### M7.15 — Hotkeys & toolbar customization (v0.7.15) · *make it yours*
 
@@ -2298,7 +2306,7 @@ tools M7.8).
 - [x] Bed sim with hold-down (tool **and holder**) collision highlight + Z-aware height (M7.12.3)
 - [x] Unified 2D/3D/Sim view model + context-aware sidebar (M7.12.3)
 - [x] On-canvas measure + 3D section view (M7.13)
-- [ ] Job/validation inspector panel consolidating all warnings (M7.14)
+- [x] Job/validation inspector panel consolidating all warnings (M7.14)
 - [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
 - [ ] Saveable frame-style parameter presets (M7.16)
 - [ ] Full suite green; sub-milestones tagged `v0.7.8` … `v0.7.16`
