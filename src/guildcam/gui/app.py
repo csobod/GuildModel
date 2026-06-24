@@ -1724,6 +1724,102 @@ class PrefsDialog(QDialog):
         # ── Tab 2 — Tools (the editable tool library, BUILDPLAN M7.8) ──────
         self._build_tools_tab(tabs)
 
+        # ── Tab 3 — Hotkeys (rebind shortcuts, BUILDPLAN M7.15) ────────────
+        self._action_specs = list(getattr(parent, "_action_specs", []))
+        self._hotkey_overrides = dict(prefs.get("hotkeys", {}))
+        self._hotkey_rows = []
+        if self._action_specs:
+            self._build_hotkeys_tab(tabs)
+
+    # ── Hotkeys tab (rebindable shortcuts, M7.15) ─────────────────────────
+
+    def _build_hotkeys_tab(self, tabs) -> None:
+        from PySide6.QtWidgets import QKeySequenceEdit
+        from PySide6.QtGui import QKeySequence
+        from guildcam.gui.shortcuts import effective_shortcuts
+
+        outer = QWidget()
+        col = QVBoxLayout(outer)
+        col.setContentsMargins(16, 16, 16, 8)
+        col.setSpacing(8)
+        col.addWidget(QLabel(
+            "Rebind keyboard shortcuts. Click a cell and press the new combination; "
+            "↺ resets one binding."))
+
+        eff = effective_shortcuts(self._action_specs, self._hotkey_overrides)
+        table = QTableWidget(len(self._action_specs), 3)
+        table.setHorizontalHeaderLabels(["Action", "Shortcut", ""])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.setColumnWidth(0, 220)
+        table.setColumnWidth(1, 160)
+        table.setColumnWidth(2, 36)
+
+        for i, spec in enumerate(self._action_specs):
+            name = QTableWidgetItem(spec.label)
+            name.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            table.setItem(i, 0, name)
+            edit = QKeySequenceEdit(QKeySequence(eff[spec.key]))
+            try:
+                edit.setMaximumSequenceLength(1)      # single shortcut, not a chord chain
+            except AttributeError:
+                pass
+            edit.keySequenceChanged.connect(self._check_hotkey_conflicts)
+            table.setCellWidget(i, 1, edit)
+            rb = QPushButton("↺")
+            rb.setToolTip(f"Reset to default ({spec.default_shortcut or 'none'})")
+            rb.setFixedWidth(30)
+            rb.clicked.connect(
+                lambda _=False, e=edit, d=spec.default_shortcut: (
+                    e.setKeySequence(QKeySequence(d)), self._check_hotkey_conflicts()))
+            table.setCellWidget(i, 2, rb)
+            self._hotkey_rows.append((spec.key, spec.default_shortcut, edit))
+        col.addWidget(table, 1)
+
+        self._hotkey_conflict_lbl = QLabel("")
+        self._hotkey_conflict_lbl.setWordWrap(True)
+        col.addWidget(self._hotkey_conflict_lbl)
+
+        reset_all = QPushButton("Reset all shortcuts to defaults")
+        reset_all.clicked.connect(self._reset_all_hotkeys)
+        col.addWidget(reset_all, 0, Qt.AlignmentFlag.AlignLeft)
+
+        tabs.addTab(outer, "Hotkeys")
+        self._check_hotkey_conflicts()
+
+    def _check_hotkey_conflicts(self) -> None:
+        from PySide6.QtGui import QKeySequence
+        from guildcam.gui.shortcuts import find_conflicts
+        bindings = {
+            key: e.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+            for key, _d, e in self._hotkey_rows}
+        labels = {s.key: s.label for s in self._action_specs}
+        conflicts = find_conflicts(bindings)
+        if conflicts:
+            parts = [f"{sc} — {', '.join(labels.get(k, k) for k in keys)}"
+                     for sc, keys in conflicts.items()]
+            self._hotkey_conflict_lbl.setText("⚠ Duplicate shortcuts: " + "; ".join(parts))
+            self._hotkey_conflict_lbl.setStyleSheet("color: #c0392b; font-weight: 600;")
+        else:
+            self._hotkey_conflict_lbl.setText("")
+
+    def _reset_all_hotkeys(self) -> None:
+        from PySide6.QtGui import QKeySequence
+        for (_key, default, edit) in self._hotkey_rows:
+            edit.setKeySequence(QKeySequence(default))
+        self._check_hotkey_conflicts()
+
+    def hotkey_overrides(self) -> dict:
+        """Collect only genuine overrides (a binding that differs from its default)."""
+        from PySide6.QtGui import QKeySequence
+        out: dict = {}
+        for (key, default, edit) in self._hotkey_rows:
+            cur = edit.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+            if cur != default:
+                out[key] = cur
+        return out
+
     # ── Materials tab (feeds/speeds/stepover/stepdown defaults) ───────────
 
     _MAT_FIELDS = [
@@ -2066,13 +2162,16 @@ class PrefsDialog(QDialog):
             self._out_dir.setText(d)
 
     def to_prefs(self) -> dict:
-        return {
+        out = {
             "dark_mode": self._dark_check.isChecked(),
             "show_log_on_start": self._log_check.isChecked(),
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
             "last_output_dir": self._out_dir.text(),
         }
+        if self._hotkey_rows:                     # M7.15 — only genuine overrides
+            out["hotkeys"] = self.hotkey_overrides()
+        return out
 
 
 # ------------------------------------------------------------------ main window
@@ -2104,6 +2203,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_toolbar()
         self._build_menu()
+        self._build_action_registry()             # M7.15 customizable hotkeys + toolbar
+        self._apply_hotkeys()
 
         # Apply the persisted theme to every surface (QSS is set app-wide
         # in main(); the painter/VTK surfaces + toolbar icons need the call).
@@ -3239,6 +3340,52 @@ class MainWindow(QMainWindow):
             sep.set_color(colour)
             sep.refresh()                             # flip axis for the new orientation
 
+    # -------------------------------------------------- customizable actions (M7.15)
+
+    def _build_action_registry(self) -> None:
+        """The customizable action set for Preferences ▸ Hotkeys / Toolbar (M7.15).
+        Default shortcuts are captured live from the actions, so the table always
+        mirrors the shipped bindings; `group` drives the rebuilt toolbar's dividers."""
+        from guildcam.gui.shortcuts import ActionSpec
+        # (key, action, label, group, on-default-toolbar)
+        rows = [
+            ("open_model", self._act_open_model, "Open Drawing", "input", True),
+            ("open", self._act_open, "Open DXF", "input", False),
+            ("open_project", self._act_open_project, "Open Project", "input", False),
+            ("save_project", self._act_save_project, "Save Project", "input", False),
+            ("build", self._act_build, "Build 3D Model", "build", True),
+            ("gcode", self._act_gcode, "Generate G-code", "build", True),
+            ("export_nc", self._act_export_nc, "Export G-code", "build", True),
+            ("export", self._act_export, "Export STL", "build", True),
+            ("block", self._act_block, "Generate Base-Curve Block", "build", False),
+            ("worktable_gen", self._act_worktable, "Generate Worktable Program", "build", False),
+            ("view2d", self._act_view2d, "2D View", "view", True),
+            ("view3d", self._act_view3d, "3D View", "view", True),
+            ("simulate", self._act_simulate, "Simulation", "view", True),
+            ("measure", self._act_measure, "Measure", "view", True),
+            ("show_worktable", self._act_show_worktable, "Worktable", "view", False),
+            ("fit", self._act_fit, "Fit to View", "util", True),
+            ("log", self._act_log, "Log Panel", "util", True),
+            ("sidebar", self._act_sidebar, "Parameters Panel", "util", True),
+            ("toolpaths", self._act_toolpaths, "Toolpaths Panel", "util", False),
+            ("inspector", self._act_inspector, "Inspector Panel", "util", False),
+        ]
+        self._actions_by_key = {key: act for key, act, *_ in rows}
+        self._action_specs = [
+            ActionSpec(key, label, act.shortcut().toString(), group, tb_default)
+            for key, act, label, group, tb_default in rows
+        ]
+
+    def _apply_hotkeys(self) -> None:
+        """Bind every registered action's shortcut from prefs (override or default)."""
+        from guildcam.gui.shortcuts import effective_shortcuts
+        from PySide6.QtGui import QKeySequence
+        eff = effective_shortcuts(self._action_specs, self._prefs.get("hotkeys", {}))
+        for key, sc in eff.items():
+            act = self._actions_by_key.get(key)
+            if act is not None:
+                act.setShortcut(QKeySequence(sc) if sc else QKeySequence())
+
     # ------------------------------------------------------------------ menu
 
     def _build_menu(self) -> None:
@@ -3502,6 +3649,10 @@ class MainWindow(QMainWindow):
         old_preview_res = self._prefs["preview_resolution_mm"]
         self._prefs.update(p)
         prefs_mod.save(self._prefs)
+
+        # Re-bind shortcuts from the (possibly edited) hotkey overrides (M7.15).
+        if "hotkeys" in p:
+            self._apply_hotkeys()
 
         # The tool library may have changed (Preferences ▸ Tools) — refresh every
         # tool combo so new/edited tools appear without a restart (M7.8).

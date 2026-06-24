@@ -35,6 +35,10 @@ DEFAULTS: dict = {
     "cam_params":            {},
     # Selected material (drives feeds/speeds/stepover/stepdown) — M4.x.
     "material_name":         "acetate",
+    # Hotkey overrides (action-key → shortcut string) — M7.15. {} = shipped defaults.
+    "hotkeys":               {},
+    # Toolbar action order (list of action keys) — M7.15. [] = the default toolbar.
+    "toolbar":               [],
 }
 
 
