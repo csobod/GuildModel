@@ -870,11 +870,19 @@ class ParamsPanel(QTabWidget):
         self.spindle_override.setSuffix(" RPM")
         self.safe_z_clearance = _spinbox(
             CastleCamParams().safe_z_clearance_mm, 1.0, 30.0, step=0.5)
-        self.safe_z_clearance.setToolTip("Rapid clearance height above the stock top.")
+        self.safe_z_clearance.setToolTip(
+            "Rapid clearance height above the tallest obstacle (stock or hold-downs).")
+        self.hold_down_height = _spinbox(
+            CastleCamParams().hold_down_height_mm, 0.0, 60.0, step=0.5)
+        self.hold_down_height.setToolTip(
+            "Height of the work-holding screws / clamps above the table (z = 0). Rapids "
+            "retract above the TALLER of this and the stock, so even a single-part cut "
+            "travels clear of the hold-downs. 0 = flush work-holding.")
         of.addRow("Feed override:", self.feed_override)
         of.addRow("Plunge override:", self.plunge_override)
         of.addRow("Spindle override:", self.spindle_override)
         of.addRow("Safe-Z clearance:", self.safe_z_clearance)
+        of.addRow("Work-holding height:", self.hold_down_height)
         lay.addWidget(og)
 
         # Chip-load / surface-speed read-out (BUILDPLAN M7.10): the relationship
@@ -898,7 +906,7 @@ class ParamsPanel(QTabWidget):
 
         for w in (self.relief_stepover, self.contour_stepdown, self.rough_axial_stock,
                   self.contour_ramp_angle, self.arc_tolerance, self.feed_override,
-                  self.plunge_override, self.safe_z_clearance):
+                  self.plunge_override, self.safe_z_clearance, self.hold_down_height):
             w.valueChanged.connect(self.cam_changed)
         self.spindle_override.valueChanged.connect(self.cam_changed)
         self.machine.currentIndexChanged.connect(self.cam_changed)
@@ -1067,6 +1075,7 @@ class ParamsPanel(QTabWidget):
             plunge_rate_mmpm=_opt(self.plunge_override.value()),
             spindle_rpm=int(self.spindle_override.value()) or None,
             safe_z_clearance_mm=self.safe_z_clearance.value(),
+            hold_down_height_mm=self.hold_down_height.value(),
         )
 
     def set_cam_params(self, cp: CastleCamParams) -> None:
@@ -1090,6 +1099,7 @@ class ParamsPanel(QTabWidget):
         self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)
         self.spindle_override.setValue(cp.spindle_rpm or 0)
         self.safe_z_clearance.setValue(cp.safe_z_clearance_mm)
+        self.hold_down_height.setValue(cp.hold_down_height_mm)
 
     def temple_params(self) -> TempleParams:
         """Temple component params from the Temple tab (BUILDPLAN M7.3)."""

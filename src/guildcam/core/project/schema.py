@@ -218,7 +218,17 @@ class CastleCamParams(BaseModel):
     feed_rate_mmpm: float | None = None
     plunge_rate_mmpm: float | None = None
     spindle_rpm: int | None = None
-    safe_z_clearance_mm: float = 5.0       # rapid clearance above the stock top
+    safe_z_clearance_mm: float = 5.0       # rapid clearance above the tallest obstacle
+    # Height of the work-holding screws / clamps above the table (z = 0). Single-part
+    # rapids retract above the TALLER of the stock and this, so travels clear the
+    # hold-downs even when only one part is cut (M8 prep). 0 = flush work-holding.
+    hold_down_height_mm: float = 0.0
+
+    def safe_z_for(self, stock_top_mm: float) -> float:
+        """Rapid retract height above the table: clears the taller of the stock top
+        and the work-holding screws/clamps, plus the clearance margin. The program
+        zero offset re-references this to the touch-off datum at post time."""
+        return max(float(stock_top_mm), self.hold_down_height_mm) + self.safe_z_clearance_mm
 
 
 class TempleParams(BaseModel):

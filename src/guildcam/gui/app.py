@@ -595,7 +595,7 @@ class GCodeWorker(_ProgressWorker):
             spindle_rpm=post_spindle,
             feed_rate_mmpm=post_feed,
             plunge_rate_mmpm=post_plunge,
-            safe_z_mm=castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
+            safe_z_mm=cam.safe_z_for(castle.stock.total_pad_height_mm),
             work_offset=work_offset,
         )
         self._progress("Writing program", 0.95)
@@ -754,7 +754,7 @@ class GCodeWorker(_ProgressWorker):
             job_name="temple_cut", material=p["material_name"],
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
             feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
-            safe_z_mm=temple.blank_thickness_mm + cam.safe_z_clearance_mm,
+            safe_z_mm=cam.safe_z_for(temple.blank_thickness_mm),
             work_offset=work_offset,
         )
         self._progress("Writing temple program", 0.9)
@@ -887,7 +887,7 @@ class GCodeWorker(_ProgressWorker):
             job_name="base_curve_block", material=block.material,
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
             feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
-            safe_z_mm=block.blank_thickness_mm + cam.safe_z_clearance_mm,
+            safe_z_mm=cam.safe_z_for(block.blank_thickness_mm),
             work_offset=work_offset,
         )
         self._progress("Writing block program", 0.9)
@@ -1020,7 +1020,7 @@ class GCodeWorker(_ProgressWorker):
             self.progress.emit(f"[gcode] WARNING: {v}")
 
         first_ts = tool_settings[bed.ops[0].tool_name]
-        safe_z = max(castle.stock.total_pad_height_mm, block.blank_thickness_mm) + cam.safe_z_clearance_mm
+        safe_z = cam.safe_z_for(max(castle.stock.total_pad_height_mm, block.blank_thickness_mm))
         post = GRBLPost(
             job_name="worktable", material=mat_name,
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
@@ -1242,7 +1242,7 @@ class SimWorker(_ProgressWorker):
                 spindle_rpm=(first.spindle_rpm if first else mat["spindle_rpm"]),
                 feed_rate_mmpm=(first.feed_rate_mmpm if first else mat["feed_rate_mmpm"]),
                 plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
-                safe_z_mm=self.castle.stock.total_pad_height_mm + cam.safe_z_clearance_mm,
+                safe_z_mm=cam.safe_z_for(self.castle.stock.total_pad_height_mm),
             )
             write_castle_program(
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
@@ -1374,7 +1374,7 @@ class FlatSimWorker(_ProgressWorker):
                 job_name="sim", material=self.material_name,
                 tool_diameter_mm=first.diameter_mm, spindle_rpm=first.spindle_rpm,
                 feed_rate_mmpm=first.feed_rate_mmpm, plunge_rate_mmpm=first.plunge_rate_mmpm,
-                safe_z_mm=top_z + cam.safe_z_clearance_mm)        # work_offset (0,0,0): sim stays in the design frame
+                safe_z_mm=cam.safe_z_for(top_z))                 # work_offset (0,0,0): sim stays in the design frame
             write_castle_program(
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
