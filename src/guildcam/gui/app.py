@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (
     QToolBar, QProgressDialog, QTabBar, QComboBox,
     QListWidget, QListWidgetItem, QSpinBox, QSplitter,
 )
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize
-from PySide6.QtGui import QAction, QKeySequence, QColor
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize, QPointF
+from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen
 
 from guildcam.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildcam.gui import prefs as prefs_mod
@@ -43,6 +43,62 @@ from guildcam.gui.component_workspace import (
 
 class _Cancelled(Exception):
     """Raised inside a worker's progress callback to abort at a stage boundary."""
+
+
+class ToolSep(QWidget):
+    """A crisp, uniform toolbar group divider (BUILDPLAN M7.12 UI).
+
+    A stylesheet ``QToolBar::separator`` with a 1 px width rounds inconsistently on
+    fractional-DPI displays — each separator lands at a different sub-pixel position
+    and rasterises to 0/1/2 device px, so they look mismatched. This paints the line
+    itself with a *cosmetic* pen (width is transform-independent → exactly one device
+    pixel everywhere), giving identical, hairline-crisp dividers at any scale, and
+    flips its axis with the toolbar's orientation."""
+
+    def __init__(self, toolbar: QToolBar):
+        super().__init__(toolbar)
+        self._tb = toolbar
+        self._color = QColor("#383838")
+        self._pad = 4          # logical-px inset at the line's ends
+        self._cell = 13        # logical-px thickness of the spacing cell
+        self._apply_policy()
+
+    def _apply_policy(self) -> None:
+        # Fixed along the toolbar axis (the spacing cell); stretch across it so the
+        # line spans the button height.
+        if self._tb.orientation() == Qt.Orientation.Horizontal:
+            self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_color(self, color) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def refresh(self) -> None:
+        self._apply_policy()
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        cross = 24             # span most of the button height even if not stretched
+        if self._tb.orientation() == Qt.Orientation.Horizontal:
+            return QSize(self._cell, cross)
+        return QSize(cross, self._cell)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = QPen(self._color)
+        pen.setCosmetic(True)              # 1 device px regardless of DPI / position
+        p.setPen(pen)
+        r = self.rect()
+        if self._tb.orientation() == Qt.Orientation.Horizontal:
+            x = r.center().x() + 0.5       # pixel-centre for a crisp vertical line
+            p.drawLine(QPointF(x, r.top() + self._pad), QPointF(x, r.bottom() - self._pad))
+        else:
+            y = r.center().y() + 0.5
+            p.drawLine(QPointF(r.left() + self._pad, y), QPointF(r.right() - self._pad, y))
 
 
 # ------------------------------------------------------------------ DXF import worker
@@ -3059,21 +3115,28 @@ class MainWindow(QMainWindow):
         self._act_toolpaths.toggled.connect(self._toolpath_dock.setVisible)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
-        # Input: open a GuildDraw .gdraw model (the primary M7 intake; DXF is on the
-        # File menu). Then the build/output group, then the three view modes.
+        # Four groups split by custom ToolSep dividers (painted, not stylesheet — they
+        # stay identical on fractional-DPI screens). Input: open a GuildDraw .gdraw model
+        # (the primary M7 intake; DXF is on the File menu). Then build/output, then views,
+        # then the trailing utilities.
+        self._tool_seps: list[ToolSep] = []
+
+        def _add_sep() -> None:
+            sep = ToolSep(tb)
+            self._tool_seps.append(sep)
+            tb.addWidget(sep)
+
         tb.addAction(self._act_open_model)
-        tb.addSeparator()
+        _add_sep()
         tb.addAction(self._act_build)
         tb.addAction(self._act_gcode)
         tb.addAction(self._act_export_nc)
         tb.addAction(self._act_export)
-        tb.addSeparator()
+        _add_sep()
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
-        # No expanding spacer: the four groups sit contiguously so every separator has
-        # identical surrounding padding (the spacer was widening the gap at this one).
-        tb.addSeparator()                 # views | utilities (Fit + dock toggles)
+        _add_sep()                        # views | utilities (Fit + dock toggles)
         tb.addAction(self._act_fit)
         tb.addAction(self._act_log)
         tb.addAction(self._act_sidebar)
@@ -3098,22 +3161,13 @@ class MainWindow(QMainWindow):
         self._style_toolbar_separators()          # initial (default-left) orientation
 
     def _style_toolbar_separators(self) -> None:
-        """Thin, well-spaced separators that group the toolbar buttons, applied on the
-        correct axis for the current dock orientation (BUILDPLAN M7.12 UI). Re-run on
+        """Re-tint + re-orient the custom ToolSep dividers (BUILDPLAN M7.12 UI). Run on
         re-dock + theme change. Charcoal on light / a darker amber on dark keeps them
         subtle but well-defined against either toolbar background."""
-        tb = getattr(self, "_toolbar", None)
-        if tb is None:
-            return
         colour = "#8d7030" if self._dark_mode else "#383838"
-        if tb.orientation() == Qt.Orientation.Horizontal:
-            size = "width: 1px; margin: 3px 5px;"       # vertical line, padded left/right
-        else:
-            size = "height: 1px; margin: 5px 3px;"      # horizontal line, padded top/bot
-        # No border-radius: on a 1 px line the rounded-corner anti-aliasing bleeds
-        # unevenly by sub-pixel position, making separators look progressively thicker.
-        tb.setStyleSheet(
-            f"QToolBar::separator {{ background: {colour}; {size} }}")
+        for sep in getattr(self, "_tool_seps", []):
+            sep.set_color(colour)
+            sep.refresh()                             # flip axis for the new orientation
 
     # ------------------------------------------------------------------ menu
 
