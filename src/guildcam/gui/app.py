@@ -459,6 +459,10 @@ class GCodeWorker(_ProgressWorker):
         self.is_block = False
         self.is_worktable = False            # combined multi-part bed (M6.5)
         self.op_overlay = None               # per-op toolpaths for the 2D overlay (M7.11)
+        # inspector inputs (M7.14): captured by the finish handler into the dock
+        self.reach_warnings: list = []
+        self.clearance_violations: list = []
+        self.machine_warnings: list = []
         # .gcam artifacts (filled by the castle path on success)
         self.programs: dict = {}
         self.machine_dump = None
@@ -612,6 +616,9 @@ class GCodeWorker(_ProgressWorker):
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        self.reach_warnings = list(reach)                 # M7.14 inspector inputs
+        self.clearance_violations = list(violations)
+        self.machine_warnings = list(machine_warnings)
         report = estimate_program(
             text, MachineDynamics.from_profile(machine),
             tool_change_seconds=machine.tool_change_seconds,
@@ -763,6 +770,8 @@ class GCodeWorker(_ProgressWorker):
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        self.clearance_violations = list(violations)      # M7.14 inspector inputs
+        self.machine_warnings = list(machine_warnings)
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
@@ -894,6 +903,8 @@ class GCodeWorker(_ProgressWorker):
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        self.clearance_violations = list(violations)      # M7.14 inspector inputs
+        self.machine_warnings = list(machine_warnings)
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
@@ -1030,6 +1041,8 @@ class GCodeWorker(_ProgressWorker):
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
+        self.clearance_violations = list(violations)      # M7.14 inspector inputs
+        self.machine_warnings = list(machine_warnings)
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
@@ -2159,6 +2172,13 @@ class MainWindow(QMainWindow):
         self._last_machine: Optional[dict] = None
         self._last_report: Optional[dict] = None
 
+        # Inspector inputs (M7.14): the latest generate warnings + the cut-report
+        # object, folded into severity-tagged issues for the Inspector dock.
+        self._diag_reach: list = []
+        self._diag_clearance: list = []
+        self._diag_lint: list = []
+        self._diag_cut_report = None
+
         # Castle preview state: current teaching stage + per-stage mesh cache
         # (cache invalidated whenever a castle parameter changes)
         self._stage = "pockets"
@@ -2207,6 +2227,7 @@ class MainWindow(QMainWindow):
         self.bed_canvas.set_dark_mode(dark)
         self.params.set_dark_mode(dark)
         self.readiness.set_dark_mode(dark)
+        self._inspector.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
         self._style_toolbar_separators()          # re-tint for the new theme
 
@@ -2318,6 +2339,18 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._toolpath_dock)
         self.tabifyDockWidget(self._log_dock, self._toolpath_dock)
         self._toolpath_dock.setVisible(False)
+
+        # Bottom dock: job & validation inspector (M7.14), tabbed with the log.
+        from guildcam.gui.widgets.inspector import InspectorPanel
+        self._inspector = InspectorPanel()
+        self._inspector.issue_activated.connect(self._on_issue_activated)
+        self._inspector_dock = QDockWidget("Inspector", self)
+        self._inspector_dock.setObjectName("inspectorDock")
+        self._inspector_dock.setWidget(self._inspector)
+        self._inspector_dock.setMinimumHeight(120)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._inspector_dock)
+        self.tabifyDockWidget(self._log_dock, self._inspector_dock)
+        self._log_dock.raise_()                  # keep the log as the front tab by default
 
         # Status bar: transient message (left) + zoom read-out (permanent right)
         sb = QStatusBar()
@@ -3130,6 +3163,12 @@ class MainWindow(QMainWindow):
         self._act_toolpaths.toggled.connect(self._toolpath_dock.setVisible)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
+        self._act_inspector = QAction("Inspector", self, checkable=True)
+        self._act_inspector.setToolTip(
+            "Show/hide the job & validation inspector — every warning in one place (M7.14)")
+        self._act_inspector.toggled.connect(self._inspector_dock.setVisible)
+        self._inspector_dock.visibilityChanged.connect(self._act_inspector.setChecked)
+
         # Four groups split by custom ToolSep dividers (painted, not stylesheet — they
         # stay identical on fractional-DPI screens). Input: open a GuildDraw .gdraw model
         # (the primary M7 intake; DXF is on the File menu). Then build/output, then views,
@@ -3223,6 +3262,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._act_sidebar)
         view_menu.addAction(self._act_log)
         view_menu.addAction(self._act_toolpaths)
+        view_menu.addAction(self._act_inspector)
 
         # Settings menu mirrors GuildDraw: Dark Mode toggle + Preferences…
         settings_menu = mb.addMenu("&Settings")
@@ -3670,6 +3710,10 @@ class MainWindow(QMainWindow):
         ws.last_machine = self._last_machine
         ws.last_report = self._last_report
         ws.program_stored = self._program_stored
+        ws.diag = {                               # M7.14 inspector inputs per component
+            "reach": self._diag_reach, "clearance": self._diag_clearance,
+            "lint": self._diag_lint, "cut_report": self._diag_cut_report,
+        }
         # Capture this component's editable params from the kind-aware dock (M7.3).
         if ws.kind == ComponentKind.FRAME_FRONT:
             ws.castle_params = self.params.castle_params()
@@ -3696,6 +3740,12 @@ class MainWindow(QMainWindow):
         self._last_machine = ws.last_machine
         self._last_report = ws.last_report
         self._program_stored = ws.program_stored
+        d = ws.diag or {}                         # M7.14 inspector inputs per component
+        self._diag_reach = d.get("reach", [])
+        self._diag_clearance = d.get("clearance", [])
+        self._diag_lint = d.get("lint", [])
+        self._diag_cut_report = d.get("cut_report")
+        self._refresh_inspector()
 
     def _apply_workspace_to_ui(self, ws: ComponentWorkspace) -> None:
         """Re-render the shared views + dock + actions for the active component."""
@@ -4343,6 +4393,42 @@ class MainWindow(QMainWindow):
     def _on_measure_changed(self, text: str) -> None:
         self._measure_lbl.setText(text)
 
+    # ------------------------------------------------------------ inspector (M7.14)
+
+    def _refresh_inspector(self) -> None:
+        """Fold the latest engine checks into the Inspector dock + its title badge.
+        Reach/depth are pre-combined in `_diag_reach`; the cut report is the live
+        `CutReport` object (or None when superseded by a fresh program)."""
+        if not hasattr(self, "_inspector"):
+            return
+        from guildcam.core.diagnostics import collect_issues, severity_counts
+        issues = collect_issues(
+            reach_warnings=self._diag_reach,
+            clearance_violations=self._diag_clearance,
+            machine_lint=self._diag_lint,
+            cut_report=self._diag_cut_report,
+        )
+        self._inspector.set_issues(issues)
+        counts = severity_counts(issues)
+        n = counts["error"] + counts["warning"]
+        self._inspector_dock.setWindowTitle("Inspector" if n == 0 else f"Inspector ({n})")
+
+    def _on_issue_activated(self, target) -> None:
+        """Jump to the place an inspector issue points at (best-effort navigation)."""
+        if not target:
+            return
+        kind, ref = target
+        if kind == "op" and ref:
+            if self._current_view != 0:
+                self._switch_view(0)
+            self.canvas.set_toolpath_highlight(ref)
+            self._toolpath_dock.show()
+            self._toolpath_dock.raise_()
+        elif kind == "view" and ref == "sim":
+            self._switch_view(2, run=True)
+        elif kind == "view" and ref == "worktable":
+            self._on_show_worktable()
+
     # ------------------------------------------------------------------ cut simulation
 
     def _start_component_sim(self) -> None:
@@ -4394,6 +4480,8 @@ class MainWindow(QMainWindow):
         self._close_progress()
         self._active_sim_report = report          # cache for instant Sim re-toggle (M7.12)
         self._active_sim_removal = plan
+        self._diag_cut_report = report            # feed cut completeness/gouge to M7.14
+        self._refresh_inspector()
         self.view3d.show_report(report)           # badge + (bed) floor sheet fallback
         self.view3d.set_plan(plan)                # volumetric block, carved along the path
         self._update_view_toggles()
@@ -4717,6 +4805,14 @@ class MainWindow(QMainWindow):
             if self._project_path is not None:
                 self._save_gcam_to(self._project_path, announce=False)
                 self.append_log(f"[project] Updated {self._project_path.name} with the new program.")
+        # Fold this program's checks into the Inspector (M7.14). A fresh program
+        # supersedes any prior cut report, so clear it until the sim re-runs.
+        if w is not None:
+            self._diag_reach = list(getattr(w, "reach_warnings", []))
+            self._diag_clearance = list(getattr(w, "clearance_violations", []))
+            self._diag_lint = list(getattr(w, "machine_warnings", []))
+            self._diag_cut_report = None
+            self._refresh_inspector()
         # Draw the toolpaths over the 2D design + fill the inspector (M7.11); the
         # worktable bed has its own render, so only per-component programs overlay.
         overlay = getattr(w, "op_overlay", None) if w is not None else None

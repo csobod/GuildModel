@@ -56,6 +56,7 @@ class ComponentWorkspace:
     last_machine: object = None
     last_report: object = None
     program_stored: bool = False
+    diag: dict = field(default_factory=dict)   # M7.14 inspector inputs (reach/clearance/lint)
 
 
 def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
