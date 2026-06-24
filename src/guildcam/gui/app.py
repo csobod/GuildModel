@@ -2323,6 +2323,11 @@ class MainWindow(QMainWindow):
         sb = QStatusBar()
         self.status_lbl = QLabel("Ready — open a GuildDraw drawing (.gdraw) or a DXF to begin")
         sb.addWidget(self.status_lbl)
+        # measure-tool read-out (M7.13): distance / angle, shown only while measuring
+        self._measure_lbl = QLabel("")
+        self._measure_lbl.setObjectName("measureLabel")
+        self._measure_lbl.setVisible(False)
+        sb.addPermanentWidget(self._measure_lbl)
         self.zoom_label = QLabel("")
         self.zoom_label.setObjectName("mutedSmallLabel")
         sb.addPermanentWidget(self.zoom_label)
@@ -3085,6 +3090,16 @@ class MainWindow(QMainWindow):
         self._act_simulate.setEnabled(False)
         self._act_simulate.triggered.connect(lambda: self._switch_view(2, run=True))
 
+        # Measure tool (M7.13) — a 2D-canvas inspect mode: click points (snapped to
+        # curve vertices) to read a distance or a corner angle. Only the component
+        # outline view; toggling it on switches there.
+        self._act_measure = QAction("Measure", self, checkable=True)
+        self._act_measure.setShortcut("M")
+        self._act_measure.setToolTip(
+            "Measure — click points on the 2D outline to read distance / angle  (M)")
+        self._act_measure.setEnabled(False)
+        self._act_measure.toggled.connect(self._on_toggle_measure)
+
         self._act_show_worktable = QAction("Worktable", self)
         self._act_show_worktable.setShortcut("Ctrl+B")
         self._act_show_worktable.setToolTip(
@@ -3136,6 +3151,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act_view2d)
         tb.addAction(self._act_view3d)
         tb.addAction(self._act_simulate)
+        tb.addAction(self._act_measure)   # 2D inspect tool, lives with the views
         _add_sep()                        # views | utilities (Fit + dock toggles)
         tb.addAction(self._act_fit)
         tb.addAction(self._act_log)
@@ -3153,6 +3169,7 @@ class MainWindow(QMainWindow):
             (self._act_view2d, "view-2d"),
             (self._act_view3d, "view-3d"),
             (self._act_simulate, "sim-cut"),
+            (self._act_measure, "measure"),
             (self._act_show_worktable, "op-fit"),
             (self._act_fit, "op-fit"),
             (self._act_log, "toggle-log"),
@@ -3199,6 +3216,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._act_view2d)
         view_menu.addAction(self._act_view3d)
         view_menu.addAction(self._act_simulate)
+        view_menu.addAction(self._act_measure)
         view_menu.addAction(self._act_show_worktable)
         view_menu.addAction(self._act_fit)
         view_menu.addSeparator()
@@ -3448,6 +3466,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.canvas.zoom_changed.connect(self._on_zoom_changed)
+        self.canvas.measure_changed.connect(self._on_measure_changed)
 
         for layer, cb in self.params.layer_checks.items():
             cb.toggled.connect(
@@ -3535,6 +3554,12 @@ class MainWindow(QMainWindow):
         self._act_simulate.setEnabled(
             self._bed_sim_enabled() if on_wt else self._component_sim_enabled())
         self.zoom_label.setVisible(self._current_view == 0 and not on_wt)
+        # Measure: only on the component 2D outline, and only with geometry loaded.
+        # Leaving that view ends measure mode (uncheck fires _on_toggle_measure).
+        measure_ok = self._current_view == 0 and not on_wt and self.canvas.has_layers()
+        self._act_measure.setEnabled(measure_ok)
+        if not measure_ok and self._act_measure.isChecked():
+            self._act_measure.setChecked(False)
 
     def _show_component_sim(self, run: bool) -> bool:
         """Show the active component's cut-sim — the cached result, or start it when
@@ -4299,6 +4324,24 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_changed(self, scale: float) -> None:
         self.zoom_label.setText(f"Zoom: {scale:.1f} px/mm")
+
+    # ------------------------------------------------------------------ measure (M7.13)
+
+    def _on_toggle_measure(self, on: bool) -> None:
+        """Toggle the 2D measure tool. Turning it on snaps to the component outline
+        view first so the maker is actually looking at what they're measuring."""
+        if on and self._current_view != 0:
+            self._switch_view(0)                  # measure lives on the 2D outline
+        self.canvas.set_measure_mode(on)
+        self._measure_lbl.setVisible(on)
+        if on:
+            self._measure_lbl.setText("Measure: click a point")
+            self.status_lbl.setText("Measure — click points on the outline; Esc clears")
+        else:
+            self._measure_lbl.setText("")
+
+    def _on_measure_changed(self, text: str) -> None:
+        self._measure_lbl.setText(text)
 
     # ------------------------------------------------------------------ cut simulation
 

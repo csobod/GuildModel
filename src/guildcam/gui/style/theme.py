@@ -327,6 +327,7 @@ class CanvasPalette:
     canvas_bg: str          # 2D canvas + 3D viewport background
     grid: str               # 10-mm grid lines
     annotation: str         # scale bar, measurement text
+    measure: str            # measure-tool dimension lines + vertex markers (M7.13)
     placeholder: str        # "open a DXF" canvas text
     stock_dash: str         # dashed stock blank / pad block outlines (2D)
     stock_ghost: str        # wireframe stock ghost (3D)
@@ -344,6 +345,7 @@ LIGHT = CanvasPalette(
     canvas_bg="#faf6ee",
     grid="#e8e0c0",
     annotation="#444444",
+    measure="#0c7fb8",
     placeholder="#d4a840",
     stock_dash="#909090",
     stock_ghost="#9a9a9a",
@@ -360,6 +362,7 @@ DARK = CanvasPalette(
     canvas_bg="#1e1e1e",
     grid="#333333",
     annotation="#d4cfc0",
+    measure="#43c5e8",
     placeholder="#8a7a5a",
     stock_dash="#6a6a6a",
     stock_ghost="#777777",

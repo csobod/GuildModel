@@ -24,6 +24,7 @@ class DxfCanvas(QWidget):
     """
 
     zoom_changed = Signal(float)   # emits current scale (px / mm)
+    measure_changed = Signal(str)  # measure read-out text ("" when cleared) — M7.13
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -53,6 +54,14 @@ class DxfCanvas(QWidget):
         self._tp_visible: dict[str, bool] = {}
         self._tp_highlight: Optional[str] = None
 
+        # measure tool (BUILDPLAN M7.13): left-click drops snapped points; 2 points
+        # read a distance, 3 read a corner angle. A flat vertex cache feeds snapping.
+        self._measure_mode = False
+        self._measure_pts: list[tuple[float, float]] = []
+        self._measure_hover: Optional[tuple[float, float]] = None
+        self._measure_hover_snapped = False
+        self._measure_vertices: list[tuple[float, float]] = []
+
         # view transform: world_to_screen = point * scale + offset
         self._scale: float = 5.0       # px / mm
         self._offset: QPointF = QPointF(0.0, 0.0)
@@ -75,6 +84,8 @@ class DxfCanvas(QWidget):
         """Replace layer data and refresh."""
         self._layers = layers
         self._visible = {k: True for k in LAYER_STYLES}
+        self._rebuild_measure_vertices()
+        self._clear_measure()
         self.fit_to_view()
 
     def set_layer_visible(self, layer: str, visible: bool) -> None:
@@ -127,6 +138,65 @@ class DxfCanvas(QWidget):
         """Highlight a zone polygon (exterior + hole rings); None clears."""
         self._zone_rings = rings or []
         self.update()
+
+    # ----------------------------------------------------------- measure (M7.13)
+    def set_measure_mode(self, on: bool) -> None:
+        """Enter/leave the measure tool. In measure mode a left-click drops a point
+        (snapped to the nearest curve vertex); 2 points read a distance, 3 a corner
+        angle. Leaving clears the picks and the read-out."""
+        self._measure_mode = bool(on)
+        self._clear_measure()
+        self.setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
+        if not on:
+            self.unsetCursor()
+        self.update()
+
+    def measure_active(self) -> bool:
+        return self._measure_mode
+
+    def has_layers(self) -> bool:
+        return bool(self._layers)
+
+    def _rebuild_measure_vertices(self) -> None:
+        verts: list[tuple[float, float]] = []
+        for curves in self._layers.values():
+            for curve in curves:
+                verts.extend((float(x), float(y)) for x, y in curve)
+        self._measure_vertices = verts
+
+    def _clear_measure(self) -> None:
+        self._measure_pts = []
+        self._measure_hover = None
+        self._measure_hover_snapped = False
+        if self._measure_mode:
+            self.measure_changed.emit("")
+
+    def _snap(self, sx: float, sy: float) -> tuple[tuple[float, float], bool]:
+        """World point for a screen click, snapped to the nearest vertex within ~10 px
+        if one is in range. Returns (point, snapped?)."""
+        from guildcam.core.geometry.measure import snap_to_vertices
+        wx, wy = self._screen_to_world(sx, sy)
+        tol_mm = 10.0 / self._scale if self._scale else 0.0
+        hit = snap_to_vertices((wx, wy), self._measure_vertices, tol_mm)
+        if hit is not None:
+            return hit, True
+        return (wx, wy), False
+
+    def _measure_readout(self, hover: tuple[float, float] | None) -> str:
+        """Build the status text for the current picks (+ optional live hover)."""
+        from guildcam.core.geometry.measure import angle_at, distance
+        pts = self._measure_pts
+        if not pts:
+            return "Measure: click a point (snaps to curve vertices)"
+        if len(pts) == 1:
+            if hover is None:
+                return "Measure: click the second point"
+            return f"{distance(pts[0], hover):.2f} mm"
+        if len(pts) == 2:
+            return f"Distance: {distance(pts[0], pts[1]):.2f} mm"
+        a, b, c = pts[0], pts[1], pts[2]
+        return (f"A–B {distance(a, b):.2f} mm   ·   B–C {distance(b, c):.2f} mm"
+                f"   ·   ∠B {angle_at(a, b, c):.1f}°")
 
     def fit_to_view(self) -> None:
         """Scale and centre so all geometry fills 90% of the widget."""
@@ -196,6 +266,7 @@ class DxfCanvas(QWidget):
         self._draw_toolpaths(painter)
         self._draw_zone_highlight(painter)
         self._draw_program_zero(painter)
+        self._draw_measure(painter)
         self._draw_scale_bar(painter)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
@@ -381,6 +452,82 @@ class DxfCanvas(QWidget):
         label_rect = QRectF(x1, y - 18, bar_px, 14)
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, "10 mm")
 
+    def _draw_measure(self, painter: QPainter) -> None:
+        """Measure-tool overlay (M7.13): the picked points, the dimension lines with
+        their lengths, the corner angle (3 points), the live rubber-band to the cursor,
+        and a snap box when the cursor has latched onto a vertex."""
+        if not self._measure_mode:
+            return
+        from guildcam.core.geometry.measure import angle_at, distance
+        color = QColor(self._palette.measure)
+        screen = [self._world_to_screen(x, y) for (x, y) in self._measure_pts]
+
+        # rubber-band from the last point to the live (snapped) cursor
+        if screen and self._measure_hover is not None and len(self._measure_pts) < 3:
+            hs = self._world_to_screen(*self._measure_hover)
+            pen = QPen(color, 1.2)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawLine(screen[-1], hs)
+
+        # solid dimension segments + length labels
+        pen = QPen(color, 1.8)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(1, len(screen)):
+            painter.drawLine(screen[i - 1], screen[i])
+            mid = QPointF((screen[i - 1].x() + screen[i].x()) / 2.0,
+                          (screen[i - 1].y() + screen[i].y()) / 2.0)
+            d = distance(self._measure_pts[i - 1], self._measure_pts[i])
+            self._draw_measure_label(painter, mid, f"{d:.2f} mm", color)
+
+        # point markers
+        painter.setBrush(color)
+        painter.setPen(QPen(color, 1.0))
+        for p in screen:
+            painter.drawEllipse(p, 3.2, 3.2)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # corner angle at the middle vertex when three points are placed
+        if len(self._measure_pts) == 3:
+            ang = angle_at(*self._measure_pts)
+            self._draw_measure_label(
+                painter, screen[1] + QPointF(2, -2), f"∠ {ang:.1f}°", color)
+
+        # snap box at the cursor when latched onto a vertex
+        if self._measure_hover is not None and self._measure_hover_snapped:
+            hs = self._world_to_screen(*self._measure_hover)
+            pen = QPen(color, 1.4)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(hs.x() - 4.0, hs.y() - 4.0, 8.0, 8.0))
+
+    def _draw_measure_label(self, painter: QPainter, anchor: QPointF,
+                            text: str, color: QColor) -> None:
+        font = QFont(self.font())
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        w = fm.horizontalAdvance(text)
+        h = fm.height()
+        pad = 3.0
+        x = anchor.x() + 6.0
+        top = anchor.y() - h / 2.0
+        bg = QRectF(x - pad, top - pad, w + 2 * pad, h + 2 * pad)
+        bgc = QColor(self._palette.canvas_bg)
+        bgc.setAlpha(220)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bgc)
+        painter.drawRoundedRect(bg, 3.0, 3.0)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(color)
+        painter.drawText(QPointF(x, anchor.y() + fm.ascent() / 2.0 - fm.descent() / 2.0),
+                         text)
+
     # ------------------------------------------------------------------ interaction
 
     def wheelEvent(self, event: QWheelEvent) -> None:
@@ -406,6 +553,16 @@ class DxfCanvas(QWidget):
             self._pan_last = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
+            return
+        if self._measure_mode and event.button() == Qt.MouseButton.LeftButton:
+            pt, _ = self._snap(event.position().x(), event.position().y())
+            if len(self._measure_pts) >= 3:      # a 4th click starts a fresh chain
+                self._measure_pts = [pt]
+            else:
+                self._measure_pts.append(pt)
+            self.measure_changed.emit(self._measure_readout(None))
+            self.update()
+            event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._pan_active:
@@ -414,6 +571,23 @@ class DxfCanvas(QWidget):
             self._pan_last = event.position()
             self.update()
             event.accept()
+            return
+        if self._measure_mode:
+            hover, snapped = self._snap(event.position().x(), event.position().y())
+            self._measure_hover = hover
+            self._measure_hover_snapped = snapped
+            if 0 < len(self._measure_pts) < 3:   # live read-out while extending
+                self.measure_changed.emit(self._measure_readout(hover))
+            self.update()
+            event.accept()
+
+    def keyPressEvent(self, event) -> None:
+        if self._measure_mode and event.key() == Qt.Key.Key_Escape:
+            self._clear_measure()
+            self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._pan_active:
