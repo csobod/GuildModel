@@ -2173,11 +2173,15 @@ class MainWindow(QMainWindow):
         self._last_report: Optional[dict] = None
 
         # Inspector inputs (M7.14): the latest generate warnings + the cut-report
-        # object, folded into severity-tagged issues for the Inspector dock.
+        # object, folded into severity-tagged issues for the Inspector dock. Component
+        # diag (per workspace) vs the worktable's own bed diag (clearance + collisions).
         self._diag_reach: list = []
         self._diag_clearance: list = []
         self._diag_lint: list = []
         self._diag_cut_report = None
+        self._diag_bed_clearance: list = []
+        self._diag_bed_lint: list = []
+        self._diag_bed_collisions: list = []
 
         # Castle preview state: current teaching stage + per-stage mesh cache
         # (cache invalidated whenever a castle parameter changes)
@@ -2517,6 +2521,7 @@ class MainWindow(QMainWindow):
         self._dock_stack.setCurrentIndex(1)       # worktable controls in the sidebar
         self._right_dock.setVisible(self._act_sidebar.isChecked())
         self._switch_view(self._current_view)     # bed canvas, or the bed sim if cached
+        self._refresh_inspector()                 # show the bed's diagnostics (M7.14)
         self.status_lbl.setText(f"Worktable — {self._worktable.display_name}")
 
     def _on_show_worktable(self) -> None:
@@ -2793,6 +2798,10 @@ class MainWindow(QMainWindow):
             machine_warnings = lint_program(text, machine)
             for w in machine_warnings:
                 self.append_log(f"[gcode] ⚠ machine: {w}")
+            self._diag_bed_clearance = list(violations)    # feed the Inspector (M7.14)
+            self._diag_bed_lint = list(machine_warnings)
+            self._diag_bed_collisions = []                 # stale until the bed re-sims
+            self._refresh_inspector()
             report = estimate_program(text, MachineDynamics.from_profile(machine),
                                       tool_change_seconds=machine.tool_change_seconds)
             self.append_log("[gcode] Estimated cut time —\n" + format_report(report))
@@ -2899,6 +2908,11 @@ class MainWindow(QMainWindow):
             plan.hold_down_height_mm = h
             plan.collision_pos = plan_collisions(plan, keep_outs, h)
             ncol = int(plan.collision_pos.sum())
+            self._diag_bed_collisions = (                 # feed the Inspector (M7.14)
+                [f"The tool or its holder passes over a hold-down at {ncol} point(s) "
+                 f"of the bed cut — raise the hold-down height ({h:.1f} mm now) or "
+                 "reposition the part"] if ncol else [])
+            self._refresh_inspector()
             if ncol:
                 self.append_log(
                     "[bed-sim] ⚠ the tool or its holder passes over a hold-down — "
@@ -4402,12 +4416,19 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_inspector"):
             return
         from guildcam.core.diagnostics import collect_issues, severity_counts
-        issues = collect_issues(
-            reach_warnings=self._diag_reach,
-            clearance_violations=self._diag_clearance,
-            machine_lint=self._diag_lint,
-            cut_report=self._diag_cut_report,
-        )
+        if self._on_worktable_tab():               # the bed has its own diagnostics
+            issues = collect_issues(
+                clearance_violations=self._diag_bed_clearance,
+                machine_lint=self._diag_bed_lint,
+                collisions=self._diag_bed_collisions,
+            )
+        else:
+            issues = collect_issues(
+                reach_warnings=self._diag_reach,
+                clearance_violations=self._diag_clearance,
+                machine_lint=self._diag_lint,
+                cut_report=self._diag_cut_report,
+            )
         self._inspector.set_issues(issues)
         counts = severity_counts(issues)
         n = counts["error"] + counts["warning"]

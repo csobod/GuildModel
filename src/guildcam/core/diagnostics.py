@@ -39,6 +39,7 @@ def collect_issues(
     depth_warnings: Iterable[Any] = (),
     clearance_violations: Sequence[str] = (),
     machine_lint: Sequence[str] = (),
+    collisions: Sequence[str] = (),
     cut_report: Any = None,
 ) -> list[Issue]:
     """Fold the engine's checks into one severity-sorted issue list.
@@ -58,8 +59,11 @@ def collect_issues(
         issues.append(Issue("warning", "Tool reach", w.message(),
                              ("op", getattr(w, "op_name", None))))
 
-    for msg in clearance_violations:               # bed / worktable fouling
+    for msg in clearance_violations:               # static bed / worktable fouling
         issues.append(Issue("error", "Clearance", str(msg), ("view", "worktable")))
+
+    for msg in collisions:                          # dynamic hold-down fouling (cut sim)
+        issues.append(Issue("error", "Collision", str(msg), ("view", "sim")))
 
     for msg in machine_lint:                        # posted-program lint
         issues.append(Issue("warning", "Machine lint", str(msg), None))

@@ -64,6 +64,15 @@ def test_collects_every_category_from_a_bad_job():
     assert len(issues) == 6
 
 
+def test_collisions_are_errors_to_the_sim():
+    issues = collect_issues(
+        collisions=["the tool fouls a hold-down at 12 points"])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "Collision"
+    assert issues[0].target == ("view", "sim")
+
+
 def test_sorted_errors_before_warnings():
     issues = collect_issues(
         reach_warnings=[_Reach("A")],                       # warning
