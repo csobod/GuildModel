@@ -70,7 +70,7 @@ def test_collisions_are_errors_to_the_sim():
     assert len(issues) == 1
     assert issues[0].severity == "error"
     assert issues[0].category == "Collision"
-    assert issues[0].target == ("view", "sim")
+    assert issues[0].target == ("collision", None)
 
 
 def test_sorted_errors_before_warnings():

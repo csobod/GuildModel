@@ -4447,6 +4447,11 @@ class MainWindow(QMainWindow):
             self._toolpath_dock.raise_()
         elif kind == "view" and ref == "sim":
             self._switch_view(2, run=True)
+        elif kind == "collision":
+            # open the bed cut sim and scrub to the first fouling position (red tool)
+            self._switch_view(2, run=True)
+            if not self.view3d.goto_first_collision():
+                self.status_lbl.setText("No collision position in the current sim")
         elif kind == "view" and ref == "worktable":
             self._on_show_worktable()
 

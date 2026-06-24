@@ -720,6 +720,23 @@ class Viewer3D(QWidget):
             min(self._play_idx, self._plan.n_positions - 1),
             self._plan.label_at(min(self._play_idx, self._plan.n_positions - 1)))
 
+    def goto_first_collision(self) -> bool:
+        """Scrub the cut sim to the first toolpath position that fouls a hold-down so
+        the maker lands right on the red tool (M7.14 inspector navigation). Returns
+        True if there was a collision to jump to."""
+        plan = self._plan
+        cp = getattr(plan, "collision_pos", None) if plan is not None else None
+        if cp is None or not bool(cp.any()):
+            return False
+        idx = int(np.argmax(cp))
+        self._play_timer.stop()
+        self._play_btn.setText("▶")
+        if self._scrub.value() == idx:            # setValue wouldn't re-fire — force it
+            self._on_scrub(idx)
+        else:
+            self._scrub.setValue(idx)
+        return True
+
     def _render_pos(self, pos: float, reset_camera: bool = False) -> None:
         """Draw the block at the current floor (carved up to the playhead) + the tool
         at its exact toolpath position (BUILDPLAN M7.12 — tool & removal in sync)."""

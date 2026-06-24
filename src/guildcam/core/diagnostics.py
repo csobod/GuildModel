@@ -63,7 +63,7 @@ def collect_issues(
         issues.append(Issue("error", "Clearance", str(msg), ("view", "worktable")))
 
     for msg in collisions:                          # dynamic hold-down fouling (cut sim)
-        issues.append(Issue("error", "Collision", str(msg), ("view", "sim")))
+        issues.append(Issue("error", "Collision", str(msg), ("collision", None)))
 
     for msg in machine_lint:                        # posted-program lint
         issues.append(Issue("warning", "Machine lint", str(msg), None))
