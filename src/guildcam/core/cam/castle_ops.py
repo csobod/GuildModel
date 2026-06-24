@@ -268,6 +268,10 @@ def relief_ops(
     fine_type, fine_r = fine_tool["type"], fine_tool["radius_mm"]
     rough_type, rough_r = rough_tool["type"], rough_tool["radius_mm"]
     f = relief.field
+    # Relief passes follow the PRE-pocket surface so they sail over the already-cut
+    # hinge pockets instead of re-diving to the floor (M8); the Hinge Pockets op cuts
+    # the pockets, the sim verifies the full pocketed `field`.
+    surf = relief.surface_field if relief.surface_field is not None else f
     res = f.resolution
     ox, oy = f.origin
     inside = relief.inside
@@ -282,7 +286,7 @@ def relief_ops(
     dist, (iy, ix) = distance_transform_edt(
         ~inside, sampling=res, return_indices=True
     )
-    nearest_relief = f.z[iy, ix]
+    nearest_relief = surf.z[iy, ix]
     band = inside | (dist <= band_mm + 1e-9)
     cam_z = np.where(band, np.minimum(nearest_relief, stock_hf.z), stock_hf.z)
     cam_hf = Heightfield(z=cam_z, origin=f.origin, resolution=res)

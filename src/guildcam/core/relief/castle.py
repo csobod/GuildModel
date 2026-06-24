@@ -48,11 +48,15 @@ GRID_MARGIN_MM = 2.0
 @dataclass
 class CastleRelief:
     """Rasterized posterior surface plus the masks needed downstream."""
-    field: Heightfield          # posterior z over the full grid (mm)
+    field: Heightfield          # posterior z over the full grid (mm) — WITH hinge pockets
     inside: np.ndarray          # bool (rows, cols): inside body (lens holes excluded)
     zone_index: np.ndarray      # int (rows, cols): index into partition.zones, -1 outside
     partition: CastlePartition
     pocket_polys: list[Polygon] = dc_field(default_factory=list)  # carved hinge pockets
+    # The posterior surface BEFORE the pockets are carved (M8): the relief passes
+    # follow this so they sail OVER the already-cut pockets instead of re-diving to the
+    # floor — the Hinge Pockets op cuts the pockets, the sim verifies the full `field`.
+    surface_field: "Heightfield | None" = None
 
     @property
     def Xs(self) -> np.ndarray:
@@ -297,6 +301,8 @@ def build_castle_relief(
             fill[sub] = tgt
 
     z = np.minimum(fill, carve)
+    surface = z.copy()                # posterior surface BEFORE the pockets (relief
+                                      # passes sail over them; the Hinge Pockets op cuts)
 
     # ---- Hinge pockets: sharp-walled cut below the endpiece height ----
     _report(progress, "Hinge pockets", 0.88)
@@ -307,11 +313,14 @@ def build_castle_relief(
         z[in_pocket & inside] = np.minimum(z[in_pocket & inside], pocket_floor)
 
     z[~inside] = 0.0
+    surface[~inside] = 0.0
     _report(progress, "Relief ready", 0.92)
     field = Heightfield(z=z, origin=(ox, oy), resolution=resolution)
+    surface_field = Heightfield(z=surface, origin=(ox, oy), resolution=resolution)
     return CastleRelief(
         field=field, inside=inside, zone_index=zone_index,
         partition=partition, pocket_polys=list(hinge_polys),
+        surface_field=surface_field,
     )
 
 
