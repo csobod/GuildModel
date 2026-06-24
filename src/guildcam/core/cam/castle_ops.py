@@ -206,6 +206,22 @@ def _densify_xy(coords: list, spacing: float) -> np.ndarray:
                             np.interp(s, cum, pts[:, 1])])
 
 
+def _smooth_path_z(zs: np.ndarray, window: int = 7) -> np.ndarray:
+    """Light moving-average on a relief path's Z to calm cutter-location-surface
+    jitter on steep slopes — the zig-zag the maker sees on the nosepad (BUILDPLAN M8).
+    The CL surface sits ABOVE the smooth design surface, so averaging stays above it
+    (gouge-safe; `test_fine_relief_never_gouges` guards it). Endpoints are kept exact
+    so the plunge entry and path joins are unaffected."""
+    n = len(zs)
+    if n < 3 or window < 3:
+        return zs
+    half = window // 2
+    padded = np.pad(zs, half, mode="edge")        # edge-pad so interior points near the
+    sm = np.convolve(padded, np.ones(window) / float(window), mode="valid")  # ends smooth too
+    sm[0], sm[-1] = zs[0], zs[-1]                 # keep the very ends exact (plunge / joins)
+    return sm
+
+
 def contour_parallel_rings(body: Polygon, stepover_mm: float,
                            max_rings: int = 4000) -> list[list]:
     """Concentric boundary-offset rings tiling `body` (Fusion 'Scallop' style).
@@ -327,8 +343,9 @@ def relief_ops(
             for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
                 if run.size < 2:
                     continue
-                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
-                       for k in run]
+                zr = _smooth_path_z(zline[run])      # calm steep-slope Z jitter (M8)
+                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zr[j]))
+                       for j, k in enumerate(run)]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
     # Finish only where the target sits below the stock surface — skip the flat-top
