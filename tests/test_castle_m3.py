@@ -111,10 +111,16 @@ def test_rough_relief_stock_aware(program, demo_inputs):
 
 def test_fine_relief_full_surface(program, demo_inputs):
     ops, _, relief = program
+    _, castle, _ = demo_inputs
     op = ops["Fine Relief"]
     zmin, zmax = op.z_range()
+    top = castle.stock.total_pad_height_mm
     assert zmin == pytest.approx(4.2, abs=0.01)
-    assert zmax == pytest.approx(10.0, abs=0.01)
+    # Finishes the real relief up to just below the stock surface, but skips the
+    # zero-material flat-top regions (relief == stock top) — like the stock-aware
+    # rough pass, so no wasted skim cuts at the top (BUILDPLAN M8 efficiency).
+    assert zmax < top
+    assert zmax == pytest.approx(top - 0.05, abs=0.1)
     body = relief.partition.body
     bx = op.xy_bounds()
     assert bx[0] == pytest.approx(body.bounds[0], abs=TOOL_R + 0.8)
@@ -254,4 +260,6 @@ def test_against_reference_nc(program):
     ref_fine_cut = [z for z in ref_fine if z < 15]           # drop retracts
     zmin, zmax = ops["Fine Relief"].z_range()
     assert zmin == pytest.approx(min(ref_fine_cut), abs=0.05)
-    assert zmax == pytest.approx(max(ref_fine_cut), abs=0.05)
+    # We skip the zero-material skim cuts at the stock top that the reference (Fusion)
+    # still emits, so our fine envelope tops out just below the stock surface (M8).
+    assert zmax < max(ref_fine_cut)

@@ -75,6 +75,12 @@ class GRBLPost:
     feed_rate_mmpm: float       # cutting feed, mm/min
     plunge_rate_mmpm: float     # plunge feed, mm/min
     safe_z_mm: float = 5.0
+    # Rapid-descent floor just above the stock (BUILDPLAN M8): a plunge rapids (G0)
+    # down to this height — clear of all stock — then *feeds* the last bit into the
+    # cut. Without it every plunge feeds the full distance from safe Z at the plunge
+    # rate, which dominates the cycle when there are many short relief passes. None
+    # disables it (feed the whole plunge, original behaviour). Must be >= stock top.
+    feed_plane_mm: float | None = None
     units: str = "mm"           # "mm" or "inch"
     comment_char: str = ";"
     # Rigid work-zero offset added to every emitted coordinate (BUILDPLAN M6.2).
@@ -185,6 +191,21 @@ class GRBLPost:
     def safe_retract(self) -> None:
         self.rapid(z=self.safe_z_mm)
 
+    def _rapid_to_feed_plane(self, z_target: float) -> None:
+        """Rapid (G0) down to the feed plane before a plunge, so only the cut portion
+        is fed (BUILDPLAN M8). No-op when no feed plane is set or it's already at/below
+        the target — the plunge then feeds the whole way (original behaviour). The feed
+        plane is above the stock, so this never rapids into material."""
+        fp = self.feed_plane_mm
+        if fp is not None and fp > z_target + 1e-6:
+            self.rapid(z=fp)
+
+    def initial_tool_load(self, number: int) -> None:
+        """Emit the program's first tool change so a controller with a tool-length
+        probe (Carbide Motion + BitSetter / Nomad) loads and measures the tool before
+        cutting — the spindle is still off here, so it probes safely (BUILDPLAN M8)."""
+        self._lines.append(f"M6 T{number}")
+
     def program_pause(self, message: str = "Flip stock and re-register on dowel pins") -> None:
         self._lines.append(f"; {message}")
         self._lines.append("M0")
@@ -271,8 +292,9 @@ class GRBLPost:
             ramp_dist = total
         ramp_dist = max(ramp_dist, 1e-9)
 
-        # controlled descent through air to the ramp-start height (never a rapid
-        # below safe Z — keeps the tool out of uncleared stock)
+        # rapid down to the feed plane (above stock), then a controlled feed to the
+        # ramp-start height — never a rapid below the stock top
+        self._rapid_to_feed_plane(z_top)
         self.feed(z=z_top, feed=self.plunge_rate_mmpm)
 
         # Phase A — ramp z_top -> z_cut over the first ramp_dist of the loop
@@ -312,6 +334,7 @@ class GRBLPost:
             return
 
         if first_move_is_plunge:
+            self._rapid_to_feed_plane(z0)    # rapid the air, feed only the cut (M8)
             self.plunge(z0)
         else:
             self.feed(x=x0, y=y0, z=z0)

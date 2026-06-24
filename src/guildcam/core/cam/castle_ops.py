@@ -327,7 +327,11 @@ def relief_ops(
                        for k in run]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
-    _emit(fine, z_fine, band)
+    # Finish only where the target sits below the stock surface — skip the flat-top
+    # regions where the relief IS the stock top (those were emitting zero-material
+    # "skim" fragments, each a full retract + plunge for nothing). Mirrors the rough
+    # pass's stock-aware mask; removes the bulk of the wasted Fine Relief motion.
+    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
     _emit(rough, z_rough, cut_rough)
     return rough, fine
 
@@ -786,11 +790,15 @@ def write_castle_program(
     drill_ops = drill_op_names or set()
     post.header(side)
     current: str | None = None
-    if tool_settings:
-        first = ops[0].tool_name if ops else None
-        if first in tool_settings:
-            post.apply_tool(tool_settings[first])
-            current = first
+    first = ops[0].tool_name if ops else None
+    if tool_settings and first in tool_settings:
+        post.apply_tool(tool_settings[first])
+        current = first
+    # Auto-tool-change machines (Carbide Motion + probe) want the first tool loaded
+    # and measured up front — emit M6 so it probes before cutting (BUILDPLAN M8).
+    if tool_change_mode == "m6":
+        n = tool_settings[first].number if (tool_settings and first in tool_settings) else 1
+        post.initial_tool_load(n)
     post.spindle_on()
     for op in ops:
         nm = op.tool_name

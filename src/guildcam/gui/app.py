@@ -596,6 +596,7 @@ class GCodeWorker(_ProgressWorker):
             feed_rate_mmpm=post_feed,
             plunge_rate_mmpm=post_plunge,
             safe_z_mm=cam.safe_z_for(castle.stock.total_pad_height_mm),
+            feed_plane_mm=castle.stock.total_pad_height_mm + 1.0,   # rapid-descent floor
             work_offset=work_offset,
         )
         self._progress("Writing program", 0.95)
@@ -755,6 +756,7 @@ class GCodeWorker(_ProgressWorker):
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
             feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
             safe_z_mm=cam.safe_z_for(temple.blank_thickness_mm),
+            feed_plane_mm=temple.blank_thickness_mm + 1.0,
             work_offset=work_offset,
         )
         self._progress("Writing temple program", 0.9)
@@ -888,6 +890,7 @@ class GCodeWorker(_ProgressWorker):
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
             feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
             safe_z_mm=cam.safe_z_for(block.blank_thickness_mm),
+            feed_plane_mm=block.blank_thickness_mm + 1.0,
             work_offset=work_offset,
         )
         self._progress("Writing block program", 0.9)
