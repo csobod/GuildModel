@@ -128,6 +128,7 @@ class Viewer3D(QWidget):
         self._zero_actors: list = []
         self._zero_xyz: Optional[tuple] = None
         self._model_label_text = "No mesh"
+        self._section_on = False                  # 3D section cutting plane (M7.13)
 
         # sim-mode scene cache
         self._report = None
@@ -174,6 +175,19 @@ class Viewer3D(QWidget):
             self._stage_icons[icon_name] = (b, label)
         self._stage_buttons["pockets"].setChecked(True)
         self._apply_stage_icons()
+
+        # Section tool (M7.13): a draggable cutting plane that slices the model so the
+        # maker can read terrace heights + footing depths.
+        self._section_btn = QPushButton("Section")
+        self._section_btn.setCheckable(True)
+        self._section_btn.setFixedHeight(22)
+        self._section_btn.setEnabled(False)
+        self._section_btn.setToolTip(
+            "Section — slice the model with a draggable plane to inspect terrace "
+            "heights and footing depths (drag the plane / its arrow to move it)")
+        self._section_btn.toggled.connect(self._on_toggle_section)
+        lay.addSpacing(8)
+        lay.addWidget(self._section_btn)
 
         lay.addStretch()
         self._mesh_label = QLabel("No mesh"); self._mesh_label.setObjectName("hintLabel")
@@ -307,6 +321,7 @@ class Viewer3D(QWidget):
         if mode == "model":
             self._render_model(reset_camera=False)
         else:
+            self._clear_plane_widgets()           # drop the section plane in sim mode
             self._render_sim(reset_camera=False)
 
     # ------------------------------------------------------------------ model mode
@@ -314,6 +329,7 @@ class Viewer3D(QWidget):
     def set_stage_enabled(self, enabled: bool) -> None:
         for btn in self._stage_buttons.values():
             btn.setEnabled(enabled)
+        self._section_btn.setEnabled(enabled)     # section needs a mesh too (M7.13)
 
     def set_stage(self, stage: str) -> None:
         btn = self._stage_buttons.get(stage)
@@ -354,16 +370,29 @@ class Viewer3D(QWidget):
         import pyvista as pv
 
         self._plotter.clear()
+        self._clear_plane_widgets()
         self._zero_actors = []
         if self._model_pv is None:
             self._mesh_label.setText("No mesh")
             self._safe_render()
             return
 
-        self._plotter.add_mesh(
-            self._model_pv, color=self._palette.mesh_surface, smooth_shading=True,
-            show_edges=False, lighting=True, specular=0.3, specular_power=20,
-        )
+        mesh_kwargs = dict(
+            color=self._palette.mesh_surface, smooth_shading=True,
+            show_edges=False, lighting=True, specular=0.3, specular_power=20)
+        sectioned = False
+        if self._section_on:
+            # a draggable clip plane carves the model live so the maker can inspect the
+            # interior profile (M7.13); fall back to the full mesh if the widget fails
+            try:
+                self._plotter.add_mesh_clip_plane(
+                    self._model_pv, normal="x", invert=False,
+                    widget_color=self._palette.measure, **mesh_kwargs)
+                sectioned = True
+            except Exception:
+                sectioned = False
+        if not sectioned:
+            self._plotter.add_mesh(self._model_pv, **mesh_kwargs)
         self._plotter.add_light(
             pv.Light(position=(100, -50, 200), focal_point=(0, 0, 0), intensity=0.8))
 
@@ -398,6 +427,27 @@ class Viewer3D(QWidget):
             self._plotter.reset_camera(render=False)
         self._safe_render()
         self._mesh_label.setText(self._model_label_text)
+
+    # -------------------------------------------------------- section (M7.13)
+    def _on_toggle_section(self, on: bool) -> None:
+        self._section_on = bool(on)
+        if self._mode == "model":
+            self._render_model(reset_camera=False)
+
+    def clear_section(self) -> None:
+        """Turn the section plane off (e.g. on a component / view switch)."""
+        if self._section_btn.isChecked():
+            self._section_btn.setChecked(False)   # fires _on_toggle_section → re-render
+        else:
+            self._section_on = False
+            self._clear_plane_widgets()
+
+    def _clear_plane_widgets(self) -> None:
+        if self._plotter is not None and hasattr(self._plotter, "clear_plane_widgets"):
+            try:
+                self._plotter.clear_plane_widgets()
+            except Exception:
+                pass
 
     def _axis_length(self, stock) -> float:
         if stock is not None:
@@ -831,6 +881,7 @@ class Viewer3D(QWidget):
         self._model_label_text = "No mesh"
         self._zero_actors = []
         if self._plotter is not None and self._mode == "model":
+            self._clear_plane_widgets()
             self._plotter.clear()
             self._mesh_label.setText("No mesh")
             self._safe_render()
