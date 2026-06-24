@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- GuildCAM app icon: a 3D extruded eyewear front. Pairs with GuildDraw (same dark
+       charcoal plate + amber #ffd580 brand) but the frame is a shaded SOLID with stacked
+       extrusion depth, reading as the 3D-modeling/CAM tool vs GuildDraw flat 2D outline. -->
+  <defs><linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#2b2b2b"/><stop offset="1" stop-color="#161616"/></linearGradient></defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#plate)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="51.5" fill="none" stroke="#ffd580" stroke-opacity="0.18" stroke-width="1"/>
+  <g fill="none" stroke="#7a5a1e" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(16.0 14.0)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#896829" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(14.222222222222221 12.444444444444445)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#987534" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(12.444444444444445 10.88888888888889)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#a6833f" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(10.666666666666666 9.333333333333334)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#b5914a" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(8.88888888888889 7.777777777777778)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#c49e54" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(7.111111111111111 6.222222222222222)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#d3ac5f" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(5.333333333333333 4.666666666666667)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#e1ba6a" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(3.5555555555555554 3.111111111111111)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#f0c775" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(1.7777777777777777 1.5555555555555556)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+  <g fill="none" stroke="#ffd580" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 0)">
+    <rect x="40" y="104" width="68" height="56" rx="18"/>
+    <rect x="148" y="104" width="68" height="56" rx="18"/>
+    <path d="M108 120 Q128 104 148 120"/>
+    <path d="M40 120 L20 108"/>
+    <path d="M216 120 L236 108"/></g>
+</svg>

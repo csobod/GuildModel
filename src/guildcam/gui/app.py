@@ -5238,17 +5238,40 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("STL export cancelled")
 
     def _on_about(self) -> None:
+        from guildcam import __version__
+
         QMessageBox.about(
             self,
             "About GuildCAM",
-            "<b>GuildCAM</b> v0.7.11 — pre-release<br><br>"
+            f"<b>GuildCAM</b> v{__version__}<br><br>"
             "Free, open-source CAM tool for spectacle frame cutting on GRBL CNCs.<br>"
             "Companion to the Guild CNC and gSender fork.<br><br>"
+            "The frame-front workflow is hardware-proven on real acetate. The "
+            "temple, base-curve-block, and worktable-nesting paths are "
+            "<i>beta</i> — built and cut-sim-verified, not yet fully "
+            "hardware-validated.<br><br>"
             "GPLv3 — see LICENSE for details.",
         )
 
 
 # ------------------------------------------------------------------ entry point
+
+def _app_icon():
+    """The GuildCAM app/window icon, or None if the asset is missing.
+
+    Prefers the multi-resolution ``.ico`` (crisp at every taskbar size); falls
+    back to the source ``.svg``. The ``assets/`` dir sits beside the package and
+    is bundled by the PyInstaller build (see build_common.py)."""
+    from pathlib import Path
+    from PySide6.QtGui import QIcon
+
+    assets = Path(__file__).resolve().parents[1] / "assets"
+    for name in ("icon.ico", "icon.svg"):
+        p = assets / name
+        if p.exists():
+            return QIcon(str(p))
+    return None
+
 
 def main() -> None:
     # Share one OpenGL context across the 3D-preview + cut-sim render windows
@@ -5259,9 +5282,16 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("GuildCAM")
     app.setOrganizationName("Guild")
+    from guildcam import __version__
+    app.setApplicationVersion(__version__)
+    _icon = _app_icon()
+    if _icon is not None:
+        app.setWindowIcon(_icon)
     app.setStyleSheet(theme.stylesheet(prefs_mod.load()["dark_mode"]))
 
     win = MainWindow()
+    if _icon is not None:
+        win.setWindowIcon(_icon)
     win.show()
 
     sys.exit(app.exec())

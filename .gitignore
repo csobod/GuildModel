@@ -22,3 +22,7 @@ Thumbs.db
 *.log
 # Generated CAM output in the Demo Project (the reference Demo Program.nc is tracked)
 Demo Project/GuildCAM Generated*.nc
+
+# Icon/render scratch
+assets_preview/
+src/guildcam/assets/_iconcache/

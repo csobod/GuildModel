@@ -11,12 +11,30 @@ for the Guild CNC fixture.
 
 ## Status
 
-v0.4.0 — M4 complete (parametric castle UI). See `BUILDPLAN.md` for the
-milestone roadmap to 1.0.
+**v1.0.0-rc1** — release candidate.
+
+The **frame-front workflow is hardware-proven**: a frame front has been cut on
+real acetate end-to-end (GuildDraw DXF → castle relief → five-op GRBL program →
+cut on a Carbide 3D Nomad). This is the core of the tool and the focus of RC1.
+
+The **temple, base-curve-block, and worktable-nesting paths are beta** — fully
+built and verified in cut-simulation, but not yet hardware-validated on real
+stock. They work; treat their first real cuts as you would any new program
+(air-cut, then a test piece). The two-sided (cut-and-flip) workflow is planned
+for a later release.
+
+See `BUILDPLAN.md` for the full milestone history and roadmap.
 
 ## Requirements
 
-Python 3.12 or newer.
+Python 3.12 or newer (the packaged Windows installer bundles its own runtime —
+no Python needed to run it).
+
+## Install (Windows)
+
+Download `GuildCAM-<version>-setup.exe` from the release and run it. It is a
+per-user install (no admin prompt) and registers the `.gcam` project type. To
+build the installer yourself, see `scripts/build_release.ps1`.
 
 ## Installation (development)
 
