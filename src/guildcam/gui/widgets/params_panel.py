@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox,
     QLineEdit, QListWidget, QListWidgetItem, QFrame, QTabWidget,
+    QInputDialog, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal
 
@@ -252,8 +253,111 @@ class ParamsPanel(QTabWidget):
     # ------------------------------------------------------------------ Castle tab
 
     def _build_castle_tab(self, lay: QVBoxLayout) -> None:
+        self._build_style_preset_group(lay)
         self._build_castle_group(lay)
         self._build_zones_group(lay)
+
+    # ---------------------------------------------- frame-style presets (M7.16)
+
+    def _build_style_preset_group(self, lay: QVBoxLayout) -> None:
+        """Save / recall a whole CastleParams as a named house style (BUILDPLAN M7.16).
+        Selecting a preset seeds the dock (one live rebuild); Save as… / Update / Delete
+        manage the maker's library (shipped 'Guild demo' is the reference)."""
+        grp = QGroupBox("Frame style")
+        v = QVBoxLayout(grp)
+
+        self.style_combo = QComboBox()
+        self.style_combo.setToolTip(
+            "Recall a saved frame style — loads its full castle + stock parameters.")
+        self.style_combo.activated.connect(self._on_style_selected)
+        v.addWidget(self.style_combo)
+
+        row = QHBoxLayout()
+        self._style_save_btn = QPushButton("Save as…")
+        self._style_update_btn = QPushButton("Update")
+        self._style_delete_btn = QPushButton("Delete")
+        self._style_save_btn.setToolTip("Save the current parameters as a new frame style")
+        self._style_update_btn.setToolTip("Overwrite the selected style with the current parameters")
+        self._style_delete_btn.setToolTip("Delete the selected frame style")
+        self._style_save_btn.clicked.connect(self._on_style_save_as)
+        self._style_update_btn.clicked.connect(self._on_style_update)
+        self._style_delete_btn.clicked.connect(self._on_style_delete)
+        row.addWidget(self._style_save_btn)
+        row.addWidget(self._style_update_btn)
+        row.addWidget(self._style_delete_btn)
+        v.addLayout(row)
+
+        lay.addWidget(grp)
+        self._refresh_style_combo()
+
+    def _refresh_style_combo(self, select: str | None = None) -> None:
+        from guildcam.gui import style_store
+        self.style_combo.blockSignals(True)
+        self.style_combo.clear()
+        self.style_combo.addItem("— Frame style —")        # index 0: no selection
+        for name in style_store.names():
+            self.style_combo.addItem(name)
+        if select is not None:
+            i = self.style_combo.findText(select)
+            self.style_combo.setCurrentIndex(max(0, i))
+        self.style_combo.blockSignals(False)
+        self._update_style_buttons()
+
+    def _selected_style(self) -> str | None:
+        return self.style_combo.currentText() if self.style_combo.currentIndex() > 0 else None
+
+    def _update_style_buttons(self) -> None:
+        name = self._selected_style()
+        self._style_update_btn.setEnabled(name is not None)
+        # a shipped preset can be re-hidden but not "updated" in place (fork instead)
+        self._style_delete_btn.setEnabled(name is not None)
+
+    def _on_style_selected(self, index: int) -> None:
+        from guildcam.gui import style_store
+        self._update_style_buttons()
+        if index <= 0:
+            return
+        preset = style_store.style(self.style_combo.itemText(index))
+        if preset is not None:
+            self.set_castle_params(preset)            # one live rebuild, like material apply
+
+    def _on_style_save_as(self) -> None:
+        from guildcam.gui import style_store
+        name, ok = QInputDialog.getText(self, "Save frame style", "Style name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in style_store.names() and QMessageBox.question(
+                self, "Replace style", f"A style named “{name}” exists. Replace it?"
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        style_store.save_style(name, self.castle_params())
+        self._refresh_style_combo(select=name)
+
+    def _on_style_update(self) -> None:
+        from guildcam.gui import style_store
+        name = self._selected_style()
+        if name is None:
+            return
+        if style_store.is_shipped(name) and QMessageBox.question(
+                self, "Update shipped style",
+                f"“{name}” is a built-in reference. Save your edits over it "
+                "(you can reset it later)?") != QMessageBox.StandardButton.Yes:
+            return
+        style_store.save_style(name, self.castle_params())
+        self._refresh_style_combo(select=name)
+
+    def _on_style_delete(self) -> None:
+        from guildcam.gui import style_store
+        name = self._selected_style()
+        if name is None:
+            return
+        if QMessageBox.question(
+                self, "Delete style", f"Delete the frame style “{name}”?"
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        style_store.delete_style(name)
+        self._refresh_style_combo()
 
     def _build_castle_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Castle")
