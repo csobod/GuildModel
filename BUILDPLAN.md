@@ -2276,23 +2276,20 @@ pattern that fixed it.
    empty-never-conflicts, default + custom toolbar order, drops unknown keys, reset.
    Tagged `v0.7.15`.
 
-### M7.16 — Frame-style parameter presets (v0.7.16) · *recall a house style in one click*
+### M7.16 — Frame-style parameter presets (v0.7.16) · *recall a house style in one click* — ✅ DONE 2026-06-24 (388 tests)
 
-The castle params (Towers / Walls / Footing / Stock) define a frame's *style*; a shop
-makes many frames in a handful of house styles. Save and recall a whole `CastleParams`
-set as a named preset — the third use of the now-familiar store pattern (materials M4.9,
-tools M7.8).
-
-1. **`gui/style_store.py`** (the material/tool store pattern): named **frame-style**
-   presets — a full `CastleParams` snapshot (zone heights, footing schedule, stock,
-   onion skin, allowance) — shipped defaults (at least the Demo reference as "Guild
-   demo") merged with user presets in `~/.guildcam/frame_styles.yaml`.
-2. **Castle/Stock tab control**: a preset combo + **Save as preset… / Update / Delete**;
-   selecting a preset loads it into the dock (one live rebuild, like material apply);
-   editing then saving offers to update or fork it. Presets are project-independent
-   (they seed a new frame); the `.gcam` still stores the frame's actual params.
-3. **Tests**: save → list → load round-trips a full `CastleParams`; shipped presets are
-   never written; a loaded preset drives the preview; delete/reset behave. Tag `v0.7.16`.
+1. **`gui/style_store.py`** ✅ — the store pattern's third use (materials M4.9, tools
+   M7.8): named `CastleParams` snapshots; shipped **'Guild demo'** computed from the
+   schema default (never written) merged with `~/.guildcam/frame_styles.yaml` via
+   add / override / `_deleted` tombstone. `style(name)` → `CastleParams`.
+2. **Castle-tab control** ✅ — a **Frame style** group: a preset combo (selecting loads
+   it into the dock via `set_castle_params`, one live rebuild like material apply) +
+   **Save as… / Update / Delete** (Update warns before editing the shipped reference).
+   Presets seed a frame; the `.gcam` still owns its actual params.
+3. **Tests** ✅ (`test_style_store_m716`): save → list → load round-trips a full nested
+   `CastleParams`; shipped baseline never written; delete/reset/tombstone; a panel test
+   confirms a loaded preset drives the dock + emits `castle_changed`. Tagged `v0.7.16`.
+   **This completes the M7.8–M7.16 "Tooling & control UX" block.**
 
 ### M7.8–M7.16 exit criteria
 - [x] Managed tool library — add/edit/delete/reset in Settings (shipped + override
@@ -2309,7 +2306,7 @@ tools M7.8).
 - [x] On-canvas measure + 3D section view (M7.13)
 - [x] Job/validation inspector panel consolidating all warnings (M7.14)
 - [x] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
-- [ ] Saveable frame-style parameter presets (M7.16)
+- [x] Saveable frame-style parameter presets (M7.16)
 - [ ] Full suite green; sub-milestones tagged `v0.7.8` … `v0.7.16`
 
 ## M8 — Hardware round-trip (v0.8.0) · *the only gate that cuts acetate*
