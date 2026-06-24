@@ -2220,16 +2220,23 @@ pattern that fixed it.
 4. **Tests**: a known clamp-fouling job flags ≥1 frame, a clear job flags none; the
    holder-radius check generalises the tip check. Tag `v0.7.12.3`.
 
-### M7.13 — Measure/inspect & 3D section view (v0.7.13) · *verify before you cut*
+### M7.13 — Measure/inspect & 3D section view (v0.7.13) · *verify before you cut* — ✅ DONE 2026-06-23 (362 tests)
 
-1. **2D measure tools** on `DxfCanvas`: point-to-point distance, angle, and a
-   caliper read-out (verify lens opening, DBL, hinge spacing) — a small measure
-   mode that snaps to curve points.
-2. **3D section plane** on `Preview3D` / `Viewer3D`: a movable cutting plane that
-   slices the model so the maker can inspect terrace heights and footing depths —
-   directly serving the castle teaching ethos (§2).
-3. **Tests**: distance / angle math; the section produces a valid cross-section
-   polyline at a given plane. Tag `v0.7.13`.
+1. **2D measure tools** on `DxfCanvas` ✅ — `core/geometry/measure.py` (pure, tested):
+   `distance`, `angle_at`, `snap_to_vertices`. A canvas measure mode: left-click drops
+   points snapped to the nearest curve vertex (~10 px), live rubber-band, dimension
+   lines + length labels, a corner angle on the third point, a snap box at the cursor;
+   Esc clears; status-bar read-out. A checkable **Measure** action (toolbar Views group
+   + View menu, hotkey `M`, `measure.svg`, theme `measure` colour), gated to the
+   component 2D outline with geometry loaded — leaving that view ends the mode.
+2. **3D section plane** on `Viewer3D` ✅ — `core/mesh/section.py` `mesh_section`
+   (pure, tested) + a **Section** toggle in the model toolbar: `add_mesh_clip_plane`
+   draws a draggable cutting plane (tinted with the measure accent) so the maker reads
+   terrace heights + footing depths; cleared entering sim / on clear(); falls back to
+   the full mesh if the widget can't be created.
+3. **Tests** ✅: distance / angle / snap math (`test_measure_m713`); the section of a
+   cube yields the square-perimeter polyline, a miss → empty (`test_section_m713`).
+   Tagged `v0.7.13`.
 
 ### M7.14 — Job & validation inspector panel (v0.7.14) · *what's blocking green?*
 
@@ -2290,7 +2297,7 @@ tools M7.8).
 - [x] Visible tool + shank + holder following the path (M7.12.2)
 - [x] Bed sim with hold-down (tool **and holder**) collision highlight + Z-aware height (M7.12.3)
 - [x] Unified 2D/3D/Sim view model + context-aware sidebar (M7.12.3)
-- [ ] On-canvas measure + 3D section view (M7.13)
+- [x] On-canvas measure + 3D section view (M7.13)
 - [ ] Job/validation inspector panel consolidating all warnings (M7.14)
 - [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
 - [ ] Saveable frame-style parameter presets (M7.16)
