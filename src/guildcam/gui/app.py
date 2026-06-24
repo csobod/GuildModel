@@ -1724,12 +1724,15 @@ class PrefsDialog(QDialog):
         # ── Tab 2 — Tools (the editable tool library, BUILDPLAN M7.8) ──────
         self._build_tools_tab(tabs)
 
-        # ── Tab 3 — Hotkeys (rebind shortcuts, BUILDPLAN M7.15) ────────────
+        # ── Tabs 3–4 — Hotkeys + Toolbar (customization, BUILDPLAN M7.15) ──
         self._action_specs = list(getattr(parent, "_action_specs", []))
         self._hotkey_overrides = dict(prefs.get("hotkeys", {}))
+        self._saved_toolbar = list(prefs.get("toolbar", []) or [])
         self._hotkey_rows = []
+        self._toolbar_list = None
         if self._action_specs:
             self._build_hotkeys_tab(tabs)
+            self._build_toolbar_tab(tabs)
 
     # ── Hotkeys tab (rebindable shortcuts, M7.15) ─────────────────────────
 
@@ -1819,6 +1822,86 @@ class PrefsDialog(QDialog):
             if cur != default:
                 out[key] = cur
         return out
+
+    # ── Toolbar tab (which buttons show + their order, M7.15) ─────────────
+
+    def _build_toolbar_tab(self, tabs) -> None:
+        from guildcam.gui.shortcuts import effective_toolbar
+        spec_by_key = {s.key: s for s in self._action_specs}
+        shown = effective_toolbar(self._action_specs, self._saved_toolbar)
+        shown_set = set(shown)
+        # checked (toolbar) items first in their order, then the rest in registry order
+        ordered = shown + [s.key for s in self._action_specs if s.key not in shown_set]
+
+        outer = QWidget()
+        col = QVBoxLayout(outer)
+        col.setContentsMargins(16, 16, 16, 8)
+        col.setSpacing(8)
+        col.addWidget(QLabel(
+            "Choose which buttons appear on the toolbar and their order. Check to show; "
+            "use ▲ / ▼ to reorder. Dividers between groups are added automatically."))
+
+        self._toolbar_list = QListWidget()
+        for key in ordered:
+            spec = spec_by_key[key]
+            item = QListWidgetItem(f"{spec.label}   ·   {spec.group}")
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if key in shown_set
+                               else Qt.CheckState.Unchecked)
+            self._toolbar_list.addItem(item)
+        col.addWidget(self._toolbar_list, 1)
+
+        row = QHBoxLayout()
+        up = QPushButton("▲ Up")
+        down = QPushButton("▼ Down")
+        up.clicked.connect(lambda: self._move_toolbar_item(-1))
+        down.clicked.connect(lambda: self._move_toolbar_item(1))
+        reset = QPushButton("Reset toolbar to default")
+        reset.clicked.connect(self._reset_toolbar)
+        row.addWidget(up)
+        row.addWidget(down)
+        row.addStretch()
+        row.addWidget(reset)
+        col.addLayout(row)
+
+        tabs.addTab(outer, "Toolbar")
+
+    def _move_toolbar_item(self, delta: int) -> None:
+        lw = self._toolbar_list
+        row = lw.currentRow()
+        new = row + delta
+        if row < 0 or not (0 <= new < lw.count()):
+            return
+        item = lw.takeItem(row)
+        lw.insertItem(new, item)
+        lw.setCurrentRow(new)
+
+    def _reset_toolbar(self) -> None:
+        lw = self._toolbar_list
+        lw.clear()
+        # default order: toolbar_default specs (in registry order), then the rest
+        defaults = [s for s in self._action_specs if s.toolbar_default]
+        rest = [s for s in self._action_specs if not s.toolbar_default]
+        for spec in defaults + rest:
+            item = QListWidgetItem(f"{spec.label}   ·   {spec.group}")
+            item.setData(Qt.ItemDataRole.UserRole, spec.key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if spec.toolbar_default
+                               else Qt.CheckState.Unchecked)
+            lw.addItem(item)
+
+    def toolbar_order(self) -> list:
+        """The checked action keys in list order; [] when it equals the shipped
+        default (so a future default change still reaches unchanged users)."""
+        lw = self._toolbar_list
+        out = []
+        for i in range(lw.count()):
+            item = lw.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                out.append(item.data(Qt.ItemDataRole.UserRole))
+        default = [s.key for s in self._action_specs if s.toolbar_default]
+        return [] if out == default else out
 
     # ── Materials tab (feeds/speeds/stepover/stepdown defaults) ───────────
 
@@ -2171,6 +2254,8 @@ class PrefsDialog(QDialog):
         }
         if self._hotkey_rows:                     # M7.15 — only genuine overrides
             out["hotkeys"] = self.hotkey_overrides()
+        if self._toolbar_list is not None:        # M7.15 — [] = default toolbar
+            out["toolbar"] = self.toolbar_order()
         return out
 
 
@@ -2201,10 +2286,9 @@ class MainWindow(QMainWindow):
         self._program_stored = False
 
         self._build_ui()
-        self._build_toolbar()
+        self._build_toolbar()                     # builds the action registry + toolbar
         self._build_menu()
-        self._build_action_registry()             # M7.15 customizable hotkeys + toolbar
-        self._apply_hotkeys()
+        self._apply_hotkeys()                     # M7.15 customizable hotkeys
 
         # Apply the persisted theme to every surface (QSS is set app-wide
         # in main(); the painter/VTK surfaces + toolbar icons need the call).
@@ -2334,6 +2418,7 @@ class MainWindow(QMainWindow):
         self.readiness.set_dark_mode(dark)
         self._inspector.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
+        self._fit_toolbar_button_styles()         # icons now set → icon-only vs text
         self._style_toolbar_separators()          # re-tint for the new theme
 
     def _on_toggle_dark_mode(self, dark: bool) -> None:
@@ -3284,33 +3369,6 @@ class MainWindow(QMainWindow):
         self._act_inspector.toggled.connect(self._inspector_dock.setVisible)
         self._inspector_dock.visibilityChanged.connect(self._act_inspector.setChecked)
 
-        # Four groups split by custom ToolSep dividers (painted, not stylesheet — they
-        # stay identical on fractional-DPI screens). Input: open a GuildDraw .gdraw model
-        # (the primary M7 intake; DXF is on the File menu). Then build/output, then views,
-        # then the trailing utilities.
-        self._tool_seps: list[ToolSep] = []
-
-        def _add_sep() -> None:
-            sep = ToolSep(tb)
-            self._tool_seps.append(sep)
-            tb.addWidget(sep)
-
-        tb.addAction(self._act_open_model)
-        _add_sep()
-        tb.addAction(self._act_build)
-        tb.addAction(self._act_gcode)
-        tb.addAction(self._act_export_nc)
-        tb.addAction(self._act_export)
-        _add_sep()
-        tb.addAction(self._act_view2d)
-        tb.addAction(self._act_view3d)
-        tb.addAction(self._act_simulate)
-        tb.addAction(self._act_measure)   # 2D inspect tool, lives with the views
-        _add_sep()                        # views | utilities (Fit + dock toggles)
-        tb.addAction(self._act_fit)
-        tb.addAction(self._act_log)
-        tb.addAction(self._act_sidebar)
-
         # (action, icon-name) for the runtime recolor hook (text fallback if
         # the SVG is missing). op-fit / view-sidebar are reused from GuildDraw.
         self._icon_actions = [
@@ -3329,7 +3387,49 @@ class MainWindow(QMainWindow):
             (self._act_log, "toggle-log"),
             (self._act_sidebar, "view-sidebar"),
         ]
-        self._style_toolbar_separators()          # initial (default-left) orientation
+        # Build the customizable action registry, then assemble the toolbar from the
+        # saved/default order (M7.15). Groups get auto-inserted ToolSep dividers
+        # (painted, not stylesheet → identical on fractional-DPI screens).
+        self._tool_seps: list[ToolSep] = []
+        self._build_action_registry()
+        self._rebuild_toolbar()
+
+    def _rebuild_toolbar(self) -> None:
+        """(Re)assemble the toolbar from the effective action order (M7.15): the saved
+        selection/order from prefs, or the shipped default. A ToolSep divider is added
+        at every group boundary, so grouping survives reordering; an action without an
+        icon falls back to its text label so it isn't a blank button."""
+        from guildcam.gui.shortcuts import effective_toolbar
+        tb = self._toolbar
+        tb.clear()
+        self._tool_seps = []
+        spec_by_key = {s.key: s for s in self._action_specs}
+        order = effective_toolbar(self._action_specs, self._prefs.get("toolbar", []))
+        prev_group = None
+        for key in order:
+            spec = spec_by_key.get(key)
+            act = self._actions_by_key.get(key)
+            if spec is None or act is None:
+                continue
+            if prev_group is not None and spec.group != prev_group:
+                sep = ToolSep(tb)
+                self._tool_seps.append(sep)
+                tb.addWidget(sep)
+            tb.addAction(act)
+            prev_group = spec.group
+        self._fit_toolbar_button_styles()
+        self._style_toolbar_separators()
+
+    def _fit_toolbar_button_styles(self) -> None:
+        """Icon-only where the action has an icon, text-only where it doesn't (so a
+        user-added iconless action shows a label rather than a blank button)."""
+        from PySide6.QtWidgets import QToolButton
+        for act in self._toolbar.actions():
+            btn = self._toolbar.widgetForAction(act)
+            if isinstance(btn, QToolButton):
+                btn.setToolButtonStyle(
+                    Qt.ToolButtonStyle.ToolButtonIconOnly if not act.icon().isNull()
+                    else Qt.ToolButtonStyle.ToolButtonTextOnly)
 
     def _style_toolbar_separators(self) -> None:
         """Re-tint + re-orient the custom ToolSep dividers (BUILDPLAN M7.12 UI). Run on
@@ -3650,9 +3750,11 @@ class MainWindow(QMainWindow):
         self._prefs.update(p)
         prefs_mod.save(self._prefs)
 
-        # Re-bind shortcuts from the (possibly edited) hotkey overrides (M7.15).
+        # Re-bind shortcuts + rebuild the toolbar from the (possibly edited) prefs (M7.15).
         if "hotkeys" in p:
             self._apply_hotkeys()
+        if "toolbar" in p:
+            self._rebuild_toolbar()
 
         # The tool library may have changed (Preferences ▸ Tools) — refresh every
         # tool combo so new/edited tools appear without a restart (M7.8).
