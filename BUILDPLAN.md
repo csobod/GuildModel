@@ -2257,23 +2257,24 @@ pattern that fixed it.
    job, a clean job is empty, severity sort + per-category targets + `severity_counts`.
    Tagged `v0.7.14`.
 
-### M7.15 — Hotkeys & toolbar customization (v0.7.15) · *make it yours*
+### M7.15 — Hotkeys & toolbar customization (v0.7.15) · *make it yours* — ✅ DONE 2026-06-23 (378 tests)
 
-GuildDraw's `SettingsDialog` already has **Toolbar** and **Hotkeys** tabs; GuildCAM's
-`PrefsDialog` (M4.5) deliberately left room for them but only ever shipped General.
-Close the parity gap — the maker who lives in both apps gets one muscle-memory.
+`gui/shortcuts.py` (pure, tested): `ActionSpec` + `effective_shortcuts` /
+`find_conflicts` / `effective_toolbar`. The main window builds an **action registry**
+(key → QAction + label + group + live default shortcut) that drives both features.
 
-1. **Hotkeys tab**: an editable shortcut table over the existing actions (Open / Build
-   3D / Generate / Export / Simulate / view toggles / Worktable / Nest …), persisted in
-   `~/.guildcam/prefs.json` (the `prefs.py` DEFAULTS-merge pattern) and applied to the
-   `QAction`s at startup; per-binding **reset-to-default** + a conflict warning. Port
-   GuildDraw's hotkeys-tab UX where it fits.
-2. **Toolbar tab**: choose which actions appear on the left icon toolbar and their
-   order (the toolbar is already built from a known action list in `app.py`); persisted
-   and rebuilt on apply. Defaults reproduce today's toolbar exactly.
-3. **Tests**: a custom binding round-trips through prefs and rebinds the action; a
-   conflict is detected; a hidden/reordered toolbar restores from prefs; reset returns
-   the shipped defaults. Tag `v0.7.15`.
+1. **Hotkeys tab** ✅ — a per-action `QKeySequenceEdit` table; per-row ↺ + reset-all to
+   defaults; a live duplicate-shortcut warning. `_apply_hotkeys` binds each `QAction`
+   from prefs (override or default) at startup + on OK; only genuine overrides persist
+   to `~/.guildcam/prefs.json` (`"hotkeys"`).
+2. **Toolbar tab** ✅ — a checkable, reorderable (▲/▼) list of every action + reset; the
+   toolbar is rebuilt by `_rebuild_toolbar` from the effective order with a `ToolSep`
+   divider auto-inserted at each group boundary (iconless actions fall back to text).
+   Order persists (`"toolbar"`, `[]` = shipped default); rebuilt on OK. Defaults
+   reproduce today's toolbar exactly.
+3. **Tests** ✅ (`test_shortcuts_m715`): override/default round-trip, conflict detection,
+   empty-never-conflicts, default + custom toolbar order, drops unknown keys, reset.
+   Tagged `v0.7.15`.
 
 ### M7.16 — Frame-style parameter presets (v0.7.16) · *recall a house style in one click*
 
@@ -2307,7 +2308,7 @@ tools M7.8).
 - [x] Unified 2D/3D/Sim view model + context-aware sidebar (M7.12.3)
 - [x] On-canvas measure + 3D section view (M7.13)
 - [x] Job/validation inspector panel consolidating all warnings (M7.14)
-- [ ] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
+- [x] Customizable hotkeys + toolbar (GuildDraw-parity Settings tabs) (M7.15)
 - [ ] Saveable frame-style parameter presets (M7.16)
 - [ ] Full suite green; sub-milestones tagged `v0.7.8` … `v0.7.16`
 
