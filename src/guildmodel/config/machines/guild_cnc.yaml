@@ -1,0 +1,37 @@
+# GuildModel machine profile — Guild CNC (the default, proven on the Demo Project)
+# A machine profile describes the *controller's capabilities*; it is distinct
+# from the fixture (config/fixtures/), which describes the bed and hold-downs.
+# The post validates against and adapts to these limits. All values editable.
+
+name: guild_cnc
+display_name: "Guild CNC"
+
+# Work envelope (mm); origin lower-left, Z+ above the stock.
+work_area_x_mm: 300.0
+work_area_y_mm: 200.0
+work_area_z_mm: 80.0
+
+# Feed / speed ceilings — cutting feed, plunge feed and spindle are clamped here.
+max_feed_mmpm: 3000.0
+max_plunge_mmpm: 1000.0
+max_spindle_rpm: 24000.0
+min_spindle_rpm: 0.0
+
+# Machine-rigidity depth-of-cut cap (the material preset caps it further).
+max_doc_mm: 5.0
+
+# Motion dynamics (GRBL $110/$111, $120, $11) — drive the cut-time estimate.
+rapid_rate_mmpm: 3000.0
+max_accel_mmps2: 500.0
+junction_deviation_mm: 0.01
+
+# Output dialect.
+supports_arcs: true          # reliable G2/G3
+units: mm
+enforce_soft_limits: true
+
+# Tool-change policy: manual change behind an M0 pause (no automatic tool
+# changer on the Guild CNC). nominal dwell feeds the cut-time estimate.
+tool_change_mode: m0
+tool_change_seconds: 20.0
+notes: "Reference machine; Demo Project feeds (S10000 F750/F333) proven here."

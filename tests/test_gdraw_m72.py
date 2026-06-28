@@ -13,8 +13,8 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from guildcam.core.project.schema import ComponentKind
-from guildcam.core.io_import.gdraw import (
+from guildmodel.core.project.schema import ComponentKind
+from guildmodel.core.io_import.gdraw import (
     GdrawError,
     TABS,
     build_project_from_gdraw,

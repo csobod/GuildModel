@@ -1,8 +1,8 @@
-# GuildCAM
+# GuildModel
 
 Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines.
 
-GuildCAM takes a GuildDraw frame-front DXF and builds the posterior relief the
+GuildModel takes a GuildDraw frame-front DXF and builds the posterior relief the
 way a maker models it — the **castle**: tower zones (endpieces, bridge,
 nosepads), eyewire walls, and rolling-ball footing fillets — then generates
 the five-operation single-tool GRBL program (hinge pockets → rough relief →
@@ -32,8 +32,8 @@ no Python needed to run it).
 
 ## Install (Windows)
 
-Download `GuildCAM-<version>-setup.exe` from the release and run it. It is a
-per-user install (no admin prompt) and registers the `.gcam` project type. To
+Download `GuildModel-<version>-setup.exe` from the release and run it. It is a
+per-user install (no admin prompt) and registers the `.gmodel` project type. To
 build the installer yourself, see `scripts/build_release.ps1`.
 
 ## Installation (development)
@@ -44,17 +44,17 @@ pip install -e ".[dev]"
 
 ## Running the app
 
-The install registers a `guildcam` entry point:
+The install registers a `guildmodel` entry point:
 
 ```
-guildcam
+guildmodel
 ```
 
 or, without activating the venv:
 
 ```
-.venv\Scripts\guildcam.exe          # Windows
-.venv\Scripts\python -m guildcam.gui.app
+.venv\Scripts\guildmodel.exe          # Windows
+.venv\Scripts\python -m guildmodel.gui.app
 ```
 
 In a development checkout the app auto-loads

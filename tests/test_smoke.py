@@ -9,7 +9,7 @@ import pytest
 
 
 def test_heightfield_construction():
-    from guildcam.core.relief.heightfield import Heightfield
+    from guildmodel.core.relief.heightfield import Heightfield
 
     hf = Heightfield.flat(width_mm=60.0, height_mm=40.0, z_value=6.0, resolution=0.5)
     assert hf.z.shape == (80, 120)
@@ -19,7 +19,7 @@ def test_heightfield_construction():
 
 
 def test_heightfield_coordinate_roundtrip():
-    from guildcam.core.relief.heightfield import Heightfield
+    from guildmodel.core.relief.heightfield import Heightfield
 
     hf = Heightfield.flat(width_mm=50.0, height_mm=30.0, z_value=0.0, resolution=0.1, origin=(5.0, 10.0))
     row, col = hf.world_to_pixel(10.0, 15.0)
@@ -29,7 +29,7 @@ def test_heightfield_coordinate_roundtrip():
 
 
 def test_boxing_dimensions_defaults():
-    from guildcam.core.geometry.boxing import BoxingDimensions
+    from guildmodel.core.geometry.boxing import BoxingDimensions
 
     bd = BoxingDimensions()
     assert bd.a == 50.0
@@ -39,14 +39,14 @@ def test_boxing_dimensions_defaults():
 
 
 def test_boxing_dimensions_override():
-    from guildcam.core.geometry.boxing import BoxingDimensions
+    from guildmodel.core.geometry.boxing import BoxingDimensions
 
     bd = BoxingDimensions(a=52.0, b=40.0, dbl=20.0, frame_width=130.0)
     assert bd.derived_frame_width() == pytest.approx(130.0)
 
 
 def test_project_schema_defaults():
-    from guildcam.core.project.schema import ProjectSchema
+    from guildmodel.core.project.schema import ProjectSchema
 
     schema = ProjectSchema(job_name="Test Frame")
     assert schema.job_name == "Test Frame"
@@ -55,11 +55,11 @@ def test_project_schema_defaults():
 
 
 def test_project_schema_roundtrip(tmp_path):
-    from guildcam.core.project.schema import ProjectSchema
-    from guildcam.core.project.save_load import save_project, load_project
+    from guildmodel.core.project.schema import ProjectSchema
+    from guildmodel.core.project.save_load import save_project, load_project
 
     schema = ProjectSchema(job_name="Roundtrip Test", stock_thickness_mm=7.5)
-    path = tmp_path / "test.guildcam"
+    path = tmp_path / "test.guildmodel"
     save_project(schema, path)
     loaded = load_project(path)
     assert loaded.job_name == "Roundtrip Test"
@@ -67,7 +67,7 @@ def test_project_schema_roundtrip(tmp_path):
 
 
 def test_grbl_post_emits_header():
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.post.grbl import GRBLPost
 
     post = GRBLPost(
         job_name="SmokeTest",
@@ -81,7 +81,7 @@ def test_grbl_post_emits_header():
     post.spindle_on()
     post.end_program()
     gcode = post.to_string()
-    assert "GuildCAM" in gcode
+    assert "GuildModel" in gcode
     assert "G90" in gcode
     assert "G21" in gcode
     assert "M3" in gcode
@@ -89,7 +89,7 @@ def test_grbl_post_emits_header():
 
 
 def test_validate_missing_outline():
-    from guildcam.core.io_import.validate import validate
+    from guildmodel.core.io_import.validate import validate
 
     result = validate({})
     assert not result.ok
@@ -98,7 +98,7 @@ def test_validate_missing_outline():
 
 def test_validate_ok(tmp_path):
     from shapely.geometry import Polygon
-    from guildcam.core.io_import.validate import validate
+    from guildmodel.core.io_import.validate import validate
 
     outline = Polygon([(0, 0), (60, 0), (60, 40), (0, 40)])
     lens_od = Polygon([(5, 5), (30, 5), (30, 35), (5, 35)])
@@ -112,7 +112,7 @@ def test_validate_ok(tmp_path):
 
 def test_tabs_single_tab_raises_z():
     """insert_tabs must produce at least one waypoint above z_cut."""
-    from guildcam.core.cam.tabs import insert_tabs
+    from guildmodel.core.cam.tabs import insert_tabs
 
     # Square path: 4 × 20 mm sides = 80 mm perimeter
     pts = [(0, 0), (20, 0), (20, 20), (0, 20), (0, 0)]
@@ -127,7 +127,7 @@ def test_tabs_single_tab_raises_z():
 
 def test_tabs_width_maintained():
     """Tab should span at least tab_width_mm of travel at raised height."""
-    from guildcam.core.cam.tabs import insert_tabs
+    from guildmodel.core.cam.tabs import insert_tabs
     import math
 
     pts = [(0, 0), (100, 0)]  # straight 100 mm line
@@ -145,7 +145,7 @@ def test_tabs_width_maintained():
 
 def test_tabs_no_tabs_passthrough():
     """tab_count=0 must return the path unchanged at z_cut."""
-    from guildcam.core.cam.tabs import insert_tabs
+    from guildmodel.core.cam.tabs import insert_tabs
 
     pts = [(0, 0), (10, 0), (10, 10)]
     result = insert_tabs(pts, tab_count=0, tab_width_mm=3.0, tab_height_mm=1.0, z_cut=-2.0)
@@ -156,7 +156,7 @@ def test_tabs_no_tabs_passthrough():
 def test_measure_from_polygon():
     """measure_from_polygon must recover A, B, DBL from synthetic rectangular lenses."""
     from shapely.geometry import Polygon
-    from guildcam.core.geometry.boxing import measure_from_polygon
+    from guildmodel.core.geometry.boxing import measure_from_polygon
 
     # Two 25 × 30 mm lenses separated by 15 mm (DBL) centred symmetrically
     # Left lens: x ∈ [0, 25],  y ∈ [0, 30]
@@ -177,11 +177,11 @@ def test_measure_from_polygon():
 def test_hinge_catalog_loads():
     """load_hinge_catalog must parse the bundled standard.yaml without error."""
     from pathlib import Path
-    from guildcam.core.relief.hinge import load_hinge_catalog
+    from guildmodel.core.relief.hinge import load_hinge_catalog
 
     catalog_path = (
         Path(__file__).parent.parent
-        / "src" / "guildcam" / "config" / "hinges" / "standard.yaml"
+        / "src" / "guildmodel" / "config" / "hinges" / "standard.yaml"
     )
     catalog = load_hinge_catalog(catalog_path)
     assert "screw_barrel_14x5p5" in catalog
@@ -194,7 +194,7 @@ def test_hinge_catalog_loads():
 
 def test_hinge_pocket_polygon_shape():
     """hinge_pocket_polygon must return a rotated rectangle of the correct area."""
-    from guildcam.core.relief.hinge import (
+    from guildmodel.core.relief.hinge import (
         HingePlacement, HingeSpec, hinge_pocket_polygon
     )
 
@@ -217,8 +217,8 @@ def test_integration_bevel_to_gcode(tmp_path):
     """
     import math
     from shapely.geometry import Polygon
-    from guildcam.core.relief.groove import bevel_flank
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.relief.groove import bevel_flank
+    from guildmodel.core.post.grbl import GRBLPost
 
     # Synthetic rounded-ish lens: regular 32-gon approximating a 25 × 20 mm ellipse
     n = 32

@@ -3,7 +3,7 @@
 A temple is a flat outline cut plus ENGRAVING passes, with a tool change between
 the small engraving bit and the bulk profile tool (built on the M6.1 multi-tool
 machinery). These tests cover the engrave depth/tool, the profile envelope, the
-posted tool change, intake of the ENGRAVING layer, and the `.gcam` round-trip.
+posted tool change, intake of the ENGRAVING layer, and the `.gmodel` round-trip.
 """
 from pathlib import Path
 
@@ -11,20 +11,20 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     CastleCamParams, MachineProfile, ProjectSchema, TempleParams,
 )
-from guildcam.core.cam.temple_ops import (
+from guildmodel.core.cam.temple_ops import (
     TEMPLE_CONTOUR_OPS, engrave_op, generate_temple_program,
 )
-from guildcam.core.cam.castle_ops import (
+from guildmodel.core.cam.castle_ops import (
     build_tool_settings, count_tool_changes, write_castle_program,
 )
-from guildcam.core.post.grbl import GRBLPost
-from guildcam.core.post.machine import lint_program
+from guildmodel.core.post.grbl import GRBLPost
+from guildmodel.core.post.machine import lint_program
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MAT = yaml.safe_load((CONFIG / "materials.yaml").read_text())["acetate"]
 
@@ -179,7 +179,7 @@ def test_engraving_layer_imported(tmp_path):
     path = tmp_path / "temple.dxf"
     doc.saveas(path)
 
-    from guildcam.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.dxf import import_dxf
     raw = import_dxf(path)
     assert raw["ENGRAVING"] and len(raw["ENGRAVING"][0]) >= 3
     assert not raw["LENS"]                       # a temple has no lenses
@@ -188,13 +188,13 @@ def test_engraving_layer_imported(tmp_path):
 
 # ------------------------------------------------------------------ round-trip
 
-def test_temple_params_round_trip_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_temple_params_round_trip_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="Temple")
     proj.temple = TempleParams(engrave_depth_mm=0.5, profile_tool="flat_2mm",
                                blank_thickness_mm=5.0)
-    path = tmp_path / "temple.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    t = load_gcam(path).project.temple
+    path = tmp_path / "temple.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    t = load_gmodel(path).project.temple
     assert t.engrave_depth_mm == 0.5 and t.profile_tool == "flat_2mm"
     assert t.blank_thickness_mm == 5.0

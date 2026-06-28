@@ -9,17 +9,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     CastleCamParams, MachineProfile, ProjectSchema,
 )
-from guildcam.core.post.machine import (
+from guildmodel.core.post.machine import (
     apply_machine_limits, available_machines, lint_program, load_machine_profile,
 )
-from guildcam.core.cam.cuttime import MachineDynamics
+from guildmodel.core.cam.cuttime import MachineDynamics
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 
 # ------------------------------------------------------------------ schema persistence
@@ -121,11 +121,11 @@ def test_lint_flags_arcs_on_no_arc_machine():
 
 @pytest.fixture(scope="module")
 def demo_relief():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import build_castle_relief
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -138,8 +138,8 @@ def demo_relief():
 
 
 def _post_for(machine_name, demo_relief):
-    from guildcam.core.cam.castle_ops import generate_castle_program, write_castle_program
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.cam.castle_ops import generate_castle_program, write_castle_program
+    from guildmodel.core.post.grbl import GRBLPost
 
     relief, castle, hinges = demo_relief
     tool = yaml.safe_load((CONFIG / "tools.yaml").read_text())["flat_3175"]

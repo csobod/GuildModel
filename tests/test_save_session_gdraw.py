@@ -1,4 +1,4 @@
-"""A whole-model (.gdraw) session must be saveable to a .gcam and reopen intact.
+"""A whole-model (.gdraw) session must be saveable to a .gmodel and reopen intact.
 
 Pre-rc1 fix: loading a .gdraw, editing, and saving used to fail with "Import a
 DXF before saving" because the container only embedded a single source.dxf. Now
@@ -63,7 +63,7 @@ def test_gdraw_session_saves_and_reopens(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtWidgets import QMessageBox
-    from guildcam.gui.app import MainWindow
+    from guildmodel.gui.app import MainWindow
     # No blocking dialogs in a headless run.
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: None)
@@ -81,21 +81,21 @@ def test_gdraw_session_saves_and_reopens(qapp, tmp_path, monkeypatch):
     assert win._source_dxf_bytes is None      # a model has no single DXF
 
     # Edit a per-component param on a (non-active) temple workspace.
-    from guildcam.core.project.schema import TempleParams, ComponentKind
+    from guildmodel.core.project.schema import TempleParams, ComponentKind
     temple = next(w for w in win._workspaces if w.kind == ComponentKind.TEMPLE_RIGHT)
     temple.temple_params = TempleParams(blank_length_mm=173.5)
 
     # The old blocker: saving a .gdraw session. It must now succeed.
-    gcam = tmp_path / "model.gcam"
-    assert win._save_gcam_to(gcam) is True
-    with zipfile.ZipFile(gcam) as zf:
+    gmodel = tmp_path / "model.gmodel"
+    assert win._save_gmodel_to(gmodel) is True
+    with zipfile.ZipFile(gmodel) as zf:
         assert "source.gdraw" in zf.namelist()
         assert "source.dxf" not in zf.namelist()
 
     # Reopen into a fresh window: geometry rebuilt from the embedded .gdraw and the
     # edited temple param restored.
     win2 = MainWindow()
-    win2._open_project(gcam)
+    win2._open_project(gmodel)
     assert win2._source_gdraw_bytes is not None
     assert len(win2._workspaces) == len(win._workspaces)
     temple2 = next(w for w in win2._workspaces if w.kind == ComponentKind.TEMPLE_RIGHT)

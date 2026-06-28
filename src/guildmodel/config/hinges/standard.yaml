@@ -1,0 +1,50 @@
+# GuildModel hinge catalog — standard acetate-frame hinges
+#
+# Parameter vocabulary follows CHA.dll (OLGA teardown §3):
+#   footprint_w_mm    : EncombrementCharniere width  (along hinge barrel axis, mm)
+#   footprint_h_mm    : EncombrementCharniere height (across hinge barrel axis, mm)
+#   pocket_depth_mm   : ProfondeurPocheCharniere — flat pocket depth (mm)
+#   pocket_tilt_deg   : InclinaisonPocheCharniere — floor tilt (0 = flat)
+#   ramp_angle_deg    : InclinaisonPente — lead-in ramp angle from horizontal (deg)
+#   ramp_rotation_deg : RotationPenteCharniere — ramp approach direction (deg, CCW from +X)
+#   ramp_depth_mm     : ProfondeurPenteCharniere — depth at deep end of ramp (mm)
+#
+# All lengths in mm, all angles in degrees.
+
+hinges:
+
+  # ── 5-barrel screw hinge, 14 × 5.5 mm — the most common acetate hinge ──────
+  - name: screw_barrel_14x5p5
+    footprint_w_mm: 14.0
+    footprint_h_mm: 5.5
+    pocket_depth_mm: 1.2
+    pocket_tilt_deg: 0.0
+    ramp_angle_deg: 0.0
+    ramp_rotation_deg: 0.0
+    ramp_depth_mm: 0.0
+    notes: "5-barrel screw hinge 14 × 5.5 mm. Standard acetate frame hinge, flat pocket."
+
+  # ── 7-barrel screw hinge, 14 × 7 mm — heavier / sport frame ─────────────────
+  - name: screw_barrel_14x7
+    footprint_w_mm: 14.0
+    footprint_h_mm: 7.0
+    pocket_depth_mm: 1.5
+    pocket_tilt_deg: 0.0
+    ramp_angle_deg: 0.0
+    ramp_rotation_deg: 0.0
+    ramp_depth_mm: 0.0
+    notes: "7-barrel screw hinge 14 × 7 mm. Heavier construction, flat pocket."
+
+  # ── Spring hinge, 16 × 5.5 mm, ramped entry ──────────────────────────────────
+  - name: spring_hinge_16x5p5
+    footprint_w_mm: 16.0
+    footprint_h_mm: 5.5
+    pocket_depth_mm: 1.4
+    pocket_tilt_deg: 0.0
+    ramp_angle_deg: 20.0
+    ramp_rotation_deg: 0.0
+    ramp_depth_mm: 1.4
+    notes: >
+      Spring (flex) hinge 16 × 5.5 mm with ramped lead-in along the hinge axis.
+      Ramp enters from the end-piece edge at 20 deg, reaching full pocket depth
+      at the hinge seat.

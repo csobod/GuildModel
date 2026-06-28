@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from guildcam.core.mesh.section import mesh_section
+from guildmodel.core.mesh.section import mesh_section
 
 
 def _unit_cube():

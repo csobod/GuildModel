@@ -1,7 +1,7 @@
 """M7.14 — job/validation diagnostics aggregation."""
 from dataclasses import dataclass
 
-from guildcam.core.diagnostics import Issue, collect_issues, severity_counts
+from guildmodel.core.diagnostics import Issue, collect_issues, severity_counts
 
 
 @dataclass

@@ -1,8 +1,8 @@
 """M7.16 — frame-style preset store: save/list/load round-trip, shipped untouched."""
 import pytest
 
-from guildcam.gui import style_store
-from guildcam.core.project.schema import CastleParams
+from guildmodel.gui import style_store
+from guildmodel.core.project.schema import CastleParams
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def test_panel_preset_drives_the_dock(tmp_user, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from guildcam.gui.widgets.params_panel import ParamsPanel
+    from guildmodel.gui.widgets.params_panel import ParamsPanel
 
     p = ParamsPanel()
     # the combo seeds with the placeholder + the shipped preset

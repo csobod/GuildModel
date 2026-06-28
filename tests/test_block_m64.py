@@ -11,21 +11,21 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams, CastleCamParams, MachineProfile, ProjectSchema,
 )
-from guildcam.core.cam.block_ops import (
+from guildmodel.core.cam.block_ops import (
     BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, center_on_origin, generate_block_program,
 )
-from guildcam.core.cam.castle_ops import (
+from guildmodel.core.cam.castle_ops import (
     build_tool_settings, count_tool_changes, write_castle_program,
 )
-from guildcam.core.post.grbl import GRBLPost
-from guildcam.core.post.machine import lint_program
+from guildmodel.core.post.grbl import GRBLPost
+from guildmodel.core.post.machine import lint_program
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 
@@ -153,13 +153,13 @@ def test_peck_drill_emits_g83_cycle():
 
 # ------------------------------------------------------------------ round-trip
 
-def test_block_params_round_trip_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_block_params_round_trip_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="BC")
     proj.base_curve_block = BaseCurveBlockParams(
         hole_arrangement="triangle", hole_diameter_mm=3.3, blank_thickness_mm=8.0)
-    path = tmp_path / "bc.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    b = load_gcam(path).project.base_curve_block
+    path = tmp_path / "bc.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    b = load_gmodel(path).project.base_curve_block
     assert b.hole_arrangement == "triangle" and b.hole_diameter_mm == 3.3
     assert b.blank_thickness_mm == 8.0

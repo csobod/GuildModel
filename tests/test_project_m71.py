@@ -12,7 +12,7 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams,
     CastleParams,
     Component,
@@ -24,16 +24,16 @@ from guildcam.core.project.schema import (
     component_param_field,
     lens_side,
 )
-from guildcam.core.cam.component import (
+from guildmodel.core.cam.component import (
     ComponentGeometry,
     ComponentProgram,
     build_component_ops,
 )
-from guildcam.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
-from guildcam.core.cam.temple_ops import TEMPLE_CONTOUR_OPS
+from guildmodel.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
+from guildmodel.core.cam.temple_ops import TEMPLE_CONTOUR_OPS
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
 ALL_KINDS = list(ComponentKind)
@@ -188,19 +188,19 @@ def test_dispatch_missing_geometry_raises():
         build_component_ops(front, ComponentGeometry(), TOOLS, tool=TOOLS["flat_3175"])
 
 
-# ------------------------------------------------------------------ .gcam migration
+# ------------------------------------------------------------------ .gmodel migration
 
-def test_legacy_gcam_loads_as_one_component_project(tmp_path):
-    """A .gcam saved without `components` (M5.1–M6.5) reopens as one frame_front."""
-    from guildcam.core.project.gcam import load_gcam, save_gcam
+def test_legacy_gmodel_loads_as_one_component_project(tmp_path):
+    """A .gmodel saved without `components` (M5.1–M6.5) reopens as one frame_front."""
+    from guildmodel.core.project.gmodel import load_gmodel, save_gmodel
 
     p = ProjectSchema(job_name="Legacy", source_file="frame.dxf")
     p.castle.zones.endpiece_mm = 5.9
     assert p.components == []                                # legacy: no components
-    path = tmp_path / "legacy.gcam"
-    save_gcam(path, project=p, dxf_bytes=b"dxf")
+    path = tmp_path / "legacy.gmodel"
+    save_gmodel(path, project=p, dxf_bytes=b"dxf")
 
-    b = load_gcam(path)
+    b = load_gmodel(path)
     assert len(b.project.components) == 1
     ff = b.project.components[0]
     assert ff.kind == ComponentKind.FRAME_FRONT
@@ -208,16 +208,16 @@ def test_legacy_gcam_loads_as_one_component_project(tmp_path):
     assert isinstance(ff.params(), CastleParams)
 
 
-def test_multi_component_gcam_round_trips_without_migration(tmp_path):
+def test_multi_component_gmodel_round_trips_without_migration(tmp_path):
     """A project that already has components is loaded unchanged (no phantom add)."""
-    from guildcam.core.project.gcam import load_gcam, save_gcam
+    from guildmodel.core.project.gmodel import load_gmodel, save_gmodel
 
     p = ProjectSchema(job_name="Model")
     p.add_component(Component.for_kind(ComponentKind.FRAME_FRONT))
     p.add_component(Component.for_kind(ComponentKind.TEMPLE_RIGHT))
-    path = tmp_path / "model.gcam"
-    save_gcam(path, project=p, dxf_bytes=b"dxf")
+    path = tmp_path / "model.gmodel"
+    save_gmodel(path, project=p, dxf_bytes=b"dxf")
 
-    b = load_gcam(path)
+    b = load_gmodel(path)
     assert [c.kind for c in b.project.components] == [
         ComponentKind.FRAME_FRONT, ComponentKind.TEMPLE_RIGHT]

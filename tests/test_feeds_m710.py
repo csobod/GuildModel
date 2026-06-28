@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.cam import feeds
+from guildmodel.core.cam import feeds
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 
 
@@ -70,13 +70,13 @@ def test_materials_carry_a_chip_load_window():
 def test_params_panel_chip_readout(tmp_path, monkeypatch):
     pytest.importorskip("PySide6.QtWidgets")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from guildcam.gui import material_store, tool_store
+    from guildmodel.gui import material_store, tool_store
     monkeypatch.setattr(material_store, "_USER", tmp_path / "materials.yaml")
     monkeypatch.setattr(tool_store, "_USER", tmp_path / "tools.yaml")
     from PySide6.QtWidgets import QApplication
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.widgets.params_panel import ParamsPanel
+    from guildmodel.gui.widgets.params_panel import ParamsPanel
 
     p = ParamsPanel()
     # default flat_3175 (1 flute) @ acetate (750 / 10000) → 0.0750 mm/tooth, in range

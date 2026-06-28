@@ -12,8 +12,8 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from guildcam.core.project.schema import ComponentKind
-from guildcam.gui.component_workspace import (
+from guildmodel.core.project.schema import ComponentKind
+from guildmodel.gui.component_workspace import (
     build_workspaces_from_gdraw,
     derive_workspace,
     ComponentWorkspace,
@@ -144,7 +144,7 @@ def test_open_model_populates_tabs(tmp_path, monkeypatch):
 
     try:
         QApplication.instance() or QApplication([])
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                                  # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
@@ -178,7 +178,7 @@ def test_kind_aware_param_dock_and_persistence(tmp_path, monkeypatch):
 
     try:
         QApplication.instance() or QApplication([])
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                                      # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")

@@ -17,10 +17,10 @@ RES = 0.5   # coarse grid — stage tests need topology, not the M2 gate
 
 @pytest.fixture(scope="module")
 def demo_inputs():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -38,7 +38,7 @@ def _zone_mask(relief, name: str) -> np.ndarray:
 # ------------------------------------------------------------------ stages
 
 def test_towers_stage_walls_at_ground(demo_inputs):
-    from guildcam.core.relief.castle import STAGE_GROUND_MM, build_castle_stage
+    from guildmodel.core.relief.castle import STAGE_GROUND_MM, build_castle_stage
 
     part, castle, hinges = demo_inputs
     relief = build_castle_stage(part, castle, hinges, stage="towers", resolution=RES)
@@ -51,7 +51,7 @@ def test_towers_stage_walls_at_ground(demo_inputs):
 
 
 def test_walls_stage_sharp_terraces(demo_inputs):
-    from guildcam.core.relief.castle import build_castle_stage
+    from guildmodel.core.relief.castle import build_castle_stage
 
     part, castle, hinges = demo_inputs
     relief = build_castle_stage(part, castle, hinges, stage="walls", resolution=RES)
@@ -69,7 +69,7 @@ def test_walls_stage_sharp_terraces(demo_inputs):
 
 
 def test_footing_stage_adds_blends_no_pockets(demo_inputs):
-    from guildcam.core.relief.castle import build_castle_stage
+    from guildmodel.core.relief.castle import build_castle_stage
 
     part, castle, hinges = demo_inputs
     relief = build_castle_stage(part, castle, hinges, stage="footing", resolution=RES)
@@ -90,7 +90,7 @@ def test_footing_stage_adds_blends_no_pockets(demo_inputs):
 
 
 def test_pockets_stage_is_the_full_relief(demo_inputs):
-    from guildcam.core.relief.castle import build_castle_relief, build_castle_stage
+    from guildmodel.core.relief.castle import build_castle_relief, build_castle_stage
 
     part, castle, hinges = demo_inputs
     staged = build_castle_stage(part, castle, hinges, stage="pockets", resolution=RES)
@@ -99,8 +99,8 @@ def test_pockets_stage_is_the_full_relief(demo_inputs):
 
 
 def test_stage_validation(demo_inputs):
-    from guildcam.core.geometry.regions import CastlePartition
-    from guildcam.core.relief.castle import build_castle_stage
+    from guildmodel.core.geometry.regions import CastlePartition
+    from guildmodel.core.relief.castle import build_castle_stage
 
     part, castle, hinges = demo_inputs
     with pytest.raises(ValueError, match="stage"):
@@ -111,7 +111,7 @@ def test_stage_validation(demo_inputs):
 
 
 def test_stage_does_not_mutate_castle_params(demo_inputs):
-    from guildcam.core.relief.castle import build_castle_stage
+    from guildmodel.core.relief.castle import build_castle_stage
 
     part, castle, hinges = demo_inputs
     before = castle.model_dump()
@@ -122,7 +122,7 @@ def test_stage_does_not_mutate_castle_params(demo_inputs):
 # ------------------------------------------------------------------ op summary
 
 def test_path_length_and_summary_rows():
-    from guildcam.core.cam.castle_ops import CamOp, op_summaries
+    from guildmodel.core.cam.castle_ops import CamOp, op_summaries
 
     op = CamOp(name="Perimeter", paths=[
         [(0.0, 0.0, 1.0), (3.0, 4.0, 1.0)],      # 5 mm
@@ -145,13 +145,13 @@ def test_path_length_and_summary_rows():
 
 def test_summary_covers_the_demo_program(demo_inputs):
     import yaml
-    from guildcam.core.cam.castle_ops import generate_castle_program, op_summaries
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program, op_summaries
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo_inputs
     relief = build_castle_relief(part, castle, hinges, resolution=RES)
     tools = yaml.safe_load(
-        (ROOT / "src" / "guildcam" / "config" / "tools.yaml").read_text(encoding="utf-8")
+        (ROOT / "src" / "guildmodel" / "config" / "tools.yaml").read_text(encoding="utf-8")
     )
     ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"])
     rows = op_summaries(ops, feed_rate_mmpm=750.0)

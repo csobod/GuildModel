@@ -15,7 +15,7 @@ DEMO_DXF = Path(__file__).parents[1] / "Demo Project" / "GuildDraw DXF Export.dx
 # ---------------------------------------------------------------- M1.2: flip
 
 def test_posterior_flip_negates_x_only():
-    from guildcam.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.dxf import import_dxf
 
     anterior = import_dxf(DEMO_DXF, posterior=False)
     posterior = import_dxf(DEMO_DXF)  # default posterior=True
@@ -31,7 +31,7 @@ def test_posterior_flip_negates_x_only():
 
 
 def test_posterior_flip_is_involution():
-    from guildcam.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.dxf import import_dxf
 
     once = import_dxf(DEMO_DXF)
     twice = [(-x, y) for x, y in once["OUTLINE"][0]]
@@ -45,9 +45,9 @@ def test_posterior_flip_is_involution():
 
 @pytest.fixture(scope="module")
 def demo_partition():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
 
     raw = import_dxf(DEMO_DXF)
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -108,7 +108,7 @@ def _rect(x0, y0, x1, y1):
 
 
 def test_nonstandard_cut_count_falls_back_to_generic():
-    from guildcam.core.geometry.regions import partition_zones
+    from guildmodel.core.geometry.regions import partition_zones
 
     outline = _rect(-50, -20, 50, 20)
     lenses = [Point(-25, 0).buffer(12), Point(25, 0).buffer(12)]
@@ -126,7 +126,7 @@ def test_nonstandard_cut_count_falls_back_to_generic():
 
 
 def test_no_cuts_yields_single_generic_zone():
-    from guildcam.core.geometry.regions import partition_zones
+    from guildmodel.core.geometry.regions import partition_zones
 
     outline = _rect(-50, -20, 50, 20)
     part = partition_zones(outline, [Point(0, 0).buffer(10)], [])
@@ -138,7 +138,7 @@ def test_no_cuts_yields_single_generic_zone():
 # ------------------------------------------------------- M1.4: castle schema
 
 def test_castle_schema_demo_defaults():
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.project.schema import CastleParams
 
     c = CastleParams()
     assert c.zones.endpiece_mm == 5.5
@@ -161,14 +161,14 @@ def test_castle_schema_demo_defaults():
 
 
 def test_castle_schema_roundtrip(tmp_path):
-    from guildcam.core.project.schema import ProjectSchema
-    from guildcam.core.project.save_load import save_project, load_project
+    from guildmodel.core.project.schema import ProjectSchema
+    from guildmodel.core.project.save_load import save_project, load_project
 
     proj = ProjectSchema(job_name="Castle RT")
     proj.castle.zones.bridge_mm = 5.0
     proj.castle.footing.bridge_superior.exterior_mm = 20.0
     proj.castle.stock.pad_block_dy_mm = -3.5
-    path = tmp_path / "castle.guildcam"
+    path = tmp_path / "castle.guildmodel"
     save_project(proj, path)
     back = load_project(path)
     assert back.castle.zones.bridge_mm == 5.0

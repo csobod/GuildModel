@@ -13,9 +13,9 @@ import sys
 import pytest
 from shapely.geometry import Polygon, box
 
-from guildcam.core.project.schema import BaseCurveBlockParams, TempleParams
-from guildcam.core.relief.castle import build_castle_mesh
-from guildcam.core.relief.flat import (
+from guildmodel.core.project.schema import BaseCurveBlockParams, TempleParams
+from guildmodel.core.relief.castle import build_castle_mesh
+from guildmodel.core.relief.flat import (
     build_block_relief, build_temple_relief, temple_core_guide, temple_snap_offset,
 )
 
@@ -173,11 +173,11 @@ def test_build_3d_dispatch_wired_for_temple_and_block(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtWidgets import QApplication
-    from guildcam.core.project.schema import ComponentKind
+    from guildmodel.core.project.schema import ComponentKind
 
     try:
         QApplication.instance() or QApplication([])
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                                      # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
@@ -208,11 +208,11 @@ def test_open_drawing_rename_and_view_persistence(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtWidgets import QApplication
-    from guildcam.core.project.schema import ComponentKind
+    from guildmodel.core.project.schema import ComponentKind
 
     try:
         QApplication.instance() or QApplication([])
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                                      # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
@@ -273,7 +273,7 @@ def test_multi_mesh_worker_builds_all_in_one_pass(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import MultiMeshWorker
+    from guildmodel.gui.app import MultiMeshWorker
 
     specs = [
         {"index": 1, "mode": "temple", "label": "Temple R",
@@ -305,7 +305,7 @@ def test_startup_with_saved_cam_params_does_not_raise(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    prefs_dir = tmp_path / ".guildcam"
+    prefs_dir = tmp_path / ".guildmodel"
     prefs_dir.mkdir(parents=True, exist_ok=True)
     (prefs_dir / "prefs.json").write_text(json.dumps(
         {"cam_params": {"tool_name": "flat_3175"}, "material_name": "acetate"}))
@@ -317,7 +317,7 @@ def test_startup_with_saved_cam_params_does_not_raise(tmp_path, monkeypatch):
     old_hook = sys.excepthook
     sys.excepthook = lambda *a: recorded.append(a)      # PySide routes swallowed slot errors here
     try:
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                            # pragma: no cover
         sys.excepthook = old_hook
@@ -348,8 +348,8 @@ def test_flat_sim_worker_simulates_temple_and_block(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import FlatSimWorker
-    from guildcam.core.project.schema import CastleCamParams
+    from guildmodel.gui.app import FlatSimWorker
+    from guildmodel.core.project.schema import CastleCamParams
 
     # a temple with engraving (no hinge pocket → the program cuts what it targets)
     rep_t = _drive_sim(FlatSimWorker(
@@ -373,8 +373,8 @@ def test_flat_sim_worker_temple_mills_hinge_pocket(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import FlatSimWorker
-    from guildcam.core.project.schema import CastleCamParams
+    from guildmodel.gui.app import FlatSimWorker
+    from guildmodel.core.project.schema import CastleCamParams
 
     hinge = [box(115.0, 11.0, 127.0, 23.0)]            # a 12 × 12 recess near the hinge end
     rep = _drive_sim(FlatSimWorker(

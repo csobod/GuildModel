@@ -3,7 +3,7 @@ Demo Program.nc (BUILDPLAN M3.6).
 
 The gate checks structural invariants — op order, floor depths, pass stacks,
 XY envelopes, onion skin, allowance, ramp entry, fixture clearance — not
-byte equality: GuildCAM's relief pattern is raster (vs Fusion's
+byte equality: GuildModel's relief pattern is raster (vs Fusion's
 constant-stepover contours) and its rough pass is stock-aware by design.
 """
 import re
@@ -15,17 +15,17 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 TOOL_R = 3.175 / 2.0
 
 
 @pytest.fixture(scope="module")
 def demo_inputs():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -37,8 +37,8 @@ def demo_inputs():
 
 @pytest.fixture(scope="module")
 def program(demo_inputs):
-    from guildcam.core.cam.castle_ops import generate_castle_program
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo_inputs
     relief = build_castle_relief(part, castle, hinges, resolution=0.2)
@@ -66,7 +66,7 @@ def test_op_order(program):
 
 
 def test_contour_pass_stack():
-    from guildcam.core.cam.castle_ops import contour_passes
+    from guildmodel.core.cam.castle_ops import contour_passes
 
     assert contour_passes(10.0, 0.4, 2.5) == [7.5, 5.0, 2.5, 0.4]
     assert contour_passes(6.0, 0.4, 2.5) == [3.5, 1.0, 0.4]
@@ -174,7 +174,7 @@ def test_contour_allowance_offsets(program, demo_inputs):
 # ------------------------------------------------------------------ fixture + post
 
 def test_fixture_clearance_demo(program):
-    from guildcam.core.cam.castle_ops import fixture_clearance_violations
+    from guildmodel.core.cam.castle_ops import fixture_clearance_violations
 
     ops, names, _ = program
     fixture = yaml.safe_load(
@@ -185,8 +185,8 @@ def test_fixture_clearance_demo(program):
 
 
 def test_grbl_program_lint(program, demo_inputs, tmp_path):
-    from guildcam.core.cam.castle_ops import write_castle_program
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.cam.castle_ops import write_castle_program
+    from guildmodel.core.post.grbl import GRBLPost
 
     ops, names, _ = program
     _, castle, _ = demo_inputs

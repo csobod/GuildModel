@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams, CastleCamParams, Worktable,
 )
-from guildcam.core.sim import verify
-from guildcam.core.sim.bed import ComponentSim, composite_bed_report, simulate_component
+from guildmodel.core.sim import verify
+from guildmodel.core.sim.bed import ComponentSim, composite_bed_report, simulate_component
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
@@ -94,7 +94,7 @@ def test_bed_sim_worker_composites_a_nest(tmp_path, monkeypatch):
     from shapely.geometry import Polygon
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import BedSimWorker, NestWorker
+    from guildmodel.gui.app import BedSimWorker, NestWorker
 
     bed = Worktable.from_fixture_dict(FIXTURE)
     lens = Polygon([(0, 0), (40, 0), (40, 26), (0, 26)])

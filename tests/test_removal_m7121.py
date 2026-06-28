@@ -11,8 +11,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from guildcam.core.sim.toolsim import ToolProfile, densify, _stamp_points
-from guildcam.core.sim.playback import (
+from guildmodel.core.sim.toolsim import ToolProfile, densify, _stamp_points
+from guildmodel.core.sim.playback import (
     RemovalPlayback, simulate_removal, steps_from_ops,
 )
 
@@ -175,7 +175,7 @@ def test_empty_steps_cursor_is_nan():
 def test_bed_removal_two_disjoint_parts():
     """The whole-bed volumetric removal (M7.12.3) stamps each part's stock onto one
     cropped machine grid and carves the combined steps."""
-    from guildcam.core.sim.bed import BedRemovalPart, simulate_bed_removal
+    from guildmodel.core.sim.bed import BedRemovalPart, simulate_bed_removal
     prof = _flat()
     stock_a = np.full((20, 20), 5.0)          # 10×10 mm at 0.5
     steps_a = [("A · cut", prof, [[(2.0, 5.0, 2.0), (8.0, 5.0, 2.0)]])]
@@ -193,7 +193,7 @@ def test_bed_removal_two_disjoint_parts():
 
 
 def test_bed_removal_empty():
-    from guildcam.core.sim.bed import simulate_bed_removal
+    from guildmodel.core.sim.bed import simulate_bed_removal
     pb = simulate_bed_removal([], resolution=0.5)
     assert pb.n_frames == 1
 
@@ -201,7 +201,7 @@ def test_bed_removal_empty():
 def test_bed_removal_groups_ops_by_tool():
     """The bed sim plays in the tool-grouped order the worktable.nc runs — every
     same-tool op at once (all hinges, then all bodies), not part by part."""
-    from guildcam.core.sim.bed import BedRemovalPart, simulate_bed_removal
+    from guildmodel.core.sim.bed import BedRemovalPart, simulate_bed_removal
     small = ToolProfile(kind="flat", radius_mm=1.0)        # 2 mm hinge tool
     big = ToolProfile(kind="flat", radius_mm=1.5875)       # 3.175 mm bulk tool
 
@@ -220,7 +220,7 @@ def test_bed_removal_groups_ops_by_tool():
 
 
 def test_removal_plan_positions_and_final():
-    from guildcam.core.sim.playback import build_removal_plan, plan_floor_to
+    from guildmodel.core.sim.playback import build_removal_plan, plan_floor_to
     steps, stock = _steps(), _stock(5.0)
     plan = build_removal_plan(steps, stock, ORIGIN, RES, keyframes=4)
     assert plan.n_positions > 0
@@ -231,7 +231,7 @@ def test_removal_plan_positions_and_final():
 
 
 def test_removal_plan_floor_to_monotone():
-    from guildcam.core.sim.playback import build_removal_plan, plan_floor_to
+    from guildmodel.core.sim.playback import build_removal_plan, plan_floor_to
     plan = build_removal_plan(_steps(), _stock(5.0), ORIGIN, RES, keyframes=4)
     M = plan.n_positions
     assert plan_floor_to(plan, 0).max() == pytest.approx(5.0)   # uncut at the start
@@ -243,7 +243,7 @@ def test_removal_plan_floor_to_monotone():
 
 
 def test_removal_plan_cursor_on_path():
-    from guildcam.core.sim.playback import build_removal_plan
+    from guildmodel.core.sim.playback import build_removal_plan
     plan = build_removal_plan(_steps(), _stock(5.0), ORIGIN, RES)
     # every cursor is exactly one of the plan's densified positions (on the path)
     c = plan.cursor_at(plan.n_positions // 2)
@@ -252,7 +252,7 @@ def test_removal_plan_cursor_on_path():
 
 
 def test_plan_collisions_z_aware():
-    from guildcam.core.sim.playback import build_removal_plan, plan_collisions
+    from guildmodel.core.sim.playback import build_removal_plan, plan_collisions
     steps = [("Hinge", _flat(), [[(48.0, 50.0, 1.0), (52.0, 50.0, 1.0)]])]
     plan = build_removal_plan(steps, np.full((120, 120), 5.0), (0.0, 0.0), 0.5)
     plan.op_tool_geom = {"Hinge": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}
@@ -262,7 +262,7 @@ def test_plan_collisions_z_aware():
 
 
 def test_tool_envelope():
-    from guildcam.core.sim.playback import tool_envelope
+    from guildmodel.core.sim.playback import tool_envelope
     cut_r, holder_r = tool_envelope({"radius_mm": 1.5875, "shank_diameter_mm": 6.0})
     assert cut_r == pytest.approx(1.5875)
     assert holder_r >= 8.0 and holder_r > cut_r          # holder is the widest part
@@ -271,7 +271,7 @@ def test_tool_envelope():
 
 
 def test_bed_collision_frames():
-    from guildcam.core.sim.bed import bed_collision_frames
+    from guildmodel.core.sim.bed import bed_collision_frames
     geom = {"cut": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}   # holder_r ~ 8
     # cursor 0 right on a keep-out; cursor 1 far away; cursor 2 NaN (no tool)
     cursors = [(50.0, 50.0, 1.0), (5.0, 5.0, 1.0),
@@ -283,7 +283,7 @@ def test_bed_collision_frames():
 
 
 def test_bed_collision_none_without_keepouts():
-    from guildcam.core.sim.bed import bed_collision_frames
+    from guildmodel.core.sim.bed import bed_collision_frames
     cursors = [(10.0, 10.0, 1.0), (20.0, 20.0, 1.0)]
     flags = bed_collision_frames(cursors, ["a", "a"], {}, [])
     assert flags == [False, False]
@@ -292,7 +292,7 @@ def test_bed_collision_none_without_keepouts():
 def test_bed_collision_z_aware():
     """The collision check is height-aware: a tip above the hold-down clears, a tip
     below it collides, and a tall clamp the holder reaches flags at the holder radius."""
-    from guildcam.core.sim.bed import bed_collision_frames
+    from guildmodel.core.sim.bed import bed_collision_frames
     geom = {"a": {"radius_mm": 1.0, "shank_diameter_mm": 6.0}}   # R=1, holder_r ≈ 8
     ko = [(50.0, 50.0, 5.0)]                                     # screw r=5 at (50,50)
     # tip directly over the screw but ABOVE a 4 mm hold-down → clears
@@ -307,7 +307,7 @@ def test_bed_collision_z_aware():
 
 def test_steps_from_ops_feeds_removal():
     """The M7.12 steps_from_ops builder drives simulate_removal unchanged."""
-    from guildcam.core.cam.castle_ops import CamOp
+    from guildmodel.core.cam.castle_ops import CamOp
     ops = [CamOp(name="Rough", paths=[_hline(8.0, 3.0)]),
            CamOp(name="Perimeter", paths=[_hline(12.0, 1.0)])]
     pb = simulate_removal(steps_from_ops(ops, _flat()), _stock(), ORIGIN, RES, frames=15)

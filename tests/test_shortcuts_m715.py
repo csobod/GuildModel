@@ -1,5 +1,5 @@
 """M7.15 — hotkey + toolbar customization model."""
-from guildcam.gui.shortcuts import (
+from guildmodel.gui.shortcuts import (
     ActionSpec, effective_shortcuts, effective_toolbar, find_conflicts,
 )
 

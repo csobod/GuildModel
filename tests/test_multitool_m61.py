@@ -1,7 +1,7 @@
 """Multi-tool jobs & per-operation tool assignment (BUILDPLAN M6.1).
 
 Covers the five M6.1 deliverables:
-  * per-op tool binding (schema + generation) and round-trip through `.gcam`;
+  * per-op tool binding (schema + generation) and round-trip through `.gmodel`;
   * tool-change posting (M0/M6 blocks) that parses and lints clean;
   * tool-reach gating (warn + suggest a fitting tool);
   * the sim + cut-time model are tool-aware (a 2 mm tool reaches a pocket the
@@ -14,20 +14,20 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     CastleParams, CastleCamParams, MachineProfile, ProjectSchema, POSTERIOR_OPS,
 )
-from guildcam.core.cam.castle_ops import (
+from guildmodel.core.cam.castle_ops import (
     build_tool_settings, count_tool_changes, generate_castle_program,
     hinge_pocket_op, reach_warnings, resolve_tool, write_castle_program,
 )
-from guildcam.core.post.grbl import GRBLPost, ToolSetting
-from guildcam.core.post.machine import lint_program
-from guildcam.core.cam.cuttime import estimate_program, MachineDynamics
+from guildmodel.core.post.grbl import GRBLPost, ToolSetting
+from guildmodel.core.post.machine import lint_program
+from guildmodel.core.cam.cuttime import estimate_program, MachineDynamics
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MAT = yaml.safe_load((CONFIG / "materials.yaml").read_text())["acetate"]
 
@@ -55,13 +55,13 @@ def test_resolve_tool_normalizes_name_and_default():
     assert d is TOOLS["flat_3175"]
 
 
-def test_op_tools_round_trip_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_op_tools_round_trip_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="MT")
     proj.cam_params = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
-    path = tmp_path / "mt.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    b = load_gcam(path)
+    path = tmp_path / "mt.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    b = load_gmodel(path)
     assert b.project.cam_params.op_tools == {"Hinge Pockets": "flat_2mm"}
     assert b.project.cam_params.is_multi_tool()
 
@@ -70,10 +70,10 @@ def test_op_tools_round_trip_through_gcam(tmp_path):
 
 @pytest.fixture(scope="module")
 def demo():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.relief.castle import build_castle_relief
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -139,7 +139,7 @@ def test_tool_change_block_m0_parses_and_lints(demo):
     # tool numbers assigned by first appearance
     assert ts["flat_2mm"].number == 1 and ts["flat_3175"].number == 2
     # the program is ASCII below the (legacy em-dash) header banner
-    assert all(ln.isascii() for ln in text.splitlines() if "GuildCAM" not in ln)
+    assert all(ln.isascii() for ln in text.splitlines() if "GuildModel" not in ln)
     # lint clean against the machine
     assert lint_program(text, machine) == []
 
@@ -228,7 +228,7 @@ def test_reach_no_warning_when_tool_fits():
 def test_small_tool_reaches_narrow_pocket_bulk_tool_cannot():
     """The headline multi-tool win: a 2 mm tool clears a narrow pocket floor the
     3.175 mm bulk tool can't even enter (BUILDPLAN M6.1 task 5)."""
-    from guildcam.core.sim import ToolProfile, achieved_floor, cutting_paths_from_ops
+    from guildmodel.core.sim import ToolProfile, achieved_floor, cutting_paths_from_ops
 
     pocket = _square(0.0, 0.0, 2.4)
     floor_z, start_z = 2.0, 8.0

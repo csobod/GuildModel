@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from guildcam.core.geometry.measure import angle_at, distance, snap_to_vertices
+from guildmodel.core.geometry.measure import angle_at, distance, snap_to_vertices
 
 
 def test_distance_basic():

@@ -13,13 +13,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.cam.cuttime import (
+from guildmodel.core.cam.cuttime import (
     MachineDynamics, estimate_program, format_report,
 )
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 # The cutting-only budget the generated program must stay within, relative to
 # the Fusion control. Cutting-only (length / programmed feed) is the gate figure
@@ -77,15 +77,15 @@ def test_reference_program_is_sane():
 
 @pytest.fixture(scope="module")
 def generated_program() -> str:
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import (
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import (
         generate_castle_program, write_castle_program,
     )
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.post.grbl import GRBLPost
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])

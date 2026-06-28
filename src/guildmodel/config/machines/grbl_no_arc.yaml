@@ -1,0 +1,26 @@
+# GuildModel machine profile — GRBL without reliable arc support
+# Some GRBL builds/controllers handle G2/G3 poorly (or have arcs disabled). With
+# supports_arcs=false the post linearizes every curve to G1 segments instead.
+
+name: grbl_no_arc
+display_name: "GRBL (no arc support)"
+
+work_area_x_mm: 200.0
+work_area_y_mm: 200.0
+work_area_z_mm: 60.0
+
+max_feed_mmpm: 2000.0
+max_plunge_mmpm: 800.0
+max_spindle_rpm: 24000.0
+min_spindle_rpm: 0.0
+
+max_doc_mm: 2.0
+
+rapid_rate_mmpm: 2000.0
+max_accel_mmps2: 300.0
+junction_deviation_mm: 0.01
+
+supports_arcs: false         # G2/G3 disabled -> emit linearized G1 only
+units: mm
+enforce_soft_limits: true
+notes: "Linearizes arcs to G1. Larger files, but valid on controllers with weak G2/G3."

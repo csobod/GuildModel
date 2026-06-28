@@ -1,12 +1,12 @@
 """Material store: shipped defaults + user overrides + write-back (BUILDPLAN M4.x).
 
 The CAM tab populates feeds/speeds/stepover/stepdown from the selected material;
-edits can be written back as per-user overrides (~/.guildcam/materials.yaml),
+edits can be written back as per-user overrides (~/.guildmodel/materials.yaml),
 merged over the shipped baseline, and reset to shipped.
 """
 import pytest
 
-from guildcam.gui import material_store
+from guildmodel.gui import material_store
 
 
 @pytest.fixture

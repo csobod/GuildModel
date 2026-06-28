@@ -4,7 +4,7 @@ Cut several components in one program on the bed (the fixture): each part is
 generated in its own design frame, placed on its bed zone, and the whole set is
 scheduled to minimise tool changes across the bed while respecting each part's
 internal op order. These tests cover the transform, the scheduler, clearance over
-the layout, the combined post, cut-time over the bed, and the `.gcam` round-trip.
+the layout, the combined post, cut-time over the bed, and the `.gmodel` round-trip.
 """
 from pathlib import Path
 
@@ -12,27 +12,27 @@ import pytest
 import yaml
 from shapely.geometry import Polygon
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BedLayout, CastleCamParams, CastleParams,
     ComponentPlacement, MachineProfile, ProjectSchema,
 )
-from guildcam.core.cam.castle_ops import (
+from guildmodel.core.cam.castle_ops import (
     CamOp, build_tool_settings, write_castle_program,
 )
-from guildcam.core.cam.block_ops import (
+from guildmodel.core.cam.block_ops import (
     BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
 )
-from guildcam.core.cam.layout import (
+from guildmodel.core.cam.layout import (
     BedPart, bed_clearance_violations, build_bed_program, ops_bbox_center,
     place_ops_at_zone, schedule_bed_ops, transform_ops, zone_center,
 )
-from guildcam.core.post.grbl import GRBLPost
-from guildcam.core.post.machine import lint_program
-from guildcam.core.cam.cuttime import estimate_program, MachineDynamics
+from guildmodel.core.post.grbl import GRBLPost
+from guildmodel.core.post.machine import lint_program
+from guildmodel.core.cam.cuttime import estimate_program, MachineDynamics
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
@@ -103,11 +103,11 @@ def test_schedule_preserves_precedence_across_conflicting_tool_orders():
 
 @pytest.fixture(scope="module")
 def demo_bed():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -183,8 +183,8 @@ def test_block_holes_land_on_the_fixture_mounting_screws(demo_bed):
 
 # ------------------------------------------------------------------ round-trip
 
-def test_bed_layout_round_trips_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_bed_layout_round_trips_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="Bed")
     proj.bed_layout = BedLayout(placements=[
         ComponentPlacement(kind="frame_front", label="Frame", fixture_zone="front",
@@ -192,8 +192,8 @@ def test_bed_layout_round_trips_through_gcam(tmp_path):
         ComponentPlacement(kind="base_curve_block", label="Block",
                            fixture_zone="bc_template_right", x_mm=54.8, y_mm=147.3),
     ])
-    path = tmp_path / "bed.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    bl = load_gcam(path).project.bed_layout
+    path = tmp_path / "bed.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    bl = load_gmodel(path).project.bed_layout
     assert [p.kind for p in bl.placements] == ["frame_front", "base_curve_block"]
     assert bl.placements[0].x_mm == pytest.approx(201.1)

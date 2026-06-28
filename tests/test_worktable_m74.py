@@ -5,29 +5,29 @@ A bed drawn in CAD is polygonized into candidate regions the maker tags by role
 loads into the same `Worktable` model as the default bed, and bridges back onto the
 M6.5 layout machinery via `to_fixture_dict()` so nesting/clearance keep working.
 These tests cover the DXF intake, tag/untag, the fixture equivalence, and both the
-`.bed` and `.gcam` round-trips.
+`.bed` and `.gmodel` round-trips.
 """
 from pathlib import Path
 
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BedRole, ProjectSchema, Worktable, WorktableZone, kind_for_role,
     role_for_kind, ComponentKind,
 )
-from guildcam.core.cam.worktable import (
+from guildmodel.core.cam.worktable import (
     WorktableError, build_worktable_from_dxf, default_worktable, load_bed,
     polygonize_bed, read_bed_linework, save_bed,
 )
-from guildcam.core.cam.layout import (
+from guildmodel.core.cam.layout import (
     BedPart, bed_clearance_violations, build_bed_program, place_ops_at_zone,
     zone_center,
 )
-from guildcam.core.cam.castle_ops import CamOp
+from guildmodel.core.cam.castle_ops import CamOp
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
@@ -197,13 +197,13 @@ def test_bed_yaml_round_trip(tmp_path):
         wt.zone("front").extra["flip_axis_x_mm"])
 
 
-def test_worktable_round_trips_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_worktable_round_trips_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="Bed")
     proj.worktable = default_worktable()
-    path = tmp_path / "wt.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    back = load_gcam(path).project.worktable
+    path = tmp_path / "wt.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    back = load_gmodel(path).project.worktable
     assert back is not None
     assert len(back.placement_zones()) == 5
     assert len(back.keep_outs()) == 24
@@ -227,7 +227,7 @@ def test_worktable_tab_loads_bed_and_tags_a_region(tmp_path, monkeypatch):
 
     try:
         QApplication.instance() or QApplication([])
-        from guildcam.gui.app import MainWindow
+        from guildmodel.gui.app import MainWindow
         win = MainWindow()
     except Exception as exc:                                      # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")

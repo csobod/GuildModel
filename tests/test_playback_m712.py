@@ -10,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from guildcam.core.cam.castle_ops import CamOp
-from guildcam.core.sim.toolsim import ToolProfile, achieved_floor
-from guildcam.core.sim.playback import (
+from guildmodel.core.cam.castle_ops import CamOp
+from guildmodel.core.sim.toolsim import ToolProfile, achieved_floor
+from guildmodel.core.sim.playback import (
     FloorSnapshot, simulate_steps, steps_from_ops,
 )
 

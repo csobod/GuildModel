@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 import yaml
 
-from guildcam.core.sim.toolsim import ToolProfile
-from guildcam.core.cam.castle_ops import CamOp, depth_reach_warnings
-from guildcam.core.cam.tooling import ToolSpec
+from guildmodel.core.sim.toolsim import ToolProfile
+from guildmodel.core.cam.castle_ops import CamOp, depth_reach_warnings
+from guildmodel.core.cam.tooling import ToolSpec
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 SHIPPED_TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
 
@@ -40,7 +40,7 @@ def test_vbit_kernel_is_a_cone():
 def test_vbit_groove_widens_with_a_wider_angle():
     # at the same depth, a wider included angle removes a wider groove
     res, depth = 0.2, 0.6
-    from guildcam.core.sim.toolsim import achieved_floor
+    from guildmodel.core.sim.toolsim import achieved_floor
     shape, origin, init = (40, 40), (-4.0, -4.0), 5.0
     path = [(-3.0, 0.0, init - depth), (3.0, 0.0, init - depth)]   # a scribe line at -depth
     narrow = achieved_floor([path], ToolProfile("vbit", 3.0, included_angle_deg=30.0),
@@ -87,7 +87,7 @@ def test_tool_view_renders_every_type(monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.widgets.tool_view import ToolView
+    from guildmodel.gui.widgets.tool_view import ToolView
 
     v = ToolView()
     v.resize(160, 180)

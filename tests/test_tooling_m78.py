@@ -2,7 +2,7 @@
 
 `ToolSpec` promotes the loose ``tools.yaml`` entries to a validated model whose
 `to_tool_dict()` is a drop-in for every existing consumer; `gui.tool_store` merges
-the shipped baseline with a user library (``~/.guildcam/tools.yaml``) so the maker
+the shipped baseline with a user library (``~/.guildmodel/tools.yaml``) so the maker
 adds/edits/removes tools in Preferences instead of hand-editing YAML. Headless
 except the PrefsDialog Tools-tab smoke (offscreen Qt).
 """
@@ -11,12 +11,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.cam.tooling import ToolSpec
-from guildcam.core.cam.castle_ops import CamOp, build_tool_settings
-from guildcam.gui import tool_store
+from guildmodel.core.cam.tooling import ToolSpec
+from guildmodel.core.cam.castle_ops import CamOp, build_tool_settings
+from guildmodel.gui import tool_store
 
 ROOT = Path(__file__).parents[1]
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 SHIPPED_TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
 
@@ -146,7 +146,7 @@ def test_prefs_tools_tab_add_commits_to_library(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import PrefsDialog
+    from guildmodel.gui.app import PrefsDialog
 
     prefs = {"dark_mode": False, "show_log_on_start": False,
              "preview_resolution_mm": 0.3, "export_resolution_mm": 0.15,

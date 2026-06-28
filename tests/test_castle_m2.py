@@ -17,10 +17,10 @@ DEMO = Path(__file__).parents[1] / "Demo Project"
 
 @pytest.fixture(scope="module")
 def demo():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -32,7 +32,7 @@ def demo():
 
 @pytest.fixture(scope="module")
 def demo_relief(demo):
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
     return build_castle_relief(part, castle, hinges, resolution=0.2)
@@ -41,8 +41,8 @@ def demo_relief(demo):
 # ------------------------------------------------------------------ M2.1 stock
 
 def test_stock_heightfield_two_levels():
-    from guildcam.core.project.schema import StockDefinition
-    from guildcam.core.relief.castle import stock_top_heightfield
+    from guildmodel.core.project.schema import StockDefinition
+    from guildmodel.core.relief.castle import stock_top_heightfield
 
     stock = StockDefinition()
     hf = stock_top_heightfield(stock, resolution=0.5)
@@ -60,8 +60,8 @@ def test_stock_heightfield_two_levels():
 
 
 def test_stock_pad_block_offset():
-    from guildcam.core.project.schema import StockDefinition
-    from guildcam.core.relief.castle import stock_top_heightfield
+    from guildmodel.core.project.schema import StockDefinition
+    from guildmodel.core.relief.castle import stock_top_heightfield
 
     stock = StockDefinition(pad_block_dx_mm=10.0, pad_block_dy_mm=-5.0)
     hf = stock_top_heightfield(stock, resolution=0.5)
@@ -74,7 +74,7 @@ def test_stock_pad_block_offset():
 # ------------------------------------------------------------------ M2.3 footing math
 
 def test_footing_ext_first_construction():
-    from guildcam.core.relief.castle import _footing_centers
+    from guildmodel.core.relief.castle import _footing_centers
 
     # nosepad_inferior demo values: the first (exterior) fillet's circle
     # passes through the step's bottom corner (0, h_low); the concave circle
@@ -88,7 +88,7 @@ def test_footing_ext_first_construction():
 
 
 def test_footing_int_first_construction():
-    from guildcam.core.relief.castle import _footing_centers
+    from guildmodel.core.relief.castle import _footing_centers
 
     # endpiece_superior demo values: interior fillet first, through the top
     # corner (0, h_high); exterior lands tangent.
@@ -100,7 +100,7 @@ def test_footing_int_first_construction():
 
 
 def test_footing_profile_monotonic_and_continuous():
-    from guildcam.core.relief.castle import _footing_z
+    from guildmodel.core.relief.castle import _footing_z
 
     s = np.linspace(-20, 20, 4001)
     for first in ("interior", "exterior"):
@@ -111,7 +111,7 @@ def test_footing_profile_monotonic_and_continuous():
 
 
 def test_footing_tall_step_keeps_wall():
-    from guildcam.core.relief.castle import _footing_spans, _footing_z
+    from guildmodel.core.relief.castle import _footing_spans, _footing_z
 
     # step 8 mm, radii 2+3: quarter rounds with a 3 mm wall left at s=0
     sh, sl = _footing_spans(8.0, 2.0, 3.0, "interior")
@@ -154,9 +154,9 @@ def test_demo_relief_hinge_pocket_floor(demo_relief, demo):
 
 
 def test_generic_partition_relief_with_explicit_heights():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.project.schema import CastleParams
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import build_castle_relief
 
     outline = Polygon([(-30, -10), (30, -10), (30, 10), (-30, 10)])
     part = partition_zones(outline, [Point(0, 0).buffer(5)], [[(0, -11), (0, 11)]])
@@ -174,7 +174,7 @@ def test_generic_partition_relief_with_explicit_heights():
 # ------------------------------------------------------------------ M2.4 mesh
 
 def test_castle_mesh_watertight(demo):
-    from guildcam.core.relief.castle import build_castle_mesh, build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_mesh, build_castle_relief
 
     part, castle, hinges = demo
     relief = build_castle_relief(part, castle, hinges, resolution=0.5)
@@ -191,7 +191,7 @@ def test_demo_relief_matches_fusion_stl(demo_relief, demo):
     """The M2 milestone gate: castle relief vs Fusion ground truth."""
     import trimesh
     from shapely import contains_xy, distance as sdist, points as spoints, prepare
-    from guildcam.core.relief.castle import _footing_spans
+    from guildmodel.core.relief.castle import _footing_spans
 
     part, castle, hinges = demo
     body = part.body

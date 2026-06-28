@@ -13,24 +13,24 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BedRole, CastleCamParams, CastleParams,
     MachineProfile, Worktable, WorktableZone,
 )
-from guildcam.core.cam.castle_ops import (
+from guildmodel.core.cam.castle_ops import (
     CamOp, build_tool_settings, write_castle_program,
 )
-from guildcam.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
-from guildcam.core.cam.cuttime import MachineDynamics, estimate_program
-from guildcam.core.cam.layout import (
+from guildmodel.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
+from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program
+from guildmodel.core.cam.layout import (
     build_nest_program, nest_components_on_worktable, worktable_clearance_violations,
 )
-from guildcam.core.post.grbl import GRBLPost
-from guildcam.core.post.machine import lint_program
+from guildmodel.core.post.grbl import GRBLPost
+from guildmodel.core.post.machine import lint_program
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
@@ -50,7 +50,7 @@ def _rect_zone(zid, role, x0, y0, x1, y1):
 
 def _two_part_nest():
     """A frame (one flat op) + a base-curve block (drill then flat) on a 2-zone bed."""
-    from guildcam.core.cam.layout import BedPart
+    from guildmodel.core.cam.layout import BedPart
     bed = Worktable(zones=[
         _rect_zone("front", BedRole.FRAME_FRONT, 0, 0, 100, 80),
         _rect_zone("bc", BedRole.BASE_CURVE_RIGHT, 120, 0, 200, 80),
@@ -101,13 +101,13 @@ def test_nest_program_does_not_mutate_the_nest_ops():
 
 @pytest.fixture(scope="module")
 def demo_nest():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import generate_castle_program
-    from guildcam.core.cam.block_ops import generate_block_program
-    from guildcam.core.cam.layout import BedPart
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.cam.block_ops import generate_block_program
+    from guildmodel.core.cam.layout import BedPart
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -172,7 +172,7 @@ def test_gui_generate_worktable_program(tmp_path, monkeypatch):
     from shapely.geometry import Polygon
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import MainWindow, NestWorker
+    from guildmodel.gui.app import MainWindow, NestWorker
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: None)
 

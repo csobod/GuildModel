@@ -26,10 +26,10 @@ PREVIEW_RES = 0.3   # the coarsest mesh anyone sees — must already pass
 
 @pytest.fixture(scope="module")
 def demo():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -41,7 +41,7 @@ def demo():
 
 @pytest.fixture(scope="module")
 def demo_relief(demo):
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
     return build_castle_relief(part, castle, hinges, resolution=PREVIEW_RES)
@@ -49,7 +49,7 @@ def demo_relief(demo):
 
 @pytest.fixture(scope="module")
 def demo_mesh(demo_relief):
-    from guildcam.core.relief.castle import build_castle_mesh
+    from guildmodel.core.relief.castle import build_castle_mesh
 
     return build_castle_mesh(demo_relief)
 
@@ -106,7 +106,7 @@ def test_watertight_and_volume_matches_reference(demo, demo_mesh):
 
 def test_volume_resolution_independent(demo, demo_mesh):
     """The silhouette no longer depends on the grid resolution."""
-    from guildcam.core.relief.castle import build_castle_mesh, build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_mesh, build_castle_relief
 
     part, castle, hinges = demo
     fine = build_castle_mesh(
@@ -118,7 +118,7 @@ def test_volume_resolution_independent(demo, demo_mesh):
 
 def test_stage_meshes_still_watertight(demo):
     """The teaching stepper builds (towers/walls) survive the conform pass."""
-    from guildcam.core.relief.castle import build_castle_mesh, build_castle_stage
+    from guildmodel.core.relief.castle import build_castle_mesh, build_castle_stage
 
     part, castle, hinges = demo
     for stage in ("towers", "footing"):
@@ -130,7 +130,7 @@ def test_stage_meshes_still_watertight(demo):
 
 def test_unconformed_path_unchanged(demo_relief):
     """conform=False keeps the legacy masked-grid mesh (probe baseline)."""
-    from guildcam.core.relief.castle import build_castle_mesh
+    from guildmodel.core.relief.castle import build_castle_mesh
 
     mesh = build_castle_mesh(demo_relief, conform=False)
     edges, _ = _sharp_silhouette(mesh)
@@ -145,7 +145,7 @@ def test_unconformed_path_unchanged(demo_relief):
 # ------------------------------------------------------------------ prefs
 
 def test_prefs_defaults_and_roundtrip(tmp_path, monkeypatch):
-    from guildcam.gui import prefs
+    from guildmodel.gui import prefs
 
     monkeypatch.setattr(prefs, "_DIR", tmp_path)
     monkeypatch.setattr(prefs, "_FILE", tmp_path / "prefs.json")

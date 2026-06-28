@@ -13,15 +13,15 @@ import numpy as np
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     CastleParams, CastleCamParams, ProgramZero, ProjectSchema, StockDefinition,
 )
-from guildcam.core.cam.castle_ops import generate_castle_program, write_castle_program
-from guildcam.core.post.grbl import GRBLPost
+from guildmodel.core.cam.castle_ops import generate_castle_program, write_castle_program
+from guildmodel.core.post.grbl import GRBLPost
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 
 
@@ -123,10 +123,10 @@ def test_safe_z_is_offset():
 
 @pytest.fixture(scope="module")
 def demo_ops():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.relief.castle import build_castle_relief
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -189,11 +189,11 @@ def test_offset_is_pure_translation_vs_fixture(demo_ops):
 def test_sim_unaffected_by_program_zero(demo_ops):
     """The simulator runs in the design frame (offset 0), so completeness does
     not depend on where work zero is set."""
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.sim import (
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.sim import (
         ToolProfile, achieved_floor, cutting_paths_from_ops, verify)
 
     castle, ops = demo_ops
@@ -214,12 +214,12 @@ def test_sim_unaffected_by_program_zero(demo_ops):
 
 # ------------------------------------------------------------------ round-trip
 
-def test_program_zero_round_trips_through_gcam(tmp_path):
-    from guildcam.core.project.gcam import save_gcam, load_gcam
+def test_program_zero_round_trips_through_gmodel(tmp_path):
+    from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="PZ")
     proj.cam_params = CastleCamParams(
         program_zero=ProgramZero(mode="stock_box", x_ref="right", y_ref="top", z_ref="bottom"))
-    path = tmp_path / "pz.gcam"
-    save_gcam(path, project=proj, dxf_bytes=b"dxf")
-    pz = load_gcam(path).project.cam_params.program_zero
+    path = tmp_path / "pz.gmodel"
+    save_gmodel(path, project=proj, dxf_bytes=b"dxf")
+    pz = load_gmodel(path).project.cam_params.program_zero
     assert (pz.mode, pz.x_ref, pz.y_ref, pz.z_ref) == ("stock_box", "right", "top", "bottom")

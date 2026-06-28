@@ -11,20 +11,20 @@ from pathlib import Path
 import pytest
 import yaml
 
-from guildcam.core.project.schema import (
+from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BedRole, CastleCamParams, CastleParams,
     Worktable, WorktableZone,
 )
-from guildcam.core.cam.castle_ops import CamOp
-from guildcam.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
-from guildcam.core.cam.layout import (
+from guildmodel.core.cam.castle_ops import CamOp
+from guildmodel.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
+from guildmodel.core.cam.layout import (
     BedPart, nest_components_on_worktable, ops_bbox_center,
     worktable_clearance_violations,
 )
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
 
@@ -149,12 +149,12 @@ def test_circle_keepout_and_drill_exemption():
 
 @pytest.fixture(scope="module")
 def demo_parts():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import generate_castle_program
-    from guildcam.core.cam.block_ops import generate_block_program
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.cam.block_ops import generate_block_program
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -185,7 +185,7 @@ def test_nest_worker_and_gui_render_and_nudge(tmp_path, monkeypatch):
     from shapely.geometry import Polygon
 
     QApplication.instance() or QApplication([])
-    from guildcam.gui.app import MainWindow, NestWorker
+    from guildmodel.gui.app import MainWindow, NestWorker
 
     bed = Worktable.from_fixture_dict(FIXTURE)
     lens = Polygon([(0, 0), (40, 0), (40, 26), (0, 26)])      # a cheap stand-in lens

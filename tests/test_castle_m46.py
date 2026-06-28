@@ -12,17 +12,17 @@ from shapely.geometry import Point
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-ICONS = ROOT / "src" / "guildcam" / "gui" / "resources" / "icons"
+ICONS = ROOT / "src" / "guildmodel" / "gui" / "resources" / "icons"
 
 
 # ------------------------------------------------------------------ fixtures
 
 @pytest.fixture(scope="module")
 def demo():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -37,7 +37,7 @@ def demo():
 def test_relief_progress_is_monotonic_and_complete(demo):
     """build_castle_relief reports labelled stages with non-decreasing
     fractions in [0, 1], ending near completion."""
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
     calls = []
@@ -54,7 +54,7 @@ def test_relief_progress_is_monotonic_and_complete(demo):
 
 
 def test_mesh_progress_reaches_one(demo):
-    from guildcam.core.relief.castle import build_castle_mesh, build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_mesh, build_castle_relief
 
     part, castle, hinges = demo
     relief = build_castle_relief(part, castle, hinges, resolution=0.4)
@@ -65,8 +65,8 @@ def test_mesh_progress_reaches_one(demo):
 
 
 def test_gcode_progress_one_per_op(demo):
-    from guildcam.core.cam.castle_ops import generate_castle_program
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
     relief = build_castle_relief(part, castle, hinges, resolution=0.4)
@@ -86,7 +86,7 @@ def test_gcode_progress_one_per_op(demo):
 def test_progress_callback_can_abort_at_stage_boundary(demo):
     """A callback that raises aborts the build — the cancellation mechanism
     the GUI workers rely on (raise propagates; core never catches)."""
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
 
@@ -109,7 +109,7 @@ def test_progress_callback_can_abort_at_stage_boundary(demo):
 
 def test_default_progress_is_none(demo):
     """Core stays headless: omitting progress builds normally."""
-    from guildcam.core.relief.castle import build_castle_relief
+    from guildmodel.core.relief.castle import build_castle_relief
 
     part, castle, hinges = demo
     relief = build_castle_relief(part, castle, hinges, resolution=0.4)
@@ -143,7 +143,7 @@ def test_icon_svg_present_and_conformant(name):
 def test_make_icon_recolors_currentcolor():
     """gui/icons.make_icon string-replaces currentColor (no Qt needed for the
     source-level contract)."""
-    from guildcam.gui import icons as icons_mod
+    from guildmodel.gui import icons as icons_mod
 
     src = (ICONS / "op-build-3d.svg").read_text(encoding="utf-8")
     assert "currentColor" in src

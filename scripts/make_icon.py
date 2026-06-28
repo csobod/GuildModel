@@ -1,4 +1,4 @@
-"""Regenerate src/guildcam/assets/icon.ico from icon.svg (multi-resolution).
+"""Regenerate src/guildmodel/assets/icon.ico from icon.svg (multi-resolution).
 
 Run by the release script before freezing so the bundled .ico always matches the
 source SVG. Renders the SVG with Qt (QSvgRenderer) at every Windows icon size and
@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
-ASSETS = Path(__file__).resolve().parents[1] / "src" / "guildcam" / "assets"
+ASSETS = Path(__file__).resolve().parents[1] / "src" / "guildmodel" / "assets"
 SVG = ASSETS / "icon.svg"
 ICO = ASSETS / "icon.ico"
 SIZES = [256, 128, 64, 48, 32, 24, 16]

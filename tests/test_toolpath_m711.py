@@ -19,7 +19,7 @@ def qapp():
 
 
 def test_dxf_canvas_toolpath_overlay(qapp):
-    from guildcam.gui.widgets.dxf_canvas import DxfCanvas
+    from guildmodel.gui.widgets.dxf_canvas import DxfCanvas
     c = DxfCanvas()
     c.resize(320, 220)
     c.set_layers({"OUTLINE": [[(0, 0), (50, 0), (50, 30), (0, 30), (0, 0)]]})
@@ -38,8 +38,8 @@ def test_dxf_canvas_toolpath_overlay(qapp):
 
 
 def test_op_overlay_from_ops_drops_z(qapp):
-    from guildcam.gui.app import _op_overlay
-    from guildcam.core.cam.castle_ops import CamOp
+    from guildmodel.gui.app import _op_overlay
+    from guildmodel.core.cam.castle_ops import CamOp
     ops = [
         CamOp("Perimeter", paths=[[(0.0, 0.0, 1.0), (5.0, 0.0, 1.0)]],
               tool={"name": "flat_3175"}),
@@ -55,7 +55,7 @@ def test_inspector_populates_toggles_and_highlights(qapp, tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtCore import Qt
-    from guildcam.gui.app import MainWindow
+    from guildmodel.gui.app import MainWindow
     try:
         win = MainWindow()
     except Exception as exc:                                   # pragma: no cover

@@ -1,4 +1,4 @@
-from guildcam.gui.app import main
+from guildmodel.gui.app import main
 
 if __name__ == "__main__":
     main()

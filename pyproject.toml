@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "guildcam"
+name = "guildmodel"
 version = "1.0.0-rc1"
 description = "Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines"
 readme = "README.md"
@@ -34,15 +34,15 @@ packaging = [
 ]
 
 [project.scripts]
-guildcam = "guildcam.gui.app:main"
+guildmodel = "guildmodel.gui.app:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/guildcam"]
+packages = ["src/guildmodel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]
-source = ["src/guildcam/core"]
-omit = ["src/guildcam/gui/*"]
+source = ["src/guildmodel/core"]
+omit = ["src/guildmodel/gui/*"]

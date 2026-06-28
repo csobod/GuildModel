@@ -17,17 +17,17 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 
 @pytest.fixture(scope="module")
 def program():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
@@ -43,8 +43,8 @@ def program():
 
 @pytest.fixture(scope="module")
 def posted(program):
-    from guildcam.core.cam.castle_ops import write_castle_program
-    from guildcam.core.post.grbl import GRBLPost
+    from guildmodel.core.cam.castle_ops import write_castle_program
+    from guildmodel.core.post.grbl import GRBLPost
 
     ops, castle = program
     post = GRBLPost(
@@ -90,7 +90,7 @@ def test_relief_is_contour_parallel_not_raster(program, op_name):
 # ------------------------------------------------------------------ arc fitting
 
 def test_fit_arcs_recovers_a_circle():
-    from guildcam.core.post.arcfit import fit_arcs
+    from guildmodel.core.post.arcfit import fit_arcs
 
     t = np.linspace(0.0, np.pi / 2, 40)          # quarter circle, ccw
     cx, cy, r = 5.0, -3.0, 10.0
@@ -104,7 +104,7 @@ def test_fit_arcs_recovers_a_circle():
 
 
 def test_fit_arcs_keeps_straight_lines():
-    from guildcam.core.post.arcfit import fit_arcs
+    from guildmodel.core.post.arcfit import fit_arcs
 
     pts = [(float(i), 0.0, 1.0) for i in range(10)]
     moves = fit_arcs(pts, tol_mm=0.01)

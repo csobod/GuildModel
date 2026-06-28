@@ -12,14 +12,14 @@ import numpy as np
 import pytest
 import yaml
 
-from guildcam.core.sim import (
+from guildmodel.core.sim import (
     ToolProfile, achieved_floor, densify,
     cutting_paths_from_ops, cutting_paths_from_program, verify,
 )
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "Demo Project"
-CONFIG = ROOT / "src" / "guildcam" / "config"
+CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 
 # ------------------------------------------------------------------ tool model
@@ -62,12 +62,12 @@ def test_program_parse_flattens_arc_and_drops_rapids():
 
 @pytest.fixture(scope="module")
 def demo():
-    from guildcam.core.geometry.regions import partition_zones
-    from guildcam.core.io_import.dxf import import_dxf
-    from guildcam.core.io_import.normalize import points_to_polygon
-    from guildcam.core.project.schema import CastleParams
-    from guildcam.core.relief.castle import build_castle_relief
-    from guildcam.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import build_castle_relief
+    from guildmodel.core.cam.castle_ops import generate_castle_program
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])

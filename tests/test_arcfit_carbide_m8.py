@@ -9,8 +9,8 @@ import math
 
 import numpy as np
 
-from guildcam.core.post.arcfit import _equidistant_center, _fit_circle, fit_arcs
-from guildcam.core.post.machine import lint_program, load_machine_profile
+from guildmodel.core.post.arcfit import _equidistant_center, _fit_circle, fit_arcs
+from guildmodel.core.post.machine import lint_program, load_machine_profile
 
 
 def test_equidistant_center_makes_radii_equal():

@@ -7,7 +7,7 @@ construction check that skips when no Qt platform plugin is available.
 """
 import pytest
 
-from guildcam.gui.widgets import readiness_dot as rd
+from guildmodel.gui.widgets import readiness_dot as rd
 
 
 # ------------------------------------------------------------ state machine
@@ -45,7 +45,7 @@ def test_workflow_walk():
         rd.state_for(False, False, False),  # start
         rd.state_for(True, False, False),   # DXF imported
         rd.state_for(True, True, False),    # 3D built
-        rd.state_for(True, True, True),     # program saved to .gcam
+        rd.state_for(True, True, True),     # program saved to .gmodel
     ]
     assert walk == [rd.OFF, rd.RED, rd.YELLOW, rd.GREEN]
 
@@ -62,7 +62,7 @@ def test_tooltip_wording_is_exact():
 # ------------------------------------------------------------ theme colors
 
 def test_each_state_has_a_distinct_color_in_both_themes():
-    from guildcam.gui.style import theme
+    from guildmodel.gui.style import theme
 
     for dark in (False, True):
         pal = theme.palette(dark)

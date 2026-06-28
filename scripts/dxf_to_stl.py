@@ -1,6 +1,6 @@
 """GuildDraw DXF → solid 3D model (STL + rendered PNG).
 
-Exercises GuildCAM's castle pipeline end-to-end on real GuildDraw output,
+Exercises GuildModel's castle pipeline end-to-end on real GuildDraw output,
 headless:
 
     io_import.dxf.import_dxf      SPLINE tessellation @ 0.01 mm (posterior flip)
@@ -20,14 +20,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from guildcam.core.io_import.dxf import import_dxf
-from guildcam.core.io_import.normalize import normalize, points_to_polygon
-from guildcam.core.io_import.validate import validate
-from guildcam.core.geometry.boxing import measure_from_polygon
-from guildcam.core.geometry.regions import partition_zones
-from guildcam.core.project.schema import CastleParams
-from guildcam.core.relief.castle import build_castle_mesh, build_castle_relief
-from guildcam.core.mesh.stl_export import export_stl
+from guildmodel.core.io_import.dxf import import_dxf
+from guildmodel.core.io_import.normalize import normalize, points_to_polygon
+from guildmodel.core.io_import.validate import validate
+from guildmodel.core.geometry.boxing import measure_from_polygon
+from guildmodel.core.geometry.regions import partition_zones
+from guildmodel.core.project.schema import CastleParams
+from guildmodel.core.relief.castle import build_castle_mesh, build_castle_relief
+from guildmodel.core.mesh.stl_export import export_stl
 
 
 def main(dxf_path: Path, stl_path: Path, png_path: Path) -> int:

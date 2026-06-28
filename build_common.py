@@ -1,17 +1,17 @@
-"""Shared PyInstaller analysis inputs for GuildCAM.
+"""Shared PyInstaller analysis inputs for GuildModel.
 
-Imported by ``guildcam.spec`` (one-folder build). Keeps the hidden imports,
+Imported by ``guildmodel.spec`` (one-folder build). Keeps the hidden imports,
 bundled data files, and excluded Qt modules in one place.
 
-Unlike GuildDraw (2D, Qt-only), GuildCAM renders 3D through PyVista/VTK, so the
+Unlike GuildDraw (2D, Qt-only), GuildModel renders 3D through PyVista/VTK, so the
 VTK binaries + QtOpenGL(Widgets) must be COLLECTED, not excluded. The package
-lives under ``src/`` (src-layout), so data is bundled to the ``guildcam/...``
+lives under ``src/`` (src-layout), so data is bundled to the ``guildmodel/...``
 dest the frozen ``__file__`` resolution expects.
 """
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 # App icon, relative to the spec directory (repo root).
-ICON_PATH = "src/guildcam/assets/icon.ico"
+ICON_PATH = "src/guildmodel/assets/icon.ico"
 
 # Heavy third-party packages that ship DLLs / data files / dynamically-imported
 # submodules PyInstaller's static analysis misses. collect_all bundles all three.
@@ -25,7 +25,7 @@ _COLLECT_ALL = [
     "trimesh",      # bundled resource data
 ]
 
-# Qt modules GuildCAM never touches — excluded to keep the bundle lean.
+# Qt modules GuildModel never touches — excluded to keep the bundle lean.
 # KEPT (do NOT exclude): QtOpenGL / QtOpenGLWidgets (VTK render surface),
 # QtSvg / QtSvgWidgets (QSvgRenderer draws the toolbar + app icon).
 _EXCLUDED_QT = [
@@ -75,13 +75,13 @@ _EXCLUDED_QT = [
     "PySide6.QtWebSockets",
 ]
 
-# GuildCAM package data, bundled to the dest the runtime expects (it locates
+# GuildModel package data, bundled to the dest the runtime expects (it locates
 # these via ``Path(__file__).parents[...] / "config"`` etc., which under a frozen
-# build resolves inside the recreated ``guildcam/`` package tree).
-_GUILDCAM_DATAS = [
-    ("src/guildcam/config", "guildcam/config"),
-    ("src/guildcam/gui/resources", "guildcam/gui/resources"),
-    ("src/guildcam/assets", "guildcam/assets"),
+# build resolves inside the recreated ``guildmodel/`` package tree).
+_GUILDMODEL_DATAS = [
+    ("src/guildmodel/config", "guildmodel/config"),
+    ("src/guildmodel/gui/resources", "guildmodel/gui/resources"),
+    ("src/guildmodel/assets", "guildmodel/assets"),
 ]
 
 
@@ -97,12 +97,12 @@ def analysis_inputs():
     # scipy / pydantic reach some submodules dynamically.
     hiddenimports += collect_submodules("scipy")
     hiddenimports += collect_submodules("pydantic")
-    hiddenimports += collect_submodules("guildcam")
+    hiddenimports += collect_submodules("guildmodel")
     # pyclipper / svgelements are small pure/binary extensions — make sure their
     # data (if any) rides along.
     datas += collect_data_files("svgelements")
 
-    datas += _GUILDCAM_DATAS
+    datas += _GUILDMODEL_DATAS
 
     return {
         "binaries": binaries,

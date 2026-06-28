@@ -4,8 +4,8 @@ A frame-front-only program must clear the hold-down screws/clamps during travels
 the same way the bed program does. `CastleCamParams.safe_z_for` raises the retract to
 the taller of the stock and the work-holding height; the post emits it on every rapid.
 """
-from guildcam.core.project.schema import CastleCamParams
-from guildcam.core.post.grbl import GRBLPost
+from guildmodel.core.project.schema import CastleCamParams
+from guildmodel.core.post.grbl import GRBLPost
 
 
 def test_safe_z_default_is_back_compatible():
