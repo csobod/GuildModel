@@ -824,8 +824,7 @@ class ParamsPanel(QTabWidget):
 
         self.relief_stepover = _spinbox(d.relief_stepover_mm, 0.2, 3.0, step=0.05)
         self.relief_stepover.setToolTip(
-            "Spacing between relief finishing passes. Lower = finer surface but "
-            "longer cut; 0.9 mm matches the Fusion reference's coverage."
+            "Spacing between relief finishing passes. Lower = finer surface, longer cut."
         )
         form.addRow("Relief stepover:", self.relief_stepover)
 
