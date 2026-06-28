@@ -55,6 +55,28 @@ def test_full_round_trip(tmp_path):
     assert b.has_program()
 
 
+def test_gdraw_source_and_components_round_trip(tmp_path):
+    """A whole-model project embeds its .gdraw source + per-component params, so a
+    .gdraw session round-trips without ever loading a single DXF (BUILDPLAN M7.1)."""
+    from guildcam.core.project.schema import Component, TempleParams
+
+    proj = ProjectSchema(job_name="Whole Model", source_file="model.gdraw")
+    proj.components = [
+        Component(id="frame_front", kind="frame_front"),
+        Component(id="temple_right", kind="temple_right",
+                  temple=TempleParams(blank_length_mm=171.0)),
+    ]
+    path = tmp_path / "model.gcam"
+    save_gcam(path, project=proj, gdraw_bytes=b"PK\x03\x04gdraw-zip-bytes")
+
+    b = load_gcam(path)
+    assert b.gdraw_bytes == b"PK\x03\x04gdraw-zip-bytes"
+    assert b.dxf_bytes is None
+    kinds = {c.kind: c for c in b.project.components}
+    assert set(kinds) == {"frame_front", "temple_right"}
+    assert kinds["temple_right"].temple.blank_length_mm == 171.0
+
+
 def test_manifest_inventory_and_checksums(tmp_path):
     path = tmp_path / "job.gcam"
     save_gcam(path, project=_project(), dxf_bytes=b"abc",

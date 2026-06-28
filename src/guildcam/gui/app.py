@@ -2353,6 +2353,9 @@ class MainWindow(QMainWindow):
         # file, and the artifacts that go into the container (the last generated
         # program, its setup sheet + machine snapshot, and the last cut report).
         self._source_dxf_bytes: Optional[bytes] = None
+        # A whole-model .gdraw is the source for a multi-component project (it has no
+        # single DXF); embedding its bytes lets a .gcam round-trip the whole session.
+        self._source_gdraw_bytes: Optional[bytes] = None
         self._source_name = ""
         self._project_path: Optional[Path] = None
         self._last_programs: dict = {}
@@ -3038,10 +3041,10 @@ class MainWindow(QMainWindow):
         if warn_bits:
             summary += "\n\n⚠ " + " · ".join(warn_bits) + " — see log."
 
-        # Fold straight into an open single-DXF project; a full multi-component
-        # model has no embedded source DXF yet (M7.x .gcam tree), so it is kept in
-        # memory and exported / saved explicitly.
-        if self._project_path is not None and self._source_dxf_bytes is not None:
+        # Fold straight into an open project (single DXF or whole .gdraw model — both
+        # are embedded, so the container stays self-contained).
+        if self._project_path is not None and (
+                self._source_dxf_bytes is not None or self._source_gdraw_bytes is not None):
             self._save_gcam_to(self._project_path, announce=False)
             self.append_log(
                 f"[project] Updated {self._project_path.name} with the worktable program.")
@@ -3627,7 +3630,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ .gcam project I/O (M5.1)
 
     def _build_project_schema(self):
-        from guildcam.core.project.schema import MachineRef, MaterialRef, ProjectSchema
+        from guildcam.core.project.schema import (
+            Component, MachineRef, MaterialRef, ProjectSchema, component_param_field)
+        self._sync_active_workspace()     # capture the active component's live dock edits
         cam = self.params.cam_params()
         job = self._source_name.rsplit(".", 1)[0] if self._source_name else "Untitled Frame"
         proj = ProjectSchema(
@@ -3640,13 +3645,32 @@ class MainWindow(QMainWindow):
         )
         proj.cam.material = MaterialRef(name=self.params.material_name())
         proj.worktable = self._worktable          # the tagged bed, if any (M7.4)
+        # One Component per workspace, carrying its kind + edited params, so a whole-
+        # model (.gdraw) session round-trips — not just the active frame (M7.1).
+        comps = []
+        ws_param = {"castle": "castle_params", "temple": "temple_params",
+                    "base_curve_block": "block_params"}
+        for ws in self._workspaces:
+            field = component_param_field(ws.kind)
+            param = getattr(ws, ws_param[field], None)
+            kwargs = dict(
+                id=ws.source_workspace or ws.kind.value, kind=ws.kind,
+                label=ws.label, enabled=ws.enabled,
+                source_workspace=ws.source_workspace, source_file=self._source_name,
+                has_program=ws.program_stored)
+            if param is not None:
+                kwargs[field] = param
+            comps.append(Component(**kwargs))
+        if comps:
+            proj.components = comps
         return proj
 
     def _save_gcam_to(self, path: Path, announce: bool = True) -> bool:
         from guildcam.core.project.gcam import save_gcam
         from guildcam.core.post.machine import load_machine_profile
-        if self._source_dxf_bytes is None:
-            QMessageBox.warning(self, "No design", "Import a DXF before saving a project.")
+        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
+            QMessageBox.warning(self, "No design",
+                                "Open a drawing (.gdraw) or import a DXF before saving a project.")
             return False
         cam = self.params.cam_params()
         config_dir = Path(__file__).parent.parent / "config"
@@ -3660,6 +3684,7 @@ class MainWindow(QMainWindow):
             save_gcam(
                 path, project=self._build_project_schema(),
                 dxf_bytes=self._source_dxf_bytes,
+                gdraw_bytes=self._source_gdraw_bytes,
                 programs=self._last_programs or None,
                 machine=machine, setup=self._last_setup, report=self._last_report,
             )
@@ -3678,8 +3703,9 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_save_project(self) -> None:
-        if self._source_dxf_bytes is None:
-            QMessageBox.warning(self, "No design", "Import a DXF before saving a project.")
+        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
+            QMessageBox.warning(self, "No design",
+                                "Open a drawing (.gdraw) or import a DXF before saving a project.")
             return
         default = self._project_path or (
             Path(self._prefs["last_output_dir"] or ".")
@@ -3730,7 +3756,18 @@ class MainWindow(QMainWindow):
         self.append_log(
             f"[project] Opened {path.name} "
             f"({'with program' if bundle.has_program() else 'no program yet'})")
-        if bundle.dxf_bytes:
+        if bundle.gdraw_bytes:
+            # Whole-model project: rebuild every component from the embedded drawing,
+            # then overlay the saved per-component params (M7.1 round-trip).
+            import tempfile
+            tmp = Path(tempfile.gettempdir()) / f"gcam_{path.stem}.gdraw"
+            tmp.write_bytes(bundle.gdraw_bytes)
+            self._source_gdraw_bytes = bundle.gdraw_bytes
+            self._source_dxf_bytes = None
+            self._load_model(tmp, from_project=True)
+            self._source_name = proj.source_file or tmp.name
+            self._apply_components_to_workspaces(proj.components)
+        elif bundle.dxf_bytes:
             import tempfile
             tmp = Path(tempfile.gettempdir()) / f"gcam_{path.stem}.dxf"
             tmp.write_bytes(bundle.dxf_bytes)
@@ -3739,7 +3776,7 @@ class MainWindow(QMainWindow):
             self._source_name = proj.source_file or tmp.name
         else:
             QMessageBox.warning(self, "No DXF",
-                                "This project has no embedded DXF; parameters restored only.")
+                                "This project has no embedded design; parameters restored only.")
 
     # ------------------------------------------------------------------ preferences
 
@@ -4116,9 +4153,13 @@ class MainWindow(QMainWindow):
         if path_str:
             self._load_model(Path(path_str))
 
-    def _load_model(self, path: Path) -> None:
+    def _load_model(self, path: Path, *, from_project: bool = False) -> None:
         """Import a GuildDraw ``.gdraw`` as a multi-component project (M7.3): one
-        workspace tab per component (frame front + temples + base-curve templates)."""
+        workspace tab per component (frame front + temples + base-curve templates).
+
+        ``from_project`` rebuilds the workspaces from a ``.gcam``'s embedded drawing
+        (a temp file): the caller keeps the project path / window title / recents and
+        overlays the saved per-component params, so we skip those here."""
         from guildcam.core.io_import.gdraw import GdrawError
         self.status_lbl.setText(f"Loading {path.name}…")
         self.append_log(f"[model] {path.name}")
@@ -4137,10 +4178,17 @@ class MainWindow(QMainWindow):
             return
 
         self._source_name = path.name
-        # A whole-model .gcam (the components/<id>/ tree) is M7.6; for now per-
-        # component Generate works in each tab, but Save Project stays frame-bound.
+        # Retain the .gdraw bytes so a saved .gcam is self-contained: reopening
+        # rebuilds every component's geometry from this embedded drawing, then
+        # overlays the saved per-component params (see _build_project_schema /
+        # _open_project). The single-DXF source does not apply to a whole model.
+        try:
+            self._source_gdraw_bytes = path.read_bytes()
+        except Exception:
+            self._source_gdraw_bytes = None
         self._source_dxf_bytes = None
-        self._project_path = None
+        if not from_project:
+            self._project_path = None
         self._workspaces = workspaces
         self._active_ws = -1
         self._populate_component_tabs()
@@ -4151,11 +4199,29 @@ class MainWindow(QMainWindow):
             + ", ".join(populated))
         self._dxf_loaded = True
         self._activate_workspace(0)
-        self.setWindowTitle(f"GuildCAM  —  {path.name}")
-        self.status_lbl.setText(
-            f"Loaded drawing: {path.name}  ({len(populated)} of {len(workspaces)} "
-            f"components) — Build 3D to model them all")
-        self._add_recent(str(path))
+        if not from_project:
+            self.setWindowTitle(f"GuildCAM  —  {path.name}")
+            self.status_lbl.setText(
+                f"Loaded drawing: {path.name}  ({len(populated)} of {len(workspaces)} "
+                f"components) — Build 3D to model them all")
+            self._add_recent(str(path))
+
+    def _apply_components_to_workspaces(self, components) -> None:
+        """Overlay saved per-component params (from a reopened .gcam) onto the
+        freshly-rebuilt workspaces, matched by kind (M7.1)."""
+        from guildcam.core.project.schema import component_param_field
+        ws_attr = {"castle": "castle_params", "temple": "temple_params",
+                   "base_curve_block": "block_params"}
+        by_kind = {c.kind: c for c in (components or [])}
+        for ws in self._workspaces:
+            comp = by_kind.get(ws.kind)
+            if comp is None:
+                continue
+            ws.enabled = comp.enabled
+            field = component_param_field(ws.kind)
+            setattr(ws, ws_attr[field], getattr(comp, field))
+        if 0 <= self._active_ws < len(self._workspaces):
+            self._activate_workspace(self._active_ws)   # push restored params into the dock
 
     def _load_dxf(self, path: Path, *, from_project: bool = False) -> None:
         if self._import_thread is not None and self._import_thread.isRunning():
@@ -4169,6 +4235,7 @@ class MainWindow(QMainWindow):
             self._source_name = path.name
         except Exception:
             self._source_dxf_bytes = None
+        self._source_gdraw_bytes = None        # a DXF is a single frame front, not a model
         if not from_project:
             # A fresh DXF starts a new (unsaved) project; drop stale artifacts.
             self._project_path = None

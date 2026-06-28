@@ -5,8 +5,9 @@ whole project in GuildCAM with no external files and **(b)** hand the job to a
 gSender fork. Layout:
 
     manifest.json      format / app / version, timestamps, run mode, SHA-256 inventory
-    project.json       the full ProjectSchema (boxing / castle / cam_params / …)
-    source.dxf         the imported GuildDraw DXF (self-contained reopen)
+    project.json       the full ProjectSchema (boxing / castle / cam_params / components / …)
+    source.dxf         the imported GuildDraw DXF (single frame-front reopen)
+    source.gdraw       OR a whole-model GuildDraw drawing (multi-component reopen)
     program/*.nc       generated G-code (posterior_cut.nc [, back_cut.nc])
     machine.yaml       snapshot of the active MachineProfile
     setup.json         setup sheet (tool, feeds, op order, cut lengths, est. time)
@@ -38,6 +39,7 @@ FORMAT_VERSION = 1
 _MANIFEST = "manifest.json"
 _PROJECT = "project.json"
 _SOURCE = "source.dxf"
+_SOURCE_GDRAW = "source.gdraw"   # a whole-model GuildDraw drawing (multi-component)
 _MACHINE = "machine.yaml"
 _SETUP = "setup.json"
 _REPORT = "cut_report.json"
@@ -76,6 +78,7 @@ class GcamBundle:
     project: ProjectSchema
     manifest: dict
     dxf_bytes: bytes | None = None
+    gdraw_bytes: bytes | None = None
     programs: dict[str, str] = field(default_factory=dict)
     machine: dict | None = None
     setup: dict | None = None
@@ -96,6 +99,7 @@ def save_gcam(
     *,
     project: ProjectSchema,
     dxf_bytes: bytes | None = None,
+    gdraw_bytes: bytes | None = None,
     programs: dict[str, str] | None = None,
     machine: "MachineProfile | dict | None" = None,
     setup: dict | None = None,
@@ -113,6 +117,8 @@ def save_gcam(
     }
     if dxf_bytes is not None:
         files[_SOURCE] = bytes(dxf_bytes)
+    if gdraw_bytes is not None:
+        files[_SOURCE_GDRAW] = bytes(gdraw_bytes)
     for name, text in (programs or {}).items():
         files[f"{_PROGRAM_DIR}/{name}"] = text.encode("utf-8")
     if machine is not None:
@@ -186,6 +192,7 @@ def load_gcam(path, verify: bool = True) -> GcamBundle:
             project=project,
             manifest=manifest,
             dxf_bytes=zf.read(_SOURCE) if _SOURCE in names else None,
+            gdraw_bytes=zf.read(_SOURCE_GDRAW) if _SOURCE_GDRAW in names else None,
             programs=programs,
             machine=yaml.safe_load(zf.read(_MACHINE)) if _MACHINE in names else None,
             setup=json.loads(zf.read(_SETUP)) if _SETUP in names else None,
