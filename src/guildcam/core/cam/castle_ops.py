@@ -206,20 +206,24 @@ def _densify_xy(coords: list, spacing: float) -> np.ndarray:
                             np.interp(s, cum, pts[:, 1])])
 
 
-def _smooth_path_z(zs: np.ndarray, window: int = 7) -> np.ndarray:
-    """Light moving-average on a relief path's Z to calm cutter-location-surface
-    jitter on steep slopes — the zig-zag the maker sees on the nosepad (BUILDPLAN M8).
-    The CL surface sits ABOVE the smooth design surface, so averaging stays above it
-    (gouge-safe; `test_fine_relief_never_gouges` guards it). Endpoints are kept exact
-    so the plunge entry and path joins are unaffected."""
-    n = len(zs)
-    if n < 3 or window < 3:
-        return zs
-    half = window // 2
-    padded = np.pad(zs, half, mode="edge")        # edge-pad so interior points near the
-    sm = np.convolve(padded, np.ones(window) / float(window), mode="valid")  # ends smooth too
-    sm[0], sm[-1] = zs[0], zs[-1]                 # keep the very ends exact (plunge / joins)
-    return sm
+def _bilinear_sample(zgrid: np.ndarray, xs: np.ndarray, ys: np.ndarray,
+                     ox: float, oy: float, res: float) -> np.ndarray:
+    """Bilinearly sample a heightfield at arbitrary world (xs, ys).
+
+    The relief path runs at an angle across the grid; the nearest-cell sample
+    (`zgrid[round(y), round(x)]`) snaps between adjacent rows/cols and aliases
+    into a zig-zag on steep walls — the nosepad jitter the maker saw (BUILDPLAN
+    M8). Bilinear follows the true cutter-location height smoothly and, being the
+    faithful CL value at the exact xy, never dips below it (no convex-peak gouge —
+    unlike a moving average, which lowers convex tops)."""
+    cx = (xs - ox) / res
+    cy = (ys - oy) / res
+    x0 = np.clip(np.floor(cx).astype(int), 0, zgrid.shape[1] - 2)
+    y0 = np.clip(np.floor(cy).astype(int), 0, zgrid.shape[0] - 2)
+    fx = np.clip(cx - x0, 0.0, 1.0)
+    fy = np.clip(cy - y0, 0.0, 1.0)
+    return (zgrid[y0, x0] * (1 - fx) * (1 - fy) + zgrid[y0, x0 + 1] * fx * (1 - fy)
+            + zgrid[y0 + 1, x0] * (1 - fx) * fy + zgrid[y0 + 1, x0 + 1] * fx * fy)
 
 
 def contour_parallel_rings(body: Polygon, stepover_mm: float,
@@ -339,20 +343,21 @@ def relief_ops(
             idx = np.flatnonzero(m)
             if idx.size < 2:
                 continue
-            zline = zgrid[ri, ci]
+            zline = _bilinear_sample(zgrid, dp[:, 0], dp[:, 1], ox, oy, res)
             for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
                 if run.size < 2:
                     continue
-                zr = _smooth_path_z(zline[run])      # calm steep-slope Z jitter (M8)
-                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zr[j]))
-                       for j, k in enumerate(run)]
+                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
+                       for k in run]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
-    # Finish only where the target sits below the stock surface — skip the flat-top
-    # regions where the relief IS the stock top (those were emitting zero-material
-    # "skim" fragments, each a full retract + plunge for nothing). Mirrors the rough
-    # pass's stock-aware mask; removes the bulk of the wasted Fine Relief motion.
-    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
+    # Finish the whole in-body posterior surface, but OUTSIDE the body skip the
+    # zero-material flat band (those scattered air skims were the wasted "tiny bump
+    # + full retract" motion). An earlier version skipped every flat-top-at-stock
+    # cell, which also dropped the in-body tower caps — leaving the nosepad top
+    # unfinished (the maker's "top of the nosepad didn't get cut"). Facing the body
+    # at stock height matches the proven Fusion reference; the air-band skip stays.
+    _emit(fine, z_fine, band & (inside | (z_fine < stock_cls.z - eps)))
     _emit(rough, z_rough, cut_rough)
     return rough, fine
 
