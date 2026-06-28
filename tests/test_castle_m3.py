@@ -120,10 +120,12 @@ def test_fine_relief_full_surface(program, demo_inputs):
     zmin, zmax = op.z_range()
     top = castle.stock.total_pad_height_mm
     assert zmin == pytest.approx(4.2, abs=0.01)
-    # Finishes the whole in-body surface up to the stock top: the nosepad towers sit
-    # at stock height, so the fine pass faces their caps (matching the Fusion
-    # reference). Only the zero-material band OUTSIDE the body is skipped (M8).
-    assert zmax == pytest.approx(top, abs=0.1)
+    # Finishes the real relief up to just below the stock surface, but skips every
+    # flat top already at stock height (the nosepad tower caps + the outside band):
+    # cutting those removes nothing and just makes the rings peck in and out of the
+    # cap. So the fine envelope tops out a hair below the stock surface (M8).
+    assert zmax < top
+    assert zmax == pytest.approx(top - 0.05, abs=0.1)
     body = relief.partition.body
     bx = op.xy_bounds()
     assert bx[0] == pytest.approx(body.bounds[0], abs=TOOL_R + 0.8)
@@ -263,6 +265,6 @@ def test_against_reference_nc(program):
     ref_fine_cut = [z for z in ref_fine if z < 15]           # drop retracts
     zmin, zmax = ops["Fine Relief"].z_range()
     assert zmin == pytest.approx(min(ref_fine_cut), abs=0.05)
-    # Our fine pass faces the in-body towers up to the stock top, same as the
-    # reference (the air-skims it emits outside the body are what we drop).
-    assert zmax == pytest.approx(max(ref_fine_cut), abs=0.05)
+    # We skip the zero-material skim cuts at the stock top that the reference (Fusion)
+    # still emits, so our fine envelope tops out just below the stock surface (M8).
+    assert zmax < max(ref_fine_cut)

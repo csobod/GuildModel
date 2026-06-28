@@ -351,13 +351,14 @@ def relief_ops(
                        for k in run]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
-    # Finish the whole in-body posterior surface, but OUTSIDE the body skip the
-    # zero-material flat band (those scattered air skims were the wasted "tiny bump
-    # + full retract" motion). An earlier version skipped every flat-top-at-stock
-    # cell, which also dropped the in-body tower caps — leaving the nosepad top
-    # unfinished (the maker's "top of the nosepad didn't get cut"). Facing the body
-    # at stock height matches the proven Fusion reference; the air-band skip stays.
-    _emit(fine, z_fine, band & (inside | (z_fine < stock_cls.z - eps)))
+    # Finish only where the target sits BELOW the stock surface; skip every flat-top
+    # cell that already sits at stock height (the nosepad tower caps + the outside
+    # band). Cutting those removes zero material but makes the concentric rings weave
+    # in and out of the cap — Z bouncing 5↔10 (back-and-forth) and short runs with a
+    # retract between (pecking), slow and hard on the tool. The cap is the highest
+    # point of the frame = the uncut blank back; to give it a machined top, lower the
+    # nosepad height a hair (a design param) rather than skim at stock height.
+    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
     _emit(rough, z_rough, cut_rough)
     return rough, fine
 
