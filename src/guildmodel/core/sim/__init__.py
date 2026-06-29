@@ -16,6 +16,7 @@ from .report import Completeness, Gouge, CutReport, verify
 from .playback import (
     FloorSnapshot, RemovalPlan, RemovalPlayback, build_removal_plan, plan_collisions,
     plan_floor_to, plan_stamp_forward, simulate_removal, simulate_steps, steps_from_ops,
+    motion_steps_from_program,
     tool_envelope, tool_profile_dims, tool_radius_below,
 )
 from .bed import (
@@ -32,7 +33,7 @@ __all__ = [
     "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
     "build_bed_removal_plan",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
-    "steps_from_ops", "tool_envelope", "tool_profile_dims", "tool_radius_below",
+    "steps_from_ops", "motion_steps_from_program", "tool_envelope", "tool_profile_dims", "tool_radius_below",
     "RemovalPlan", "build_removal_plan", "plan_floor_to", "plan_stamp_forward",
     "plan_collisions",
 ]

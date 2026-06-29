@@ -1217,7 +1217,7 @@ class SimWorker(_ProgressWorker):
             from guildmodel.core.sim import (
                 ToolProfile, achieved_floor, achieved_floor_grouped,
                 cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
-                build_removal_plan, steps_from_ops,
+                build_removal_plan, steps_from_ops, motion_steps_from_program,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1295,7 +1295,11 @@ class SimWorker(_ProgressWorker):
                 self.castle.stock, resolution=f.resolution,
                 origin=f.origin, shape=f.z.shape)
             plan = build_removal_plan(
-                steps_from_ops(ops, ToolProfile.from_tool(tool)),
+                motion_steps_from_program(
+                    post.to_string(), ToolProfile.from_tool(tool),
+                    profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
+                    rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
+                    base_spacing=f.resolution),
                 stock_hf.z, f.origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, tool)
             self.finished.emit(report, report.summary_lines(), plan)
@@ -1350,7 +1354,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildmodel.core.sim import (
                 ToolProfile, achieved_floor_grouped,
                 cutting_paths_from_program_grouped, verify,
-                build_removal_plan, steps_from_ops,
+                build_removal_plan, steps_from_ops, motion_steps_from_program,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1419,7 +1423,11 @@ class FlatSimWorker(_ProgressWorker):
             self._progress("Building playback", 0.96)
             stock_top = np.full(f.z.shape, float(top_z), dtype=float)
             plan = build_removal_plan(
-                steps_from_ops(ops, ToolProfile.from_tool(fallback_tool)),
+                motion_steps_from_program(
+                    post.to_string(), ToolProfile.from_tool(fallback_tool),
+                    profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
+                    rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
+                    base_spacing=f.resolution),
                 stock_top, f.origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, report.summary_lines(), plan)

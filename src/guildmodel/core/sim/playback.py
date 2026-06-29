@@ -61,6 +61,28 @@ def steps_from_ops(
     return steps
 
 
+def motion_steps_from_program(
+    gcode: str, default: ToolProfile, *, profiles: dict | None = None,
+    rapid_mmpm: float = 3000.0, feed_mmpm: float = 750.0, base_spacing: float = 0.4,
+) -> list[tuple]:
+    """Playback steps for the FULL posted motion — cuts AND rapids (BUILDPLAN M8
+    Part B). Each step is ``(label, profile, [polyline], is_cut, spacing)``. Rapids
+    are kept (so the playback animates the retract / traverse / descend) and flagged
+    ``is_cut=False`` so no material is removed along them. The per-step SPACING
+    time-weights the run: a rapid is densified at ``base_spacing·rapid/feed`` (coarser
+    → fewer frames → it plays back fast), a cut at ``base_spacing`` — so the uniform
+    scrubber spends time ∝ length/rate and its duration tracks the real cycle."""
+    from .paths import motion_runs_from_program
+    profiles = profiles or {}
+    cut_sp = max(1e-3, base_spacing)
+    rapid_sp = max(cut_sp, base_spacing * rapid_mmpm / max(1.0, feed_mmpm))
+    steps = []
+    for label, tool, poly, is_cut in motion_runs_from_program(gcode):
+        prof = profiles[tool] if (tool and tool in profiles) else default
+        steps.append((label, prof, [poly], is_cut, cut_sp if is_cut else rapid_sp))
+    return steps
+
+
 def simulate_steps(
     steps: list[Step],
     origin: tuple[float, float],
@@ -294,6 +316,7 @@ class RemovalPlan:
     seg_bounds: list                 # cumulative position counts, len = n_segments + 1
     seg_kernel: list = field(repr=False)
     seg_label: list
+    seg_cut: list = field(default_factory=list)   # per-seg: True=cuts material, False=rapid
     op_tool_geom: dict = field(default_factory=dict)
     keyframes: list = field(default_factory=list, repr=False)
     keep_outs: list = field(default_factory=list)
@@ -348,13 +371,18 @@ def build_removal_plan(
     seg_pos: list = []
     seg_kernel: list = []
     seg_label: list = []
-    for label, prof, paths in steps:
-        chunks = [densify(p, spacing) for p in paths if len(p) >= 1]
+    seg_cut: list = []
+    for step in steps:
+        label, prof, paths = step[0], step[1], step[2]
+        is_cut = step[3] if len(step) > 3 else True       # 3-tuple steps = all cuts
+        sp = step[4] if len(step) > 4 else spacing         # per-step time-weighted spacing
+        chunks = [densify(p, sp) for p in paths if len(p) >= 1]
         if not chunks:
             continue
         seg_pos.append(np.vstack(chunks))
         seg_kernel.append(_kern(prof))
         seg_label.append(label)
+        seg_cut.append(bool(is_cut))
 
     positions = np.vstack(seg_pos) if seg_pos else np.empty((0, 3))
     seg_bounds = [0]
@@ -369,10 +397,12 @@ def build_removal_plan(
         gidx, target = 0, step
         for si, P in enumerate(seg_pos):
             kern = seg_kernel[si]
+            cut = seg_cut[si]
             i, n = 0, len(P)
             while i < n:
                 take = max(1, min(n - i, target - gidx))
-                _stamp_points(floor, P[i:i + take], kern, origin, resolution, shape)
+                if cut:                          # rapids move the tool but remove nothing
+                    _stamp_points(floor, P[i:i + take], kern, origin, resolution, shape)
                 i += take
                 gidx += take
                 if gidx >= target and gidx < total:
@@ -381,7 +411,7 @@ def build_removal_plan(
         keyframes_list.append((total, floor.copy()))
 
     return RemovalPlan(stock_top, tuple(origin), resolution, positions, seg_bounds,
-                       seg_kernel, seg_label, keyframes=keyframes_list)
+                       seg_kernel, seg_label, seg_cut=seg_cut, keyframes=keyframes_list)
 
 
 def plan_stamp_forward(plan: RemovalPlan, floor: np.ndarray, a: int, b: int) -> None:
@@ -391,6 +421,8 @@ def plan_stamp_forward(plan: RemovalPlan, floor: np.ndarray, a: int, b: int) -> 
     if a >= b:
         return
     for si in range(len(plan.seg_label)):
+        if plan.seg_cut and not plan.seg_cut[si]:     # don't remove material on rapids
+            continue
         s0, s1 = plan.seg_bounds[si], plan.seg_bounds[si + 1]
         lo, hi = max(a, s0), min(b, s1)
         if lo < hi:

@@ -190,6 +190,98 @@ def cutting_paths_from_program(gcode: str, chord_mm: float = 0.3) -> list[list[P
     return [p for p in paths if len(p) >= 1]
 
 
+_OP_COMMENT = re.compile(r"-{2,}\s*(.+?)\s*-{2,}")
+
+
+def motion_runs_from_program(
+    gcode: str, chord_mm: float = 0.3,
+) -> list[tuple[str, str | None, list[Point3], bool]]:
+    """Parse the FULL posted motion — cuts AND rapids — into ordered runs for the
+    playback (BUILDPLAN M8 Part B). Each run is ``(op_label, tool_name, polyline,
+    is_cut)``: a maximal stretch of same-class motion (rapid G0 vs feed G1/2/3) under
+    one op/tool. Rapids are kept (so the playback animates the retract / traverse /
+    descend) and flagged ``is_cut=False`` so the simulator removes no material along
+    them. Arcs are flattened; a run starts at the tool's current position so the
+    motion is continuous."""
+    x = y = z = 0.0
+    motion = 0
+    incremental = False
+    scale = 1.0
+    tool: str | None = None
+    label = ""
+    runs: list = []
+    cur: list[Point3] = []
+    cur_key = None                      # (is_cut, label, tool)
+
+    def _flush():
+        nonlocal cur, cur_key
+        if len(cur) >= 2 and cur_key is not None:
+            runs.append((cur_key[1], cur_key[2], cur, cur_key[0]))
+        cur = []
+        cur_key = None
+
+    for raw in gcode.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith((";", "(")):
+            body = s.lstrip(";(").strip()
+            mt = _TOOL_COMMENT.search(body)
+            if mt:
+                tool = mt.group(1)
+            else:
+                mo = _OP_COMMENT.match(body)
+                if mo and not mo.group(1).startswith("Tool"):
+                    label = mo.group(1)
+            continue
+        for c in (";", "("):
+            if c in s:
+                s = s.split(c, 1)[0].strip()
+        if not s:
+            continue
+        words = _WORD.findall(s)
+        if not words:
+            continue
+        if any(w[0].upper() == "G" and w[1] in ("28", "30") for w in words):
+            _flush()
+            continue
+        for letter, num in words:
+            L = letter.upper()
+            if L == "G":
+                g = int(round(float(num)))
+                if g in (0, 1, 2, 3):
+                    motion = g
+                elif g == 20:
+                    scale = 25.4
+                elif g == 21:
+                    scale = 1.0
+                elif g == 90:
+                    incremental = False
+                elif g == 91:
+                    incremental = True
+        d = {w[0].upper(): float(w[1]) * scale for w in words if w[0].upper() in "XYZIJ"}
+        if not (("X" in d) or ("Y" in d) or ("Z" in d)):
+            continue
+        nx = (x + d["X"]) if ("X" in d and incremental) else d.get("X", x)
+        ny = (y + d["Y"]) if ("Y" in d and incremental) else d.get("Y", y)
+        nz = (z + d["Z"]) if ("Z" in d and incremental) else d.get("Z", z)
+        is_cut = motion in (1, 2, 3)
+        key = (is_cut, label, tool)
+        if key != cur_key:
+            _flush()
+            cur = [(x, y, z)]
+            cur_key = key
+        if motion in (2, 3) and ("I" in d or "J" in d):
+            cur += _flatten_arc((x, y, z), (nx, ny, nz),
+                                d.get("I", 0.0), d.get("J", 0.0),
+                                ccw=(motion == 3), chord_mm=chord_mm)
+        else:
+            cur.append((nx, ny, nz))
+        x, y, z = nx, ny, nz
+    _flush()
+    return runs
+
+
 def cutting_paths_from_ops(ops, names=None) -> list[list[Point3]]:
     """Cutting polylines straight from CamOps (optionally a subset by op name)."""
     out: list[list[Point3]] = []
