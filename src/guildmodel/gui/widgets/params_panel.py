@@ -484,6 +484,11 @@ class ParamsPanel(QTabWidget):
         for sb in (self.pad_length, self.pad_width, self.pad_thickness):
             sb.setEnabled(on)
 
+    def _on_temple_snap_toggled(self, on: bool) -> None:
+        """Stock side only matters when snapping to the blank; invalidate the path."""
+        self.temple_stock_side.setEnabled(on)
+        self.cam_changed.emit()
+
     # ------------------------------------------------------------------ Temple tab
 
     def _build_temple_tab(self, lay: QVBoxLayout) -> None:
@@ -499,13 +504,23 @@ class ParamsPanel(QTabWidget):
         form.addRow("Blank length:", self.temple_blank_length)
         form.addRow("Blank width:", self.temple_blank_width)
         form.addRow("Blank thickness:", self.temple_blank_thickness)
+        self.temple_snap_blank = QCheckBox("Snap to blank end")
+        self.temple_snap_blank.setChecked(d.snap_to_blank_end)
+        self.temple_snap_blank.setToolTip(
+            "Re-centre the temple on its blank for cutting (centred across the width, "
+            "hinge butted to one short end). OFF keeps the part at its design alignment "
+            "so the cutting path matches the 2D view. 'Stock side' applies only when on.")
+        self.temple_snap_blank.toggled.connect(self._on_temple_snap_toggled)
+        form.addRow("", self.temple_snap_blank)
         self.temple_stock_side = QComboBox()
         self.temple_stock_side.addItems(["right", "left"])
         self.temple_stock_side.setCurrentText(d.stock_side)
         self.temple_stock_side.setToolTip(
-            "Which end of the blank the hinge registers to. Flip to cut with the core "
-            "shot from the left of the stock instead of the right (hinge pocket stays up).")
+            "Which end of the blank the hinge registers to (when 'Snap to blank end' is "
+            "on). Flip to cut with the core shot from the left of the stock instead of "
+            "the right (hinge pocket stays up).")
         self.temple_stock_side.currentIndexChanged.connect(self.cam_changed)
+        self.temple_stock_side.setEnabled(d.snap_to_blank_end)
         form.addRow("Stock side:", self.temple_stock_side)
 
         self.temple_engrave_depth = _spinbox(d.engrave_depth_mm, 0.0, 3.0, step=0.05, decimals=2)
@@ -1153,6 +1168,7 @@ class ParamsPanel(QTabWidget):
             engrave_centerline=self.temple_engrave_centerline.isChecked(),
             hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
+            snap_to_blank_end=self.temple_snap_blank.isChecked(),
             stock_side=self.temple_stock_side.currentText(),
             onion_skin_mm=self.temple_onion.value(),
             hand_finishing_allowance_mm=self.temple_allowance.value(),
@@ -1180,6 +1196,10 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_centerline.blockSignals(True)
         self.temple_engrave_centerline.setChecked(t.engrave_centerline)
         self.temple_engrave_centerline.blockSignals(False)
+        self.temple_snap_blank.blockSignals(True)
+        self.temple_snap_blank.setChecked(t.snap_to_blank_end)
+        self.temple_snap_blank.blockSignals(False)
+        self.temple_stock_side.setEnabled(t.snap_to_blank_end)
 
     def block_params(self) -> BaseCurveBlockParams:
         """Base-curve forming-block params from the Base Curve tab (BUILDPLAN M7.3)."""

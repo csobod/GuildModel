@@ -275,7 +275,10 @@ class TempleParams(BaseModel):
     # Snap the temple to one end of the blank so the injected metal core (a wire
     # set into the blank along its length) runs through the whole temple — the
     # HINGE/butt end registers to a short edge of the 170 mm blank (BUILDPLAN M7).
-    snap_to_blank_end: bool = True
+    # OFF (default, M11) leaves the part at its DESIGN alignment, so the cutting path
+    # matches where it sits in the 2D view; ON re-centres it on the blank (and is what
+    # makes `stock_side` meaningful). Exposed as a per-temple toggle in the dock.
+    snap_to_blank_end: bool = False
     # Which short end of the blank the HINGE/butt end registers to (M11). Cores are
     # sometimes shot from the left of the stock instead of the right; flipping the
     # side rotates the temple 180° in-plane (hinge pocket stays up) so it butts the
