@@ -506,7 +506,13 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_tool = QComboBox()
         self.temple_engrave_tool.addItems(_tool_names())
         self.temple_engrave_tool.setCurrentText(d.engrave_tool)
+        self.temple_engrave_tool.setToolTip("Bit for the ENGRAVING grooves (per temple).")
         form.addRow("Engrave tool:", self.temple_engrave_tool)
+        self.temple_hinge_tool = QComboBox()
+        self.temple_hinge_tool.addItems(_tool_names())
+        self.temple_hinge_tool.setCurrentText(d.hinge_tool)
+        self.temple_hinge_tool.setToolTip("Endmill that clears the HINGE pockets (per temple).")
+        form.addRow("Hinge-pocket tool:", self.temple_hinge_tool)
         self.temple_profile_tool = QComboBox()
         self.temple_profile_tool.addItems(_tool_names())
         self.temple_profile_tool.setCurrentText(d.profile_tool)
@@ -522,6 +528,7 @@ class ParamsPanel(QTabWidget):
                   self.temple_onion, self.temple_allowance):
             w.valueChanged.connect(self.cam_changed)
         self.temple_engrave_tool.currentIndexChanged.connect(self.cam_changed)
+        self.temple_hinge_tool.currentIndexChanged.connect(self.cam_changed)
         self.temple_profile_tool.currentIndexChanged.connect(self.cam_changed)
         lay.addWidget(grp)
 
@@ -823,7 +830,7 @@ class ParamsPanel(QTabWidget):
             _repop(self.cam_tool)
         for cb in getattr(self, "op_tool_combos", {}).values():
             _repop(cb, sentinel=True)
-        for attr in ("temple_engrave_tool", "temple_profile_tool",
+        for attr in ("temple_engrave_tool", "temple_hinge_tool", "temple_profile_tool",
                      "block_profile_tool", "block_drill_tool"):
             cb = getattr(self, attr, None)
             if cb is not None:
@@ -1127,6 +1134,7 @@ class ParamsPanel(QTabWidget):
             blank_thickness_mm=self.temple_blank_thickness.value(),
             engrave_depth_mm=self.temple_engrave_depth.value(),
             engrave_tool=self.temple_engrave_tool.currentText(),
+            hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
             onion_skin_mm=self.temple_onion.value(),
             hand_finishing_allowance_mm=self.temple_allowance.value(),
@@ -1146,6 +1154,7 @@ class ParamsPanel(QTabWidget):
         ):
             sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
         for cb, val in ((self.temple_engrave_tool, t.engrave_tool),
+                        (self.temple_hinge_tool, t.hinge_tool),
                         (self.temple_profile_tool, t.profile_tool)):
             if cb.findText(val) >= 0:
                 cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
