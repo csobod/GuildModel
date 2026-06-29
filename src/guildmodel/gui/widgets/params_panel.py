@@ -499,6 +499,14 @@ class ParamsPanel(QTabWidget):
         form.addRow("Blank length:", self.temple_blank_length)
         form.addRow("Blank width:", self.temple_blank_width)
         form.addRow("Blank thickness:", self.temple_blank_thickness)
+        self.temple_stock_side = QComboBox()
+        self.temple_stock_side.addItems(["right", "left"])
+        self.temple_stock_side.setCurrentText(d.stock_side)
+        self.temple_stock_side.setToolTip(
+            "Which end of the blank the hinge registers to. Flip to cut with the core "
+            "shot from the left of the stock instead of the right (hinge pocket stays up).")
+        self.temple_stock_side.currentIndexChanged.connect(self.cam_changed)
+        form.addRow("Stock side:", self.temple_stock_side)
 
         self.temple_engrave_depth = _spinbox(d.engrave_depth_mm, 0.0, 3.0, step=0.05, decimals=2)
         self.temple_engrave_depth.setToolTip("Groove depth below the top face.")
@@ -1136,6 +1144,7 @@ class ParamsPanel(QTabWidget):
             engrave_tool=self.temple_engrave_tool.currentText(),
             hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
+            stock_side=self.temple_stock_side.currentText(),
             onion_skin_mm=self.temple_onion.value(),
             hand_finishing_allowance_mm=self.temple_allowance.value(),
             fixture_zone=self._temple_fixture_zone,
@@ -1155,7 +1164,8 @@ class ParamsPanel(QTabWidget):
             sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
         for cb, val in ((self.temple_engrave_tool, t.engrave_tool),
                         (self.temple_hinge_tool, t.hinge_tool),
-                        (self.temple_profile_tool, t.profile_tool)):
+                        (self.temple_profile_tool, t.profile_tool),
+                        (self.temple_stock_side, t.stock_side)):
             if cb.findText(val) >= 0:
                 cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
 

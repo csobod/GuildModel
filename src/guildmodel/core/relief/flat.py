@@ -120,6 +120,39 @@ def temple_snap_offset(
     return dx, dy
 
 
+def _hinge_on_plus_x(outline: Polygon, hinge_polys: list[Polygon]) -> bool:
+    """True when the temple's HINGE end is at its +x extreme (its long axis is x)."""
+    minx, _, maxx, _ = outline.bounds
+    hx = unary_union(hinge_polys).centroid.x if hinge_polys else maxx
+    return abs(hx - maxx) <= abs(hx - minx)
+
+
+def place_temple_on_blank(
+    outline: Polygon, hinge_polys: list[Polygon], engraving: list,
+    blank_length: float, *, stock_side: str = "right", snap: bool = True,
+) -> tuple[Polygon, list[Polygon], list]:
+    """Position a temple on its blank (BUILDPLAN M11). When ``snap``, butt the HINGE
+    end against the chosen short end (``stock_side`` "right"=+x / "left"=-x), keeping
+    the hinge pocket up. If the hinge naturally points at the wrong end, the temple is
+    rotated 180° in-plane (x,y)->(-x,-y) — the same posterior flip the import applies —
+    so the body runs inward from the chosen end rather than off the blank. Returns the
+    placed (outline, hinge_polys, engraving)."""
+    from shapely.affinity import scale, translate as _translate
+    hinge_polys = list(hinge_polys)
+    engraving = [list(c) for c in engraving]
+    if not snap:
+        return outline, hinge_polys, engraving
+    if _hinge_on_plus_x(outline, hinge_polys) != (stock_side != "left"):
+        outline = scale(outline, xfact=-1.0, yfact=-1.0, origin=(0, 0))
+        hinge_polys = [scale(h, xfact=-1.0, yfact=-1.0, origin=(0, 0)) for h in hinge_polys]
+        engraving = [[(-x, -y) for x, y in c] for c in engraving]
+    dx, dy = temple_snap_offset(outline, hinge_polys, blank_length)
+    outline = _translate(outline, dx, dy)
+    hinge_polys = [_translate(h, dx, dy) for h in hinge_polys]
+    engraving = [[(x + dx, y + dy) for x, y in c] for c in engraving]
+    return outline, hinge_polys, engraving
+
+
 def temple_core_guide(
     outline: Polygon, hinge_polys: list[Polygon], temple: TempleParams,
 ) -> Polygon:

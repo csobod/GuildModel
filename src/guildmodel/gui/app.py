@@ -250,16 +250,13 @@ class FlatMeshWorker(_ProgressWorker):
             from guildmodel.core.relief.castle import build_castle_mesh
             from guildmodel.core.relief.flat import (
                 build_block_relief, build_temple_relief, temple_core_guide,
-                temple_snap_offset,
+                place_temple_on_blank,
             )
             if self.mode == "temple":
-                outline, hinge = self.outline, list(self.hinge_polys)
-                eng = [list(c) for c in self.engraving]
-                if self.temple.snap_to_blank_end:
-                    dx, dy = temple_snap_offset(outline, hinge, self.temple.blank_length_mm)
-                    outline = translate(outline, dx, dy)
-                    hinge = [translate(h, dx, dy) for h in hinge]
-                    eng = [[(x + dx, y + dy) for x, y in c] for c in eng]
+                outline, hinge, eng = place_temple_on_blank(
+                    self.outline, self.hinge_polys, self.engraving,
+                    self.temple.blank_length_mm, stock_side=self.temple.stock_side,
+                    snap=self.temple.snap_to_blank_end)
                 relief = build_temple_relief(
                     outline, self.temple, hinge, eng,
                     resolution=self.resolution, progress=self._progress)
@@ -300,7 +297,7 @@ class MultiMeshWorker(_ProgressWorker):
             from guildmodel.core.relief.castle import build_castle_mesh, build_castle_stage
             from guildmodel.core.relief.flat import (
                 build_block_relief, build_temple_relief, temple_core_guide,
-                temple_snap_offset,
+                place_temple_on_blank,
             )
             n = max(1, len(self.specs))
             for k, spec in enumerate(self.specs):
@@ -318,14 +315,11 @@ class MultiMeshWorker(_ProgressWorker):
                     mesh = build_castle_mesh(relief, progress=sub)
                     self.built.emit(spec["index"], mesh, None)
                 elif mode == "temple":
-                    outline, hinge = spec["outline"], list(spec["hinge"])
-                    eng = [list(c) for c in spec["engraving"]]
                     temple = spec["temple"]
-                    if temple.snap_to_blank_end:
-                        dx, dy = temple_snap_offset(outline, hinge, temple.blank_length_mm)
-                        outline = translate(outline, dx, dy)
-                        hinge = [translate(h, dx, dy) for h in hinge]
-                        eng = [[(x + dx, y + dy) for x, y in c] for c in eng]
+                    outline, hinge, eng = place_temple_on_blank(
+                        spec["outline"], spec["hinge"], spec["engraving"],
+                        temple.blank_length_mm, stock_side=temple.stock_side,
+                        snap=temple.snap_to_blank_end)
                     relief = build_temple_relief(
                         outline, temple, hinge, eng, resolution=self.resolution, progress=sub)
                     guide = temple_core_guide(outline, hinge, temple).bounds
@@ -725,8 +719,12 @@ class GCodeWorker(_ProgressWorker):
             f"engrave {temple.engrave_tool} → profile {temple.profile_tool}"
         )
 
-        ops = generate_temple_program(self.outline, self.engraving, temple, tools_cfg, cam,
-                                      hinge_polys=self.hinge_polys)
+        from guildmodel.core.relief.flat import place_temple_on_blank
+        outline, hinge_polys, engraving = place_temple_on_blank(
+            self.outline, self.hinge_polys, self.engraving, temple.blank_length_mm,
+            stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
+        ops = generate_temple_program(outline, engraving, temple, tools_cfg, cam,
+                                      hinge_polys=hinge_polys)
         for op in ops:
             zmin, zmax = op.z_range()
             self.progress.emit(
@@ -1375,12 +1373,17 @@ class FlatSimWorker(_ProgressWorker):
                 t = self.temple
                 # The sim target matches what the PROGRAM cuts: the temple program
                 # now mills the HINGE pockets (BUILDPLAN M7), so the relief carves
-                # them too — model, sim, and posted G-code agree on the recess.
+                # them too — model, sim, and posted G-code agree on the recess. Place
+                # the temple on its blank (M11 stock-side) first so all three agree.
+                from guildmodel.core.relief.flat import place_temple_on_blank
+                outline, hinge_polys, engraving = place_temple_on_blank(
+                    self.outline, self.hinge_polys, self.engraving, t.blank_length_mm,
+                    stock_side=t.stock_side, snap=t.snap_to_blank_end)
                 relief = build_temple_relief(
-                    self.outline, t, self.hinge_polys, self.engraving,
+                    outline, t, hinge_polys, engraving,
                     resolution=self.resolution, progress=self._progress)
-                ops = generate_temple_program(self.outline, self.engraving, t, tools_cfg, cam,
-                                              hinge_polys=self.hinge_polys)
+                ops = generate_temple_program(outline, engraving, t, tools_cfg, cam,
+                                              hinge_polys=hinge_polys)
                 contour_names, drill_names = TEMPLE_CONTOUR_OPS, set()
                 top_z, peck = t.blank_thickness_mm, 1.5
                 fallback_tool = resolve_tool(t.profile_tool, tools_cfg)
@@ -1499,9 +1502,14 @@ class NestWorker(_ProgressWorker):
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                          {"Eyewires", "Perimeter"}, set()))
                 elif mode == "temple":
+                    from guildmodel.core.relief.flat import place_temple_on_blank
+                    t = spec["temple"]
+                    t_outline, t_hinge, t_eng = place_temple_on_blank(
+                        spec["outline"], spec["hinge"], spec["engraving"],
+                        t.blank_length_mm, stock_side=t.stock_side,
+                        snap=t.snap_to_blank_end)
                     ops = generate_temple_program(
-                        spec["outline"], spec["engraving"], spec["temple"], tools, cam,
-                        hinge_polys=spec["hinge"])
+                        t_outline, t_eng, t, tools, cam, hinge_polys=t_hinge)
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                          set(TEMPLE_CONTOUR_OPS), set()))
                 else:  # block

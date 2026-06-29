@@ -272,6 +272,11 @@ class TempleParams(BaseModel):
     # set into the blank along its length) runs through the whole temple — the
     # HINGE/butt end registers to a short edge of the 170 mm blank (BUILDPLAN M7).
     snap_to_blank_end: bool = True
+    # Which short end of the blank the HINGE/butt end registers to (M11). Cores are
+    # sometimes shot from the left of the stock instead of the right; flipping the
+    # side rotates the temple 180° in-plane (hinge pocket stays up) so it butts the
+    # chosen end with the body running inward.
+    stock_side: Literal["right", "left"] = "right"
     # The injected core is a 3D *visual reference* only (not machined): a bar this
     # wide and long, laid along the temple's long axis from the hinge end.
     core_guide_width_mm: float = 2.0
