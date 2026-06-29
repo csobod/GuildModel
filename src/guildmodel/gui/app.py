@@ -3412,6 +3412,8 @@ class MainWindow(QMainWindow):
             (self._act_show_worktable, "op-fit"),
             (self._act_fit, "op-fit"),
             (self._act_log, "toggle-log"),
+            (self._act_toolpaths, "toggle-toolpaths"),
+            (self._act_inspector, "toggle-inspector"),
             (self._act_sidebar, "view-sidebar"),
         ]
         # Build the customizable action registry, then assemble the toolbar from the
@@ -3493,9 +3495,9 @@ class MainWindow(QMainWindow):
             ("show_worktable", self._act_show_worktable, "Worktable", "view", False),
             ("fit", self._act_fit, "Fit to View", "util", True),
             ("log", self._act_log, "Log Panel", "util", True),
+            ("toolpaths", self._act_toolpaths, "Toolpaths Panel", "util", True),
+            ("inspector", self._act_inspector, "Inspector Panel", "util", True),
             ("sidebar", self._act_sidebar, "Parameters Panel", "util", True),
-            ("toolpaths", self._act_toolpaths, "Toolpaths Panel", "util", False),
-            ("inspector", self._act_inspector, "Inspector Panel", "util", False),
         ]
         self._actions_by_key = {key: act for key, act, *_ in rows}
         self._action_specs = [

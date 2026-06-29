@@ -2421,6 +2421,55 @@ arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by t
 4. STEP/B-rep export, adaptive strategies, macOS/Linux — unchanged from the
    spike's exclusion list.
 
+## M11 — RC1 follow-ups: per-component flexibility & UX (post-`v1.0.0-rc1`)
+
+> Field-driven refinements found cutting real frames. The theme is **per-component
+> independence**: each part (front / each temple / each base-curve block / the
+> worktable) carries its own setup, and the whole session round-trips in the
+> `.gmodel`. Listed in rough build order (tractable → architectural).
+
+1. **Toolbar toggles for Toolpaths + Inspector.** Add the two panel toggles to the
+   toolbar after the Log toggle, each with its own icon in our SVG format. (The
+   actions already exist and live in the `util` group; flip them on-default + draw
+   `toggle-toolpaths` / `toggle-inspector`.)
+
+2. **Stock pad-block toggle.** Make the nosepad pad-block stock addition optional
+   (`StockDefinition.use_pad_block`, default on). Off ⇒ the stock is the single
+   blank whose thickness the user sets directly — for parts extruded/milled to the
+   blank alone. Relief (`stock_top_heightfield` / rough stock-aware band), sim,
+   stock canvas, and program-zero all honour it.
+
+3. **Per-component engraving bit (selectable, with a default).** Expose the engrave
+   tool as a per-component setting that defaults to a standard saved engraving bit
+   (a `tool_store` default, e.g. `engrave_vbit`). Today it is fixed. Lives on each
+   component's params + the kind-aware param dock.
+
+4. **Temple stock-side alignment (L/R).** Temples snap hinge-pocket-up to one end of
+   the blank; add a per-temple flip of WHICH side (left/right) they align to — the
+   front-alignment transform currently forces one side, but cores are sometimes shot
+   from the left. Always hinge-pocket-up. `TempleParams.stock_side` honoured by
+   `temple_snap_offset` + the flat relief; flows through per-NC and on-bed export.
+
+5. **Per-component, per-operation tool assignment.** Each component picks its own
+   tools per op (a different tool for temple hinge-pockets / outline than the frame
+   front). The M6.1 `op_tools` map exists but isn't per-component; carry it on each
+   component's params + the op-tool combos in the dock, persisted.
+
+6. **Per-component program zero + a separate worktable-bed zero.** Today the program
+   zero is in the shared CAM params, so it persists across tabs — a per-component
+   exported NC can't keep its own datum (fronts and temples as separate NC files
+   want different zeros). Move the zero per-component (each part's own datum) + give
+   the worktable bed its own; persist all in the `.gmodel`.
+
+7. **Engraving toolpath optimisation (efficient + exact) — DESIGN OPEN.** Current
+   engrave is a single depth trace of the ENGRAVING curves. For TEXT the right answer
+   is usually a **centerline (medial-axis) V-carve**: trace the glyph spine in one
+   pass while the V-bit's angle gives variable stroke width (serifs + thick/thin fall
+   out naturally) — efficient AND exact, no pocket. Alternatives: a centerline pass +
+   a rest-cleanup pass for anything the spine misses; or pure outline-trace. Hinges on
+   what the ENGRAVING layer actually contains (centerlines vs glyph outlines) — decide
+   with the user before building; this is the largest of the seven.
+
 ---
 
 # Reference
