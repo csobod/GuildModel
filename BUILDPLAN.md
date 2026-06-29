@@ -2428,6 +2428,13 @@ arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by t
 > worktable) carries its own setup, and the whole session round-trips in the
 > `.gmodel`. Listed in rough build order (tractable → architectural).
 
+**STATUS — all 7 ✅ COMPLETE (2026-06-29), 425 tests green.** Commits: toolbar
+toggles + dock side-by-side/wrap (`f84b8c8`), pad-block toggle (`5932…`), engrave
+bit + temple hinge tool `3a5221c`, temple stock-side `b08ab85`, per-component zero
+`a81a1d4`, bed zero `2e1519c`, centerline engraving `6d7acd4`. Two behaviour changes
+to air-cut on the beta temple path: the temple NC now snaps to its blank (matches the
+3D) and engraves stroke **centerlines** by default (was outline-trace).
+
 1. **Toolbar toggles for Toolpaths + Inspector.** Add the two panel toggles to the
    toolbar after the Log toggle, each with its own icon in our SVG format. (The
    actions already exist and live in the `util` group; flip them on-default + draw
@@ -2461,14 +2468,15 @@ arises. (**Temples** and **base-curve forming blocks** were moved *into* v1 by t
    want different zeros). Move the zero per-component (each part's own datum) + give
    the worktable bed its own; persist all in the `.gmodel`.
 
-7. **Engraving toolpath optimisation (efficient + exact) — DESIGN OPEN.** Current
-   engrave is a single depth trace of the ENGRAVING curves. For TEXT the right answer
-   is usually a **centerline (medial-axis) V-carve**: trace the glyph spine in one
-   pass while the V-bit's angle gives variable stroke width (serifs + thick/thin fall
-   out naturally) — efficient AND exact, no pocket. Alternatives: a centerline pass +
-   a rest-cleanup pass for anything the spine misses; or pure outline-trace. Hinges on
-   what the ENGRAVING layer actually contains (centerlines vs glyph outlines) — decide
-   with the user before building; this is the largest of the seven.
+7. **Engraving toolpath optimisation (efficient + exact) — ✅ DONE (centerline).**
+   Confirmed the ENGRAVING layer holds **closed glyph outlines**; user chose the
+   fixed-depth centerline. `core/cam/engrave_centerline.py` derives each stroke's
+   medial axis (even-odd ink fill → interior Voronoi ridges with boundary-spoke
+   rejection → leaf-spur pruning → merged polylines; outline fallback on failure) and
+   both `generate_temple_program` and `build_temple_relief` engrave it (gated by
+   `TempleParams.engrave_centerline`, default on) so NC/model/sim agree. The V-carve
+   variable-width variant (use the V-bit angle for thick/thin) is the natural future
+   toggle on the same medial axis.
 
 ---
 
