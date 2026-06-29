@@ -111,6 +111,10 @@ def generate_temple_program(
 
     hinges = [p for p in hinge_polys if p is not None and not p.is_empty]
 
+    if engraving_curves and temple.engrave_centerline:
+        from .engrave_centerline import engraving_centerlines
+        engraving_curves = engraving_centerlines(engraving_curves)
+
     ops: list[CamOp] = []
     if hinges:
         hinge_op = temple_hinge_pocket_op(hinges, temple, tools_cfg, params)

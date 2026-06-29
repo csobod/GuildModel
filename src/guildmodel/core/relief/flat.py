@@ -192,6 +192,9 @@ def build_temple_relief(
     groove_floor = thickness - temple.engrave_depth_mm
     grooves: list[tuple[Polygon, float]] = []
     r = max(engrave_tool_radius, 0.15)
+    if engraving_curves and temple.engrave_centerline:   # match the program (M11 #7)
+        from ..cam.engrave_centerline import engraving_centerlines
+        engraving_curves = engraving_centerlines(engraving_curves)
     for curve in engraving_curves:
         if len(curve) >= 2:
             g = LineString([(float(x), float(y)) for x, y in curve]).buffer(r)

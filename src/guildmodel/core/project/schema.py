@@ -263,6 +263,10 @@ class TempleParams(BaseModel):
     engrave_depth_mm: float = 0.3          # groove depth below the top face
     engrave_tool: str = "engrave_vbit"     # small tool for the ENGRAVING passes
     hinge_tool: str = "flat_2mm"           # endmill that clears the HINGE pockets
+    # M11 #7: engrave a single fixed-depth line down each stroke's CENTRE (medial
+    # axis of the closed glyph outlines) instead of tracing the outlines — one pass
+    # per stroke, no double-cut ridge. Off = trace the raw ENGRAVING outlines.
+    engrave_centerline: bool = True
     profile_tool: str = "flat_3175"        # outline through-cut tool
     onion_skin_mm: float = 0.4             # axial stock left under the profile
     hand_finishing_allowance_mm: float = 0.1

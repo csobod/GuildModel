@@ -516,6 +516,14 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_tool.setCurrentText(d.engrave_tool)
         self.temple_engrave_tool.setToolTip("Bit for the ENGRAVING grooves (per temple).")
         form.addRow("Engrave tool:", self.temple_engrave_tool)
+        self.temple_engrave_centerline = QCheckBox("Engrave stroke centerlines")
+        self.temple_engrave_centerline.setChecked(d.engrave_centerline)
+        self.temple_engrave_centerline.setToolTip(
+            "Engrave one fixed-depth line down the centre of each stroke (the medial "
+            "axis of the glyph outlines) — one pass per stroke. Off traces the raw "
+            "ENGRAVING outlines instead.")
+        self.temple_engrave_centerline.toggled.connect(self.cam_changed)
+        form.addRow("", self.temple_engrave_centerline)
         self.temple_hinge_tool = QComboBox()
         self.temple_hinge_tool.addItems(_tool_names())
         self.temple_hinge_tool.setCurrentText(d.hinge_tool)
@@ -1142,6 +1150,7 @@ class ParamsPanel(QTabWidget):
             blank_thickness_mm=self.temple_blank_thickness.value(),
             engrave_depth_mm=self.temple_engrave_depth.value(),
             engrave_tool=self.temple_engrave_tool.currentText(),
+            engrave_centerline=self.temple_engrave_centerline.isChecked(),
             hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
             stock_side=self.temple_stock_side.currentText(),
@@ -1168,6 +1177,9 @@ class ParamsPanel(QTabWidget):
                         (self.temple_stock_side, t.stock_side)):
             if cb.findText(val) >= 0:
                 cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
+        self.temple_engrave_centerline.blockSignals(True)
+        self.temple_engrave_centerline.setChecked(t.engrave_centerline)
+        self.temple_engrave_centerline.blockSignals(False)
 
     def block_params(self) -> BaseCurveBlockParams:
         """Base-curve forming-block params from the Base Curve tab (BUILDPLAN M7.3)."""
