@@ -457,6 +457,13 @@ class ParamsPanel(QTabWidget):
         form.addRow("Blank width:", self.blank_width)
         form.addRow("Blank thickness:", self.blank_thickness)
 
+        self.use_pad_block = QCheckBox("Add nosepad pad block")
+        self.use_pad_block.setChecked(True)
+        self.use_pad_block.setToolTip(
+            "Raised pad block stacked on the blank for the tall nosepad towers. Off = "
+            "mill the model from the single blank (set its thickness directly).")
+        form.addRow("", self.use_pad_block)
+
         self.pad_length = _spinbox(45.0, 10.0, 120.0, step=1.0, decimals=1)
         self.pad_width = _spinbox(45.0, 10.0, 120.0, step=1.0, decimals=1)
         self.pad_thickness = _spinbox(4.0, 0.5, 10.0, step=0.5, decimals=1)
@@ -467,8 +474,15 @@ class ParamsPanel(QTabWidget):
         for sb in (self.blank_length, self.blank_width, self.blank_thickness,
                    self.pad_length, self.pad_width, self.pad_thickness):
             sb.valueChanged.connect(self.stock_changed)
+        self.use_pad_block.toggled.connect(self._on_pad_block_toggled)
+        self.use_pad_block.toggled.connect(self.stock_changed)
 
         lay.addWidget(grp)
+
+    def _on_pad_block_toggled(self, on: bool) -> None:
+        """Grey out the pad-block dimensions when the pad block is off."""
+        for sb in (self.pad_length, self.pad_width, self.pad_thickness):
+            sb.setEnabled(on)
 
     # ------------------------------------------------------------------ Temple tab
 
@@ -1013,6 +1027,7 @@ class ParamsPanel(QTabWidget):
                 pad_block_length_mm=self.pad_length.value(),
                 pad_block_width_mm=self.pad_width.value(),
                 pad_block_thickness_mm=self.pad_thickness.value(),
+                use_pad_block=self.use_pad_block.isChecked(),
             ),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
@@ -1043,6 +1058,10 @@ class ParamsPanel(QTabWidget):
             sb.blockSignals(True)
             sb.setValue(val)
             sb.blockSignals(False)
+        self.use_pad_block.blockSignals(True)
+        self.use_pad_block.setChecked(c.stock.use_pad_block)
+        self.use_pad_block.blockSignals(False)
+        self._on_pad_block_toggled(c.stock.use_pad_block)
         self.castle_changed.emit()
         self.stock_changed.emit()
 

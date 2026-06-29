@@ -96,13 +96,15 @@ def stock_top_heightfield(
     Xs, Ys = np.meshgrid(xs, ys)
 
     z = np.full(shape, stock.blank_thickness_mm, dtype=np.float64)
-    half_l = stock.pad_block_length_mm / 2.0
-    half_w = stock.pad_block_width_mm / 2.0
-    in_pad = (
-        (np.abs(Xs - stock.pad_block_dx_mm) <= half_l)
-        & (np.abs(Ys - stock.pad_block_dy_mm) <= half_w)
-    )
-    z[in_pad] = stock.total_pad_height_mm
+    if (stock.use_pad_block and stock.pad_block_length_mm > 0
+            and stock.pad_block_width_mm > 0):
+        half_l = stock.pad_block_length_mm / 2.0
+        half_w = stock.pad_block_width_mm / 2.0
+        in_pad = (
+            (np.abs(Xs - stock.pad_block_dx_mm) <= half_l)
+            & (np.abs(Ys - stock.pad_block_dy_mm) <= half_w)
+        )
+        z[in_pad] = stock.total_pad_height_mm
     return Heightfield(z=z, origin=origin, resolution=resolution)
 
 

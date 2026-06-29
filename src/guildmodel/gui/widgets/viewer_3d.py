@@ -402,7 +402,8 @@ class Viewer3D(QWidget):
             half_w = stock.blank_width_mm / 2.0
             boxes = [pv.Box(bounds=(
                 -half_l, half_l, -half_w, half_w, 0.0, stock.blank_thickness_mm))]
-            if (stock.pad_block_length_mm > 0 and stock.pad_block_width_mm > 0
+            if (stock.use_pad_block and stock.pad_block_length_mm > 0
+                    and stock.pad_block_width_mm > 0
                     and stock.pad_block_thickness_mm > 0):
                 half_pl = stock.pad_block_length_mm / 2.0
                 half_pw = stock.pad_block_width_mm / 2.0

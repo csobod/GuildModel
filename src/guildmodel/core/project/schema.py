@@ -86,10 +86,15 @@ class StockDefinition(BaseModel):
     # Pad block center offset from the blank center (0,0 = centrally located).
     pad_block_dx_mm: float = 0.0
     pad_block_dy_mm: float = 0.0
+    # Whether the raised nosepad pad-block sits on the blank (M11). Off ⇒ a single
+    # flat blank whose thickness the user sets directly (mill the model to the blank
+    # alone). When off, total_pad_height and the stock-top surface are blank-only.
+    use_pad_block: bool = True
 
     @property
     def total_pad_height_mm(self) -> float:
-        return self.blank_thickness_mm + self.pad_block_thickness_mm
+        pad = self.pad_block_thickness_mm if self.use_pad_block else 0.0
+        return self.blank_thickness_mm + pad
 
 
 class CastleParams(BaseModel):
