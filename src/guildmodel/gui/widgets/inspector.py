@@ -37,11 +37,16 @@ class InspectorPanel(QWidget):
 
         self._summary = QLabel("")
         self._summary.setObjectName("hintLabel")
+        self._summary.setWordWrap(True)
         lay.addWidget(self._summary)
 
         self._list = QListWidget()
         self._list.setObjectName("inspectorList")
         self._list.setAlternatingRowColors(True)
+        # Wrap long issue messages to the panel width instead of clipping / scrolling
+        # sideways (the panel is often narrow when docked beside the toolpaths).
+        self._list.setWordWrap(True)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list.itemActivated.connect(self._emit_target)
         self._list.itemClicked.connect(self._emit_target)
         lay.addWidget(self._list, 1)

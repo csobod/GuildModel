@@ -45,6 +45,12 @@ class _Cancelled(Exception):
     """Raised inside a worker's progress callback to abort at a stage boundary."""
 
 
+# Saved dock/toolbar layout version (QMainWindow.save/restoreState). Bump whenever
+# the default dock arrangement changes so a stale saved layout is dropped rather than
+# overriding the new default. v2 (M11): the inspector is split beside the toolpaths.
+_DOCK_STATE_VERSION = 2
+
+
 class ToolSep(QWidget):
     """A crisp, uniform toolbar group divider (BUILDPLAN M7.12 UI).
 
@@ -2537,7 +2543,11 @@ class MainWindow(QMainWindow):
         self._log_dock.setMinimumHeight(120)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._log_dock)
 
-        # Bottom dock: per-op toolpath inspector (M7.11), tabbed with the log.
+        # Bottom-area docks (M11): Log + Toolpaths tabbed together on the LEFT, the
+        # Inspector split BESIDE them on the RIGHT so toolpaths and inspector can be
+        # open at once. ORDER MATTERS: establish the log|inspector split FIRST, then
+        # tab the toolpaths onto the log — splitting into an already-full tab group
+        # only re-tabs (Qt gives the group the whole area, no room to split).
         self._toolpath_table = QTableWidget(0, 5)
         self._toolpath_table.setHorizontalHeaderLabels(
             ["Op", "Tool", "Z floor", "Length", "Est. time"])
@@ -2549,15 +2559,7 @@ class MainWindow(QMainWindow):
             QTableWidget.SelectionMode.SingleSelection)
         self._toolpath_table.itemChanged.connect(self._on_toolpath_item_changed)
         self._toolpath_table.itemSelectionChanged.connect(self._on_toolpath_selection)
-        self._toolpath_dock = QDockWidget("Toolpaths", self)
-        self._toolpath_dock.setObjectName("toolpathDock")
-        self._toolpath_dock.setWidget(self._toolpath_table)
-        self._toolpath_dock.setMinimumHeight(120)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._toolpath_dock)
-        self.tabifyDockWidget(self._log_dock, self._toolpath_dock)
-        self._toolpath_dock.setVisible(False)
 
-        # Bottom dock: job & validation inspector (M7.14), tabbed with the log.
         from guildmodel.gui.widgets.inspector import InspectorPanel
         self._inspector = InspectorPanel()
         self._inspector.issue_activated.connect(self._on_issue_activated)
@@ -2565,8 +2567,17 @@ class MainWindow(QMainWindow):
         self._inspector_dock.setObjectName("inspectorDock")
         self._inspector_dock.setWidget(self._inspector)
         self._inspector_dock.setMinimumHeight(120)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._inspector_dock)
-        self.tabifyDockWidget(self._log_dock, self._inspector_dock)
+        self.splitDockWidget(self._log_dock, self._inspector_dock,
+                             Qt.Orientation.Horizontal)        # log | inspector
+
+        self._toolpath_dock = QDockWidget("Toolpaths", self)
+        self._toolpath_dock.setObjectName("toolpathDock")
+        self._toolpath_dock.setWidget(self._toolpath_table)
+        self._toolpath_dock.setMinimumHeight(120)
+        self.tabifyDockWidget(self._log_dock, self._toolpath_dock)  # tab onto the log
+
+        self._toolpath_dock.setVisible(False)
+        self._inspector_dock.setVisible(False)
         self._log_dock.raise_()                  # keep the log as the front tab by default
 
         # Status bar: transient message (left) + zoom read-out (permanent right)
@@ -3574,9 +3585,13 @@ class MainWindow(QMainWindow):
         state = self._prefs.get("main_window_state", "")
         if geo:
             self.restoreGeometry(QByteArray.fromBase64(geo.encode()))
-        if state:
-            # restoreState reinstates dock sizes + visibility; sync the toggles.
-            self.restoreState(QByteArray.fromBase64(state.encode()))
+        # restoreState reinstates dock sizes/visibility — but ONLY when the saved
+        # layout version matches. Bumping _DOCK_STATE_VERSION invalidates a stale
+        # saved layout (e.g. the pre-M11 tabbed inspector) so the new code default
+        # (inspector split beside the toolpaths) takes effect; restoreState then
+        # returns False and we keep the default.
+        if state and self.restoreState(
+                QByteArray.fromBase64(state.encode()), _DOCK_STATE_VERSION):
             self._act_sidebar.setChecked(self._right_dock.isVisible())
             self._act_log.setChecked(self._log_dock.isVisible())
         self._style_toolbar_separators()          # match the restored dock orientation
@@ -3586,7 +3601,7 @@ class MainWindow(QMainWindow):
             self.saveGeometry().toBase64()
         ).decode()
         self._prefs["main_window_state"] = bytes(
-            self.saveState().toBase64()
+            self.saveState(_DOCK_STATE_VERSION).toBase64()
         ).decode()
         prefs_mod.save(self._prefs)
 
