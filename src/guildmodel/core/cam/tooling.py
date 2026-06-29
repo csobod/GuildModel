@@ -13,7 +13,7 @@ drop-in over the raw YAML, never a break.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # tool types the geometry understands. `vbit` carries an included angle for the
 # M7.9 visualizer / engraving profile; the others map to ToolProfile kinds.

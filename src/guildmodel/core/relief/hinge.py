@@ -17,7 +17,7 @@ The actual machining is delegated to pocket.py; this module only builds geometry
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 

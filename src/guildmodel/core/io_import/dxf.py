@@ -13,7 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import ezdxf
-from ezdxf.math import Vec3
 
 from guildmodel.core.layers import ALL_LAYERS
 

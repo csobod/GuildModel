@@ -1217,7 +1217,7 @@ class SimWorker(_ProgressWorker):
             from guildmodel.core.sim import (
                 ToolProfile, achieved_floor, achieved_floor_grouped,
                 cutting_paths_from_program, cutting_paths_from_program_grouped, verify,
-                build_removal_plan, steps_from_ops, motion_steps_from_program,
+                build_removal_plan, motion_steps_from_program,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1354,7 +1354,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildmodel.core.sim import (
                 ToolProfile, achieved_floor_grouped,
                 cutting_paths_from_program_grouped, verify,
-                build_removal_plan, steps_from_ops, motion_steps_from_program,
+                build_removal_plan, motion_steps_from_program,
             )
 
             cam = self.cam_params or CastleCamParams()
@@ -1461,7 +1461,6 @@ class NestWorker(_ProgressWorker):
 
     def run(self) -> None:
         try:
-            import yaml
             from guildmodel.core.cam.block_ops import (
                 BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
             )
@@ -1475,7 +1474,6 @@ class NestWorker(_ProgressWorker):
             from guildmodel.core.relief.castle import build_castle_relief
 
             cam = self.cam_params or CastleCamParams()
-            config_dir = Path(__file__).parent.parent / "config"
             tools = _tools_cfg()
             default_tool = tools.get(cam.tool_name, tools["flat_3175"])
             n = max(len(self.specs), 1)

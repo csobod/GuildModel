@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import QSize
 
 from guildmodel.gui.style import theme
 

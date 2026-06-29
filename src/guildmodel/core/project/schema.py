@@ -2,7 +2,6 @@
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator

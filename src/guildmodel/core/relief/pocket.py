@@ -1,6 +1,5 @@
 """Hinge / shield pocket generator."""
 from __future__ import annotations
-import pyclipper
 from shapely.geometry import Polygon
 
 

@@ -202,7 +202,6 @@ def _parse_segments(gcode: str, dyn: MachineDynamics) -> list[_Segment]:
         words = _WORD.findall(line)
         if not words:
             continue
-        letters = {w[0].upper() for w in words}
 
         # G28/G30 homing: machine setup, not part cycle — skip and don't move
         if any(w[0].upper() == "G" and w[1] in ("28", "30") for w in words):
