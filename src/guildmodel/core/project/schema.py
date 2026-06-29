@@ -118,6 +118,12 @@ POSTERIOR_OPS: tuple[str, ...] = (
     "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
 )
 
+# Per-op tool defaults when a job hasn't pinned one (M11): small precise features
+# get a fine tool rather than the bulk global tool. Hinge pockets cut with the
+# 3.175 mm default leave ~1.6 mm corners instead of ~1 mm. An explicit op_tools
+# entry always overrides this; it only changes the otherwise-global fallback.
+DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm"}
+
 
 class ProgramZero(BaseModel):
     """Where the program's G54 work zero lands (BUILDPLAN M6.2).
@@ -192,8 +198,11 @@ class CastleCamParams(BaseModel):
     program_zero: ProgramZero = Field(default_factory=ProgramZero)
 
     def tool_for_op(self, op_name: str) -> str:
-        """The tool assigned to `op_name`, falling back to the global tool."""
-        return self.op_tools.get(op_name, self.tool_name)
+        """The tool assigned to `op_name`: an explicit op_tools entry, else a per-op
+        fine-tool default (M11), else the global tool."""
+        return (self.op_tools.get(op_name)
+                or DEFAULT_OP_TOOLS.get(op_name)
+                or self.tool_name)
 
     def tools_in_use(self) -> list[str]:
         """Distinct tool names across all five ops, in machining order."""

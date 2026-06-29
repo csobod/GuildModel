@@ -631,6 +631,8 @@ def generate_castle_program(
     top_z = stock.total_pad_height_mm
 
     def _tool_for(op_name: str) -> dict:
+        # tool_for_op() now defaults small features (hinge pockets) to a fine tool
+        # rather than the bulk global tool, so corners aren't over-rounded (M11).
         if tools_cfg is None:
             return tool
         return resolve_tool(params.tool_for_op(op_name), tools_cfg, default=tool)

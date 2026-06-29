@@ -132,7 +132,7 @@ def demo_nest():
 def test_demo_worktable_program_posts_lints_and_clears(demo_nest):
     bed, nest = demo_nest
     prog = build_nest_program(nest)
-    assert prog.n_tool_changes == 1                              # frame flat + block drill→flat
+    assert prog.n_tool_changes == 2     # fine hinge tool + bulk flat + block drill → 2 changes
     machine = MachineProfile()
     acetate = MATS["acetate"]
     ts, _ = build_tool_settings(prog.ops, TOOLS, default_feed=acetate["feed_rate_mmpm"],
@@ -146,7 +146,7 @@ def test_demo_worktable_program_posts_lints_and_clears(demo_nest):
                          contour_op_names=prog.contour_op_names,
                          drill_op_names=prog.drill_op_names, peck_depth_mm=1.5)
     text = post.to_string()
-    assert text.count("Tool Change") == 1                       # one program, one change
+    assert text.count("Tool Change") == 2                       # 3 tools → 2 changes
     assert lint_program(text, machine) == []
     # drilling at the mounting screws is intended -> drill ops exempt; cutting clears
     assert worktable_clearance_violations(
@@ -155,7 +155,7 @@ def test_demo_worktable_program_posts_lints_and_clears(demo_nest):
     assert any("Drill Holes" in v for v in worktable_clearance_violations(prog.ops, bed))
     rep = estimate_program(text, MachineDynamics.from_profile(machine),
                            tool_change_seconds=machine.tool_change_seconds)
-    assert rep.n_tool_changes == 1
+    assert rep.n_tool_changes == 2
     assert rep.total_seconds > rep.cycle_seconds                # change dwell counted
 
 

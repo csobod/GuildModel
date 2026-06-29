@@ -142,9 +142,11 @@ def test_bed_op_names_are_prefixed_and_classified(demo_bed):
     assert any(n.endswith("Drill Holes") for n in demo_bed.drill_op_names)
 
 
-def test_bed_minimises_changes_one_for_two_tools(demo_bed):
-    # frame (flat) + block (drill + flat) -> 2 tools -> exactly one change
-    assert demo_bed.n_tool_changes == 1
+def test_bed_minimises_changes_minimal_for_three_tools(demo_bed):
+    # M11: the frame's hinge pockets now default to a fine tool (flat_2mm), so the bed
+    # carries 3 tools — flat_2mm, the bulk flat_3175, and the block's drill — and the
+    # scheduler minimises the changes between them to exactly 2.
+    assert demo_bed.n_tool_changes == 2
 
 
 def test_one_program_posts_lints_and_clears(demo_bed):
@@ -161,7 +163,7 @@ def test_one_program_posts_lints_and_clears(demo_bed):
                          contour_op_names=demo_bed.contour_op_names,
                          drill_op_names=demo_bed.drill_op_names, peck_depth_mm=1.5)
     text = post.to_string()
-    assert text.count("Tool Change") == 1                    # one program, one change
+    assert text.count("Tool Change") == 2     # 3 tools (fine hinge + bulk + drill) → 2 changes
     assert lint_program(text, machine) == []
     # drilling at the mounting screws is intended -> exempt; cutting must clear
     assert bed_clearance_violations(demo_bed.ops, FIXTURE,
@@ -169,7 +171,7 @@ def test_one_program_posts_lints_and_clears(demo_bed):
     # cut-time over the whole bed includes the change dwell
     rep = estimate_program(text, MachineDynamics.from_profile(machine),
                            tool_change_seconds=machine.tool_change_seconds)
-    assert rep.n_tool_changes == 1
+    assert rep.n_tool_changes == 2
     assert rep.total_seconds > rep.cycle_seconds
 
 

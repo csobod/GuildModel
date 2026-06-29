@@ -39,8 +39,8 @@ from guildmodel.gui import material_store
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, CastleCamParams, CastleParams, ComponentKind,
-    FootingFillet, FootingSchedule, POSTERIOR_OPS, ProgramZero, StockDefinition,
-    TempleParams, ZoneThicknesses,
+    DEFAULT_OP_TOOLS, FootingFillet, FootingSchedule, POSTERIOR_OPS, ProgramZero,
+    StockDefinition, TempleParams, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -835,6 +835,9 @@ class ParamsPanel(QTabWidget):
             cb = QComboBox()
             cb.addItem(_SAME_AS_GLOBAL)
             cb.addItems(names)
+            default = DEFAULT_OP_TOOLS.get(op)        # fine-tool default (M11)
+            if default and cb.findText(default) >= 0:
+                cb.setCurrentText(default)
             cb.currentIndexChanged.connect(self.cam_changed)
             self.op_tool_combos[op] = cb
             form.addRow(f"{op}:", cb)
@@ -1139,7 +1142,7 @@ class ParamsPanel(QTabWidget):
         if cp.tool_name:
             self.cam_tool.setCurrentText(cp.tool_name)
         for op, cb in getattr(self, "op_tool_combos", {}).items():
-            name = cp.op_tools.get(op)
+            name = cp.op_tools.get(op) or DEFAULT_OP_TOOLS.get(op)   # M11 fine-tool default
             cb.blockSignals(True)
             cb.setCurrentText(name if name and cb.findText(name) >= 0 else _SAME_AS_GLOBAL)
             cb.blockSignals(False)

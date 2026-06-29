@@ -44,7 +44,22 @@ def test_tool_for_op_falls_back_to_global():
     assert cam.tool_for_op("Perimeter") == "flat_3175"
     assert cam.tools_in_use() == ["flat_2mm", "flat_3175"]
     assert cam.is_multi_tool()
-    assert not CastleCamParams().is_multi_tool()
+    # M11: a default job uses the fine hinge tool + the global tool, so it is
+    # multi-tool by design; pinning the hinge to the global tool collapses it.
+    assert CastleCamParams().is_multi_tool()
+    glob = CastleCamParams().tool_name
+    assert not CastleCamParams(op_tools={"Hinge Pockets": glob}).is_multi_tool()
+
+
+def test_hinge_pockets_default_to_fine_tool():
+    # M11: hinge pockets are small precise features — they default to a fine tool, not
+    # the bulk global tool, so corners aren't over-rounded (a 3.175 mm tool leaves
+    # ~1.6 mm corners, a 2 mm tool ~1 mm). An explicit assignment still wins.
+    cam = CastleCamParams(tool_name="flat_3175")
+    assert cam.tool_for_op("Hinge Pockets") == "flat_2mm"
+    assert cam.tool_for_op("Rough Relief") == "flat_3175"
+    pinned = CastleCamParams(tool_name="flat_3175", op_tools={"Hinge Pockets": "flat_3175"})
+    assert pinned.tool_for_op("Hinge Pockets") == "flat_3175"
 
 
 def test_resolve_tool_normalizes_name_and_default():
