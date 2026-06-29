@@ -88,8 +88,16 @@ class GRBLPost:
     # chosen datum (e.g. the stock blank's lower-left/top) lands at G54 zero. Arc
     # I/J are centre-relative and translation-invariant, so they are not offset.
     work_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Collision-aware pass linking (BUILDPLAN M8): between cutting passes, retract
+    # only to `link_clearance_z_mm` (just above the stock) instead of the full safe
+    # Z — UNLESS the straight hop to the next pass would pass within a `link_keepouts`
+    # circle (a work-holding screw standing proud of the stock), in which case it
+    # keeps the full safe Z. None disables it (always safe Z, the original behaviour).
+    link_clearance_z_mm: float | None = None
+    link_keepouts: tuple = ()      # (cx, cy, radius) screw keep-outs, design coords
 
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
+    _last_xy: tuple | None = field(default=None, init=False, repr=False)
 
     def header(self, side: str, timestamp: datetime | None = None) -> None:
         ts = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -173,6 +181,7 @@ class GRBLPost:
         # hang the worker): drill the hole in one full-depth plunge instead.
         if peck_depth <= 1e-9:
             peck_depth = max(z_top - z_bottom, 1e-9)
+        self._last_xy = None          # a drill isn't a linkable cutting pass
         approach = z_top + approach_mm
         self.safe_retract()
         self.rapid(x=x, y=y)
@@ -190,6 +199,36 @@ class GRBLPost:
 
     def safe_retract(self) -> None:
         self.rapid(z=self.safe_z_mm)
+
+    def reset_link(self) -> None:
+        """Forget the last cut position so the next pass takes a full safe-Z retract
+        (used after a move the post can't link-check — drills, tool changes)."""
+        self._last_xy = None
+
+    @staticmethod
+    def _pt_seg_dist(px, py, ax, ay, bx, by) -> float:
+        dx, dy = bx - ax, by - ay
+        if dx == 0.0 and dy == 0.0:
+            return math.hypot(px - ax, py - ay)
+        t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+    def _link_retract(self, x_to: float, y_to: float) -> None:
+        """Retract before traversing to (x_to, y_to). Lifts only to the low clearance
+        plane when that hop provably clears every work-holding screw; otherwise (or
+        when linking is disabled / the prior position is unknown) a full safe-Z
+        retract. The fail-safe is the full retract — a low hop is taken ONLY when
+        proven clear."""
+        a = self._last_xy
+        if self.link_clearance_z_mm is None or a is None:
+            self.safe_retract()
+            return
+        for cx, cy, r in self.link_keepouts:
+            if self._pt_seg_dist(cx, cy, a[0], a[1], x_to, y_to) < r:
+                self.safe_retract()       # the hop passes near a proud screw — clear it
+                return
+        self.rapid(z=self.link_clearance_z_mm)
 
     def _rapid_to_feed_plane(self, z_target: float) -> None:
         """Rapid (G0) down to the feed plane before a plunge, so only the cut portion
@@ -231,6 +270,7 @@ class GRBLPost:
         """
         self.comment(f"--- Tool Change -> T{ts.number}: {ts.name} ({ts.diameter_mm:.2f} mm) ---")
         self.spindle_off()
+        self._last_xy = None          # new tool: next pass takes a full safe-Z retract
         self.safe_retract()
         if mode == "m6":
             self._lines.append(f"M6 T{ts.number}")
@@ -309,6 +349,7 @@ class GRBLPost:
         # Phase B — one full finish lap at depth, starting/ending at the ramp end
         lap = _lap_from(xy, cum, ramp_dist)
         self._emit_moves([(x, y, z_cut) for x, y in lap], arc_tol)
+        return (pr[0], pr[1])      # the tool ends here, not at pts[-1] (pass linking)
 
     def emit_polyline(
         self,
@@ -322,7 +363,7 @@ class GRBLPost:
             return
         pts = [(float(a), float(b), float(c)) for a, b, c in points]
         x0, y0, z0 = pts[0]
-        self.safe_retract()
+        self._link_retract(x0, y0)           # links from the PREVIOUS pass's real end
         self.rapid(x=x0, y=y0)
 
         closed = (len(pts) >= 4
@@ -330,7 +371,9 @@ class GRBLPost:
                   and abs(pts[0][1] - pts[-1][1]) < 1e-6)
         const_z = (max(p[2] for p in pts) - min(p[2] for p in pts)) < 1e-6
         if ramp_height > 0 and closed and const_z:
-            self._emit_ramped_loop(pts, ramp_height, ramp_angle_deg, arc_tol)
+            # The ramped lap ends at the ramp-end point, not pts[-1] — record where the
+            # tool actually is so the next pass's link retract checks the right segment.
+            self._last_xy = self._emit_ramped_loop(pts, ramp_height, ramp_angle_deg, arc_tol)
             return
 
         if first_move_is_plunge:
@@ -339,6 +382,7 @@ class GRBLPost:
         else:
             self.feed(x=x0, y=y0, z=z0)
         self._emit_moves(pts, arc_tol)
+        self._last_xy = (pts[-1][0], pts[-1][1])    # next pass links from this pass's end
 
     def to_string(self) -> str:
         return "\n".join(self._lines) + "\n"

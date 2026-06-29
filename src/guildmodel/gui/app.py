@@ -599,6 +599,13 @@ class GCodeWorker(_ProgressWorker):
             feed_plane_mm=castle.stock.total_pad_height_mm + 1.0,   # rapid-descent floor
             work_offset=work_offset,
         )
+        if cam.link_retracts:
+            from guildmodel.core.cam.castle_ops import work_holding_keepouts
+            post.link_clearance_z_mm = castle.stock.total_pad_height_mm + cam.link_clearance_mm
+            post.link_keepouts = tuple(work_holding_keepouts(
+                relief.partition.body, castle.stock, post_dia / 2.0,
+                screw_head_diameter_mm=cam.screw_head_diameter_mm,
+                margin_mm=cam.screw_keepout_margin_mm))
         self._progress("Writing program", 0.95)
         write_castle_program(
             ops, post, arc_tol_mm=clamp.arc_tol_mm,
@@ -1247,6 +1254,14 @@ class SimWorker(_ProgressWorker):
                 plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
                 safe_z_mm=cam.safe_z_for(self.castle.stock.total_pad_height_mm),
             )
+            if cam.link_retracts:
+                from guildmodel.core.cam.castle_ops import work_holding_keepouts
+                post.link_clearance_z_mm = self.castle.stock.total_pad_height_mm + cam.link_clearance_mm
+                post.link_keepouts = tuple(work_holding_keepouts(
+                    relief.partition.body, self.castle.stock,
+                    (first.diameter_mm if first else tool["diameter_mm"]) / 2.0,
+                    screw_head_diameter_mm=cam.screw_head_diameter_mm,
+                    margin_mm=cam.screw_keepout_margin_mm))
             write_castle_program(
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,

@@ -223,6 +223,16 @@ class CastleCamParams(BaseModel):
     # rapids retract above the TALLER of the stock and this, so travels clear the
     # hold-downs even when only one part is cut (M8 prep). 0 = flush work-holding.
     hold_down_height_mm: float = 0.0
+    # Collision-aware pass linking (M8): between cutting passes, retract only to
+    # `link_clearance_mm` above the stock instead of the full safe Z — except where
+    # the hop would pass near a work-holding screw (the standard Guild fixture: one
+    # at each stock-blank corner + one at each lens centre, `screw_head_diameter_mm`
+    # across), which keeps the full safe-Z retract. Cuts the many full retracts of
+    # the small relief/rough passes. Set False to always retract to safe Z.
+    link_retracts: bool = True
+    link_clearance_mm: float = 1.5         # low-retract height above the stock top
+    screw_head_diameter_mm: float = 7.0
+    screw_keepout_margin_mm: float = 2.0   # extra clearance the tool edge keeps off a head
 
     def safe_z_for(self, stock_top_mm: float) -> float:
         """Rapid retract height above the table: clears the taller of the stock top

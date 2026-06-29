@@ -144,6 +144,25 @@ def _poly_rings(poly: Polygon, tool_radius_mm: float, stepover_mm: float) -> lis
     return _inward_offsets(scaled, tool_radius_mm, stepover_mm)
 
 
+def work_holding_keepouts(
+    body: Polygon, stock: StockDefinition, tool_radius_mm: float,
+    *, screw_head_diameter_mm: float = 7.0, margin_mm: float = 2.0,
+) -> list[tuple[float, float, float]]:
+    """Keep-out circles ``(cx, cy, radius)`` the tool CENTRE must stay outside when
+    a pass-link retract is lowered below safe Z (BUILDPLAN M8). They mark the
+    work-holding screws standing proud of the stock — the standard Guild fixture:
+    one at each stock-blank corner and one at each lens centre (the body's interior
+    holes). ``radius`` = screw radius + tool radius + margin, so the tool *edge*
+    keeps ``margin`` clear of the head. Design coordinates (blank centred on origin)."""
+    keep_r = screw_head_diameter_mm / 2.0 + tool_radius_mm + margin_mm
+    hl, hw = stock.blank_length_mm / 2.0, stock.blank_width_mm / 2.0
+    centers = [(hl, hw), (-hl, hw), (hl, -hw), (-hl, -hw)]      # blank corners
+    for ring in body.interiors:                                 # lens centres
+        c = Polygon(ring).centroid
+        centers.append((c.x, c.y))
+    return [(x, y, keep_r) for x, y in centers]
+
+
 # ------------------------------------------------------------------ op 1: hinge pockets
 
 def hinge_pocket_op(
