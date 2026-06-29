@@ -2690,6 +2690,26 @@ class MainWindow(QMainWindow):
         hd_row.addWidget(self._bed_holddown_spin)
         v.addLayout(hd_row)
 
+        bz_row = QHBoxLayout()
+        bz_row.addWidget(QLabel("Bed zero:"))
+        self._bed_zero_combo = QComboBox()
+        for label, data in (
+            ("Lower-left (bed origin)", ("stock_box", "left", "bottom")),
+            ("Lower-right", ("stock_box", "right", "bottom")),
+            ("Upper-left", ("stock_box", "left", "top")),
+            ("Upper-right", ("stock_box", "right", "top")),
+            ("Center", ("stock_box", "center", "center")),
+            ("Raw bed coordinates", ("fixture", "left", "bottom")),
+        ):
+            self._bed_zero_combo.addItem(label, data)
+        self._bed_zero_combo.setToolTip(
+            "Where the whole-bed worktable.nc touches off G54, over the work area — "
+            "independent of each component's own zero. 'Raw bed coordinates' keeps "
+            "machine coordinates (lower-left origin).")
+        self._bed_zero_combo.currentIndexChanged.connect(self._on_bed_zero_changed)
+        bz_row.addWidget(self._bed_zero_combo)
+        v.addLayout(bz_row)
+
         v.addSpacing(6)
         self._bed_nest_btn = QPushButton("Nest Components")
         self._bed_nest_btn.setToolTip(
@@ -2954,6 +2974,15 @@ class MainWindow(QMainWindow):
         self._bed_report = None
         self._update_view_toggles()
 
+    def _on_bed_zero_changed(self, idx: int) -> None:
+        """Bed-zero datum edited (M11) — store it on the worktable. The whole-bed
+        worktable.nc touches off here; each component keeps its own separate zero."""
+        if self._worktable is None or idx < 0:
+            return
+        from guildmodel.core.project.schema import ProgramZero
+        mode, x_ref, y_ref = self._bed_zero_combo.itemData(idx)
+        self._worktable.program_zero = ProgramZero(mode=mode, x_ref=x_ref, y_ref=y_ref)
+
     def _on_generate_worktable_nest(self) -> None:
         """Post the whole nested bed as one ``worktable.nc`` (BUILDPLAN M7.7).
 
@@ -3013,12 +3042,16 @@ class MainWindow(QMainWindow):
                 self.append_log(f"[gcode] WARNING: {vmsg}")
 
             first_ts = tool_settings[bed.ops[0].tool_name]
+            bed_offset = self._worktable.bed_work_offset()
+            self.append_log(
+                f"[gcode] Bed zero: {self._worktable.program_zero.label()} · "
+                f"offset ({bed_offset[0]:+.2f}, {bed_offset[1]:+.2f}) mm")
             post = GRBLPost(
                 job_name="worktable", material=mat_name,
                 tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
                 feed_rate_mmpm=first_ts.feed_rate_mmpm,
                 plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
-                safe_z_mm=self._bed_safe_z(cam))
+                safe_z_mm=self._bed_safe_z(cam), work_offset=bed_offset)
             write_castle_program(
                 bed.ops, post, side="Worktable", arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
@@ -3261,6 +3294,17 @@ class MainWindow(QMainWindow):
 
         for btn in (self._bed_save_btn,):
             btn.setEnabled(wt is not None)
+        self._bed_zero_combo.setEnabled(wt is not None)
+        self._bed_zero_combo.blockSignals(True)
+        if wt is not None:
+            pz = wt.program_zero
+            want = (("fixture", "left", "bottom") if pz.mode == "fixture"
+                    else (pz.mode, pz.x_ref, pz.y_ref))
+            for i in range(self._bed_zero_combo.count()):
+                if self._bed_zero_combo.itemData(i) == want:
+                    self._bed_zero_combo.setCurrentIndex(i)
+                    break
+        self._bed_zero_combo.blockSignals(False)
         if wt is not None:
             self._bed_counts.setText(
                 f"{len(wt.zones)} regions · {len(wt.placement_zones())} tagged · "

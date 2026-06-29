@@ -678,8 +678,27 @@ class Worktable(BaseModel):
     hold_down_height_mm: float = 8.0
     zones: list[WorktableZone] = Field(default_factory=list)
     source_dxf: str = ""
+    # Where the whole-bed program's G54 work zero touches off (M11). Reuses the
+    # ProgramZero datum picker over the work-area box; default = bed lower-left (the
+    # historical bed origin, offset 0). Independent of each component's own zero so a
+    # combined bed program and a separately exported part can touch off differently.
+    program_zero: ProgramZero = Field(
+        default_factory=lambda: ProgramZero(x_ref="left", y_ref="bottom"))
 
     # ── accessors ────────────────────────────────────────────────────────────
+    def bed_work_offset(self) -> tuple[float, float, float]:
+        """G54 offset (mm) for the whole-bed program (M11): the negative of the datum
+        the maker touches off, over the work-area box [0,W]×[0,H] (machine coords,
+        lower-left origin — unlike a stock box, which is centered). `fixture` mode
+        keeps raw bed coordinates; Z is left unshifted (touched off on the stock)."""
+        pz = self.program_zero
+        if pz.mode != "stock_box":
+            return (0.0, 0.0, 0.0)
+        w, h = self.work_area_width_mm, self.work_area_height_mm
+        dx = {"left": 0.0, "center": w / 2.0, "right": w}[pz.x_ref]
+        dy = {"bottom": 0.0, "center": h / 2.0, "top": h}[pz.y_ref]
+        return (-dx + 0.0, -dy + 0.0, 0.0)
+
     def zone(self, zone_id: str) -> WorktableZone:
         for z in self.zones:
             if z.id == zone_id:
