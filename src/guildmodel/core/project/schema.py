@@ -811,6 +811,9 @@ class Component(BaseModel):
     castle: CastleParams | None = None
     temple: TempleParams | None = None
     base_curve_block: BaseCurveBlockParams | None = None
+    # Per-component G54 work zero (M11): each part keeps its own datum so separately
+    # exported NC files (front, each temple) don't all share one zero.
+    program_zero: ProgramZero = Field(default_factory=ProgramZero)
 
     forming: FormingMetadata = Field(default_factory=FormingMetadata)
 

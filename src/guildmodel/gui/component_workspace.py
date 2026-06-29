@@ -34,6 +34,7 @@ class ComponentWorkspace:
     castle_params: object = None
     temple_params: object = None
     block_params: object = None
+    program_zero: object = None     # per-component G54 datum (M11); None = panel default
 
     # derived geometry (filled by derive_workspace)
     outline_poly: object = None

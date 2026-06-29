@@ -3706,6 +3706,8 @@ class MainWindow(QMainWindow):
                 has_program=ws.program_stored)
             if param is not None:
                 kwargs[field] = param
+            if ws.program_zero is not None:
+                kwargs["program_zero"] = ws.program_zero       # per-component datum (M11)
             comps.append(Component(**kwargs))
         if comps:
             proj.components = comps
@@ -4074,6 +4076,7 @@ class MainWindow(QMainWindow):
             ws.temple_params = self.params.temple_params()
         elif ws.kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
             ws.block_params = self.params.block_params()
+        ws.program_zero = self.params._program_zero()    # per-component G54 datum (M11)
 
     def _load_active_geometry(self, ws: ComponentWorkspace) -> None:
         """Point the active ``self._*`` working set at ``ws``."""
@@ -4126,6 +4129,8 @@ class MainWindow(QMainWindow):
             elif (ws.kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT)
                   and ws.block_params is not None):
                 self.params.set_block_params(ws.block_params)
+            if ws.program_zero is not None:          # restore this part's G54 datum (M11)
+                self.params._set_program_zero(ws.program_zero)
         finally:
             self.params.blockSignals(False)
         self.view3d.set_stage_enabled(ws.matched)
@@ -4264,6 +4269,7 @@ class MainWindow(QMainWindow):
             if comp is None:
                 continue
             ws.enabled = comp.enabled
+            ws.program_zero = comp.program_zero          # restore per-component datum (M11)
             field = component_param_field(ws.kind)
             setattr(ws, ws_attr[field], getattr(comp, field))
         if 0 <= self._active_ws < len(self._workspaces):
