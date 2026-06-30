@@ -2489,6 +2489,13 @@ to air-cut on the beta temple path: the temple NC now snaps to its blank (matche
 > aggressive feeds + continuous, well-ordered paths over conservative pecking. Items
 > in priority order (value / risk).
 
+**STATUS — M12.1-.5 all ✅ DONE, demo front 9.58 → 5.27 min (−45%), 435 tests.** Commits:
+ordering `d1a11c6`, spiral stitch `ac01a7f`, feed 0.12 mm/tooth `3fc5714`, per-material
+DOC `471974d`, climb-consistent `d0ff222`. Two hardware-behaviour changes to AIR-CUT /
+test before production: the 1200 mm/min feed (M12.3) and the 4 mm through-cut DOC
+(M12.4). Tangential lead-in/out arcs were deferred (the ramped lead-in covers it for
+acetate; revisit only if witness marks appear).
+
 1. **Per-op path ordering — HIGH value, LOW risk (DOING FIRST).** Relief paths are
    emitted in contour-ring order, so fragments + the separate regions (each eyewire /
    bridge / nosepads) interleave and the tool jumps across the part between paths. On
