@@ -224,6 +224,13 @@ class CastleCamParams(BaseModel):
     ramp_step_mm: float = 0.6              # pocket ramp descent per lap
     contour_ramp_angle_deg: float = 8.0    # through-cut lead-in ramp (partial lap)
     skim_epsilon_mm: float = 0.05          # "nothing to cut" threshold for roughing
+    # Contour-relief linking (M11): bridge a contour ring's masked gaps up to this
+    # width by riding the cutter over the thin cap instead of retract+plunging across
+    # it — turns a ring shattered into tiny stub paths ("drill holes" over caps/bands)
+    # into one long sweep, like a Fusion contour. A run still shorter than
+    # `relief_min_run_mm` after linking is dropped (negligible material, hand-finished).
+    relief_link_gap_mm: float = 4.0
+    relief_min_run_mm: float = 1.0
     simplify_tol_mm: float = 0.01
     arc_tolerance_mm: float = 0.01         # 0 disables arc fitting (linearized G1)
 

@@ -105,12 +105,27 @@ def test_rough_relief_stock_aware(program, demo_inputs):
     # leaves 2 mm for the finish, and never below the 4.2 final surface.
     assert zmin == pytest.approx(4.2 + 2.0, abs=0.15)
     assert zmin > 4.2          # rough never reaches the final surface (no gouge)
-    assert zmax < castle.stock.total_pad_height_mm
-    # stock-aware: confined to the pad-block zone (only place with stock
-    # above target+2) — the reference air-cut the whole blank instead
+    # Contour linking (M11) lets the cutter ride over a thin cap at stock height to keep
+    # one continuous sweep instead of retract+plunging across it, so zmax may touch (but
+    # never exceed) the stock top. Confinement to the pad-block zone is what keeps the
+    # pass from air-cutting the whole blank — the bounds check below enforces it.
+    assert zmax <= castle.stock.total_pad_height_mm + 1e-6
     bx = op.xy_bounds()
     half = castle.stock.pad_block_length_mm / 2.0
     assert bx[0] >= -half - TOOL_R - 0.5 and bx[2] <= half + TOOL_R + 0.5
+
+
+def test_relief_paths_are_sweeps_not_drill_holes(program):
+    """Contour linking (M11): the cut mask used to shatter each ring into tiny stub
+    paths — a retract+plunge to cut ~nothing, all over the rough + start of fine.
+    Linking small gaps + dropping sub-mm runs means every kept path is a real sweep."""
+    from shapely.geometry import LineString
+    ops, _, _ = program
+    for name in ("Rough Relief", "Fine Relief"):
+        lens = [LineString([(p[0], p[1]) for p in path]).length
+                for path in ops[name].paths if len(path) >= 2]
+        stubs = [round(L, 2) for L in lens if L < 0.8]
+        assert not stubs, f"{name} still has stub paths: {stubs}"
 
 
 def test_fine_relief_full_surface(program, demo_inputs):

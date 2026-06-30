@@ -350,6 +350,13 @@ def relief_ops(
 
     machining = relief.partition.body.buffer(band_mm, join_style="round")
 
+    # Bridge a ring's masked gaps up to `relief_link_gap_mm` (the cutter rides over the
+    # thin cap at its drop-cutter height) so a ring shattered by the cut mask becomes
+    # one long sweep instead of a string of retract+plunge stubs ("drill holes"); a run
+    # still shorter than `relief_min_run_mm` is dropped (negligible material).
+    gap_cells = max(1, int(round(params.relief_link_gap_mm / res)))
+    min_cells = max(2, int(round(params.relief_min_run_mm / res)))
+
     def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray) -> None:
         for ring in contour_parallel_rings(machining,
                                            params.relief_stepover_mm):
@@ -363,11 +370,13 @@ def relief_ops(
             if idx.size < 2:
                 continue
             zline = _bilinear_sample(zgrid, dp[:, 0], dp[:, 1], ox, oy, res)
-            for run in np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1):
-                if run.size < 2:
+            breaks = np.flatnonzero(np.diff(idx) > gap_cells) + 1
+            for grp in np.split(idx, breaks):
+                a, b = int(grp[0]), int(grp[-1])      # span the small internal gaps too
+                if b - a + 1 < min_cells:
                     continue
                 pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
-                       for k in run]
+                       for k in range(a, b + 1)]
                 op.paths.append(_rdp(pts, params.simplify_tol_mm))
 
     # Finish only where the target sits BELOW the stock surface; skip every flat-top
