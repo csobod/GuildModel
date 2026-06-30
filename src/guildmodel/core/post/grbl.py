@@ -98,8 +98,14 @@ class GRBLPost:
 
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
     _last_xy: tuple | None = field(default=None, init=False, repr=False)
+    # Last commanded Z (work coords); None = unknown (program start / after a tool
+    # change, where the operator or the M6 macro re-establishes Z). Lets a pure-Z
+    # rapid that wouldn't move be dropped — e.g. the back-to-back safe-Z retracts an
+    # op-end + the next op's approach (or a tool change) would otherwise emit.
+    _last_z: float | None = field(default=None, init=False, repr=False)
 
-    def header(self, side: str, timestamp: datetime | None = None) -> None:
+    def header(self, side: str, timestamp: datetime | None = None,
+               initial_retract: bool = True) -> None:
         ts = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M")
         self._lines += [
             f"; GuildModel — {self.job_name}",
@@ -110,10 +116,17 @@ class GRBLPost:
             f"; Feed: {self.feed_rate_mmpm:.0f} mm/min  Plunge: {self.plunge_rate_mmpm:.0f} mm/min",
             f"; Generated: {ts}",
             "",
-            "G90" + ("  ; absolute mode" if True else ""),
+            "G90  ; absolute mode",
             "G21" if self.units == "mm" else "G20",
-            f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}",
+            "G17  ; XY arc plane",
         ]
+        # The first cutting pass always takes a full safe-Z retract before any XY move
+        # (its prior position is unknown), so a header retract is redundant. On an
+        # auto-tool-change machine (mode "m6") the M6 that follows raises Z itself — so
+        # emitting one here just adds a wasted Z bob before the tool change. Skip it
+        # there; keep it for manual starts where no M6 re-establishes Z.
+        if initial_retract:
+            self.rapid(z=self.safe_z_mm)
 
     def comment(self, text: str) -> None:
         self._lines.append(f"{self.comment_char} {text}")
@@ -125,6 +138,10 @@ class GRBLPost:
         self._lines.append("M5")
 
     def rapid(self, x: float | None = None, y: float | None = None, z: float | None = None) -> None:
+        # A pure-Z rapid to the height we're already at moves nothing — drop it.
+        if (x is None and y is None and z is not None
+                and self._last_z is not None and abs(z - self._last_z) < 1e-6):
+            return
         ox, oy, oz = self.work_offset
         parts = ["G0"]
         if x is not None:
@@ -133,6 +150,7 @@ class GRBLPost:
             parts.append(f"Y{y + oy:.4f}")
         if z is not None:
             parts.append(f"Z{z + oz:.4f}")
+            self._last_z = z
         self._lines.append(" ".join(parts))
 
     def feed(self, x: float | None = None, y: float | None = None, z: float | None = None, feed: float | None = None) -> None:
@@ -144,6 +162,7 @@ class GRBLPost:
             parts.append(f"Y{y + oy:.4f}")
         if z is not None:
             parts.append(f"Z{z + oz:.4f}")
+            self._last_z = z
         f = feed if feed is not None else self.feed_rate_mmpm
         parts.append(f"F{f:.0f}")
         self._lines.append(" ".join(parts))
@@ -160,6 +179,7 @@ class GRBLPost:
         parts = ["G3" if ccw else "G2", f"X{x + ox:.4f}", f"Y{y + oy:.4f}"]
         if z is not None:
             parts.append(f"Z{z + oz:.4f}")
+            self._last_z = z
         parts += [f"I{i:.4f}", f"J{j:.4f}"]
         f = feed if feed is not None else self.feed_rate_mmpm
         parts.append(f"F{f:.0f}")
@@ -244,10 +264,12 @@ class GRBLPost:
         probe (Carbide Motion + BitSetter / Nomad) loads and measures the tool before
         cutting — the spindle is still off here, so it probes safely (BUILDPLAN M8)."""
         self._lines.append(f"M6 T{number}")
+        self._last_z = None           # the probe/macro re-establishes Z
 
     def program_pause(self, message: str = "Flip stock and re-register on dowel pins") -> None:
         self._lines.append(f"; {message}")
         self._lines.append("M0")
+        self._last_z = None           # operator may have jogged Z during the pause
 
     def apply_tool(self, ts: "ToolSetting") -> None:
         """Adopt a tool's geometry/feeds as the current output context, without
@@ -278,6 +300,7 @@ class GRBLPost:
             self.comment(message or (f"Load tool T{ts.number}: {ts.name} "
                                      f"({ts.diameter_mm:.2f} mm), set tool length, then resume"))
             self._lines.append("M0")
+        self._last_z = None           # M6 macro / probe / manual re-zero re-establishes Z
         self.comment("Re-zero Z to the tool tip per machine tool-length policy")
         self.tool_diameter_mm = ts.diameter_mm
         self.feed_rate_mmpm = ts.feed_rate_mmpm

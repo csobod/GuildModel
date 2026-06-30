@@ -836,7 +836,10 @@ def write_castle_program(
     """
     contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Perimeter"}
     drill_ops = drill_op_names or set()
-    post.header(side)
+    # On an auto-tool-change machine the M6 that follows the header raises Z itself, so
+    # the header's safe-Z retract is a wasted bob before the tool change — skip it there
+    # (the first cutting pass still takes its own full retract after the M6).
+    post.header(side, initial_retract=(tool_change_mode != "m6"))
     current: str | None = None
     first = ops[0].tool_name if ops else None
     if tool_settings and first in tool_settings:
