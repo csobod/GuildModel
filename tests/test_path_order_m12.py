@@ -38,3 +38,29 @@ def test_is_a_permutation_with_no_reversal():
 def test_short_lists_pass_through():
     paths = [[(0, 0, 0), (1, 0, 0)], [(2, 0, 0), (3, 0, 0)]]
     assert order_paths_for_travel(paths) == paths
+
+
+# ── M12.2 spiral/morph stitching ───────────────────────────────────────────────
+def test_stitch_merges_close_keeps_far_separate():
+    import numpy as np
+    from guildmodel.core.cam.castle_ops import _stitch_close_paths
+    zgrid = np.full((60, 60), 5.0)            # flat drop-cutter surface
+    p1 = [(0.0, 0.0, 5.0), (2.0, 0.0, 5.0)]
+    p2 = [(3.0, 0.0, 5.0), (5.0, 0.0, 5.0)]   # 1 mm gap → stitched onto p1
+    p3 = [(50.0, 0.0, 5.0), (52.0, 0.0, 5.0)]  # 45 mm gap → its own path/entry
+    out = _stitch_close_paths([p1, p2, p3], zgrid, 0.0, 0.0, 1.0, max_gap=4.0)
+    assert len(out) == 2
+    assert out[0][0] == (0.0, 0.0, 5.0) and out[0][-1] == (5.0, 0.0, 5.0)
+    assert out[1] == p3
+
+
+def test_stitch_connector_rides_the_surface():
+    import numpy as np
+    from guildmodel.core.cam.castle_ops import _stitch_close_paths
+    zgrid = np.full((60, 60), 5.0)
+    p1 = [(0.0, 0.0, 5.0), (2.0, 0.0, 5.0)]
+    p2 = [(5.0, 0.0, 5.0), (7.0, 0.0, 5.0)]   # 3 mm gap → connector with interior pts
+    out = _stitch_close_paths([p1, p2], zgrid, 0.0, 0.0, 1.0, max_gap=4.0)
+    assert len(out) == 1
+    mids = [q for q in out[0] if 2.0 < q[0] < 5.0]
+    assert mids and all(abs(q[2] - 5.0) < 1e-6 for q in mids)   # stays on the surface

@@ -299,6 +299,39 @@ def order_paths_for_travel(paths: list, start: tuple = (0.0, 0.0)) -> list:
     return ordered
 
 
+def _stitch_close_paths(paths: list, zgrid, ox: float, oy: float, res: float,
+                        max_gap: float) -> list:
+    """Merge consecutive paths whose end→start gap is ≤ `max_gap` into one continuous
+    sweep, joined by a connector that rides the drop-cutter surface `zgrid` (M12.2).
+
+    The cutter steps from one ring to the next without a retract+plunge; the connector
+    follows the cutter-location surface so it never gouges (and rides over a thin cap
+    just like the M11 gap-link). A wider gap — a jump to a separate region — stays its
+    own path with its own entry. Run after `order_paths_for_travel`, so "close" means
+    genuinely adjacent."""
+    if len(paths) < 2:
+        return [list(p) for p in paths]
+    g2 = max_gap * max_gap
+    out = [list(paths[0])]
+    for p in paths[1:]:
+        ax, ay = out[-1][-1][0], out[-1][-1][1]
+        bx, by = p[0][0], p[0][1]
+        d2 = (bx - ax) ** 2 + (by - ay) ** 2
+        if 0.0 < d2 <= g2:
+            n = max(1, int(float(np.sqrt(d2)) / res))
+            if n > 1:                       # surface-riding connector, endpoints excluded
+                ts = np.arange(1, n) / n
+                xs = ax + (bx - ax) * ts
+                ys = ay + (by - ay) * ts
+                zs = _bilinear_sample(zgrid, xs, ys, ox, oy, res)
+                out[-1].extend((float(x), float(y), float(z))
+                               for x, y, z in zip(xs, ys, zs))
+            out[-1].extend(p)
+        else:
+            out.append(list(p))
+    return out
+
+
 def relief_ops(
     relief: CastleRelief,
     stock: StockDefinition,
@@ -415,9 +448,14 @@ def relief_ops(
     _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
     _emit(rough, z_rough, cut_rough)
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
-    # tool works the part in nearest-neighbour order instead of hopping across it (M12.1).
-    fine.paths = order_paths_for_travel(fine.paths)
-    rough.paths = order_paths_for_travel(rough.paths)
+    # tool works the part in nearest-neighbour order instead of hopping across it (M12.1),
+    # then stitch the now-adjacent rings into continuous surface-riding sweeps so a region
+    # takes one entry instead of one plunge per ring (M12.2).
+    link = params.relief_link_gap_mm
+    fine.paths = _stitch_close_paths(order_paths_for_travel(fine.paths),
+                                     z_fine, ox, oy, res, link)
+    rough.paths = _stitch_close_paths(order_paths_for_travel(rough.paths),
+                                      z_rough, ox, oy, res, link)
     return rough, fine
 
 
