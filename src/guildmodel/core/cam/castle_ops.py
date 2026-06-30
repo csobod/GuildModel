@@ -273,6 +273,14 @@ def contour_parallel_rings(body: Polygon, stepover_mm: float,
     return rings
 
 
+def _ring_is_ccw(coords) -> bool:
+    """Shoelace sign: True when the closed ring winds counter-clockwise (M12.5)."""
+    s = 0.0
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        s += float(x0) * float(y1) - float(x1) * float(y0)
+    return s > 0.0
+
+
 def order_paths_for_travel(paths: list, start: tuple = (0.0, 0.0)) -> list:
     """Greedily reorder paths so the air hop between them is short — at each step take
     the path whose START is nearest the previous path's END (M12.1).
@@ -419,6 +427,8 @@ def relief_ops(
     def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray) -> None:
         for ring in contour_parallel_rings(machining,
                                            params.relief_stepover_mm):
+            if not _ring_is_ccw(ring):        # uniform climb direction on the finish (M12.5)
+                ring = list(reversed(ring))
             dp = _densify_xy(ring, res)
             if len(dp) < 2:
                 continue
@@ -494,6 +504,11 @@ def contour_op(
             if g.is_empty:
                 continue
             coords = list(g.exterior.coords)
+            # Climb milling (CW spindle): an inside contour (lens hole) runs CCW, an
+            # outside contour (perimeter) runs CW — a uniform down-cut wall (M12.5). The
+            # buffered exterior's winding isn't guaranteed, so force it here.
+            if _ring_is_ccw(coords) != (side == "inside"):
+                coords = coords[::-1]
             rings.append(coords)
 
     # Ring-major ordering: finish one ring through its full depth stack before

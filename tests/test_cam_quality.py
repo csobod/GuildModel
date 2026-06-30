@@ -72,6 +72,19 @@ def test_eyewires_ring_major(program):
     assert len(ops["Eyewires"].paths) == 6     # 2 lenses x 3 depth passes (M12.4 4 mm DOC)
 
 
+def _is_ccw(p):
+    return sum(p[i][0] * p[i + 1][1] - p[i + 1][0] * p[i][1]
+               for i in range(len(p) - 1)) > 0
+
+
+def test_contours_are_climb(program):
+    """Uniform climb for a CW spindle (M12.5): an inside contour (lens hole) runs CCW,
+    an outside contour (perimeter) runs CW — a consistent down-cut wall finish."""
+    ops, _ = program
+    assert all(_is_ccw(p) for p in ops["Eyewires"].paths)        # inside -> CCW
+    assert all(not _is_ccw(p) for p in ops["Perimeter"].paths)   # outside -> CW
+
+
 # ------------------------------------------------------------------ relief pattern
 
 @pytest.mark.parametrize("op_name", ["Fine Relief", "Rough Relief"])
