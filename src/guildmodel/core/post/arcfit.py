@@ -106,6 +106,15 @@ def fit_arcs(
             cx, cy, R, dev = _fit_circle(seg[:, :2])
             if dev > tol_mm or not (min_radius_mm <= R <= max_radius_mm):
                 break
+            # The radial point fit can pass while a long chord between two on-circle
+            # points bulges off the real (straight) path: the arc then rounds a corner
+            # the toolpath actually turns sharply through. Bound each segment's sagitta
+            # (chord→arc gap) by the same tolerance — a long straight forces a break, so
+            # corners stay sharp while genuinely curved (densely sampled) runs still fit.
+            seg_len = np.hypot(np.diff(seg[:, 0]), np.diff(seg[:, 1]))
+            sagitta = R - np.sqrt(np.maximum(0.0, R * R - (seg_len / 2.0) ** 2))
+            if float(sagitta.max()) > tol_mm:
+                break
             d = _sweep_dir(seg[:, :2], cx, cy)
             if d == 0:
                 break

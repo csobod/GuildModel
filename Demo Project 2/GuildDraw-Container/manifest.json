@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "guilddraw_version": "1.0.0-rc2",
+  "tabs": [
+    "front",
+    "temple_r",
+    "temple_l",
+    "hinge"
+  ],
+  "active_tab": "front"
+}
