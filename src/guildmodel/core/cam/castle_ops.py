@@ -273,6 +273,32 @@ def contour_parallel_rings(body: Polygon, stepover_mm: float,
     return rings
 
 
+def order_paths_for_travel(paths: list, start: tuple = (0.0, 0.0)) -> list:
+    """Greedily reorder paths so the air hop between them is short — at each step take
+    the path whose START is nearest the previous path's END (M12.1).
+
+    Only the visiting order changes: each path keeps its own points and direction, so
+    the cut geometry is identical and climb/conventional sense is preserved (no
+    reversal). Relief paths come out in contour-ring order, which interleaves the
+    separate regions (each eyewire / bridge / nosepads) and sends the tool hopping
+    across the part; this collapses that air. O(n^2), fine for per-op path counts.
+    """
+    n = len(paths)
+    if n < 3:
+        return list(paths)
+    remaining = list(range(n))
+    ordered: list = []
+    cx, cy = start
+    while remaining:
+        j = min(remaining,
+                key=lambda i: (paths[i][0][0] - cx) ** 2 + (paths[i][0][1] - cy) ** 2)
+        p = paths[j]
+        ordered.append(p)
+        cx, cy = p[-1][0], p[-1][1]
+        remaining.remove(j)
+    return ordered
+
+
 def relief_ops(
     relief: CastleRelief,
     stock: StockDefinition,
@@ -388,6 +414,10 @@ def relief_ops(
     # nosepad height a hair (a design param) rather than skim at stock height.
     _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
     _emit(rough, z_rough, cut_rough)
+    # Contour-ring emission interleaves the separate regions; reorder each pass so the
+    # tool works the part in nearest-neighbour order instead of hopping across it (M12.1).
+    fine.paths = order_paths_for_travel(fine.paths)
+    rough.paths = order_paths_for_travel(rough.paths)
     return rough, fine
 
 
