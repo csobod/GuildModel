@@ -2480,6 +2480,50 @@ to air-cut on the beta temple path: the temple NC now snaps to its blank (matche
 
 ---
 
+## M12 — Toolpath quality (efficiency & "best-possible" generation)
+
+> From a deep audit of a full frame-front program (container demo, 0.15 mm relief,
+> 3.175 mm flat, Nomad profile): 9.58 min total, **cut = 87 %** of it (Fine Relief
+> 3.21, Perimeter 2.52, Eyewires 2.29 the heavy ops), 70 plunges, 56 separate paths.
+> The parts are small + soft (acetate) on a rigid desktop mill, which favours
+> aggressive feeds + continuous, well-ordered paths over conservative pecking. Items
+> in priority order (value / risk).
+
+1. **Per-op path ordering — HIGH value, LOW risk (DOING FIRST).** Relief paths are
+   emitted in contour-ring order, so fragments + the separate regions (each eyewire /
+   bridge / nosepads) interleave and the tool jumps across the part between paths. On
+   the demo front the Fine Relief travels **1344 mm** of inter-path air where
+   nearest-neighbour ordering needs **252 mm** (Rough wastes another 265 mm) — ~1357 mm
+   of air + the same number of long hops, removed by reordering each op's `paths`
+   greedily (nearest start to the last end). Contours are already ring-major (0 waste),
+   so the reorder must respect ops that are intentionally ordered. Cleaner sweeps too.
+
+2. **Spiral / morph-link the relief rings — MEDIUM.** One plunge per ring today (70
+   total, at the <½-feed plunge rate). Link concentric rings into a continuous spiral
+   (enter once per region, step over to the next ring without lifting) — the natural
+   extension of the M11 gap-linking; the endgame for "sweeping like Fusion".
+
+3. **Feeds into the material's upper chip-load window — HIGH time leverage (tuning).**
+   Cut is 87 % of the job; acetate runs **0.075 mm/tooth** (window 0.02–0.15) at
+   750 mm/min, while the Nomad allows 3000 mm/min / 24 k RPM. Pushing toward the upper
+   chip-load ~halves the cutting time. Not a generation change — the M7.10 chip-load
+   calculator already guides it; consider raising the preset / a "performance" profile.
+
+4. **Per-material through-cut DOC — MEDIUM, tooling-dependent.** Eyewires + Perimeter
+   (4.8 min) cut ~10 mm at a global **2.5 mm** stepdown = 4 passes; the Nomad `max_doc`
+   is 4.0 mm (→ 3 passes, ~25 % less contour cutting). Expose stepdown per material.
+
+5. **Climb-consistent finishing — LOW, quality.** Verify the fine pass + contour ring
+   winding is uniformly climb for surface finish; add tangential lead-in/out arcs on
+   contours to avoid witness marks if needed.
+
+Explicitly **not** worth chasing for this application: adaptive/trochoidal roughing
+(rough is only 1.1 min and shallow — overkill for soft acetate) and rest-machining
+(single-tool coverage is fine). Keep the wins already in: corner-safe arc smoothing,
+low-hop linking, ramped contour entries, relief gap-linking.
+
+---
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)
