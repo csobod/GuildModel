@@ -220,7 +220,11 @@ class CastleCamParams(BaseModel):
     pocket_stepover_mm: float = 1.2
     relief_stepover_mm: float = 0.9        # matches Fusion Scallop coverage
     rough_axial_stock_mm: float = 2.0
-    contour_stepdown_mm: float = 2.5
+    # Requested through-cut depth per pass (M12.4): clamped down per material+machine by
+    # `max_doc` (acetate 4.0, acetal 2.0, brittle horn 0.8), so this is "cut as deep as
+    # the material allows" by default — fewer perimeter/eyewire passes — and the user can
+    # still set it shallower. Was 2.5 (a blanket cap that left acetate at 4 passes).
+    contour_stepdown_mm: float = 4.0
     ramp_step_mm: float = 0.6              # pocket ramp descent per lap
     contour_ramp_angle_deg: float = 8.0    # through-cut lead-in ramp (partial lap)
     skim_epsilon_mm: float = 0.05          # "nothing to cut" threshold for roughing

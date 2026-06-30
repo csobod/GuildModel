@@ -18,9 +18,11 @@ acetate:
   spindle_rpm: 10000
   feed_rate_mmpm: 1200
   plunge_rate_mmpm: 450
-  max_doc_mm: 2.5       # maximum depth-of-cut per pass (reference contour stepdown)
+  max_doc_mm: 4.0       # M12.4: acetate handles a 4 mm through-cut pass on a rigid
+                        # desktop mill (the Nomad ceiling) -> fewer perimeter/eyewire
+                        # passes. Validate alongside the faster feed.
   relief_stepover_mm: 0.9       # matches the Fusion Scallop coverage
-  contour_stepdown_mm: 2.5
+  contour_stepdown_mm: 4.0
   rough_axial_stock_mm: 2.0
   chip_load_min_mm: 0.02        # feed-per-tooth window (M7.10); below = rubbing
   chip_load_max_mm: 0.15        # above = overloaded

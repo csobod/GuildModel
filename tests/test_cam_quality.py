@@ -66,10 +66,10 @@ def test_eyewires_ring_major(program):
         cx = sum(pt[0] for pt in p) / len(p)
         sides.append("OD" if cx > 0 else "OS")
     # one contiguous block per lens (exactly one OD->OS or OS->OD switch),
-    # not alternating at every depth (which would be 7 switches for 8 passes)
+    # not alternating at every depth (which would be 5 switches for 6 passes)
     switches = sum(1 for a, b in zip(sides, sides[1:]) if a != b)
     assert switches == 1, f"expected ring-major (1 switch), got {sides}"
-    assert len(ops["Eyewires"].paths) == 8     # 2 lenses x 4 depth passes
+    assert len(ops["Eyewires"].paths) == 6     # 2 lenses x 3 depth passes (M12.4 4 mm DOC)
 
 
 # ------------------------------------------------------------------ relief pattern

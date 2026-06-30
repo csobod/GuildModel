@@ -166,7 +166,7 @@ def test_contour_ops_passes_and_skin(program, demo_inputs):
     _, castle, _ = demo_inputs
     for name in ("Eyewires", "Perimeter"):
         zs = sorted({round(p[2], 3) for path in ops[name].paths for p in path})
-        assert zs == [0.4, 2.5, 5.0, 7.5]
+        assert zs == [0.4, 2.0, 6.0]                 # M12.4: 4 mm DOC -> 3 passes (was 2.5/4)
         assert min(zs) == castle.onion_skin_mm      # the skin, never zero
 
 
@@ -265,8 +265,12 @@ def test_against_reference_nc(program):
     # reference contour pass stack == ours (eyewires section, held Z values)
     eye_section = ref.split("(Eyewires)")[1].split("(Perimeter)")[0]
     ref_passes = _held_cut_zs(eye_section)
+    assert ref_passes == [0.4, 2.5, 5.0, 7.5]               # the proven Fusion stack (2.5 mm)
+    # M12.4 intentionally cuts deeper (4 mm DOC): same onion-skin floor and same depth
+    # reached, but fewer, deeper passes than the reference.
     ours = sorted({round(p[2], 3) for path in ops["Eyewires"].paths for p in path})
-    assert ours == ref_passes == [0.4, 2.5, 5.0, 7.5]
+    assert ours == [0.4, 2.0, 6.0]
+    assert ours[0] == ref_passes[0] == 0.4 and len(ours) < len(ref_passes)
 
     # rough floor: reference min Z 6.2 == ours (lowest terrace + 2)
     rough_section = ref.split("(Rough Scallop)")[1].split("(Fine Scallop)")[0]
