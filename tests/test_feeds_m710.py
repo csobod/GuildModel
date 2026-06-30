@@ -79,8 +79,8 @@ def test_params_panel_chip_readout(tmp_path, monkeypatch):
     from guildmodel.gui.widgets.params_panel import ParamsPanel
 
     p = ParamsPanel()
-    # default flat_3175 (1 flute) @ acetate (750 / 10000) → 0.0750 mm/tooth, in range
+    # default flat_3175 (1 flute) @ acetate (1200 / 10000) → 0.120 mm/tooth, in range (M12.3)
     assert "mm/tooth" in p._chip_load_lbl.text()
-    assert "0.075" in p._chip_load_lbl.text()
+    assert "0.120" in p._chip_load_lbl.text()
     assert "m/min" in p._surface_speed_lbl.text()
     assert "within" in p._chip_status_lbl.text().lower()

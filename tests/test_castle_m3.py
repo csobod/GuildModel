@@ -55,7 +55,8 @@ def test_demo_tool_and_feeds_in_config():
     assert t["diameter_mm"] == 3.175 and t["type"] == "flat" and t["flutes"] == 1
     mats = yaml.safe_load((CONFIG / "materials.yaml").read_text(encoding="utf-8"))
     m = mats["acetate"]
-    assert (m["spindle_rpm"], m["feed_rate_mmpm"], m["plunge_rate_mmpm"]) == (10000, 750, 333)
+    # M12.3: feed is chip-load-derived (0.12 mm/tooth x 10k x 1-flute = 1200).
+    assert (m["spindle_rpm"], m["feed_rate_mmpm"], m["plunge_rate_mmpm"]) == (10000, 1200, 450)
 
 
 # ------------------------------------------------------------------ structure

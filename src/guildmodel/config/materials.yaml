@@ -10,10 +10,14 @@
 
 acetate:
   display_name: "Acetate"
-  notes: "Standard cellulose acetate sheet. Demo Project reference feeds (proven on the Guild CNC program)."
+  # Feed is chip-load-derived (M12.3): 0.12 mm/tooth x 10000 rpm x 1 flute = 1200 mm/min,
+  # the upper-middle of acetate's 0.02-0.15 window (bigger chips run cooler -> less
+  # melting). The proven Guild CNC baseline was 750 (0.075 mm/tooth); the M7.10 chip-load
+  # badge guides further tuning. VALIDATE the faster feed on a sacrificial cut first.
+  notes: "Standard cellulose acetate sheet. Feed = 0.12 mm/tooth at 10k (1-flute). Proven baseline 750 (0.075); validate the faster feed before production."
   spindle_rpm: 10000
-  feed_rate_mmpm: 750
-  plunge_rate_mmpm: 333
+  feed_rate_mmpm: 1200
+  plunge_rate_mmpm: 450
   max_doc_mm: 2.5       # maximum depth-of-cut per pass (reference contour stepdown)
   relief_stepover_mm: 0.9       # matches the Fusion Scallop coverage
   contour_stepdown_mm: 2.5

@@ -45,12 +45,12 @@ def test_override_roundtrip_and_reset(tmp_user):
     assert eff["acetate"]["feed_rate_mmpm"] == 999.0
     assert eff["acetate"]["relief_stepover_mm"] == 1.3
     # shipped baseline is untouched
-    assert material_store.shipped_material("acetate")["feed_rate_mmpm"] == 750
+    assert material_store.shipped_material("acetate")["feed_rate_mmpm"] == 1200
     # a now-matching value is no longer "changed"
     assert material_store.changed_keys("acetate", eff["acetate"]) == []
 
     material_store.reset_material("acetate")
-    assert material_store.effective()["acetate"]["feed_rate_mmpm"] == 750
+    assert material_store.effective()["acetate"]["feed_rate_mmpm"] == 1200
 
 
 def test_reset_all(tmp_user):
