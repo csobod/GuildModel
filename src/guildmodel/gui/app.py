@@ -4171,6 +4171,11 @@ class MainWindow(QMainWindow):
         try:
             if ws.kind == ComponentKind.FRAME_FRONT and ws.castle_params is not None:
                 self.params.set_castle_params(ws.castle_params)
+            if ws.kind == ComponentKind.FRAME_FRONT and ws.forming is not None:
+                # Seed the pad-splay angle from the drawing's bridge angle (M13.1)
+                # — a no-op once the maker has touched the splay controls.
+                self.params.seed_pad_splay_angle(
+                    getattr(ws.forming, "bridge_angle_deg", 0.0) or 0.0)
             elif (ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
                   and ws.temple_params is not None):
                 self.params.set_temple_params(ws.temple_params)

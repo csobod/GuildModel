@@ -38,8 +38,9 @@ from guildmodel.gui.style import theme
 from guildmodel.gui import material_store
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
-    BaseCurveBlockParams, CastleCamParams, CastleParams, ComponentKind,
-    DEFAULT_OP_TOOLS, FootingFillet, FootingSchedule, POSTERIOR_OPS, ProgramZero,
+    BaseCurveBlockParams, BridgeReliefParams, CastleCamParams, CastleParams,
+    ComponentKind, DEFAULT_OP_TOOLS, EyewireBezelParams, FootingFillet,
+    FootingSchedule, PadSplayParams, POSTERIOR_OPS, ProgramZero,
     StockDefinition, TempleParams, ZoneThicknesses,
 )
 
@@ -120,6 +121,10 @@ class ParamsPanel(QTabWidget):
         self._temple_fixture_zone = "temple_right"
         self._block_fixture_zone = "bc_template_right"
         self._block_material = "acetal"
+        # Loaded-project values for the M13 sections that don't have widgets
+        # yet (bezel M13.2, bridge relief M13.3) — pass through unchanged.
+        self._m13_bezel_passthrough = EyewireBezelParams()
+        self._m13_bridge_passthrough = BridgeReliefParams()
 
         # Each tab is an independently scrolling column; no fixed width so the
         # Footing label + spinbox-pair rows never clip at the right edge. The
@@ -255,6 +260,7 @@ class ParamsPanel(QTabWidget):
     def _build_castle_tab(self, lay: QVBoxLayout) -> None:
         self._build_style_preset_group(lay)
         self._build_castle_group(lay)
+        self._build_posterior_finishing_group(lay)
         self._build_zones_group(lay)
 
     # ---------------------------------------------- frame-style presets (M7.16)
@@ -424,6 +430,106 @@ class ParamsPanel(QTabWidget):
             sb.valueChanged.connect(self._on_castle_spin)
 
         lay.addWidget(grp)
+
+    # ------------------------------------------ posterior finishing (M13)
+
+    def _build_posterior_finishing_group(self, lay: QVBoxLayout) -> None:
+        """Pad splay / eyewire bezel / bridge relief — the posterior features a
+        maker otherwise cuts by hand (BUILDPLAN M13). Each is off by default."""
+        d = PadSplayParams()
+        grp = QGroupBox("Posterior Finishing")
+        glay = QVBoxLayout(grp)
+
+        # --- Pad splay: chamfer under the bridge (M13.1) ---
+        glay.addWidget(_section_label("Pad Splay"))
+        self.splay_enable = QCheckBox("Cut pad splay chamfer")
+        self.splay_enable.setChecked(d.enabled)
+        self.splay_enable.setToolTip(
+            "Chamfer the bridge underside so the frame sits on the nose.")
+        glay.addWidget(self.splay_enable)
+        splay = QFormLayout()
+        splay.setContentsMargins(8, 0, 0, 0)
+        splay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.splay_run = _spinbox(d.run_mm, 2.0, 60.0, step=1.0, decimals=1)
+        self.splay_run.setToolTip(
+            "How far the chamfer runs along the outline each side of bottom-center.")
+        self.splay_dev_center = _spinbox(d.crest_deviation_center_mm, 0.0, 20.0,
+                                         step=0.5, decimals=1)
+        self.splay_dev_center.setToolTip(
+            "Crest inset from the outline at the bottom-center point.")
+        self.splay_dev_end = _spinbox(d.crest_deviation_end_mm, 0.0, 20.0,
+                                      step=0.5, decimals=1)
+        self.splay_dev_end.setToolTip("Crest inset at each end of the run.")
+        self.splay_angle_center = _spinbox(d.angle_center_deg, 5.0, 60.0,
+                                           step=1.0, decimals=1, suffix="°")
+        self.splay_angle_middle = _spinbox(d.angle_middle_deg, 5.0, 60.0,
+                                           step=1.0, decimals=1, suffix="°")
+        self.splay_angle_end = _spinbox(d.angle_end_deg, 5.0, 60.0,
+                                        step=1.0, decimals=1, suffix="°")
+        self.splay_toric = QCheckBox("Toric (blend three angles)")
+        self.splay_toric.setChecked(d.toric)
+        self.splay_toric.setToolTip(
+            "Blend the splay from a center angle through a middle to an end angle.")
+        self.splay_clamp = _spinbox(d.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
+        self.splay_clamp.setToolTip(
+            "Cut floor above the anterior face — the edge never gets thinner than this.")
+        self.splay_feather = _spinbox(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
+        self.splay_feather.setToolTip("Blend-out length at each end of the run.")
+        splay.addRow("Run per side:", self.splay_run)
+        splay.addRow("Crest at center:", self.splay_dev_center)
+        splay.addRow("Crest at ends:", self.splay_dev_end)
+        splay.addRow("Splay angle:", self.splay_angle_center)
+        splay.addRow("", self.splay_toric)
+        splay.addRow("Middle angle:", self.splay_angle_middle)
+        splay.addRow("End angle:", self.splay_angle_end)
+        splay.addRow("Min edge thickness:", self.splay_clamp)
+        splay.addRow("End feather:", self.splay_feather)
+        glay.addLayout(splay)
+
+        self.splay_enable.toggled.connect(self._on_splay_toggled)
+        self.splay_enable.toggled.connect(self.castle_changed)
+        self.splay_toric.toggled.connect(self._on_splay_toric_toggled)
+        self.splay_toric.toggled.connect(self.castle_changed)
+        for sb in self._splay_spinboxes():
+            sb.valueChanged.connect(self.castle_changed)
+        self._on_splay_toggled(d.enabled)
+
+        lay.addWidget(grp)
+
+    def _splay_spinboxes(self) -> list[QDoubleSpinBox]:
+        return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
+                self.splay_angle_center, self.splay_angle_middle,
+                self.splay_angle_end, self.splay_clamp, self.splay_feather]
+
+    def _on_splay_toggled(self, on: bool) -> None:
+        """Grey out the pad-splay controls when the chamfer is off."""
+        for sb in self._splay_spinboxes():
+            sb.setEnabled(on)
+        self.splay_toric.setEnabled(on)
+        self._on_splay_toric_toggled(self.splay_toric.isChecked())
+
+    def _on_splay_toric_toggled(self, toric: bool) -> None:
+        """Middle/end angles only apply in toric mode."""
+        on = self.splay_enable.isChecked() and toric
+        self.splay_angle_middle.setEnabled(on)
+        self.splay_angle_end.setEnabled(on)
+
+    def seed_pad_splay_angle(self, deg: float) -> None:
+        """Seed the splay angle from the drawing's forming bridge angle — only
+        while the splay is untouched (disabled and all angles at the default)."""
+        d = PadSplayParams()
+        if self.splay_enable.isChecked() or deg <= 0.0:
+            return
+        if any(sb.value() != default for sb, default in (
+                (self.splay_angle_center, d.angle_center_deg),
+                (self.splay_angle_middle, d.angle_middle_deg),
+                (self.splay_angle_end, d.angle_end_deg))):
+            return
+        for sb in (self.splay_angle_center, self.splay_angle_middle,
+                   self.splay_angle_end):
+            sb.blockSignals(True)
+            sb.setValue(deg)
+            sb.blockSignals(False)
 
     def _castle_spinboxes(self) -> list[QDoubleSpinBox]:
         boxes = [
@@ -1031,6 +1137,22 @@ class ParamsPanel(QTabWidget):
             ),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
+            pad_splay=PadSplayParams(
+                enabled=self.splay_enable.isChecked(),
+                run_mm=self.splay_run.value(),
+                crest_deviation_center_mm=self.splay_dev_center.value(),
+                crest_deviation_end_mm=self.splay_dev_end.value(),
+                toric=self.splay_toric.isChecked(),
+                angle_center_deg=self.splay_angle_center.value(),
+                angle_middle_deg=self.splay_angle_middle.value(),
+                angle_end_deg=self.splay_angle_end.value(),
+                anterior_clamp_mm=self.splay_clamp.value(),
+                feather_mm=self.splay_feather.value(),
+            ),
+            # M13.2/.3 sections land next; until then a loaded project's values
+            # pass straight through so the pull/push cycle can't reset them.
+            eyewire_bezel=self._m13_bezel_passthrough,
+            bridge_relief=self._m13_bridge_passthrough,
         )
 
     def set_castle_params(self, c: CastleParams) -> None:
@@ -1054,14 +1176,30 @@ class ParamsPanel(QTabWidget):
         for canonical, (ext_sb, int_sb) in self.footing_spins.items():
             f = c.footing.for_edge(canonical)
             pairs += [(ext_sb, f.exterior_mm), (int_sb, f.interior_mm)]
+        pairs += [
+            (self.splay_run, c.pad_splay.run_mm),
+            (self.splay_dev_center, c.pad_splay.crest_deviation_center_mm),
+            (self.splay_dev_end, c.pad_splay.crest_deviation_end_mm),
+            (self.splay_angle_center, c.pad_splay.angle_center_deg),
+            (self.splay_angle_middle, c.pad_splay.angle_middle_deg),
+            (self.splay_angle_end, c.pad_splay.angle_end_deg),
+            (self.splay_clamp, c.pad_splay.anterior_clamp_mm),
+            (self.splay_feather, c.pad_splay.feather_mm),
+        ]
         for sb, val in pairs:
             sb.blockSignals(True)
             sb.setValue(val)
             sb.blockSignals(False)
-        self.use_pad_block.blockSignals(True)
-        self.use_pad_block.setChecked(c.stock.use_pad_block)
-        self.use_pad_block.blockSignals(False)
+        for cb, val in ((self.use_pad_block, c.stock.use_pad_block),
+                        (self.splay_enable, c.pad_splay.enabled),
+                        (self.splay_toric, c.pad_splay.toric)):
+            cb.blockSignals(True)
+            cb.setChecked(val)
+            cb.blockSignals(False)
         self._on_pad_block_toggled(c.stock.use_pad_block)
+        self._on_splay_toggled(c.pad_splay.enabled)
+        self._m13_bezel_passthrough = c.eyewire_bezel.model_copy(deep=True)
+        self._m13_bridge_passthrough = c.bridge_relief.model_copy(deep=True)
         self.castle_changed.emit()
         self.stock_changed.emit()
 
