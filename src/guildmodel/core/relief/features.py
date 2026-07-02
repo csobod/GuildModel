@@ -231,6 +231,79 @@ def _carve_eyewire_bezel(
     return band
 
 
+# ------------------------------------------------------------------ bridge relief
+
+def _groove_profile(v: np.ndarray, depth: float, flank_deg: float,
+                    root_r: float) -> tuple[np.ndarray, float]:
+    """Groove cross-section depth at lateral distance v from the axis:
+    a circular (U) root of radius root_r meeting straight V flanks at
+    flank_deg, total depth `depth`. Returns (p(v), half-width W)."""
+    a = np.radians(flank_deg)
+    cap = root_r * (1.0 - np.cos(a))          # depth the root arc alone covers
+    if depth <= cap:
+        # Shallow groove: pure circular segment of the root arc.
+        W = float(np.sqrt(max(depth * (2.0 * root_r - depth), 0.0)))
+        p = depth - root_r + np.sqrt(np.maximum(root_r**2 - v**2, 0.0))
+        return np.clip(p, 0.0, None) * (v <= W), W
+    v_t = root_r * np.sin(a)                  # arc->flank tangency
+    W = float(v_t + (depth - cap) / np.tan(a))
+    p_arc = depth - root_r + np.sqrt(np.maximum(root_r**2 - np.minimum(v, v_t)**2, 0.0))
+    p_flank = (W - v) * np.tan(a)
+    p = np.where(v <= v_t, p_arc, np.clip(p_flank, 0.0, None))
+    return p * (v <= W), W
+
+
+def _carve_bridge_relief(
+    z: np.ndarray, z_pre: np.ndarray,
+    inside: np.ndarray, ox: float, oy: float, res: float, p,
+) -> np.ndarray:
+    """V/U groove swept OD<->OS across the posterior bridge: constant depth
+    below the local pre-carve surface, masked to the connected strip that
+    contains the centerline so it runs lens rim to lens rim and never touches
+    the outboard body crossing the same y band."""
+    from scipy.ndimage import label as nd_label
+
+    rows, cols = z.shape
+    band = np.zeros_like(inside)
+    if p.depth_mm <= 0.0:
+        return band
+
+    # Groove axis: the middle of the bridge strip at the centerline x=0.
+    col0 = int(np.clip(round((0.0 - ox) / res), 0, cols - 1))
+    strip_rows = np.flatnonzero(inside[:, col0])
+    if strip_rows.size == 0:
+        return band                            # no body on the centerline
+    y_mid = oy + 0.5 * (strip_rows.min() + strip_rows.max()) * res
+    y_axis = y_mid + p.axis_offset_mm
+
+    _, W = _groove_profile(np.array([0.0]), p.depth_mm,
+                           p.flank_angle_deg, p.root_radius_mm)
+    if W < 2.0 * res:
+        return band                            # unresolvable at this grid
+
+    ys = oy + np.arange(rows) * res
+    v_col = np.abs(ys - y_axis)
+    in_strip = inside & (v_col[:, None] <= W)
+    if not in_strip.any():
+        return band
+    # Keep only the connected span containing the centerline (the bridge);
+    # drop the outboard strips crossing eyewires/endpieces at the same y.
+    labels, _ = nd_label(in_strip)
+    center_labels = np.unique(labels[in_strip[:, col0], col0])
+    center_labels = center_labels[center_labels > 0]
+    if center_labels.size == 0:
+        return band
+    mask = np.isin(labels, center_labels)
+
+    depth_v, _ = _groove_profile(v_col, p.depth_mm, p.flank_angle_deg,
+                                 p.root_radius_mm)
+    target = np.maximum(z_pre - depth_v[:, None], p.anterior_clamp_mm)
+    lowered = mask & (target < z - 1e-12)
+    z[lowered] = target[lowered]
+    band[lowered] = True
+    return band
+
+
 # ------------------------------------------------------------------ dispatcher
 
 def apply_posterior_features(
@@ -273,5 +346,13 @@ def apply_posterior_features(
         band |= _carve_eyewire_bezel(z, z_pre, partition.body, inside,
                                      ox, oy, resolution, bezel)
         max_slope = max(max_slope, bezel.angle_deg)
+    if groove.enabled:
+        if progress is not None:
+            progress("Bridge relief", 0.88)
+        gb = _carve_bridge_relief(z, z_pre, inside, ox, oy, resolution, groove)
+        band |= gb
+        if gb.any():
+            # The root arc's slope never exceeds the flank angle.
+            max_slope = max(max_slope, groove.flank_angle_deg)
     band[~inside] = False
     return (band if band.any() else None), max_slope

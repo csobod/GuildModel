@@ -121,9 +121,6 @@ class ParamsPanel(QTabWidget):
         self._temple_fixture_zone = "temple_right"
         self._block_fixture_zone = "bc_template_right"
         self._block_material = "acetal"
-        # Loaded-project values for the M13 section that doesn't have widgets
-        # yet (bridge relief M13.3) — pass through unchanged.
-        self._m13_bridge_passthrough = BridgeReliefParams()
 
         # Each tab is an independently scrolling column; no fixed width so the
         # Footing label + spinbox-pair rows never clip at the right edge. The
@@ -522,7 +519,56 @@ class ParamsPanel(QTabWidget):
             sb.valueChanged.connect(self.castle_changed)
         self._on_bezel_toggled(b.enabled)
 
+        # --- Bridge relief: V/U groove across the posterior bridge (M13.3) ---
+        g = BridgeReliefParams()
+        glay.addWidget(_section_label("Bridge Relief"))
+        self.bridge_relief_enable = QCheckBox("Cut bridge projection relief")
+        self.bridge_relief_enable.setChecked(g.enabled)
+        self.bridge_relief_enable.setToolTip(
+            "Scallop a V-groove with a rounded root across the posterior bridge.")
+        glay.addWidget(self.bridge_relief_enable)
+        groove = QFormLayout()
+        groove.setContentsMargins(8, 0, 0, 0)
+        groove.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.bridge_relief_depth = _spinbox(g.depth_mm, 0.1, 4.0, step=0.1, decimals=1)
+        self.bridge_relief_depth.setToolTip("Groove depth below the bridge surface.")
+        self.bridge_relief_flank = _spinbox(g.flank_angle_deg, 10.0, 80.0,
+                                            step=1.0, decimals=1, suffix="°")
+        self.bridge_relief_flank.setToolTip("Slope of each V flank.")
+        self.bridge_relief_root = _spinbox(g.root_radius_mm, 0.1, 4.0,
+                                           step=0.1, decimals=1)
+        self.bridge_relief_root.setToolTip(
+            "Radius of the U at the groove's base — cut it with a ball this size or smaller.")
+        self.bridge_relief_axis = _spinbox(g.axis_offset_mm, -10.0, 10.0,
+                                           step=0.5, decimals=1)
+        self.bridge_relief_axis.setToolTip(
+            "Shift the groove up (+) or down (−) from the middle of the bridge.")
+        self.bridge_relief_clamp = _spinbox(g.anterior_clamp_mm, 0.2, 5.0,
+                                            step=0.1, decimals=1)
+        groove.addRow("Depth:", self.bridge_relief_depth)
+        groove.addRow("Flank angle:", self.bridge_relief_flank)
+        groove.addRow("Root radius:", self.bridge_relief_root)
+        groove.addRow("Axis offset:", self.bridge_relief_axis)
+        groove.addRow("Min edge thickness:", self.bridge_relief_clamp)
+        glay.addLayout(groove)
+
+        self.bridge_relief_enable.toggled.connect(self._on_bridge_relief_toggled)
+        self.bridge_relief_enable.toggled.connect(self.castle_changed)
+        for sb in self._bridge_relief_spinboxes():
+            sb.valueChanged.connect(self.castle_changed)
+        self._on_bridge_relief_toggled(g.enabled)
+
         lay.addWidget(grp)
+
+    def _bridge_relief_spinboxes(self) -> list[QDoubleSpinBox]:
+        return [self.bridge_relief_depth, self.bridge_relief_flank,
+                self.bridge_relief_root, self.bridge_relief_axis,
+                self.bridge_relief_clamp]
+
+    def _on_bridge_relief_toggled(self, on: bool) -> None:
+        """Grey out the bridge-relief controls when the groove is off."""
+        for sb in self._bridge_relief_spinboxes():
+            sb.setEnabled(on)
 
     def _on_bezel_toggled(self, on: bool) -> None:
         """Grey out the bezel controls when the bezel is off."""
@@ -1188,9 +1234,14 @@ class ParamsPanel(QTabWidget):
                 angle_deg=self.bezel_angle.value(),
                 anterior_clamp_mm=self.bezel_clamp.value(),
             ),
-            # M13.3 section lands next; until then a loaded project's values
-            # pass straight through so the pull/push cycle can't reset them.
-            bridge_relief=self._m13_bridge_passthrough,
+            bridge_relief=BridgeReliefParams(
+                enabled=self.bridge_relief_enable.isChecked(),
+                depth_mm=self.bridge_relief_depth.value(),
+                flank_angle_deg=self.bridge_relief_flank.value(),
+                root_radius_mm=self.bridge_relief_root.value(),
+                axis_offset_mm=self.bridge_relief_axis.value(),
+                anterior_clamp_mm=self.bridge_relief_clamp.value(),
+            ),
         )
 
     def set_castle_params(self, c: CastleParams) -> None:
@@ -1226,6 +1277,11 @@ class ParamsPanel(QTabWidget):
             (self.bezel_width, c.eyewire_bezel.width_mm),
             (self.bezel_angle, c.eyewire_bezel.angle_deg),
             (self.bezel_clamp, c.eyewire_bezel.anterior_clamp_mm),
+            (self.bridge_relief_depth, c.bridge_relief.depth_mm),
+            (self.bridge_relief_flank, c.bridge_relief.flank_angle_deg),
+            (self.bridge_relief_root, c.bridge_relief.root_radius_mm),
+            (self.bridge_relief_axis, c.bridge_relief.axis_offset_mm),
+            (self.bridge_relief_clamp, c.bridge_relief.anterior_clamp_mm),
         ]
         for sb, val in pairs:
             sb.blockSignals(True)
@@ -1234,14 +1290,15 @@ class ParamsPanel(QTabWidget):
         for cb, val in ((self.use_pad_block, c.stock.use_pad_block),
                         (self.splay_enable, c.pad_splay.enabled),
                         (self.splay_toric, c.pad_splay.toric),
-                        (self.bezel_enable, c.eyewire_bezel.enabled)):
+                        (self.bezel_enable, c.eyewire_bezel.enabled),
+                        (self.bridge_relief_enable, c.bridge_relief.enabled)):
             cb.blockSignals(True)
             cb.setChecked(val)
             cb.blockSignals(False)
         self._on_pad_block_toggled(c.stock.use_pad_block)
         self._on_splay_toggled(c.pad_splay.enabled)
         self._on_bezel_toggled(c.eyewire_bezel.enabled)
-        self._m13_bridge_passthrough = c.bridge_relief.model_copy(deep=True)
+        self._on_bridge_relief_toggled(c.bridge_relief.enabled)
         self.castle_changed.emit()
         self.stock_changed.emit()
 

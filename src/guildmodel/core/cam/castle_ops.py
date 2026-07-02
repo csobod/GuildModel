@@ -42,6 +42,10 @@ from .pocketing import _inward_offsets, _SCALE
 
 Point3 = tuple[float, float, float]
 
+# Facet-cusp target on the M13 posterior-feature chamfers: the feature-finish
+# band's stepover is derived as cusp / tan(steepest feature angle).
+FEATURE_CUSP_MM = 0.15
+
 
 @dataclass
 class CamOp:
@@ -246,16 +250,21 @@ def _bilinear_sample(zgrid: np.ndarray, xs: np.ndarray, ys: np.ndarray,
 
 
 def contour_parallel_rings(body: Polygon, stepover_mm: float,
-                           max_rings: int = 4000) -> list[list]:
+                           max_rings: int = 4000,
+                           max_depth_mm: float | None = None) -> list[list]:
     """Concentric boundary-offset rings tiling `body` (Fusion 'Scallop' style).
 
     Successive inward erosions of the material polygon: the exterior shrinks and
     the lens holes grow, so the rings wrap the outline *and* every eyewire. The
     relief finish then follows the frame instead of raster-sweeping it.
+    `max_depth_mm` caps the erosion (M13: the feature-finish band only needs
+    rings as deep as the band reaches).
     """
     rings: list[list] = []
     d = 0.0
     for _ in range(max_rings):
+        if max_depth_mm is not None and d > max_depth_mm:
+            break
         region = body if d <= 0 else body.buffer(-d, join_style="round")
         if region.is_empty:
             break
@@ -424,9 +433,11 @@ def relief_ops(
     gap_cells = max(1, int(round(params.relief_link_gap_mm / res)))
     min_cells = max(2, int(round(params.relief_min_run_mm / res)))
 
-    def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray) -> None:
-        for ring in contour_parallel_rings(machining,
-                                           params.relief_stepover_mm):
+    def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray,
+              rings: list[list] | None = None) -> None:
+        if rings is None:
+            rings = contour_parallel_rings(machining, params.relief_stepover_mm)
+        for ring in rings:
             if not _ring_is_ccw(ring):        # uniform climb direction on the finish (M12.5)
                 ring = list(reversed(ring))
             dp = _densify_xy(ring, res)
@@ -457,6 +468,23 @@ def relief_ops(
     # nosepad height a hair (a design param) rather than skim at stock height.
     _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
     _emit(rough, z_rough, cut_rough)
+    # Feature-finish band (M13): on a chamfer the contour rings are its level
+    # curves, so a flat tool leaves facet ridges of stepover*tan(slope) between
+    # them — 0.52 mm at 30°/0.9 mm, over the sim's 0.5 mm completeness gate.
+    # Add fine rings CONFINED to the posterior-feature bands at a cusp-derived
+    # stepover (the rim-band pattern): cost stays proportional to feature area.
+    fb = relief.feature_band
+    if fb is not None and fb.any() and relief.feature_max_slope_deg > 0.0:
+        from scipy.ndimage import binary_dilation
+        slope = math.radians(min(85.0, max(5.0, relief.feature_max_slope_deg)))
+        f_step = min(params.relief_stepover_mm,
+                     max(0.12, FEATURE_CUSP_MM / math.tan(slope)))
+        fb_wide = binary_dilation(fb, iterations=2)   # cover band-edge rounding
+        dist_in = distance_transform_edt(inside, sampling=res)
+        d_max = float(dist_in[fb_wide & inside].max()) + band_mm + f_step
+        f_rings = contour_parallel_rings(machining, f_step, max_depth_mm=d_max)
+        _emit(fine, z_fine, fb_wide & band & (z_fine < stock_cls.z - eps),
+              rings=f_rings)
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
     # tool works the part in nearest-neighbour order instead of hopping across it (M12.1),
     # then stitch the now-adjacent rings into continuous surface-riding sweeps so a region
@@ -694,6 +722,71 @@ def depth_reach_warnings(
         if depth > flute + 1e-6:
             out.append(DepthReachWarning(
                 op.name, t.get("name", "tool"), flute, depth))
+    return out
+
+
+@dataclass
+class FeatureReachWarning:
+    """An M13 posterior feature the Fine Relief tool can't fully finish
+    (BUILDPLAN M13.3): the groove's U root needs a ball no larger than the
+    root radius, and a chamfer falling INTO a rim (splay toe at the outline,
+    bezel toe at a lens opening) needs a ball — a flat's trailing edge rides
+    the slope behind it and leaves ~radius*tan(angle) proud at the rim edge."""
+    detail: str
+    tool_name: str
+    tool_type: str
+    suggested: str | None = None
+
+    def message(self) -> str:
+        hint = f" (try {self.suggested})" if self.suggested else ""
+        return (f"Fine Relief: {self.detail} — {self.tool_name} "
+                f"({self.tool_type}) leaves it proud{hint}")
+
+
+def feature_reach_warnings(
+    castle: CastleParams,
+    ops: list[CamOp],
+    tools_cfg: dict | None = None,
+) -> list[FeatureReachWarning]:
+    """M13 posterior-feature reach for the Fine Relief tool: the bridge-relief
+    root wants a ball <= the root radius; the splay/bezel chamfer toes at the
+    rims want a ball of any size (the feature-finish band handles their
+    mid-band facets, but no flat tool can finish a downhill slope to an edge)."""
+    fine = next((op for op in ops if op.name == "Fine Relief"), None)
+    tool = fine.tool if fine is not None and fine.tool else None
+    if tool is None:
+        return []
+    name = tool.get("name", "tool")
+    ttype = str(tool.get("type", "?"))
+    radius = float(tool["radius_mm"])
+    is_ball = tool.get("type") == "ball"
+    out: list[FeatureReachWarning] = []
+    if castle.bridge_relief.enabled and not (
+            is_ball and radius <= castle.bridge_relief.root_radius_mm + 1e-6):
+        root = castle.bridge_relief.root_radius_mm
+        suggested = _suggest_fitting_tool(root, tools_cfg, "ball") if tools_cfg else None
+        out.append(FeatureReachWarning(
+            f"the bridge-relief root (R{root:.1f}) needs a ball tool with "
+            f"radius <= {root:.1f} mm", name, ttype, suggested))
+    if (castle.pad_splay.enabled or castle.eyewire_bezel.enabled) and not is_ball:
+        which = " / ".join(w for w, on in (
+            ("pad-splay", castle.pad_splay.enabled),
+            ("eyewire-bezel", castle.eyewire_bezel.enabled)) if on)
+        angles = []
+        if castle.pad_splay.enabled:
+            s = castle.pad_splay
+            angles += ([s.angle_center_deg, s.angle_middle_deg, s.angle_end_deg]
+                       if s.toric else [s.angle_center_deg])
+        if castle.eyewire_bezel.enabled:
+            angles.append(castle.eyewire_bezel.angle_deg)
+        lip = radius * math.tan(math.radians(max(angles)))
+        balls = ({n: t for n, t in tools_cfg.items() if t.get("type") == "ball"}
+                 if tools_cfg else None)
+        suggested = _suggest_fitting_tool(radius, balls, "ball") if balls else None
+        out.append(FeatureReachWarning(
+            f"the {which} chamfer toe at the rim needs a ball tool "
+            f"(a flat leaves ~{lip:.1f} mm at the rim edge)",
+            name, ttype, suggested))
     return out
 
 
