@@ -97,6 +97,54 @@ class StockDefinition(BaseModel):
         return self.blank_thickness_mm + pad
 
 
+class PadSplayParams(BaseModel):
+    """Posterior chamfer under the bridge — the frame's "pad splay" (M13.1).
+
+    A crest line is drawn as an inward offset of the OUTLINE, centered on the
+    outline's bottom-center point and running `run_mm` of arc length along the
+    outline per side; the chamfer surface falls from the crest (anchored on the
+    local relief) toward the outline edge at the splay angle. Toric mode blends
+    three angles — center ("start") / half-run ("middle") / run-end ("end") —
+    mirror-symmetric about the centerline. Angles are measured from the anterior
+    plane (0° = flat). Off by default: many makers cut theirs by hand.
+    """
+    enabled: bool = False
+    run_mm: float = 18.0                     # arc distance per side from bottom-center
+    crest_deviation_center_mm: float = 6.0   # inward crest offset at bottom-center
+    crest_deviation_end_mm: float = 2.0      # at each run end (interpolated along the run)
+    toric: bool = False                      # off = angle_center everywhere
+    angle_center_deg: float = 30.0
+    angle_middle_deg: float = 30.0
+    angle_end_deg: float = 30.0
+    anterior_clamp_mm: float = 1.5           # cut floor above the anterior face (no knife edge)
+    feather_mm: float = 3.0                  # depth feather over the last mm of each run end
+
+
+class EyewireBezelParams(BaseModel):
+    """Constant-width chamfer band around each lens opening's posterior rim —
+    the "bezeled eyewire" (M13.2). Depth below the local surface at the rim is
+    width_mm * tan(angle_deg); the anterior clamp floors the cut.
+    """
+    enabled: bool = False
+    width_mm: float = 2.5
+    angle_deg: float = 30.0
+    anterior_clamp_mm: float = 1.5
+
+
+class BridgeReliefParams(BaseModel):
+    """Bridge projection relief (M13.3): a groove swept OD<->OS across the
+    posterior bridge from lens rim to lens rim — V flanks with a radiused (U)
+    root, constant depth below the local pre-carve surface so it rides the
+    footing swells and daylights into the eyewires at its ends.
+    """
+    enabled: bool = False
+    depth_mm: float = 1.2                    # below the local posterior surface
+    flank_angle_deg: float = 30.0            # each flank's slope from the anterior plane
+    root_radius_mm: float = 1.0              # radiused root (needs a ball <= this to cut fully)
+    axis_offset_mm: float = 0.0              # groove axis y offset from the bridge midline
+    anterior_clamp_mm: float = 1.5
+
+
 class CastleParams(BaseModel):
     """The parametric castle (BUILDPLAN §2): towers, walls, footing, stock.
 
@@ -109,6 +157,11 @@ class CastleParams(BaseModel):
     stock: StockDefinition = Field(default_factory=StockDefinition)
     onion_skin_mm: float = 0.4               # axial stock left under through-cuts (no tabs)
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
+    # Posterior finishing features (M13, all default-off — the M2/M3/M4 gates
+    # machine the bare castle; each is a min-carve into the footed surface).
+    pad_splay: PadSplayParams = Field(default_factory=PadSplayParams)
+    eyewire_bezel: EyewireBezelParams = Field(default_factory=EyewireBezelParams)
+    bridge_relief: BridgeReliefParams = Field(default_factory=BridgeReliefParams)
 
 
 # Canonical posterior op names, in machining order. These are the keys for the

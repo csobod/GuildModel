@@ -57,6 +57,11 @@ class CastleRelief:
     # follow this so they sail OVER the already-cut pockets instead of re-diving to the
     # floor — the Hinge Pockets op cuts the pockets, the sim verifies the full `field`.
     surface_field: "Heightfield | None" = None
+    # M13 posterior finishing features: mask of feature-carved cells (None when
+    # every feature is off) + the steepest enabled feature angle. The CAM fine
+    # pass adds band-confined rings at a chamfer-derived stepover from these.
+    feature_band: "np.ndarray | None" = None
+    feature_max_slope_deg: float = 0.0
 
     @property
     def Xs(self) -> np.ndarray:
@@ -303,6 +308,13 @@ def build_castle_relief(
             fill[sub] = tgt
 
     z = np.minimum(fill, carve)
+
+    # ---- Posterior finishing features (M13): min-carves into the footed
+    # surface, BEFORE the surface snapshot so the relief passes machine them.
+    from .features import apply_posterior_features
+    feature_band, feature_slope = apply_posterior_features(
+        z, partition, castle, inside, ox, oy, resolution, progress=progress)
+
     surface = z.copy()                # posterior surface BEFORE the pockets (relief
                                       # passes sail over them; the Hinge Pockets op cuts)
 
@@ -323,6 +335,7 @@ def build_castle_relief(
         field=field, inside=inside, zone_index=zone_index,
         partition=partition, pocket_polys=list(hinge_polys),
         surface_field=surface_field,
+        feature_band=feature_band, feature_max_slope_deg=feature_slope,
     )
 
 
@@ -375,6 +388,11 @@ def build_castle_stage(
             fillet = getattr(castle.footing, name)
             fillet.exterior_mm = 0.0
             fillet.interior_mm = 0.0
+        # Posterior finishing features (M13) anchor on the footed surface, so
+        # they appear with the footing stage onward.
+        castle.pad_splay.enabled = False
+        castle.eyewire_bezel.enabled = False
+        castle.bridge_relief.enabled = False
     hinges = list(hinge_polys) if level >= 3 else []
     return build_castle_relief(
         partition, castle, hinges,
