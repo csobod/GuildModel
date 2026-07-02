@@ -121,9 +121,8 @@ class ParamsPanel(QTabWidget):
         self._temple_fixture_zone = "temple_right"
         self._block_fixture_zone = "bc_template_right"
         self._block_material = "acetal"
-        # Loaded-project values for the M13 sections that don't have widgets
-        # yet (bezel M13.2, bridge relief M13.3) — pass through unchanged.
-        self._m13_bezel_passthrough = EyewireBezelParams()
+        # Loaded-project values for the M13 section that doesn't have widgets
+        # yet (bridge relief M13.3) — pass through unchanged.
         self._m13_bridge_passthrough = BridgeReliefParams()
 
         # Each tab is an independently scrolling column; no fixed width so the
@@ -494,7 +493,41 @@ class ParamsPanel(QTabWidget):
             sb.valueChanged.connect(self.castle_changed)
         self._on_splay_toggled(d.enabled)
 
+        # --- Eyewire bezel: chamfer band around each lens opening (M13.2) ---
+        b = EyewireBezelParams()
+        glay.addWidget(_section_label("Eyewire Bezel"))
+        self.bezel_enable = QCheckBox("Cut bezeled eyewire")
+        self.bezel_enable.setChecked(b.enabled)
+        self.bezel_enable.setToolTip(
+            "Chamfer the posterior rim of each lens opening.")
+        glay.addWidget(self.bezel_enable)
+        bezel = QFormLayout()
+        bezel.setContentsMargins(8, 0, 0, 0)
+        bezel.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.bezel_width = _spinbox(b.width_mm, 0.2, 8.0, step=0.1, decimals=1)
+        self.bezel_width.setToolTip("Band width from the lens rim inward.")
+        self.bezel_angle = _spinbox(b.angle_deg, 5.0, 60.0, step=1.0,
+                                    decimals=1, suffix="°")
+        self.bezel_clamp = _spinbox(b.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
+        self.bezel_clamp.setToolTip(
+            "Cut floor above the anterior face — the rim never gets thinner than this.")
+        bezel.addRow("Band width:", self.bezel_width)
+        bezel.addRow("Bezel angle:", self.bezel_angle)
+        bezel.addRow("Min edge thickness:", self.bezel_clamp)
+        glay.addLayout(bezel)
+
+        self.bezel_enable.toggled.connect(self._on_bezel_toggled)
+        self.bezel_enable.toggled.connect(self.castle_changed)
+        for sb in (self.bezel_width, self.bezel_angle, self.bezel_clamp):
+            sb.valueChanged.connect(self.castle_changed)
+        self._on_bezel_toggled(b.enabled)
+
         lay.addWidget(grp)
+
+    def _on_bezel_toggled(self, on: bool) -> None:
+        """Grey out the bezel controls when the bezel is off."""
+        for sb in (self.bezel_width, self.bezel_angle, self.bezel_clamp):
+            sb.setEnabled(on)
 
     def _splay_spinboxes(self) -> list[QDoubleSpinBox]:
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
@@ -1149,9 +1182,14 @@ class ParamsPanel(QTabWidget):
                 anterior_clamp_mm=self.splay_clamp.value(),
                 feather_mm=self.splay_feather.value(),
             ),
-            # M13.2/.3 sections land next; until then a loaded project's values
+            eyewire_bezel=EyewireBezelParams(
+                enabled=self.bezel_enable.isChecked(),
+                width_mm=self.bezel_width.value(),
+                angle_deg=self.bezel_angle.value(),
+                anterior_clamp_mm=self.bezel_clamp.value(),
+            ),
+            # M13.3 section lands next; until then a loaded project's values
             # pass straight through so the pull/push cycle can't reset them.
-            eyewire_bezel=self._m13_bezel_passthrough,
             bridge_relief=self._m13_bridge_passthrough,
         )
 
@@ -1185,6 +1223,9 @@ class ParamsPanel(QTabWidget):
             (self.splay_angle_end, c.pad_splay.angle_end_deg),
             (self.splay_clamp, c.pad_splay.anterior_clamp_mm),
             (self.splay_feather, c.pad_splay.feather_mm),
+            (self.bezel_width, c.eyewire_bezel.width_mm),
+            (self.bezel_angle, c.eyewire_bezel.angle_deg),
+            (self.bezel_clamp, c.eyewire_bezel.anterior_clamp_mm),
         ]
         for sb, val in pairs:
             sb.blockSignals(True)
@@ -1192,13 +1233,14 @@ class ParamsPanel(QTabWidget):
             sb.blockSignals(False)
         for cb, val in ((self.use_pad_block, c.stock.use_pad_block),
                         (self.splay_enable, c.pad_splay.enabled),
-                        (self.splay_toric, c.pad_splay.toric)):
+                        (self.splay_toric, c.pad_splay.toric),
+                        (self.bezel_enable, c.eyewire_bezel.enabled)):
             cb.blockSignals(True)
             cb.setChecked(val)
             cb.blockSignals(False)
         self._on_pad_block_toggled(c.stock.use_pad_block)
         self._on_splay_toggled(c.pad_splay.enabled)
-        self._m13_bezel_passthrough = c.eyewire_bezel.model_copy(deep=True)
+        self._on_bezel_toggled(c.eyewire_bezel.enabled)
         self._m13_bridge_passthrough = c.bridge_relief.model_copy(deep=True)
         self.castle_changed.emit()
         self.stock_changed.emit()

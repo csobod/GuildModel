@@ -184,6 +184,53 @@ def _carve_pad_splay(
     return band
 
 
+# ------------------------------------------------------------------ eyewire bezel
+
+def _carve_eyewire_bezel(
+    z: np.ndarray, z_pre: np.ndarray, body,
+    inside: np.ndarray, ox: float, oy: float, res: float, p,
+) -> np.ndarray:
+    """Constant-width chamfer band around each lens opening's posterior rim.
+
+    Anchored to the local pre-carve surface: the drop is zero at the band's
+    inner edge and width*tan(angle) at the rim, so the band keeps constant
+    width and rim depth all the way round and rides the footing swells."""
+    rows, cols = z.shape
+    band = np.zeros_like(inside)
+    width = p.width_mm
+    if width <= 0.0:
+        return band
+    tan_a = float(np.tan(np.radians(p.angle_deg)))
+    for interior in body.interiors:
+        ring = LineString(interior)
+        ring_xy = np.asarray(interior.coords)[:, :2]
+        r0, r1, c0, c1 = _window(ring_xy, width + 2 * res, ox, oy, res, rows, cols)
+        sub_inside = inside[r0:r1, c0:c1]
+        if not sub_inside.any():
+            continue
+        sub_x = ox + (c0 + np.arange(c1 - c0)) * res
+        sub_y = oy + (r0 + np.arange(r1 - r0)) * res
+        SX, SY = np.meshgrid(sub_x, sub_y)
+        cand = sub_inside.ravel()
+        pts = points(SX.ravel()[cand], SY.ravel()[cand])
+        d = distance(pts, ring)
+        sel = d < width
+        if not sel.any():
+            continue
+        zsub = z[r0:r1, c0:c1].ravel().copy()
+        pre = z_pre[r0:r1, c0:c1].ravel()
+        idx = np.flatnonzero(cand)[sel]
+        target = np.maximum(pre[idx] - (width - d[sel]) * tan_a,
+                            p.anterior_clamp_mm)
+        lowered = target < zsub[idx] - 1e-12
+        zsub[idx[lowered]] = target[lowered]
+        z[r0:r1, c0:c1] = zsub.reshape(r1 - r0, c1 - c0)
+        bflat = band[r0:r1, c0:c1].ravel()
+        bflat[idx[lowered]] = True
+        band[r0:r1, c0:c1] = bflat.reshape(r1 - r0, c1 - c0)
+    return band
+
+
 # ------------------------------------------------------------------ dispatcher
 
 def apply_posterior_features(
@@ -220,5 +267,11 @@ def apply_posterior_features(
                    splay.angle_end_deg) if splay.toric
                   else (splay.angle_center_deg,))
         max_slope = max(max_slope, *angles)
+    if bezel.enabled:
+        if progress is not None:
+            progress("Eyewire bezel", 0.87)
+        band |= _carve_eyewire_bezel(z, z_pre, partition.body, inside,
+                                     ox, oy, resolution, bezel)
+        max_slope = max(max_slope, bezel.angle_deg)
     band[~inside] = False
     return (band if band.any() else None), max_slope
