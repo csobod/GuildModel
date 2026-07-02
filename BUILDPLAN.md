@@ -2531,6 +2531,66 @@ low-hop linking, ramped contour entries, relief gap-linking.
 
 ---
 
+## M13 — Posterior finishing features (road to `v1.0.0-rc1a`)
+
+> The three posterior features a maker otherwise cuts by hand — each a
+> **min-carve into the footed castle surface** (new `core/relief/features.py`,
+> hooked into `build_castle_relief` after the footing blends and before the
+> `surface_field` snapshot, so the fine relief machines them, the sim verifies
+> them, and the mesher shows them with **zero worker changes**). All three are
+> **OFF by default** — the M2 STL / M3–M4 NC gates hold by construction and by
+> explicit bit-identical tests. Every feature carves from the same pre-carve
+> snapshot via `z = min(z, max(target, anterior_clamp))`: order-independent,
+> overlaps take the deepest cut, material can never rise. GUI: a **Posterior
+> Finishing** group on the Castle tab (pad-block toggle pattern, live 3D
+> rebuild); teaching stages show features from the *footing* stage onward.
+> RC1b (next) is dual-sided machining.
+
+**STATUS — M13.1–.3 all ✅ DONE (2026-07-02), 460 tests green.** Commits: UX
+tooltips split out `955a815`; splay core `3d3a4d2` + GUI `38ec6d5`; bezel
+`c52e293`; bridge relief + feature-finish band `9de6d23`; version/tag
+`v1.0.0-rc1a` this commit.
+
+1. **Pad splay chamfer (M13.1).** `PadSplayParams` — a crest path plotted as an
+   inward offset of the OUTLINE around its **bottom-center** (the lowest x=0
+   crossing = the nose-arch apex, the bridge underside), running `run_mm` per
+   side with the offset interpolated center→ends ("deviation"); the surface
+   falls from the crest (anchored on the local relief) to the outline edge at
+   the splay angle; **toric** = center/middle/end angles blended
+   mirror-symmetrically (PCHIP, no overshoot); `anterior_clamp_mm` floors the
+   cut (min edge thickness); cosine **feather** at the run ends. Distance +
+   station measured against the **windowed bottom-edge polyline** (whole-ring
+   distance truncates the chamfer with a wall past a thin strip's midline).
+   Crest guarded off the lens rims (0.8× clearance + in-body bisection).
+   Opening a `.gdraw` with a forming bridge angle **seeds** the splay angle
+   once (never clobbers user edits).
+2. **Bezeled eyewire (M13.2).** `EyewireBezelParams` — a constant-width chamfer
+   band around each lens opening's posterior rim (width / angle / clamp),
+   anchored to the local pre-carve surface: constant band width + rim depth
+   (`width·tan θ`) all the way round, rides the footing swells; composes with
+   the splay as an elementwise min (tested).
+3. **Bridge projection relief (M13.3).** `BridgeReliefParams` — a groove swept
+   OD↔OS across the posterior bridge, lens rim to lens rim: **V flanks + a
+   radiused (U) root** (analytic root-arc→flank profile), constant depth below
+   the local surface so it daylights into the eyewires at its ends; axis = the
+   middle of the centerline bridge strip + a user y-offset; masked to the
+   connected strip containing x=0 (**no zone labels** — generic/no-SCULPT
+   partitions work).
+4. **CAM: the feature-finish band + reach.** On a chamfer the contour rings are
+   its level curves — a flat tool leaves `stepover·tan θ` facet ridges
+   (0.52 mm at 30°/0.9 mm, over the sim's 0.5 mm gate). `relief_ops` adds fine
+   rings **confined to the (dilated) feature band** at a cusp-derived stepover
+   (`0.15 / tan(steepest feature angle)`, ring generation depth-capped) — same
+   five ops, cost proportional to feature area. `feature_reach_warnings`: the
+   groove root needs a **ball ≤ root radius**, and a chamfer toe falling into a
+   rim can't be finished by any flat tool (trailing edge rides the slope —
+   ~`r·tan θ` proud at the edge); both warn in the generate log and suggest a
+   fitting ball. End-to-end gate: demo, all features on, Fine Relief on
+   `ball_2mm` → sim verify green (band interior ≤ 0.18 mm past the half-kerf
+   rim ring).
+
+---
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

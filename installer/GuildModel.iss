@@ -14,7 +14,7 @@
 ; builds dist\GuildModel first. Defaults below let the script be compiled by hand.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0-rc1"
+  #define MyAppVersion "1.0.0-rc1a"
 #endif
 #ifndef MyAppVersionNumeric
   #define MyAppVersionNumeric "1.0.0.0"

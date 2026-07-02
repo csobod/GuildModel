@@ -11,7 +11,9 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.0.0-rc1** — release candidate.
+**v1.0.0-rc1a** — release candidate, plus the posterior finishing features
+(pad splay chamfer, bezeled eyewire, bridge projection relief — all optional,
+off by default).
 
 The **frame-front workflow is hardware-proven**: a frame front has been cut on
 real acetate end-to-end (GuildDraw DXF → castle relief → five-op GRBL program →
