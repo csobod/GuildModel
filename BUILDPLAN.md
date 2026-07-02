@@ -2572,6 +2572,21 @@ Four user findings, all landed:
   cone imprint, crease-free — flows with the footing). Params width / depth /
   taper; reach warning re-derived from the bell's tightest base curvature.
 
+**Fix round 2 (on-screen review, 466 tests):**
+- **Zoom no longer resets** — position survived round 1 but PyVista's
+  `clear()`+`add_mesh` still auto-refit the camera distance. The renders now
+  snapshot the full camera state (position/focal/up + parallel scale) before
+  clearing and restore it after the adds.
+- **Splay termination is clean** — three compounding causes of the jagged
+  ridge on narrow-rim frames: the per-sample lens-rim clamp / in-body
+  bisection notched the crest offsets (now slope-limited, `_slope_limit`,
+  0.5 mm/mm); outline-polyline noise rippled the finite-difference normals
+  (now wide-baseline + vector-smoothed); and — the deep teeth — crest anchor
+  heights bilinear-sampled beside the body boundary blended in the
+  outside-body ZEROS (now sampled from an EDT-filled nearest-inside surface,
+  lightly smoothed). Regression gates on a synthetic narrow-rim frame + the
+  user's steep toric settings.
+
 *M13 follow-ups (planned, not yet built):* **keyhole-bridge / sharp-corner
 splay break** — detect a sharp outline corner (turn angle past a threshold)
 inside the splay run and break the chamfer cleanly at it instead of wrapping
