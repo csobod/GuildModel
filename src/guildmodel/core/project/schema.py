@@ -118,6 +118,9 @@ class PadSplayParams(BaseModel):
     angle_end_deg: float = 30.0
     anterior_clamp_mm: float = 1.5           # cut floor above the anterior face (no knife edge)
     feather_mm: float = 3.0                  # depth feather over the last mm of each run end
+    # Convex round-over at the crest (tangent both sides, footing-style) — the
+    # hard chamfer/surface corner shaded as a jagged ridge. 0 = sharp crest.
+    crest_blend_mm: float = 2.0
 
 
 class EyewireBezelParams(BaseModel):
@@ -132,16 +135,18 @@ class EyewireBezelParams(BaseModel):
 
 
 class BridgeReliefParams(BaseModel):
-    """Bridge projection relief (M13.3): a groove swept OD<->OS across the
-    posterior bridge from lens rim to lens rim — V flanks with a radiused (U)
-    root, constant depth below the local pre-carve surface so it rides the
-    footing swells and daylights into the eyewires at its ends.
+    """Bridge projection relief (M13.3, reworked 2026-07-02): a CONIC scoop on
+    the posterior bridge, running on Y — the base (widest, deepest cut of the
+    cone section) opens through the top edge of the frame over the bridge, and
+    the sides taper at `taper_angle_deg` per side to a rounded tip down the
+    lower bridge. The cross-section is a tangent cosine bell and the depth
+    scales with the local width (a true cone imprint feathering to nothing at
+    the tip), so the cut is crease-free and flows with the smooth footing.
     """
     enabled: bool = False
-    depth_mm: float = 1.2                    # below the local posterior surface
-    flank_angle_deg: float = 30.0            # each flank's slope from the anterior plane
-    root_radius_mm: float = 1.0              # radiused root (needs a ball <= this to cut fully)
-    axis_offset_mm: float = 0.0              # groove axis y offset from the bridge midline
+    width_mm: float = 8.0                    # scoop width at its base (the top edge)
+    depth_mm: float = 1.2                    # cut depth at the base centerline
+    taper_angle_deg: float = 30.0            # per-side taper of the cone toward the tip
     anterior_clamp_mm: float = 1.5
 
 

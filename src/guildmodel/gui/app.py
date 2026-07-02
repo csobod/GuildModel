@@ -4177,6 +4177,13 @@ class MainWindow(QMainWindow):
                 # — a no-op once the maker has touched the splay controls.
                 self.params.seed_pad_splay_angle(
                     getattr(ws.forming, "bridge_angle_deg", 0.0) or 0.0)
+            if ws.kind == ComponentKind.FRAME_FRONT and ws.partition is not None:
+                # Seed the splay run from this frame: bottom-center to just past
+                # the lower nosepad SCULPT line (user rule, M13 fixes).
+                from guildmodel.core.relief.features import default_splay_run_mm
+                run = default_splay_run_mm(ws.partition)
+                if run is not None:
+                    self.params.seed_pad_splay_run(run)
             elif (ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
                   and ws.temple_params is not None):
                 self.params.set_temple_params(ws.temple_params)

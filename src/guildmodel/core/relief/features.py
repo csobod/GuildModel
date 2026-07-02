@@ -73,24 +73,12 @@ def _splay_angles_deg(p: PadSplayParams, au: np.ndarray, run: float) -> np.ndarr
     return PchipInterpolator(knots_u, knots_a)(np.clip(au, 0.0, run))
 
 
-def _carve_pad_splay(
-    z: np.ndarray, z_pre: np.ndarray, body,
-    inside: np.ndarray, ox: float, oy: float, res: float, p: PadSplayParams,
-) -> np.ndarray:
-    """Chamfer under the bridge: crest = inward offset of the OUTLINE around its
-    bottom-center; surface falls crest -> outline at the (possibly toric) splay
-    angle, feathered at the run ends, floored at the anterior clamp."""
-    rows, cols = z.shape
+def _bottom_center_station(body) -> tuple:
+    """(ring, length, station) of the outline's bottom-center point: the LOWEST
+    crossing of the centerline x=0 (the bridge straddles x=0 in posterior
+    coords) — on a frame front that is the nose-arch apex, the bridge underside
+    the pad splay sits on. Nearest-point fallback for shapes that don't cross."""
     ring = orient(body, 1.0).exterior          # CCW => inward normal = left normal
-    L = ring.length
-    run = min(p.run_mm, 0.45 * L)
-    if run <= res or p.crest_deviation_center_mm <= 0.0:
-        return np.zeros_like(inside)
-
-    # Bottom-center of the outline: the LOWEST crossing of the centerline x=0
-    # (the bridge straddles x=0 in posterior coords) — on a frame front that is
-    # the nose-arch apex, the bridge underside the pad splay sits on. Nearest-
-    # point fallback for shapes that don't cross the centerline.
     minx, miny, maxx, maxy = body.bounds
     centerline = LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)])
     hit = ring.intersection(centerline)
@@ -100,6 +88,62 @@ def _carve_pad_splay(
         pts = getattr(hit, "geoms", [hit])
         low = min(pts, key=lambda g: g.bounds[1])
         s0 = float(line_locate_point(ring, Point(low.coords[0][:2])))
+    return ring, ring.length, s0
+
+
+def default_splay_run_mm(partition: CastlePartition,
+                         extra_mm: float = 5.0) -> float | None:
+    """The maker's default splay run: from the outline's bottom-center to just
+    past the LOWER NOSEPAD SCULPT line (user rule 2026-07-02: +5 mm). Measured
+    as arc length along the outline to where each `nosepad_inferior_*` cut
+    crosses it (max of OD/OS for asymmetric frames). None when the partition
+    has no matched nosepad-inferior edges (caller keeps its own default)."""
+    ring, L, s0 = _bottom_center_station(partition.body)
+    best = None
+    for edge in partition.edges:
+        if not (edge.canonical or "").startswith("nosepad_inferior"):
+            continue
+        hit = ring.intersection(edge.cut)
+        if hit.is_empty:
+            continue
+        pts = getattr(hit, "geoms", [hit])
+        for g in pts:
+            s = float(line_locate_point(ring, Point(g.coords[0][:2])))
+            u = abs((s - s0 + L / 2.0) % L - L / 2.0)
+            best = u if best is None else max(best, u)
+    return None if best is None else best + extra_mm
+
+
+def _rounded_chamfer_drop(g: np.ndarray, tan_t: np.ndarray,
+                          blend_r: float) -> np.ndarray:
+    """Depth of a crest-blended chamfer at signed distance g inside the crest
+    (g > 0 toward the outline). A convex round-over of radius `blend_r`
+    replaces the crest corner — tangent to the surface on one side and to the
+    splay plane on the other (C1, footing-style: the M13 hard ridge shaded as
+    a jagged pixellated crease). blend_r = 0 keeps the sharp chamfer."""
+    if blend_r <= 0.0:
+        return np.maximum(g, 0.0) * tan_t
+    sec_t = np.sqrt(1.0 + tan_t**2)
+    safe_tan = np.maximum(tan_t, 1e-9)
+    g0 = blend_r * (1.0 - sec_t) / safe_tan     # arc start (inside the crest, <0)
+    g1 = g0 + blend_r * tan_t / sec_t           # arc->plane tangency (= g0 + R sin)
+    arc = blend_r - np.sqrt(np.maximum(blend_r**2 - (g - g0) ** 2, 0.0))
+    return np.where(g > g1, g * tan_t, np.where(g > g0, arc, 0.0))
+
+
+def _carve_pad_splay(
+    z: np.ndarray, z_pre: np.ndarray, body,
+    inside: np.ndarray, ox: float, oy: float, res: float, p: PadSplayParams,
+) -> np.ndarray:
+    """Chamfer under the bridge: crest = inward offset of the OUTLINE around its
+    bottom-center; surface falls crest -> outline at the (possibly toric) splay
+    angle through a tangent crest round-over, feathered at the run ends,
+    floored at the anterior clamp."""
+    rows, cols = z.shape
+    ring, L, s0 = _bottom_center_station(body)
+    run = min(p.run_mm, 0.45 * L)
+    if run <= res or p.crest_deviation_center_mm <= 0.0:
+        return np.zeros_like(inside)
 
     # ---- 1D crest tables over the signed station u in [-run, run] ----
     n = max(9, int(np.ceil(2.0 * run / res)) + 1)
@@ -150,7 +194,9 @@ def _carve_pad_splay(
     wline = LineString(p0)
     w_station = np.concatenate([[0.0], np.cumsum(
         np.linalg.norm(np.diff(p0, axis=0), axis=1))])
-    r0, r1, c0, c1 = _window(np.vstack([p0, crest]), c_tab.max() + 2 * res,
+    blend_r = max(p.crest_blend_mm, 0.0)
+    r0, r1, c0, c1 = _window(np.vstack([p0, crest]),
+                             c_tab.max() + blend_r + 2 * res,
                              ox, oy, res, rows, cols)
     sub_inside = inside[r0:r1, c0:c1]
     if not sub_inside.any():
@@ -164,11 +210,14 @@ def _carve_pad_splay(
     u = np.interp(line_locate_point(wline, pts), w_station, u_tab)
 
     cu = np.interp(u, u_tab, c_tab)
-    sel = (np.abs(u) <= run) & (d < cu)
+    g = cu - d                                  # distance inside the crest
+    # The round-over begins a little beyond the crest (g slightly negative), so
+    # the selection reaches past it; drop() is zero there and min() is a no-op.
+    sel = (np.abs(u) <= run) & (g > -blend_r)
     if not sel.any():
         return np.zeros_like(inside)
-    target = (np.interp(u, u_tab, h_tab)
-              - (cu - d) * np.interp(u, u_tab, tan_tab) * np.interp(u, u_tab, w_tab))
+    drop = _rounded_chamfer_drop(g, np.interp(u, u_tab, tan_tab), blend_r)
+    target = np.interp(u, u_tab, h_tab) - drop * np.interp(u, u_tab, w_tab)
     target = np.maximum(target, p.anterior_clamp_mm)
 
     zsub = z[r0:r1, c0:c1].ravel().copy()
@@ -233,71 +282,46 @@ def _carve_eyewire_bezel(
 
 # ------------------------------------------------------------------ bridge relief
 
-def _groove_profile(v: np.ndarray, depth: float, flank_deg: float,
-                    root_r: float) -> tuple[np.ndarray, float]:
-    """Groove cross-section depth at lateral distance v from the axis:
-    a circular (U) root of radius root_r meeting straight V flanks at
-    flank_deg, total depth `depth`. Returns (p(v), half-width W)."""
-    a = np.radians(flank_deg)
-    cap = root_r * (1.0 - np.cos(a))          # depth the root arc alone covers
-    if depth <= cap:
-        # Shallow groove: pure circular segment of the root arc.
-        W = float(np.sqrt(max(depth * (2.0 * root_r - depth), 0.0)))
-        p = depth - root_r + np.sqrt(np.maximum(root_r**2 - v**2, 0.0))
-        return np.clip(p, 0.0, None) * (v <= W), W
-    v_t = root_r * np.sin(a)                  # arc->flank tangency
-    W = float(v_t + (depth - cap) / np.tan(a))
-    p_arc = depth - root_r + np.sqrt(np.maximum(root_r**2 - np.minimum(v, v_t)**2, 0.0))
-    p_flank = (W - v) * np.tan(a)
-    p = np.where(v <= v_t, p_arc, np.clip(p_flank, 0.0, None))
-    return p * (v <= W), W
-
-
 def _carve_bridge_relief(
     z: np.ndarray, z_pre: np.ndarray,
     inside: np.ndarray, ox: float, oy: float, res: float, p,
 ) -> np.ndarray:
-    """V/U groove swept OD<->OS across the posterior bridge: constant depth
-    below the local pre-carve surface, masked to the connected strip that
-    contains the centerline so it runs lens rim to lens rim and never touches
-    the outboard body crossing the same y band."""
-    from scipy.ndimage import label as nd_label
-
+    """Conic scoop on the posterior bridge, running on Y: the base (width
+    `width_mm`, depth `depth_mm`) opens through the top edge of the frame at
+    the centerline; the sides taper at `taper_angle_deg` per side down to a
+    rounded tip on the lower bridge. At each station y the cut is a cosine
+    bell across x — tangent to the surface at its edges — and the center depth
+    scales with the local half-width (a true cone imprint), so the whole scoop
+    is C1 against the footed surface: no creases, no polygon facets."""
     rows, cols = z.shape
     band = np.zeros_like(inside)
-    if p.depth_mm <= 0.0:
+    half_w = p.width_mm / 2.0
+    tan_b = float(np.tan(np.radians(min(max(p.taper_angle_deg, 1.0), 89.0))))
+    if p.depth_mm <= 0.0 or half_w <= res:
         return band
 
-    # Groove axis: the middle of the bridge strip at the centerline x=0.
+    # Base = the top edge of the bridge strip on the centerline column; the
+    # scoop descends from there, tip at y_base - half_w/tan(taper).
     col0 = int(np.clip(round((0.0 - ox) / res), 0, cols - 1))
     strip_rows = np.flatnonzero(inside[:, col0])
     if strip_rows.size == 0:
         return band                            # no body on the centerline
-    y_mid = oy + 0.5 * (strip_rows.min() + strip_rows.max()) * res
-    y_axis = y_mid + p.axis_offset_mm
-
-    _, W = _groove_profile(np.array([0.0]), p.depth_mm,
-                           p.flank_angle_deg, p.root_radius_mm)
-    if W < 2.0 * res:
-        return band                            # unresolvable at this grid
+    y_base = oy + strip_rows.max() * res
+    y_tip = y_base - half_w / tan_b
 
     ys = oy + np.arange(rows) * res
-    v_col = np.abs(ys - y_axis)
-    in_strip = inside & (v_col[:, None] <= W)
-    if not in_strip.any():
+    r_col = np.clip((ys - y_tip) * tan_b, 0.0, half_w)   # half-width at each y
+    xs = ox + np.arange(cols) * res
+    R = r_col[:, None]
+    X = np.abs(xs)[None, :]
+    mask = inside & (R > res) & (X < R)
+    if not mask.any():
         return band
-    # Keep only the connected span containing the centerline (the bridge);
-    # drop the outboard strips crossing eyewires/endpieces at the same y.
-    labels, _ = nd_label(in_strip)
-    center_labels = np.unique(labels[in_strip[:, col0], col0])
-    center_labels = center_labels[center_labels > 0]
-    if center_labels.size == 0:
-        return band
-    mask = np.isin(labels, center_labels)
 
-    depth_v, _ = _groove_profile(v_col, p.depth_mm, p.flank_angle_deg,
-                                 p.root_radius_mm)
-    target = np.maximum(z_pre - depth_v[:, None], p.anterior_clamp_mm)
+    d_col = p.depth_mm * (r_col / half_w)                # cone: depth ~ width
+    with np.errstate(invalid="ignore", divide="ignore"):
+        bell = 0.5 + 0.5 * np.cos(np.pi * X / np.maximum(R, 1e-9))
+    target = np.maximum(z_pre - d_col[:, None] * bell, p.anterior_clamp_mm)
     lowered = mask & (target < z - 1e-12)
     z[lowered] = target[lowered]
     band[lowered] = True
@@ -352,7 +376,10 @@ def apply_posterior_features(
         gb = _carve_bridge_relief(z, z_pre, inside, ox, oy, resolution, groove)
         band |= gb
         if gb.any():
-            # The root arc's slope never exceeds the flank angle.
-            max_slope = max(max_slope, groove.flank_angle_deg)
+            # Steepest cross-slope of the cone-scaled cosine bell is constant
+            # along the scoop: max |dz/dx| = pi * depth / width.
+            scoop = np.degrees(np.arctan(
+                np.pi * groove.depth_mm / max(groove.width_mm, 1e-6)))
+            max_slope = max(max_slope, float(scoop))
     band[~inside] = False
     return (band if band.any() else None), max_slope

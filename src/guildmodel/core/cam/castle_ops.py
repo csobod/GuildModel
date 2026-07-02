@@ -761,13 +761,20 @@ def feature_reach_warnings(
     radius = float(tool["radius_mm"])
     is_ball = tool.get("type") == "ball"
     out: list[FeatureReachWarning] = []
-    if castle.bridge_relief.enabled and not (
-            is_ball and radius <= castle.bridge_relief.root_radius_mm + 1e-6):
-        root = castle.bridge_relief.root_radius_mm
-        suggested = _suggest_fitting_tool(root, tools_cfg, "ball") if tools_cfg else None
-        out.append(FeatureReachWarning(
-            f"the bridge-relief root (R{root:.1f}) needs a ball tool with "
-            f"radius <= {root:.1f} mm", name, ttype, suggested))
+    if castle.bridge_relief.enabled:
+        # Tightest curvature of the cone-scaled cosine bell sits at the base
+        # trough: R_c = width^2 / (2 pi^2 depth). A bigger tool bridges the
+        # hollow and leaves the scoop centre proud.
+        g = castle.bridge_relief
+        r_c = g.width_mm**2 / (2.0 * math.pi**2 * max(g.depth_mm, 1e-6))
+        if not (is_ball and radius <= r_c + 1e-6):
+            balls = ({n: t for n, t in tools_cfg.items()
+                      if t.get("type") == "ball"} if tools_cfg else None)
+            suggested = _suggest_fitting_tool(r_c, balls, "ball") if balls else None
+            out.append(FeatureReachWarning(
+                f"the bridge-relief hollow (tightest ~R{r_c:.1f} at its base) "
+                f"needs a ball tool with radius <= {r_c:.1f} mm",
+                name, ttype, suggested))
     if (castle.pad_splay.enabled or castle.eyewire_bezel.enabled) and not is_ball:
         which = " / ".join(w for w, on in (
             ("pad-splay", castle.pad_splay.enabled),

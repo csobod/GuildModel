@@ -1,11 +1,14 @@
-"""M13.3 tests: the bridge projection relief — a V/U groove swept OD<->OS
-across the posterior bridge, constant depth below the local surface.
+"""M13.3 tests: the bridge projection relief — a conic scoop running on Y down
+the posterior bridge (reworked per user direction 2026-07-02): base = widest,
+deepest cut opening through the top edge over the bridge; sides taper at the
+cone angle to a rounded tip on the lower bridge; tangent cosine-bell
+cross-section with depth scaling to the local width (a true cone imprint), so
+the cut is crease-free and flows with the footing.
 
 Gates: schema round-trip (default OFF), toggle-off bit-identical, the carved
-cross-section equals the analytic V-flank + circular-root profile, the axis
-offset moves the groove, the carve is masked to the bridge span between the
-lens rims, the groove works on generic (no-SCULPT) partitions, and the carve
-is stable across grid resolutions.
+cross-section equals the analytic bell, orientation/taper (base at the top,
+narrowing + shallowing toward the tip), tangent edges, generic (no-SCULPT)
+partitions, and resolution stability.
 """
 from pathlib import Path
 
@@ -38,7 +41,7 @@ def base_relief(demo):
     return build_castle_relief(part, castle, hinges, resolution=0.2)
 
 
-def _groove_relief(demo, res=0.2, **overrides):
+def _scoop_relief(demo, res=0.2, **overrides):
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.relief.castle import build_castle_relief
 
@@ -50,24 +53,31 @@ def _groove_relief(demo, res=0.2, **overrides):
     return build_castle_relief(part, castle, hinges, resolution=res)
 
 
+def _strip_top_y(relief, x=0.0):
+    res = relief.field.resolution
+    ox, oy = relief.field.origin
+    col = int(round((x - ox) / res))
+    return oy + np.flatnonzero(relief.inside[:, col]).max() * res
+
+
 # ------------------------------------------------------------------ schema
 
 def test_bridge_relief_schema_roundtrip(tmp_path):
     from guildmodel.core.project.schema import ProjectSchema
     from guildmodel.core.project.save_load import save_project, load_project
 
-    proj = ProjectSchema(job_name="Groove RT")
+    proj = ProjectSchema(job_name="Scoop RT")
     proj.castle.bridge_relief.enabled = True
-    proj.castle.bridge_relief.depth_mm = 0.8
-    proj.castle.bridge_relief.axis_offset_mm = -1.5
-    path = tmp_path / "groove.guildmodel"
+    proj.castle.bridge_relief.width_mm = 10.0
+    proj.castle.bridge_relief.taper_angle_deg = 20.0
+    path = tmp_path / "scoop.guildmodel"
     save_project(proj, path)
     back = load_project(path)
     assert back.castle.bridge_relief.enabled is True
-    assert back.castle.bridge_relief.depth_mm == 0.8
-    assert back.castle.bridge_relief.axis_offset_mm == -1.5
-    assert back.castle.bridge_relief.flank_angle_deg == 30.0
-    assert back.castle.bridge_relief.root_radius_mm == 1.0
+    assert back.castle.bridge_relief.width_mm == 10.0
+    assert back.castle.bridge_relief.taper_angle_deg == 20.0
+    assert back.castle.bridge_relief.depth_mm == 1.2
+    assert back.castle.bridge_relief.anterior_clamp_mm == 1.5
 
 
 def test_bridge_relief_off_is_bit_identical(demo, base_relief):
@@ -82,61 +92,73 @@ def test_bridge_relief_off_is_bit_identical(demo, base_relief):
 
 # ------------------------------------------------------------------ geometry
 
-def test_groove_cross_section_matches_profile(demo, base_relief):
-    from guildmodel.core.relief.features import _groove_profile
-
-    rel = _groove_relief(demo)               # D=1.2, flank 30, root 1.0
+def test_scoop_cross_section_matches_bell(demo, base_relief):
+    rel = _scoop_relief(demo)                 # W=8, D=1.2, taper 30
     assert rel.feature_band is not None
-    assert rel.feature_max_slope_deg == 30.0
 
     res = rel.field.resolution
     ox, oy = rel.field.origin
-    col0 = int(round((0.0 - ox) / res))
-    carved_rows = np.flatnonzero(rel.feature_band[:, col0])
-    assert carved_rows.size > 10
-    # groove axis = mid of the bridge strip on the centerline column
-    strip = np.flatnonzero(rel.inside[:, col0])
-    y_axis = oy + 0.5 * (strip.min() + strip.max()) * res
-    ys = oy + carved_rows * res
-    v = np.abs(ys - y_axis)
-    p_want, W = _groove_profile(v, 1.2, 30.0, 1.0)
-    drop = base_relief.field.z[carved_rows, col0] - rel.field.z[carved_rows, col0]
-    # depth below the local pre-carve surface equals the analytic profile
-    assert np.allclose(drop, p_want, atol=0.02)
-    # deepest cut = the full depth, at the axis
-    assert drop.max() == pytest.approx(1.2, abs=0.02)
-    assert v[np.argmax(drop)] <= res + 1e-9
-    # the groove spans the analytic half-width
-    assert v.max() == pytest.approx(W, abs=2 * res)
+    y_base = _strip_top_y(rel)
+    y_tip = y_base - 4.0 / np.tan(np.radians(30.0))
+    y = y_base - 2.0
+    row = int(round((y - oy) / res))
+    sel = rel.feature_band[row]
+    assert sel.any()
+    xs = ox + np.flatnonzero(sel) * res
+    r = (y - y_tip) * np.tan(np.radians(30.0))
+    d = 1.2 * (r / 4.0)
+    want = d * (0.5 + 0.5 * np.cos(np.pi * xs / r))
+    drop = base_relief.field.z[row, sel] - rel.field.z[row, sel]
+    assert np.allclose(drop, want, atol=0.02)
+    # tangent edges: the outermost carved cells are a whisper deep, no wall
+    assert drop[0] <= 0.12 * d and drop[-1] <= 0.12 * d
 
 
-def test_groove_axis_offset_moves_it(demo):
-    rel0 = _groove_relief(demo)
-    rel2 = _groove_relief(demo, axis_offset_mm=2.0)
-    res = rel0.field.resolution
-    ox, oy = rel0.field.origin
-    col0 = int(round((0.0 - ox) / res))
-
-    def deepest_y(rel):
-        rows = np.flatnonzero(rel.feature_band[:, col0])
-        drop = rel.surface_field.z[rows, col0]
-        return oy + rows[np.argmin(drop)] * res
-
-    assert deepest_y(rel2) - deepest_y(rel0) == pytest.approx(2.0, abs=2 * res)
-
-
-def test_groove_masked_to_bridge_span(demo):
-    rel = _groove_relief(demo)
+def test_scoop_runs_on_y_base_at_top(demo, base_relief):
+    rel = _scoop_relief(demo)
     res = rel.field.resolution
-    ox, _ = rel.field.origin
+    ox, oy = rel.field.origin
     rr, cc = np.nonzero(rel.feature_band)
-    xs = ox + cc * res
-    # the demo lenses flank the bridge at roughly |x| > 15; the endpieces live
-    # beyond |x| ~ 50 — the groove must stay between the lens rims.
-    assert np.abs(xs).max() < 30.0
+    xs, ys = ox + cc * res, oy + rr * res
+    drop = base_relief.field.z[rr, cc] - rel.field.z[rr, cc]
+    y_base = _strip_top_y(rel)
+
+    # widest + deepest at the base (the top edge of the frame over the bridge)
+    assert ys.max() == pytest.approx(y_base, abs=2 * res)
+    assert drop.max() == pytest.approx(1.2, abs=0.02)
+    assert ys[np.argmax(drop)] == pytest.approx(y_base, abs=3 * res)
+    # bounded by the base half-width, centered on the bridge
+    assert np.abs(xs).max() <= 4.0 + res
+    # narrower AND shallower toward the tip (a true cone section)
+    def row_stats(y):
+        row = int(round((y - oy) / res))
+        s = rel.feature_band[row]
+        x_row = ox + np.flatnonzero(s) * res
+        d_row = base_relief.field.z[row, s] - rel.field.z[row, s]
+        return x_row.max() - x_row.min(), d_row.max()
+    w_hi, d_hi = row_stats(y_base - 1.5)
+    w_lo, d_lo = row_stats(y_base - 4.5)
+    assert w_lo < w_hi and d_lo < d_hi
+    # the tip lands where the taper says (half-width / tan(taper) below base)
+    y_tip = y_base - 4.0 / np.tan(np.radians(30.0))
+    assert ys.min() >= y_tip - 2 * res
 
 
-def test_groove_generic_partition_fallback():
+def test_scoop_taper_angle_moves_the_tip(demo):
+    steep = _scoop_relief(demo, taper_angle_deg=45.0)
+    shallow = _scoop_relief(demo, taper_angle_deg=25.0)
+    res = steep.field.resolution
+    oy = steep.field.origin[1]
+
+    def tip_y(rel):
+        rr, _ = np.nonzero(rel.feature_band)
+        return oy + rr.min() * res
+
+    # a steeper taper reaches its tip sooner (higher on the bridge)
+    assert tip_y(steep) > tip_y(shallow) + 1.0
+
+
+def test_scoop_generic_partition_fallback():
     from shapely.geometry import Point, Polygon
     from guildmodel.core.geometry.regions import partition_zones
     from guildmodel.core.project.schema import CastleParams
@@ -153,23 +175,22 @@ def test_groove_generic_partition_fallback():
     assert rel.feature_band is not None
     rr, cc = np.nonzero(rel.feature_band)
     xs = rel.field.origin[0] + cc * rel.field.resolution
-    # carved only on the span between the two lens holes
-    assert np.abs(xs).max() < 13.5
-    # full depth achieved on the flat plateau
+    ys = rel.field.origin[1] + rr * rel.field.resolution
+    assert np.abs(xs).max() <= 4.0 + rel.field.resolution
+    assert ys.max() == pytest.approx(20.0, abs=2 * rel.field.resolution)
     drop = 5.0 - rel.field.z[rr, cc]
     assert drop.max() == pytest.approx(1.2, abs=0.03)
 
 
-def test_groove_resolution_stability(demo):
-    rel_a = _groove_relief(demo, res=0.3)
-    rel_b = _groove_relief(demo, res=0.15)
+def test_scoop_resolution_stability(demo):
+    rel_a = _scoop_relief(demo, res=0.3)
+    rel_b = _scoop_relief(demo, res=0.15)
 
-    def depth_at_axis(rel):
+    def depth_below_base(rel, dy=2.0):
         res = rel.field.resolution
         ox, oy = rel.field.origin
-        col0 = int(round((0.0 - ox) / res))
-        rows = np.flatnonzero(rel.feature_band[:, col0])
-        pre = rel.surface_field.z[rows, col0]  # post-carve surface
-        return float(rel.field.z[rows, col0].min())
+        row = int(round((_strip_top_y(rel) - dy - oy) / res))
+        col = int(round((0.0 - ox) / res))
+        return float(rel.surface_field.z[row, col])
 
-    assert abs(depth_at_axis(rel_a) - depth_at_axis(rel_b)) <= 0.06
+    assert abs(depth_below_base(rel_a) - depth_below_base(rel_b)) <= 0.06

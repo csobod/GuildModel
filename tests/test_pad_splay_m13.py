@@ -120,10 +120,11 @@ def test_splay_cross_section_slope_and_crest(demo, base_relief):
     zb = base_relief.field.z[rows, col]
     carved = np.flatnonzero((zb - zs) > 1e-9)
     assert carved.size > 10
-    # Carve starts at the bottom rim and spans ~the crest deviation inward.
+    # Carve starts at the bottom rim and spans ~the crest deviation inward
+    # (plus the crest round-over's small lead-in past the crest).
     assert carved[0] == 0
     span_mm = carved.size * rel.field.resolution
-    assert span_mm == pytest.approx(6.0, abs=3 * rel.field.resolution)
+    assert span_mm == pytest.approx(6.3, abs=4 * rel.field.resolution)
     # Mid-ramp slope matches the splay angle.
     ramp = zs[carved]
     dz = np.diff(ramp)
@@ -133,6 +134,42 @@ def test_splay_cross_section_slope_and_crest(demo, base_relief):
     # The chamfer toe lands at crest height - 6*tan(30) above the clamp.
     toe = 5.3 - 6.0 * np.tan(np.radians(30.0))
     assert zs[carved[0]] == pytest.approx(toe, abs=0.15)
+
+
+def test_splay_crest_is_tangent_not_ridged(demo, base_relief):
+    """The M13 fixes gate: the chamfer meets the surface through a convex
+    round-over — the last cells before the crest approach slope zero instead
+    of breaking at the full splay angle (the 'sharp ridge' complaint)."""
+    res = 0.2
+
+    def top_slope_deg(rel):
+        ys, zs, rows, col = _bottom_column_profile(rel)
+        zb = base_relief.field.z[rows, col]
+        carved = np.flatnonzero((zb - zs) > 1e-9)
+        top = zs[carved[-3:]]                 # the cells nearest the crest
+        return np.degrees(np.arctan(np.diff(top).mean() / res))
+
+    blended = _splay_relief(demo)             # crest_blend default 2.0
+    sharp = _splay_relief(demo, crest_blend_mm=0.0)
+    assert top_slope_deg(blended) < 12.0      # rolls off tangentially
+    assert top_slope_deg(sharp) > 25.0        # the old hard crease
+
+
+def test_default_splay_run_from_nosepad_line(demo):
+    from guildmodel.core.relief.features import default_splay_run_mm
+    from shapely.geometry import Point, Polygon
+    from guildmodel.core.geometry.regions import partition_zones
+
+    part, _, _ = demo
+    run = default_splay_run_mm(part)
+    # bottom-center to past the lower nosepad SCULPT line, +5 mm
+    assert run is not None and 10.0 < run < 60.0
+    assert run - default_splay_run_mm(part, extra_mm=0.0) == pytest.approx(5.0)
+
+    # no nosepad edges (generic partition) -> None, caller keeps its default
+    outline = Polygon([(-50, -20), (50, -20), (50, 20), (-50, 20)])
+    generic = partition_zones(outline, [Point(0, 0).buffer(10)], [])
+    assert default_splay_run_mm(generic) is None
 
 
 def test_splay_toric_angles_blend(demo, base_relief):
@@ -184,7 +221,7 @@ def test_splay_feather_and_run_guard(demo):
     r0 = np.flatnonzero(rel18.feature_band[:, col0]).min()
     ax, ay = 0.0, oy + r0 * res
     dist = np.hypot(xs - ax, ys - ay)
-    assert dist.max() <= 18.0 + 6.0 + 1.0
+    assert dist.max() <= 18.0 + 6.0 + 2.0     # run + crest + blend lead-in
 
 
 def test_splay_stage_gating(demo):

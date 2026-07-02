@@ -471,6 +471,9 @@ class ParamsPanel(QTabWidget):
             "Cut floor above the anterior face — the edge never gets thinner than this.")
         self.splay_feather = _spinbox(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
         self.splay_feather.setToolTip("Blend-out length at each end of the run.")
+        self.splay_blend = _spinbox(d.crest_blend_mm, 0.0, 6.0, step=0.5, decimals=1)
+        self.splay_blend.setToolTip(
+            "Round-over radius where the chamfer meets the surface (0 = sharp crest).")
         splay.addRow("Run per side:", self.splay_run)
         splay.addRow("Crest at center:", self.splay_dev_center)
         splay.addRow("Crest at ends:", self.splay_dev_end)
@@ -478,6 +481,7 @@ class ParamsPanel(QTabWidget):
         splay.addRow("", self.splay_toric)
         splay.addRow("Middle angle:", self.splay_angle_middle)
         splay.addRow("End angle:", self.splay_angle_end)
+        splay.addRow("Crest blend:", self.splay_blend)
         splay.addRow("Min edge thickness:", self.splay_clamp)
         splay.addRow("End feather:", self.splay_feather)
         glay.addLayout(splay)
@@ -519,36 +523,31 @@ class ParamsPanel(QTabWidget):
             sb.valueChanged.connect(self.castle_changed)
         self._on_bezel_toggled(b.enabled)
 
-        # --- Bridge relief: V/U groove across the posterior bridge (M13.3) ---
+        # --- Bridge relief: conic scoop down the posterior bridge (M13.3) ---
         g = BridgeReliefParams()
         glay.addWidget(_section_label("Bridge Relief"))
         self.bridge_relief_enable = QCheckBox("Cut bridge projection relief")
         self.bridge_relief_enable.setChecked(g.enabled)
         self.bridge_relief_enable.setToolTip(
-            "Scallop a V-groove with a rounded root across the posterior bridge.")
+            "Scoop a conic relief down the posterior bridge — wide at the top "
+            "edge, tapering to a rounded tip on the lower bridge.")
         glay.addWidget(self.bridge_relief_enable)
         groove = QFormLayout()
         groove.setContentsMargins(8, 0, 0, 0)
         groove.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.bridge_relief_width = _spinbox(g.width_mm, 1.0, 24.0, step=0.5, decimals=1)
+        self.bridge_relief_width.setToolTip("Scoop width at its base (the top edge).")
         self.bridge_relief_depth = _spinbox(g.depth_mm, 0.1, 4.0, step=0.1, decimals=1)
-        self.bridge_relief_depth.setToolTip("Groove depth below the bridge surface.")
-        self.bridge_relief_flank = _spinbox(g.flank_angle_deg, 10.0, 80.0,
+        self.bridge_relief_depth.setToolTip("Cut depth at the base centerline.")
+        self.bridge_relief_taper = _spinbox(g.taper_angle_deg, 5.0, 80.0,
                                             step=1.0, decimals=1, suffix="°")
-        self.bridge_relief_flank.setToolTip("Slope of each V flank.")
-        self.bridge_relief_root = _spinbox(g.root_radius_mm, 0.1, 4.0,
-                                           step=0.1, decimals=1)
-        self.bridge_relief_root.setToolTip(
-            "Radius of the U at the groove's base — cut it with a ball this size or smaller.")
-        self.bridge_relief_axis = _spinbox(g.axis_offset_mm, -10.0, 10.0,
-                                           step=0.5, decimals=1)
-        self.bridge_relief_axis.setToolTip(
-            "Shift the groove up (+) or down (−) from the middle of the bridge.")
+        self.bridge_relief_taper.setToolTip(
+            "Side taper of the cone — steeper reaches the tip sooner.")
         self.bridge_relief_clamp = _spinbox(g.anterior_clamp_mm, 0.2, 5.0,
                                             step=0.1, decimals=1)
+        groove.addRow("Width:", self.bridge_relief_width)
         groove.addRow("Depth:", self.bridge_relief_depth)
-        groove.addRow("Flank angle:", self.bridge_relief_flank)
-        groove.addRow("Root radius:", self.bridge_relief_root)
-        groove.addRow("Axis offset:", self.bridge_relief_axis)
+        groove.addRow("Taper angle:", self.bridge_relief_taper)
         groove.addRow("Min edge thickness:", self.bridge_relief_clamp)
         glay.addLayout(groove)
 
@@ -561,9 +560,8 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _bridge_relief_spinboxes(self) -> list[QDoubleSpinBox]:
-        return [self.bridge_relief_depth, self.bridge_relief_flank,
-                self.bridge_relief_root, self.bridge_relief_axis,
-                self.bridge_relief_clamp]
+        return [self.bridge_relief_width, self.bridge_relief_depth,
+                self.bridge_relief_taper, self.bridge_relief_clamp]
 
     def _on_bridge_relief_toggled(self, on: bool) -> None:
         """Grey out the bridge-relief controls when the groove is off."""
@@ -578,7 +576,8 @@ class ParamsPanel(QTabWidget):
     def _splay_spinboxes(self) -> list[QDoubleSpinBox]:
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
                 self.splay_angle_center, self.splay_angle_middle,
-                self.splay_angle_end, self.splay_clamp, self.splay_feather]
+                self.splay_angle_end, self.splay_blend, self.splay_clamp,
+                self.splay_feather]
 
     def _on_splay_toggled(self, on: bool) -> None:
         """Grey out the pad-splay controls when the chamfer is off."""
@@ -609,6 +608,18 @@ class ParamsPanel(QTabWidget):
             sb.blockSignals(True)
             sb.setValue(deg)
             sb.blockSignals(False)
+
+    def seed_pad_splay_run(self, run_mm: float) -> None:
+        """Seed the splay run from THIS frame's geometry (bottom-center to just
+        past the lower nosepad SCULPT line) — only while untouched, same guard
+        as the angle seed."""
+        d = PadSplayParams()
+        if (self.splay_enable.isChecked() or run_mm <= 0.0
+                or self.splay_run.value() != d.run_mm):
+            return
+        self.splay_run.blockSignals(True)
+        self.splay_run.setValue(run_mm)
+        self.splay_run.blockSignals(False)
 
     def _castle_spinboxes(self) -> list[QDoubleSpinBox]:
         boxes = [
@@ -1227,6 +1238,7 @@ class ParamsPanel(QTabWidget):
                 angle_end_deg=self.splay_angle_end.value(),
                 anterior_clamp_mm=self.splay_clamp.value(),
                 feather_mm=self.splay_feather.value(),
+                crest_blend_mm=self.splay_blend.value(),
             ),
             eyewire_bezel=EyewireBezelParams(
                 enabled=self.bezel_enable.isChecked(),
@@ -1236,10 +1248,9 @@ class ParamsPanel(QTabWidget):
             ),
             bridge_relief=BridgeReliefParams(
                 enabled=self.bridge_relief_enable.isChecked(),
+                width_mm=self.bridge_relief_width.value(),
                 depth_mm=self.bridge_relief_depth.value(),
-                flank_angle_deg=self.bridge_relief_flank.value(),
-                root_radius_mm=self.bridge_relief_root.value(),
-                axis_offset_mm=self.bridge_relief_axis.value(),
+                taper_angle_deg=self.bridge_relief_taper.value(),
                 anterior_clamp_mm=self.bridge_relief_clamp.value(),
             ),
         )
@@ -1274,13 +1285,13 @@ class ParamsPanel(QTabWidget):
             (self.splay_angle_end, c.pad_splay.angle_end_deg),
             (self.splay_clamp, c.pad_splay.anterior_clamp_mm),
             (self.splay_feather, c.pad_splay.feather_mm),
+            (self.splay_blend, c.pad_splay.crest_blend_mm),
             (self.bezel_width, c.eyewire_bezel.width_mm),
             (self.bezel_angle, c.eyewire_bezel.angle_deg),
             (self.bezel_clamp, c.eyewire_bezel.anterior_clamp_mm),
+            (self.bridge_relief_width, c.bridge_relief.width_mm),
             (self.bridge_relief_depth, c.bridge_relief.depth_mm),
-            (self.bridge_relief_flank, c.bridge_relief.flank_angle_deg),
-            (self.bridge_relief_root, c.bridge_relief.root_radius_mm),
-            (self.bridge_relief_axis, c.bridge_relief.axis_offset_mm),
+            (self.bridge_relief_taper, c.bridge_relief.taper_angle_deg),
             (self.bridge_relief_clamp, c.bridge_relief.anterior_clamp_mm),
         ]
         for sb, val in pairs:
