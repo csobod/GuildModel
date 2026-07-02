@@ -2551,6 +2551,33 @@ tooltips split out `955a815`; splay core `3d3a4d2` + GUI `38ec6d5`; bezel
 `c52e293`; bridge relief + feature-finish band `9de6d23`; version/tag
 `v1.0.0-rc1a` this commit.
 
+**M13 field-fix round (same day, 464 tests; tag `v1.0.0-rc1a` moved here).**
+Four user findings, all landed:
+- **The 3D camera survives same-part rebuilds** (`4fc9435`) — every Castle
+  spinbox tick reset the camera, zooming the maker out mid-fine-tune.
+  `Viewer3D._keep_camera` compares each new scene's XY footprint with the
+  last: param edits / stage steps / re-sims keep the camera; first show,
+  fresh GL context, or a different part still resets. Fit + presets unchanged.
+- **Pad splay crest round-over** (`43c13bf`) — the hard chamfer/surface corner
+  shaded as a pixellated ridge. `crest_blend_mm` (default 2.0) rolls the crest
+  with a convex arc tangent to both faces (C1, footing-style; 0 = sharp).
+- **Pad splay default run = the maker's rule** — `default_splay_run_mm`:
+  bottom-center to the **lower nosepad SCULPT line + 5 mm** along the outline
+  (demo: 28.1 mm), seeded per frame while the splay is untouched.
+- **Bridge relief re-geometried to a conic scoop on Y** — the swept OD↔OS
+  V-groove was wrong. Now: base (widest, deepest cut of the cone section)
+  opens through the top edge over the bridge; sides taper at
+  `taper_angle_deg`/side to a rounded tip down the lower bridge; tangent
+  cosine-bell cross-section with depth scaling to the local width (a true
+  cone imprint, crease-free — flows with the footing). Params width / depth /
+  taper; reach warning re-derived from the bell's tightest base curvature.
+
+*M13 follow-ups (planned, not yet built):* **keyhole-bridge / sharp-corner
+splay break** — detect a sharp outline corner (turn angle past a threshold)
+inside the splay run and break the chamfer cleanly at it instead of wrapping
+it; **eyewire-bezel anterior/posterior side selector** once RC1b dual-sided
+machining exists (posterior-only today, working as intended).
+
 1. **Pad splay chamfer (M13.1).** `PadSplayParams` — a crest path plotted as an
    inward offset of the OUTLINE around its **bottom-center** (the lowest x=0
    crossing = the nose-arch apex, the bridge underside), running `run_mm` per
