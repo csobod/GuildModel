@@ -277,6 +277,27 @@ class Viewer3D(QWidget):
         tol = 0.25 * max(pd, nd)
         return abs(nd - pd) <= tol and shift <= tol
 
+    def _camera_snapshot(self):
+        """Full camera state (position / focal / up + parallel scale). PyVista's
+        clear() + add_mesh auto-refits the camera distance even when our own
+        reset is suppressed — orientation survived but the ZOOM still reset on
+        every rebuild. Snapshot before clearing, restore after the adds."""
+        try:
+            cp = self._plotter.camera_position
+            return ([tuple(cp[0]), tuple(cp[1]), tuple(cp[2])],
+                    float(self._plotter.camera.parallel_scale))
+        except Exception:
+            return None
+
+    def _camera_restore(self, snap) -> None:
+        if snap is None:
+            return
+        try:
+            self._plotter.camera_position = snap[0]
+            self._plotter.camera.parallel_scale = snap[1]
+        except Exception:
+            pass
+
     def _ensure_plotter(self) -> bool:
         if self._plotter is not None:
             return True
@@ -393,6 +414,7 @@ class Viewer3D(QWidget):
             return
         import pyvista as pv
 
+        cam = None if reset_camera else self._camera_snapshot()
         self._plotter.clear()
         self._clear_plane_widgets()
         self._zero_actors = []
@@ -450,6 +472,8 @@ class Viewer3D(QWidget):
         self._draw_program_zero(self._model_zero, stock)
         if reset_camera:
             self._plotter.reset_camera(render=False)
+        else:
+            self._camera_restore(cam)
         self._safe_render()
         self._mesh_label.setText(self._model_label_text)
 
@@ -591,9 +615,12 @@ class Viewer3D(QWidget):
             self._plotter.clear()
             self._safe_render()
             return
+        cam = None if reset_camera else self._camera_snapshot()
         self._apply_sim_colors()
         if reset_camera:
             self._plotter.reset_camera(render=False)
+        else:
+            self._camera_restore(cam)
         self._safe_render()
 
     def _apply_sim_colors(self) -> None:
