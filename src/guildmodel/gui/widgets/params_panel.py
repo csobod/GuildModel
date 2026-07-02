@@ -267,8 +267,7 @@ class ParamsPanel(QTabWidget):
         v = QVBoxLayout(grp)
 
         self.style_combo = QComboBox()
-        self.style_combo.setToolTip(
-            "Recall a saved frame style — loads its full castle + stock parameters.")
+        self.style_combo.setToolTip("Recall a saved frame style.")
         self.style_combo.activated.connect(self._on_style_selected)
         v.addWidget(self.style_combo)
 
@@ -460,8 +459,7 @@ class ParamsPanel(QTabWidget):
         self.use_pad_block = QCheckBox("Add nosepad pad block")
         self.use_pad_block.setChecked(True)
         self.use_pad_block.setToolTip(
-            "Raised pad block stacked on the blank for the tall nosepad towers. Off = "
-            "mill the model from the single blank (set its thickness directly).")
+            "Add a raised pad block for the tall nosepad towers.")
         form.addRow("", self.use_pad_block)
 
         self.pad_length = _spinbox(45.0, 10.0, 120.0, step=1.0, decimals=1)
@@ -494,8 +492,7 @@ class ParamsPanel(QTabWidget):
     def _build_temple_tab(self, lay: QVBoxLayout) -> None:
         d = TempleParams()
         grp = QGroupBox("Temple")
-        grp.setToolTip("A temple is a flat blank: shallow ENGRAVING grooves on the "
-                       "top face + an OUTLINE through-cut (onion skin, no castle).")
+        grp.setToolTip("A flat temple: ENGRAVING grooves on top + an OUTLINE through-cut.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.temple_blank_length = _spinbox(d.blank_length_mm, 50.0, 300.0, step=1.0, decimals=1)
@@ -507,18 +504,14 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank = QCheckBox("Snap to blank end")
         self.temple_snap_blank.setChecked(d.snap_to_blank_end)
         self.temple_snap_blank.setToolTip(
-            "Re-centre the temple on its blank for cutting (centred across the width, "
-            "hinge butted to one short end). OFF keeps the part at its design alignment "
-            "so the cutting path matches the 2D view. 'Stock side' applies only when on.")
+            "Re-centre the temple on its blank for cutting (hinge butted to one end).")
         self.temple_snap_blank.toggled.connect(self._on_temple_snap_toggled)
         form.addRow("", self.temple_snap_blank)
         self.temple_stock_side = QComboBox()
         self.temple_stock_side.addItems(["right", "left"])
         self.temple_stock_side.setCurrentText(d.stock_side)
         self.temple_stock_side.setToolTip(
-            "Which end of the blank the hinge registers to (when 'Snap to blank end' is "
-            "on). Flip to cut with the core shot from the left of the stock instead of "
-            "the right (hinge pocket stays up).")
+            "Which blank end the hinge registers to (when 'Snap to blank end' is on).")
         self.temple_stock_side.currentIndexChanged.connect(self.cam_changed)
         self.temple_stock_side.setEnabled(d.snap_to_blank_end)
         form.addRow("Stock side:", self.temple_stock_side)
@@ -529,20 +522,18 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_tool = QComboBox()
         self.temple_engrave_tool.addItems(_tool_names())
         self.temple_engrave_tool.setCurrentText(d.engrave_tool)
-        self.temple_engrave_tool.setToolTip("Bit for the ENGRAVING grooves (per temple).")
+        self.temple_engrave_tool.setToolTip("Bit for the ENGRAVING grooves.")
         form.addRow("Engrave tool:", self.temple_engrave_tool)
         self.temple_engrave_centerline = QCheckBox("Engrave stroke centerlines")
         self.temple_engrave_centerline.setChecked(d.engrave_centerline)
         self.temple_engrave_centerline.setToolTip(
-            "Engrave one fixed-depth line down the centre of each stroke (the medial "
-            "axis of the glyph outlines) — one pass per stroke. Off traces the raw "
-            "ENGRAVING outlines instead.")
+            "Engrave one centre line per stroke instead of tracing the outlines.")
         self.temple_engrave_centerline.toggled.connect(self.cam_changed)
         form.addRow("", self.temple_engrave_centerline)
         self.temple_hinge_tool = QComboBox()
         self.temple_hinge_tool.addItems(_tool_names())
         self.temple_hinge_tool.setCurrentText(d.hinge_tool)
-        self.temple_hinge_tool.setToolTip("Endmill that clears the HINGE pockets (per temple).")
+        self.temple_hinge_tool.setToolTip("Endmill for the HINGE pockets.")
         form.addRow("Hinge-pocket tool:", self.temple_hinge_tool)
         self.temple_profile_tool = QComboBox()
         self.temple_profile_tool.addItems(_tool_names())
@@ -568,8 +559,7 @@ class ParamsPanel(QTabWidget):
     def _build_block_tab(self, lay: QVBoxLayout) -> None:
         d = BaseCurveBlockParams()
         grp = QGroupBox("Base-Curve Holding Block")
-        grp.setToolTip("Acetal holding block: the lens shape cut free from the blank, "
-                       "with M4 mounting holes — it holds the eyewire on the press.")
+        grp.setToolTip("Acetal block: the lens shape cut free, with M4 mounting holes.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.block_blank_length = _spinbox(d.blank_length_mm, 30.0, 150.0, step=1.0, decimals=1)
@@ -729,12 +719,7 @@ class ParamsPanel(QTabWidget):
         d = ProgramZero()
         grp = QGroupBox("Program Zero  (G54 work datum)")
         grp.setToolTip(
-            "Where you touch off work zero. 'Stock box' zeroes to a corner/centre "
-            "of the blank and its top or bottom face — what a maker sets on the "
-            "stock. 'Fixture' keeps the design frame (blank centre, anterior). "
-            "A post-time offset only — the 3D model and cut simulation are "
-            "unaffected."
-        )
+            "Where you touch off work zero — a stock-box corner/centre, or fixture.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -797,19 +782,14 @@ class ParamsPanel(QTabWidget):
             self._machine_names.append(name)
             self.machine.addItem(display)
         self.machine.setToolTip(
-            "Target controller. Feeds, plunge, spindle and depth-of-cut are "
-            "clamped to this machine; curves are linearized if it has no arc "
-            "support. Profiles are user-editable YAML in config/machines/."
-        )
+            "Target controller — feeds, spindle and depth-of-cut are clamped to it.")
         form.addRow("Machine:", self.machine)
 
         self.cam_tool = QComboBox()
         self.cam_tool.addItems(_tool_names())
         self.cam_tool.setCurrentText("flat_3175")
         self.cam_tool.setToolTip(
-            "Default tool for the posterior program; every op uses it unless "
-            "given its own tool below. Manage tools in Preferences ▸ Tools."
-        )
+            "Default tool for the program; per-op tools below override it.")
         form.addRow("Tool:", self.cam_tool)
         lay.addWidget(grp)
         self._build_op_tools_group(lay)
@@ -823,10 +803,7 @@ class ParamsPanel(QTabWidget):
         case)."""
         grp = QGroupBox("Per-operation tools  (multi-tool jobs)")
         grp.setToolTip(
-            "Assign a tool per operation. '(same as Tool)' uses the default above. "
-            "Differing tools post a tool-change block (M6/M0 per machine profile); "
-            "the order pockets → relief → contours keeps same-tool ops grouped."
-        )
+            "Assign a tool per operation ('(same as Tool)' uses the default above).")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         names = _tool_names()
@@ -879,15 +856,12 @@ class ParamsPanel(QTabWidget):
 
         self.relief_stepover = _spinbox(d.relief_stepover_mm, 0.2, 3.0, step=0.05)
         self.relief_stepover.setToolTip(
-            "Spacing between relief finishing passes. Lower = finer surface, longer cut."
-        )
+            "Spacing between relief passes (lower = finer surface, longer cut).")
         form.addRow("Relief stepover:", self.relief_stepover)
 
         self.contour_stepdown = _spinbox(d.contour_stepdown_mm, 0.5, 6.0, step=0.1)
         self.contour_stepdown.setToolTip(
-            "Axial depth per through-cut pass (capped by material and machine "
-            "max depth-of-cut)."
-        )
+            "Axial depth per through-cut pass (capped by material / machine).")
         form.addRow("Contour stepdown:", self.contour_stepdown)
 
         self.rough_axial_stock = _spinbox(d.rough_axial_stock_mm, 0.0, 5.0, step=0.1)
@@ -897,18 +871,13 @@ class ParamsPanel(QTabWidget):
         self.contour_ramp_angle = _spinbox(
             d.contour_ramp_angle_deg, 0.0, 90.0, step=1.0, decimals=1, suffix="°")
         self.contour_ramp_angle.setToolTip(
-            "Lead-in ramp angle for through-cuts: the tool ramps to depth over a "
-            "short lead-in then cuts one finish lap. Steeper = shorter lead-in "
-            "(faster); 0 ramps a full extra lap (gentlest)."
-        )
+            "Lead-in ramp angle for through-cuts (steeper = shorter lead-in, faster).")
         form.addRow("Contour ramp angle:", self.contour_ramp_angle)
 
         self.arc_tolerance = _spinbox(
             d.arc_tolerance_mm, 0.0, 0.2, step=0.005, decimals=3)
         self.arc_tolerance.setToolTip(
-            "Arc-fitting tolerance for G2/G3 output. 0 disables arcs (linearized "
-            "G1). Ignored on machines without arc support."
-        )
+            "Arc-fit tolerance for G2/G3 output (0 = linearized G1).")
         form.addRow("Arc tolerance:", self.arc_tolerance)
         lay.addWidget(grp)
 
@@ -929,9 +898,7 @@ class ParamsPanel(QTabWidget):
         self.hold_down_height = _spinbox(
             CastleCamParams().hold_down_height_mm, 0.0, 60.0, step=0.5)
         self.hold_down_height.setToolTip(
-            "Height of the work-holding screws / clamps above the table (z = 0). Rapids "
-            "retract above the TALLER of this and the stock, so even a single-part cut "
-            "travels clear of the hold-downs. 0 = flush work-holding.")
+            "Height of the work-holding clamps above the table; rapids clear it.")
         of.addRow("Feed override:", self.feed_override)
         of.addRow("Plunge override:", self.plunge_override)
         of.addRow("Spindle override:", self.spindle_override)
@@ -943,10 +910,8 @@ class ParamsPanel(QTabWidget):
         # between the tool (flutes / diameter), the spindle, and the feed.
         cg = QGroupBox("Chip load  (feed per tooth)")
         cg.setToolTip(
-            "Chip load = feed ÷ (spindle × flutes); surface speed = π × Ø × spindle. "
-            "Green = within the material's window, amber = light (rubbing), "
-            "red = heavy (overloaded). Adjust feed/spindle above to land in range."
-        )
+            "Chip load & surface speed vs the material's window "
+            "(green = OK, amber = light, red = heavy).")
         cf = QFormLayout(cg)
         cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self._chip_load_lbl = QLabel("—")
@@ -976,23 +941,17 @@ class ParamsPanel(QTabWidget):
         self.material = QComboBox()
         self.material.addItems(material_store.names() or ["acetate"])
         self.material.setToolTip(
-            "Selecting a material loads its feeds, speeds, stepover and stepdown "
-            "into the CAM tab. After generating, you'll be asked whether to save "
-            "any changes back as this material's defaults."
-        )
+            "Load this material's feeds, speeds and stepovers into the CAM tab.")
         form.addRow("Material:", self.material)
 
         self.onion_skin = _spinbox(0.4, 0.0, 2.0, step=0.1, decimals=2)
         self.onion_skin.setToolTip(
-            "Axial stock left under through-cuts — the part stays attached "
-            "until released by hand (no tabs)."
-        )
+            "Axial stock left under through-cuts (no tabs — released by hand).")
         form.addRow("Onion skin:", self.onion_skin)
 
         self.hand_allowance = _spinbox(0.1, 0.0, 1.0, step=0.05, decimals=2)
         self.hand_allowance.setToolTip(
-            "places radial leave-behind stock on contour operations"
-        )
+            "Radial leave-behind stock on contour operations.")
         form.addRow("Hand finishing allowance:", self.hand_allowance)
         glay.addLayout(form)
 

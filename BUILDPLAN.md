@@ -1,4 +1,4 @@
-# BUILDPLAN.md — GuildCAM · Road to Version 1.0
+# BUILDPLAN.md — GuildModel · Road to Version 1.0
 
 A focused, open-source CAM application for acetate / horn eyewear manufacture.
 Built on Python + PySide6 (Qt 6) over a headless, scriptable `core/`. Single

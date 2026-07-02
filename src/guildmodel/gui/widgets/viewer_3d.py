@@ -183,8 +183,7 @@ class Viewer3D(QWidget):
         self._section_btn.setFixedHeight(22)
         self._section_btn.setEnabled(False)
         self._section_btn.setToolTip(
-            "Section — slice the model with a draggable plane to inspect terrace "
-            "heights and footing depths (drag the plane / its arrow to move it)")
+            "Slice the model with a draggable plane to inspect depths.")
         self._section_btn.toggled.connect(self._on_toggle_section)
         lay.addSpacing(8)
         lay.addWidget(self._section_btn)

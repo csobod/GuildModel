@@ -2683,9 +2683,7 @@ class MainWindow(QMainWindow):
         self._bed_holddown_spin.setSuffix(" mm")
         self._bed_holddown_spin.setValue(8.0)
         self._bed_holddown_spin.setToolTip(
-            "Height of the hold-downs (screw heads / clamps) above the bed. The bed "
-            "sim flags the tool only where it is low enough to foul them, and the "
-            "worktable program's rapids clear this height.")
+            "Height of the hold-downs (screw heads / clamps) above the bed.")
         self._bed_holddown_spin.valueChanged.connect(self._on_holddown_height_changed)
         hd_row.addWidget(self._bed_holddown_spin)
         v.addLayout(hd_row)
@@ -2703,9 +2701,7 @@ class MainWindow(QMainWindow):
         ):
             self._bed_zero_combo.addItem(label, data)
         self._bed_zero_combo.setToolTip(
-            "Where the whole-bed worktable.nc touches off G54, over the work area — "
-            "independent of each component's own zero. 'Raw bed coordinates' keeps "
-            "machine coordinates (lower-left origin).")
+            "Where the whole-bed worktable.nc touches off G54.")
         self._bed_zero_combo.currentIndexChanged.connect(self._on_bed_zero_changed)
         bz_row.addWidget(self._bed_zero_combo)
         v.addLayout(bz_row)
@@ -2713,8 +2709,7 @@ class MainWindow(QMainWindow):
         v.addSpacing(6)
         self._bed_nest_btn = QPushButton("Nest Components")
         self._bed_nest_btn.setToolTip(
-            "Auto-place every built component on a zone whose role matches its kind, "
-            "then drag a footprint to nudge it. Keep-out collisions flag in red.")
+            "Auto-place every component on a role-matched zone (drag to nudge).")
         self._bed_nest_btn.clicked.connect(self._on_nest_components)
         v.addWidget(self._bed_nest_btn)
         self._bed_nest_status = QLabel("")
@@ -2724,10 +2719,7 @@ class MainWindow(QMainWindow):
 
         self._bed_gen_btn = QPushButton("Generate Worktable Program")
         self._bed_gen_btn.setToolTip(
-            "Post the whole nested bed as one worktable.nc — every placed component, "
-            "scheduled to minimise tool changes, linted and clearance-checked. "
-            "Stored in the project (Save / Ctrl+S); per-component tabs still Generate "
-            "each part on its own.")
+            "Post the whole nested bed as one worktable.nc.")
         self._bed_gen_btn.setEnabled(False)
         self._bed_gen_btn.clicked.connect(self._on_generate_worktable_nest)
         v.addWidget(self._bed_gen_btn)
@@ -3343,27 +3335,29 @@ class MainWindow(QMainWindow):
         self._act_open_model = QAction("Open Drawing…", self)
         self._act_open_model.setShortcut("Ctrl+Shift+O")
         self._act_open_model.setToolTip(
-            "Open a GuildDraw drawing (.gdraw) — frame front + temples + base-curve "
-            "templates load as separate component tabs  (Ctrl+Shift+O)")
+            "Open a GuildDraw drawing (.gdraw)  (Ctrl+Shift+O)")
         self._act_open_model.triggered.connect(self._on_open_model)
 
         self._act_open_project = QAction("Open Project…", self)
         self._act_open_project.setToolTip("Open a GuildModel .gmodel project")
         self._act_open_project.triggered.connect(self._on_open_project)
-        self._act_save_project = QAction("Save Project…", self)
+        self._act_save_project = QAction("Save Project", self)
         self._act_save_project.setShortcut("Ctrl+S")
-        self._act_save_project.setToolTip("Save the project as a .gmodel container  (Ctrl+S)")
+        self._act_save_project.setToolTip("Save the project  (Ctrl+S)")
         self._act_save_project.triggered.connect(self._on_save_project)
+        self._act_save_project_as = QAction("Save Project As…", self)
+        self._act_save_project_as.setToolTip("Save the project to a new .gmodel file")
+        self._act_save_project_as.triggered.connect(self._on_save_project_as)
 
         self._act_build = QAction("Build 3D Model", self)
         self._act_build.setShortcut("F5")
-        self._act_build.setToolTip("Build the 3D castle model  (F5)")
+        self._act_build.setToolTip("Build the 3D model  (F5)")
         self._act_build.setEnabled(False)
         self._act_build.triggered.connect(self._on_build_3d)
 
         self._act_gcode = QAction("Generate G-code", self)
         self._act_gcode.setShortcut("Ctrl+G")
-        self._act_gcode.setToolTip("Generate the posterior G-code program  (Ctrl+G)")
+        self._act_gcode.setToolTip("Generate the G-code program  (Ctrl+G)")
         self._act_gcode.setEnabled(False)
         self._act_gcode.triggered.connect(self._on_generate)
 
@@ -3376,21 +3370,19 @@ class MainWindow(QMainWindow):
         self._act_export_nc = QAction("Export G-code", self)
         self._act_export_nc.setShortcut("Ctrl+Shift+G")
         self._act_export_nc.setToolTip(
-            "Export the generated program to a standalone .nc file…  (Ctrl+Shift+G)")
+            "Export the program to a .nc file…  (Ctrl+Shift+G)")
         self._act_export_nc.setEnabled(False)
         self._act_export_nc.triggered.connect(self._on_export_nc)
 
         self._act_block = QAction("Generate Base-Curve Block", self)
         self._act_block.setToolTip(
-            "Generate the heat-forming block from the frame's lens interior "
-            "(acetal blank + 3 M4 mounting holes)")
+            "Generate the base-curve heat-forming block from the frame's lens")
         self._act_block.setEnabled(False)
         self._act_block.triggered.connect(self._on_generate_block)
 
         self._act_worktable = QAction("Generate Worktable Program", self)
         self._act_worktable.setToolTip(
-            "Cut the frame front and its base-curve block in one program, "
-            "auto-packed onto the bed and grouped to minimise tool changes")
+            "Cut the frame and its base-curve block in one bed program")
         self._act_worktable.setEnabled(False)
         self._act_worktable.triggered.connect(self._on_generate_worktable)
 
@@ -3408,8 +3400,7 @@ class MainWindow(QMainWindow):
         self._act_simulate = QAction("Simulation", self, checkable=True)
         self._act_simulate.setShortcut("Ctrl+Shift+S")
         self._act_simulate.setToolTip(
-            "Simulation view — cut-simulate this component (or the whole bed on the "
-            "Worktable tab) and verify the result  (Ctrl+Shift+S)")
+            "Simulate the cut and verify the result  (Ctrl+Shift+S)")
         self._act_simulate.setEnabled(False)
         self._act_simulate.triggered.connect(lambda: self._switch_view(2, run=True))
 
@@ -3419,15 +3410,14 @@ class MainWindow(QMainWindow):
         self._act_measure = QAction("Measure", self, checkable=True)
         self._act_measure.setShortcut("M")
         self._act_measure.setToolTip(
-            "Measure — click points on the 2D outline to read distance / angle  (M)")
+            "Measure distance / angle on the 2D outline  (M)")
         self._act_measure.setEnabled(False)
         self._act_measure.toggled.connect(self._on_toggle_measure)
 
         self._act_show_worktable = QAction("Worktable", self)
         self._act_show_worktable.setShortcut("Ctrl+B")
         self._act_show_worktable.setToolTip(
-            "Open the worktable bed — import a bed DXF and tag role zones + "
-            "keep-outs  (Ctrl+B)")
+            "Open the worktable bed  (Ctrl+B)")
         self._act_show_worktable.triggered.connect(self._on_show_worktable)
 
         self._act_fit = QAction("Fit", self)
@@ -3448,14 +3438,12 @@ class MainWindow(QMainWindow):
         self._log_dock.visibilityChanged.connect(self._act_log.setChecked)
 
         self._act_toolpaths = QAction("Toolpaths", self, checkable=True)
-        self._act_toolpaths.setToolTip(
-            "Show/hide the toolpath inspector (per-op list + 2D overlay, M7.11)")
+        self._act_toolpaths.setToolTip("Show/hide the toolpaths panel")
         self._act_toolpaths.toggled.connect(self._toolpath_dock.setVisible)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
         self._act_inspector = QAction("Inspector", self, checkable=True)
-        self._act_inspector.setToolTip(
-            "Show/hide the job & validation inspector — every warning in one place (M7.14)")
+        self._act_inspector.setToolTip("Show/hide the inspector panel")
         self._act_inspector.toggled.connect(self._inspector_dock.setVisible)
         self._inspector_dock.visibilityChanged.connect(self._act_inspector.setChecked)
 
@@ -3545,6 +3533,7 @@ class MainWindow(QMainWindow):
             ("open", self._act_open, "Open DXF", "input", False),
             ("open_project", self._act_open_project, "Open Project", "input", False),
             ("save_project", self._act_save_project, "Save Project", "input", False),
+            ("save_project_as", self._act_save_project_as, "Save Project As", "input", False),
             ("build", self._act_build, "Build 3D Model", "build", True),
             ("gcode", self._act_gcode, "Generate G-code", "build", True),
             ("export_nc", self._act_export_nc, "Export G-code", "build", True),
@@ -3591,6 +3580,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._act_open_project)
         file_menu.addAction(self._act_save_project)
+        file_menu.addAction(self._act_save_project_as)
         file_menu.addSeparator()
         file_menu.addAction(self._act_build)
         file_menu.addAction(self._act_gcode)
@@ -3795,6 +3785,20 @@ class MainWindow(QMainWindow):
         return True
 
     def _on_save_project(self) -> None:
+        """Save (Ctrl+S): write straight back to the open .gmodel — no overwrite
+        prompt — and only fall through to Save As when the project has never been
+        saved (mirrors GuildDraw's plain Save)."""
+        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
+            QMessageBox.warning(self, "No design",
+                                "Open a drawing (.gdraw) or import a DXF before saving a project.")
+            return
+        if self._project_path is not None:
+            self._save_gmodel_to(self._project_path)
+            return
+        self._on_save_project_as()
+
+    def _on_save_project_as(self) -> None:
+        """Save As…: always prompt for a new .gmodel path, then save there."""
         if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
             QMessageBox.warning(self, "No design",
                                 "Open a drawing (.gdraw) or import a DXF before saving a project.")
@@ -4214,9 +4218,16 @@ class MainWindow(QMainWindow):
         working set, and re-render the shared views/dock/actions (M7.3)."""
         if not (0 <= index < len(self._workspaces)):
             return
-        if 0 <= self._active_ws < len(self._workspaces) and self._active_ws != index:
-            self._sync_active_workspace()
-            self._active_sim_removal = None       # the cut-sim cache was the part we left
+        if self._active_ws != index:
+            # Persist the outgoing component only when there really is one (a fresh
+            # file leaves _active_ws at the -1 sentinel — nothing to sync)…
+            if 0 <= self._active_ws < len(self._workspaces):
+                self._sync_active_workspace()
+            # …but always drop the transient cut-sim cache: it belonged to whatever
+            # was shown before — a sibling component OR the previous file. Not doing
+            # this on a new-file open left the old sim on screen (Sim view never
+            # refreshed; an inspector click flashed the stale render).
+            self._active_sim_removal = None
             self._active_sim_report = None
         self._active_ws = index
         ws = self._workspaces[index]
@@ -4284,6 +4295,7 @@ class MainWindow(QMainWindow):
         self._source_dxf_bytes = None
         if not from_project:
             self._project_path = None
+        self._clear_nest()                 # the previous file's bed nest / sim is stale
         self._workspaces = workspaces
         self._active_ws = -1
         self._populate_component_tabs()
@@ -4383,6 +4395,7 @@ class MainWindow(QMainWindow):
         if ws.is_temple:
             ws.kind = ComponentKind.TEMPLE_RIGHT
         ws.label = component_label(ws.kind)
+        self._clear_nest()                 # the previous file's bed nest / sim is stale
         self._workspaces = [ws]
         self._active_ws = -1
         self._populate_component_tabs()
