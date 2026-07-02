@@ -224,6 +224,75 @@ def test_splay_feather_and_run_guard(demo):
     assert dist.max() <= 18.0 + 6.0 + 2.0     # run + crest + blend lead-in
 
 
+def test_splay_crest_tables_are_smooth_on_narrow_rims():
+    """Field regression (2026-07-02, 'jagged points where the cut terminates'):
+    on a frame whose lens rims run close to the bottom edge, the per-sample rim
+    clamp + in-body bisection notched the crest offsets, and anchor heights
+    bilinear-sampled beside the boundary blended in outside-body zeros —
+    multi-mm teeth along the chamfer's termination. The tables must now be
+    slope-limited and sampled from the nearest-inside surface."""
+    from shapely import contains_xy, prepare
+    from shapely.geometry import Point, Polygon
+    from guildmodel.core.project.schema import PadSplayParams
+    from guildmodel.core.relief.features import (
+        _CREST_MAX_SLOPE, _splay_crest_tables,
+    )
+
+    outline = Polygon([(-50, -20), (50, -20), (50, 20), (-50, 20)]).buffer(4.0)
+    lenses = [Point(-24, 0).buffer(17), Point(24, 0).buffer(17)]
+    body = outline
+    for hole in lenses:
+        body = body.difference(hole)
+
+    res = 0.3
+    minx, miny, maxx, maxy = body.bounds
+    xs = np.arange(minx - 1, maxx + 1, res)
+    ys = np.arange(miny - 1, maxy + 1, res)
+    X, Y = np.meshgrid(xs, ys)
+    prepare(body)
+    inside = contains_xy(body, X.ravel(), Y.ravel()).reshape(X.shape)
+    z_pre = np.where(inside, 5.0, 0.0)
+
+    p = PadSplayParams(enabled=True, run_mm=30.0,
+                       crest_deviation_center_mm=4.0,
+                       crest_deviation_end_mm=2.0)
+    tables = _splay_crest_tables(body, z_pre, inside, xs[0], ys[0], res, p)
+    assert tables is not None
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
+    step = u_tab[1] - u_tab[0]
+    # crest offsets: no per-sample teeth (the rim clamp varies along the run)
+    assert (c_tab > 0.5).any()                 # the clamp actually engaged
+    assert np.abs(np.diff(c_tab)).max() <= _CREST_MAX_SLOPE * step + 1e-9
+    # anchor heights: the plateau is 5.0 everywhere INSIDE — any dip means
+    # outside-body zeros leaked into the sampling (the old crater bug)
+    assert h_tab.min() > 4.8 and h_tab.max() < 5.2
+
+
+def test_splay_crest_tables_smooth_on_demo_steep_toric(demo, base_relief):
+    """The user's steep settings (toric 60/60/15, crest 3->1) on real footed
+    terrain: crest offsets and anchor heights stay continuous — the ridge line
+    where the cut terminates must be clean."""
+    from guildmodel.core.project.schema import PadSplayParams
+    from guildmodel.core.relief.features import (
+        _CREST_MAX_SLOPE, _splay_crest_tables,
+    )
+
+    part, _, _ = demo
+    f = base_relief.surface_field
+    p = PadSplayParams(enabled=True, run_mm=29.4,
+                       crest_deviation_center_mm=3.0,
+                       crest_deviation_end_mm=1.0, toric=True,
+                       angle_center_deg=60.0, angle_middle_deg=60.0,
+                       angle_end_deg=15.0)
+    tables = _splay_crest_tables(part.body, f.z, base_relief.inside,
+                                 f.origin[0], f.origin[1], f.resolution, p)
+    assert tables is not None
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
+    step = u_tab[1] - u_tab[0]
+    assert np.abs(np.diff(c_tab)).max() <= _CREST_MAX_SLOPE * step + 1e-9
+    assert np.abs(np.diff(h_tab)).max() <= 0.35   # no crater teeth in the anchors
+
+
 def test_splay_stage_gating(demo):
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.relief.castle import build_castle_stage

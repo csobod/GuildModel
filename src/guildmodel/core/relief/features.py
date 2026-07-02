@@ -131,6 +131,102 @@ def _rounded_chamfer_drop(g: np.ndarray, tan_t: np.ndarray,
     return np.where(g > g1, g * tan_t, np.where(g > g0, arc, 0.0))
 
 
+def _slope_limit(vals: np.ndarray, du: float, max_slope: float) -> np.ndarray:
+    """Cap a table's rate of change by min-propagation in both directions:
+    a clamp/bisection notch spreads into a gentle dip instead of a tooth.
+    Values only ever decrease (staying on the safe side of every clamp)."""
+    out = np.asarray(vals, dtype=np.float64).copy()
+    step = max_slope * du
+    for i in range(1, out.size):
+        out[i] = min(out[i], out[i - 1] + step)
+    for i in range(out.size - 2, -1, -1):
+        out[i] = min(out[i], out[i + 1] + step)
+    return out
+
+
+_CREST_MAX_SLOPE = 0.5   # mm of crest offset per mm of run — teeth get flattened
+
+
+def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
+    """The pad splay's 1-D crest tables over the signed station u in
+    [-run, run]. Returns None when the splay is degenerate.
+
+    Smoothness matters more than per-sample exactness here (2026-07-02 field
+    finding: 'jagged points where the cut terminates'): the lens-rim clamp and
+    the in-body bisection are per-sample and left tooth-like steps in the
+    crest line, outline-polyline noise rippled the finite-difference normals,
+    and — the deep teeth — crest anchor heights bilinear-sampled next to the
+    body boundary blended in the outside-body zeros. So: wide-baseline
+    smoothed normals, slope-limited crest offsets, anchor heights sampled from
+    an EDT-filled surface (nearest INSIDE height) and lightly smoothed."""
+    from scipy.ndimage import distance_transform_edt, uniform_filter1d
+
+    ring, L, s0 = _bottom_center_station(body)
+    run = min(p.run_mm, 0.45 * L)
+    if run <= res or p.crest_deviation_center_mm <= 0.0:
+        return None
+
+    n = max(9, int(np.ceil(2.0 * run / res)) + 1)
+    step = 2.0 * run / (n - 1)
+    u_tab = np.linspace(-run, run, n)
+    au_tab = np.abs(u_tab)
+    stations = np.mod(s0 + u_tab, L)
+    p0 = np.array([ring.interpolate(float(s)).coords[0][:2] for s in stations])
+
+    # Tangents over a wide baseline + vector smoothing: a noisy outline
+    # polyline otherwise wiggles the normals and ripples the crest.
+    eps = max(3.0 * res, 0.75)
+    p_fwd = np.array([ring.interpolate(float((s + eps) % L)).coords[0][:2] for s in stations])
+    p_bck = np.array([ring.interpolate(float((s - eps) % L)).coords[0][:2] for s in stations])
+    tang = p_fwd - p_bck
+    smooth = max(3, int(round(1.5 / step)))
+    tang = uniform_filter1d(tang, size=smooth, axis=0, mode="nearest")
+    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-12)
+    normal = np.column_stack([-tang[:, 1], tang[:, 0]])   # left of travel = inward (CCW)
+    probe = p0[n // 2] + normal[n // 2] * (2.0 * res)
+    if not body.contains(Point(probe)):
+        normal = -normal
+
+    # Crest deviation center -> end, kept off the lens rims (nosepad-width
+    # guard) and inside the body (concave outlines) — then slope-limited.
+    c_tab = (p.crest_deviation_center_mm
+             + (p.crest_deviation_end_mm - p.crest_deviation_center_mm)
+             * (au_tab / run))
+    rims = unary_union([LineString(r) for r in body.interiors]) if body.interiors else None
+    if rims is not None and not rims.is_empty:
+        clearance = distance(points(p0), rims)
+        c_tab = np.minimum(c_tab, 0.8 * clearance)
+    c_tab = _slope_limit(np.maximum(c_tab, 0.0), step, _CREST_MAX_SLOPE)
+    crest = p0 + normal * c_tab[:, None]
+    bisected = False
+    for i in range(n):
+        while c_tab[i] > res and not body.contains(Point(crest[i])):
+            c_tab[i] *= 0.5
+            crest[i] = p0[i] + normal[i] * c_tab[i]
+            bisected = True
+    if bisected:
+        c_tab = _slope_limit(c_tab, step, _CREST_MAX_SLOPE)
+        crest = p0 + normal * c_tab[:, None]
+
+    # Anchor heights from the nearest-INSIDE surface (outside cells hold 0 at
+    # carve time — bilinear next to the rim would crater the crest), smoothed.
+    _, (iy, ix) = distance_transform_edt(~inside, return_indices=True)
+    z_fill = z_pre[iy, ix]
+    h_tab = _sample_bilinear(z_fill, crest[:, 0], crest[:, 1], ox, oy, res)
+    h_tab = uniform_filter1d(h_tab, size=max(3, int(round(2.0 / step))),
+                             mode="nearest")
+
+    tan_tab = np.tan(np.radians(_splay_angles_deg(p, au_tab, run)))
+    feather = min(max(p.feather_mm, 0.0), run)
+    if feather > 0.0:
+        w_tab = np.where(
+            au_tab <= run - feather, 1.0,
+            0.5 * (1.0 + np.cos(np.pi * (au_tab - (run - feather)) / feather)))
+    else:
+        w_tab = np.ones_like(au_tab)
+    return run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab
+
+
 def _carve_pad_splay(
     z: np.ndarray, z_pre: np.ndarray, body,
     inside: np.ndarray, ox: float, oy: float, res: float, p: PadSplayParams,
@@ -140,52 +236,10 @@ def _carve_pad_splay(
     angle through a tangent crest round-over, feathered at the run ends,
     floored at the anterior clamp."""
     rows, cols = z.shape
-    ring, L, s0 = _bottom_center_station(body)
-    run = min(p.run_mm, 0.45 * L)
-    if run <= res or p.crest_deviation_center_mm <= 0.0:
+    tables = _splay_crest_tables(body, z_pre, inside, ox, oy, res, p)
+    if tables is None:
         return np.zeros_like(inside)
-
-    # ---- 1D crest tables over the signed station u in [-run, run] ----
-    n = max(9, int(np.ceil(2.0 * run / res)) + 1)
-    u_tab = np.linspace(-run, run, n)
-    au_tab = np.abs(u_tab)
-    stations = np.mod(s0 + u_tab, L)
-    p0 = np.array([ring.interpolate(float(s)).coords[0][:2] for s in stations])
-    eps = max(res, 1e-3)
-    p_fwd = np.array([ring.interpolate(float((s + eps) % L)).coords[0][:2] for s in stations])
-    p_bck = np.array([ring.interpolate(float((s - eps) % L)).coords[0][:2] for s in stations])
-    tang = p_fwd - p_bck
-    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-12)
-    normal = np.column_stack([-tang[:, 1], tang[:, 0]])   # left of travel = inward (CCW)
-    probe = p0[n // 2] + normal[n // 2] * (2.0 * res)
-    if not body.contains(Point(probe)):
-        normal = -normal
-
-    # Crest deviation center -> end, kept off the lens rims (nosepad-width
-    # guard) and inside the body (concave outlines).
-    c_tab = (p.crest_deviation_center_mm
-             + (p.crest_deviation_end_mm - p.crest_deviation_center_mm)
-             * (au_tab / run))
-    rims = unary_union([LineString(r) for r in body.interiors]) if body.interiors else None
-    if rims is not None and not rims.is_empty:
-        clearance = distance(points(p0), rims)
-        c_tab = np.minimum(c_tab, 0.8 * clearance)
-    c_tab = np.maximum(c_tab, 0.0)
-    crest = p0 + normal * c_tab[:, None]
-    for i in range(n):
-        while c_tab[i] > res and not body.contains(Point(crest[i])):
-            c_tab[i] *= 0.5
-            crest[i] = p0[i] + normal[i] * c_tab[i]
-
-    h_tab = _sample_bilinear(z_pre, crest[:, 0], crest[:, 1], ox, oy, res)
-    tan_tab = np.tan(np.radians(_splay_angles_deg(p, au_tab, run)))
-    feather = min(max(p.feather_mm, 0.0), run)
-    if feather > 0.0:
-        w_tab = np.where(
-            au_tab <= run - feather, 1.0,
-            0.5 * (1.0 + np.cos(np.pi * (au_tab - (run - feather)) / feather)))
-    else:
-        w_tab = np.ones_like(au_tab)
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
 
     # ---- Raster: distance + station against the WINDOWED bottom-edge
     # polyline (not the whole ring — on a thin bridge strip the nearest whole-
