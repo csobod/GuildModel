@@ -119,6 +119,7 @@ class Viewer3D(QWidget):
         self._layout.addWidget(self._placeholder)
 
         self._plotter: Optional[object] = None    # pyvistaqt.QtInteractor (shared)
+        self._scene_bounds = None                 # XY footprint of the last scene
 
         # model-mode scene cache
         self._model_pv = None                     # pv.PolyData (computed normals)
@@ -256,12 +257,33 @@ class Viewer3D(QWidget):
 
     # ------------------------------------------------------------------ plotter
 
+    def _keep_camera(self, bounds) -> bool:
+        """Whether the camera survives this scene update: True when the new
+        content covers roughly the last footprint — a param edit, stage step,
+        or re-sim of the same part must NOT zoom the maker back out (the M13
+        fine-tuning UX bug). A first show, or a different part (component tab
+        switch: temple vs front), still resets. `bounds` = (x0, x1, y0, y1)."""
+        prev, self._scene_bounds = self._scene_bounds, bounds
+        if prev is None or bounds is None:
+            return False
+        px0, px1, py0, py1 = prev
+        nx0, nx1, ny0, ny1 = bounds
+        pd = float(np.hypot(px1 - px0, py1 - py0))
+        nd = float(np.hypot(nx1 - nx0, ny1 - ny0))
+        if pd <= 0.0 or nd <= 0.0:
+            return False
+        shift = float(np.hypot((nx0 + nx1 - px0 - px1) / 2.0,
+                               (ny0 + ny1 - py0 - py1) / 2.0))
+        tol = 0.25 * max(pd, nd)
+        return abs(nd - pd) <= tol and shift <= tol
+
     def _ensure_plotter(self) -> bool:
         if self._plotter is not None:
             return True
         try:
             from pyvistaqt import QtInteractor
             self._plotter = QtInteractor(self)
+            self._scene_bounds = None             # fresh GL context, default camera
             self._plotter.set_background(self._palette.canvas_bg)
             self._plotter.enable_anti_aliasing()
             self._plotter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -356,8 +378,11 @@ class Viewer3D(QWidget):
         self._model_core_guide = core_guide
         self._model_zero = tuple(program_zero) if program_zero is not None else None
         self._model_label_text = f"{len(verts):,} verts · {len(faces):,} tris"
+        keep = self._keep_camera((float(verts[:, 0].min()), float(verts[:, 0].max()),
+                                  float(verts[:, 1].min()), float(verts[:, 1].max()))
+                                 if len(verts) else None)
         if self._mode == "model":
-            self._render_model(reset_camera=True)
+            self._render_model(reset_camera=not keep)
         else:
             self._mesh_label.setText(self._model_label_text)
 
@@ -519,8 +544,12 @@ class Viewer3D(QWidget):
             return
         self._sim_inside = np.isfinite(report.target)
         self._sim_mesh = self._floor_polydata(report.floor)
+        rows, cols = report.floor.shape
+        ox, oy = report.origin
+        keep = self._keep_camera((ox, ox + cols * report.resolution,
+                                  oy, oy + rows * report.resolution))
         if self._mode == "sim":
-            self._render_sim(reset_camera=True)
+            self._render_sim(reset_camera=not keep)
 
     def _floor_polydata(self, floor):
         """Triangulate an achieved-floor grid into a pv.PolyData (body cells only),
