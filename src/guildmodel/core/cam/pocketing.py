@@ -34,6 +34,12 @@ def _inward_offsets(
     tool_radius_mm: float,
     stepover_mm: float,
 ) -> list[list[list[int]]]:
+    # A non-positive stepover makes Execute(-0) return the same ring forever (step_px
+    # would be 0) — guard it so a hand-edited project can't hang the worker (matching
+    # peck_drill's zero guard). Only fires for <= 0, so legitimate fine stepovers pass
+    # through; the tool radius (else 0.1 mm) is a sane coarse fallback.
+    if stepover_mm <= 0.0:
+        stepover_mm = max(tool_radius_mm, 0.1)
     all_contours: list[list[list[int]]] = []
     current = [scaled_poly]
     offset_px = int(tool_radius_mm * _SCALE)

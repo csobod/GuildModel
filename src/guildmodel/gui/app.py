@@ -219,6 +219,20 @@ class MeshWorker(_ProgressWorker):
             self.error.emit(traceback.format_exc())
 
 
+# Preview grid step for an engraved temple. The engraving v-groove is ~0.5 mm wide, so
+# at the frame-front preview resolution (0.3 mm) it spans <2 cells and the 3D groove
+# looks blocky/pixellated. A temple is a small part (a ~135 mm strip), so refining the
+# WHOLE temple to this step still builds in ~0.5 s while the big frame front stays coarse.
+_ENGRAVE_PREVIEW_RES_MM = 0.1
+
+
+def _temple_preview_res(base_res: float, engraving) -> float:
+    """The preview grid step for a temple: refined to `_ENGRAVE_PREVIEW_RES_MM` when it
+    carries engraving (so the grooves aren't pixellated), else the coarse `base_res`.
+    Never coarsens a user resolution that is already finer."""
+    return min(base_res, _ENGRAVE_PREVIEW_RES_MM) if engraving else base_res
+
+
 class FlatMeshWorker(_ProgressWorker):
     """Builds a flat-part solid (temple or base-curve block) off the GUI thread.
 
@@ -259,7 +273,8 @@ class FlatMeshWorker(_ProgressWorker):
                     snap=self.temple.snap_to_blank_end)
                 relief = build_temple_relief(
                     outline, self.temple, hinge, eng,
-                    resolution=self.resolution, progress=self._progress)
+                    resolution=_temple_preview_res(self.resolution, eng),
+                    progress=self._progress)
                 guide = temple_core_guide(outline, hinge, self.temple).bounds
                 mesh = build_castle_mesh(relief, progress=self._progress)
                 self.finished.emit(mesh, guide)
@@ -321,7 +336,8 @@ class MultiMeshWorker(_ProgressWorker):
                         temple.blank_length_mm, stock_side=temple.stock_side,
                         snap=temple.snap_to_blank_end)
                     relief = build_temple_relief(
-                        outline, temple, hinge, eng, resolution=self.resolution, progress=sub)
+                        outline, temple, hinge, eng,
+                        resolution=_temple_preview_res(self.resolution, eng), progress=sub)
                     guide = temple_core_guide(outline, hinge, temple).bounds
                     mesh = build_castle_mesh(relief, progress=sub)
                     self.built.emit(spec["index"], mesh, guide)
@@ -4309,6 +4325,7 @@ class MainWindow(QMainWindow):
         if not from_project:
             self._project_path = None
         self._clear_nest()                 # the previous file's bed nest / sim is stale
+        self._inject_gdraw_engraving(workspaces)
         self._workspaces = workspaces
         self._active_ws = -1
         self._populate_component_tabs()
@@ -4325,6 +4342,43 @@ class MainWindow(QMainWindow):
                 f"Loaded drawing: {path.name}  ({len(populated)} of {len(workspaces)} "
                 f"components) — Build 3D to model them all")
             self._add_recent(str(path))
+
+    def _inject_gdraw_engraving(self, workspaces) -> None:
+        """Outline GuildDraw engraving *text objects* into ENGRAVING polylines.
+
+        A ``.gdraw`` stores engraving as a text object (string + font), not curves, so
+        the Qt-free core reader can't produce geometry for it — this fills that gap here
+        (fonts need Qt). Temples only for now (the frame-front castle relief/CAM don't
+        consume engraving): a temple is drawn posterior in GuildDraw, so its engraving
+        lands on the interior — the same top face the hinge pocket and the temple relief
+        already cut. The glyphs go into ``ws.layers["ENGRAVING"]`` (2D canvas) and
+        ``ws.engraving_curves`` (3D relief + G-code), aligned with the outline/hinge."""
+        from guildmodel.core.project.schema import ComponentKind
+        from guildmodel.gui.text_outline import engraving_polylines_from_texts
+
+        temple_kinds = (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
+        for ws in workspaces:
+            texts = getattr(ws, "texts", None)
+            if not texts or ws.kind not in temple_kinds:
+                continue
+            try:
+                polys = engraving_polylines_from_texts(
+                    texts, posterior=getattr(ws, "posterior", True))
+            except Exception:
+                self.append_log(
+                    f"[engraving] {ws.label}: could not outline engraving text — skipped.")
+                continue
+            if not polys:
+                continue
+            # derive_workspace already reflected the temple's other layers across the
+            # Y axis (temples are drawn posterior); flip the engraving to match so the
+            # glyphs land on the part and read correctly on the interior face.
+            polys = [[(-x, y) for x, y in poly] for poly in polys]
+            ws.layers["ENGRAVING"] = list(ws.layers.get("ENGRAVING", [])) + polys
+            ws.engraving_curves = list(ws.layers["ENGRAVING"])
+            self.append_log(
+                f"[engraving] {ws.label}: outlined {len(polys)} glyph contour(s) "
+                f"from {len(texts)} text object(s).")
 
     def _apply_components_to_workspaces(self, components) -> None:
         """Overlay saved per-component params (from a reopened .gmodel) onto the

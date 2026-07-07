@@ -158,13 +158,22 @@ def _flatten_curve(curve: dict, tol: float) -> list[Point]:
 
 @dataclass
 class GdrawWorkspace:
-    """One parsed workspace: layer-keyed geometry (``import_dxf``-shaped) + forming."""
+    """One parsed workspace: layer-keyed geometry (``import_dxf``-shaped) + forming.
+
+    ``texts`` are the raw GuildDraw text objects (``state["texts"]``, filtered to
+    recognised layers) — engraving is stored as a text object (string + font +
+    cap-height ``size_mm`` + anchor + rotation), NOT as curves, so this reader can't
+    outline it without a font engine. They are carried raw (scene coords) with the
+    ``posterior`` flag; the GUI renders them to ENGRAVING polylines (``gui.text_outline``)
+    applying the same scene→posterior flip the layer curves already got."""
     name: str
     layers: dict[str, list[list[Point]]]
     apical_radius_mm: float = 0.0
     bridge_angle_deg: float = 0.0
     mirror_enabled: bool = True
     mirror_x: float = 0.0
+    texts: list[dict] = field(default_factory=list)
+    posterior: bool = True
 
     def is_empty(self) -> bool:
         return not any(self.layers.values())
@@ -232,6 +241,8 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
                           posterior: bool) -> GdrawWorkspace:
     frm = state.get("forming", {}) or {}
     mir = state.get("mirror", {}) or {}
+    texts = [dict(t) for t in (state.get("texts") or [])
+             if isinstance(t, dict) and t.get("layer") in ALL_LAYERS]
     return GdrawWorkspace(
         name=name,
         layers=read_workspace_geometry(state, chord_tol, posterior),
@@ -239,6 +250,8 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
         bridge_angle_deg=float(frm.get("bridge_angle_deg", 0.0) or 0.0),
         mirror_enabled=bool(mir.get("enabled", True)),
         mirror_x=float(mir.get("x", 0.0) or 0.0),
+        texts=texts,
+        posterior=posterior,
     )
 
 
@@ -297,9 +310,13 @@ def read_gdraw(path, chord_tol: float = CHORD_TOL_MM,
 @dataclass
 class GdrawComponent:
     """A built :class:`Component` paired with its layer geometry (``import_dxf``-
-    shaped) — the GUI / worker build the relief / outline / lens from ``layers``."""
+    shaped) — the GUI / worker build the relief / outline / lens from ``layers``.
+
+    ``texts`` carries the workspace's raw GuildDraw text objects (engraving); the GUI
+    outlines them to ENGRAVING polylines on open (see ``GdrawWorkspace.texts``)."""
     component: Component
     layers: dict[str, list[list[Point]]]
+    texts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -346,7 +363,7 @@ def build_project_from_gdraw(path) -> GdrawProject:
         ComponentKind.FRAME_FRONT, forming=_forming_of(front),
         source_file=str(path), source_workspace="front")
     project.add_component(ff)
-    comps.append(GdrawComponent(ff, front.layers))
+    comps.append(GdrawComponent(ff, front.layers, texts=list(front.texts)))
 
     # temples (disabled when the workspace is empty / has no outline)
     for tab, kind in _TAB_KIND.items():
@@ -356,7 +373,7 @@ def build_project_from_gdraw(path) -> GdrawProject:
             kind, enabled=has_outline, forming=_forming_of(ws),
             source_file=str(path), source_workspace=tab)
         project.add_component(comp)
-        comps.append(GdrawComponent(comp, ws.layers))
+        comps.append(GdrawComponent(comp, ws.layers, texts=list(ws.texts)))
 
     # base-curve templates, one per front LENS (OD/+x → right, OS/-x → left)
     for lens_pts in front.layers.get("LENS", []):

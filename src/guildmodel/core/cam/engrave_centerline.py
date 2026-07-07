@@ -149,7 +149,7 @@ def _prune_branches(lines: list[Curve], min_len: float) -> list[Curve]:
 
 
 def engraving_centerlines(
-    curves: Iterable[Curve], *, spacing: float = 0.25, prune_len: float = 0.4,
+    curves: Iterable[Curve], *, spacing: float = 0.1, prune_len: float = 0.15,
     simplify_tol: float = 0.02,
 ) -> list[Curve]:
     """Convert raw ENGRAVING curves into fixed-depth centerline polylines.
@@ -159,6 +159,17 @@ def engraving_centerlines(
     resample step (finer = smoother, slower); `prune_len` trims corner spurs (set 0
     to keep them); `simplify_tol` decimates the output. On any failure for a glyph,
     that glyph's original outline is kept so nothing silently vanishes.
+
+    `spacing` must stay well below the stroke width or the Voronoi medial axis
+    zig-zags between staggered boundary samples (a jagged engraving groove). At 0.1 mm
+    it converges to the true smooth spine for the ~1 mm strokes of engraved text
+    (0.25 mm left the centre of a smooth stroke turning ~2× more than the stroke does).
+
+    `prune_len` is coupled to `spacing`: the only spurs a clean glyph outline throws are
+    the ~`spacing`-long ones from boundary discretisation, so prune just above that
+    (~1.5·spacing). Set larger and it eats real terminal serifs (a serif branch is only
+    0.15–0.4 mm on 3–4 mm text); the old 0.4 default was tuned for the old 0.25 spacing
+    and dropped the fine serifs (S top, M tops, terminal of a 2).
     """
     closed: list[Curve] = []
     out: list[Curve] = []

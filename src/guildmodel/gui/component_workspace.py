@@ -27,6 +27,12 @@ class ComponentWorkspace:
     enabled: bool = True
     source_workspace: str = ""
     forming: object = None
+    # Raw GuildDraw text objects (engraving) for this workspace; the GUI outlines them
+    # to ENGRAVING polylines on open (fonts need Qt, so not done in this pure module).
+    texts: list = field(default_factory=list)
+    # Set once derive_workspace has applied the temple Y-axis re-orientation, so a
+    # re-derive never double-flips the layers.
+    layers_oriented: bool = False
 
     # per-component editable params (pushed into / pulled from the kind-aware
     # param dock on a tab switch, M7.3). Exactly one is populated, per kind;
@@ -74,6 +80,21 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     from guildmodel.core.io_import.normalize import points_to_polygon
 
     layers = ws.layers
+
+    # Temples are drawn in the POSTERIOR view in GuildDraw, but the reader applies the
+    # frame-front's anterior->posterior x-mirror to every workspace — over-mirroring a
+    # temple so its geometry (and engraving) reads backwards. Reflect a temple back
+    # across the Y axis (negate X) once, up front, so the whole part builds correctly.
+    # A temple is an OUTLINE with no lens openings; temple-ness is invariant under the
+    # flip, so the pre-flip check is valid. Idempotent via `layers_oriented`.
+    if not ws.layers_oriented:
+        _outline = layers.get("OUTLINE", [])
+        _lenses = [points_to_polygon(c) for c in layers.get("LENS", []) if len(c) >= 3]
+        if _outline and not any(p.is_valid and p.area > 1.0 for p in _lenses):
+            layers = ws.layers = {lyr: [[(-x, y) for x, y in c] for c in curves]
+                                  for lyr, curves in layers.items()}
+        ws.layers_oriented = True
+
     ws.engraving_curves = list(layers.get("ENGRAVING", []))
 
     outline_curves = layers.get("OUTLINE", [])
@@ -124,6 +145,7 @@ def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
         ws = ComponentWorkspace(
             kind=c.kind, label=component_label(c.kind), layers=gc.layers,
             enabled=c.enabled, source_workspace=c.source_workspace, forming=c.forming,
+            texts=list(gc.texts),
             castle_params=c.castle, temple_params=c.temple,
             block_params=c.base_curve_block)
         derive_workspace(ws)

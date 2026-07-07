@@ -274,16 +274,19 @@ class CastleCamParams(BaseModel):
     def is_multi_tool(self) -> bool:
         return len(self.tools_in_use()) > 1
 
-    # strategy / geometry
-    pocket_stepover_mm: float = 1.2
-    relief_stepover_mm: float = 0.9        # matches Fusion Scallop coverage
+    # strategy / geometry. The step / stepover fields drive `while`-loops that only
+    # advance by their value, so 0 or negative would spin forever — reject them at
+    # load with a clear error (the generators also floor them defensively). `gt=0`
+    # is deliberately NOT on rough_axial_stock_mm (0 = leave no extra roughing stock).
+    pocket_stepover_mm: float = Field(1.2, gt=0)
+    relief_stepover_mm: float = Field(0.9, gt=0)   # matches Fusion Scallop coverage
     rough_axial_stock_mm: float = 2.0
     # Requested through-cut depth per pass (M12.4): clamped down per material+machine by
     # `max_doc` (acetate 4.0, acetal 2.0, brittle horn 0.8), so this is "cut as deep as
     # the material allows" by default — fewer perimeter/eyewire passes — and the user can
     # still set it shallower. Was 2.5 (a blanket cap that left acetate at 4 passes).
-    contour_stepdown_mm: float = 4.0
-    ramp_step_mm: float = 0.6              # pocket ramp descent per lap
+    contour_stepdown_mm: float = Field(4.0, gt=0)
+    ramp_step_mm: float = Field(0.6, gt=0)  # pocket ramp descent per lap
     contour_ramp_angle_deg: float = 8.0    # through-cut lead-in ramp (partial lap)
     skim_epsilon_mm: float = 0.05          # "nothing to cut" threshold for roughing
     # Contour-relief linking (M11): bridge a contour ring's masked gaps up to this

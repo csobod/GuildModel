@@ -66,7 +66,8 @@ def simulate_component(
     )
     from ..post.grbl import GRBLPost
 
-    mat = mats_cfg.get(material_name.split()[0].lower(), mats_cfg["acetate"])
+    key = (material_name.split() or ["acetate"])[0].lower()
+    mat = mats_cfg.get(key, mats_cfg["acetate"])
     mode = spec["mode"]
     if mode == "castle":
         from ..relief.castle import build_castle_relief
@@ -257,24 +258,39 @@ def build_bed_removal_plan(
 
 
 def _schedule_step_order(parts: list) -> list:
-    """Order every part's steps to minimise tool changes — the same greedy strategy
-    as `cam.layout.schedule_bed_ops` (BUILDPLAN M6.5), keyed by the tool **profile**:
-    stay on the current tool while any ready step needs it, else switch to the ready
-    tool with the fewest remaining steps (front-loading the rare tools), keeping each
-    part's internal order. So the bed SIM plays in the tool-grouped order the
-    worktable.nc actually runs — all same-tool ops at once — not part by part.
+    """Order every part's steps to minimise tool changes AND front-load the briefest
+    tools — the sim mirror of `cam.layout.schedule_bed_ops` (BUILDPLAN M6.5 + operator-
+    time optimisation), keyed by the tool **profile**: stay on the current tool while any
+    ready step needs it, else switch to the ready tool with the least TOTAL cutting length
+    (so the longest-running tool finishes last, unattended), keeping each part's internal
+    order. So the bed SIM plays in the exact tool-grouped order the worktable.nc runs —
+    all same-tool ops at once, longest tool last — not part by part.
     """
     def key(step):                      # step = (label, ToolProfile, paths)
         p = step[1]
         return (p.kind, round(p.radius_mm, 4), round(p.corner_radius_mm, 4),
                 round(p.included_angle_deg, 4))
 
+    def step_len(step) -> float:        # 3-D cutting length of a step's paths
+        total = 0.0
+        for path in step[2]:
+            if len(path) > 1:
+                a = np.asarray(path, dtype=float)
+                total += float(np.linalg.norm(np.diff(a, axis=0), axis=1).sum())
+        return total
+
     seqs = [list(p.steps) for p in parts]
     pointers = [0] * len(seqs)
-    remaining: dict = {}
+    tool_cost: dict = {}
+    tool_n: dict = {}
     for s in seqs:
         for st in s:
-            remaining[key(st)] = remaining.get(key(st), 0) + 1
+            k = key(st)
+            tool_cost[k] = tool_cost.get(k, 0.0) + step_len(st)
+            tool_n[k] = tool_n.get(k, 0) + 1
+
+    def rank(k):                        # ascending work → longest tool last
+        return (tool_cost.get(k, 0.0), tool_n.get(k, 0), str(k))
 
     out: list = []
     current = None
@@ -285,10 +301,9 @@ def _schedule_step_order(parts: list) -> list:
         if same:
             i, st = same[0]
         else:
-            current = min({key(st) for _, st in rdy}, key=lambda t: remaining.get(t, 0))
+            current = min({key(st) for _, st in rdy}, key=rank)
             i, st = next((i, st) for i, st in rdy if key(st) == current)
         out.append(st)
-        remaining[key(st)] -= 1
         pointers[i] += 1
     return out
 

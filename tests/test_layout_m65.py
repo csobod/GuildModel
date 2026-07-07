@@ -99,6 +99,43 @@ def test_schedule_preserves_precedence_across_conflicting_tool_orders():
     assert [op.name for op in sched] == ["A0", "A1"]
 
 
+def _op_len(name, tool, length_mm):
+    """A single-pass op whose 3-D cutting length is `length_mm` (a straight segment)."""
+    return CamOp(name, paths=[[(0.0, 0.0, 0.0), (float(length_mm), 0.0, 0.0)]],
+                 tool={**TOOLS[tool], "name": tool})
+
+
+def test_schedule_front_loads_by_time_not_op_count():
+    # Operator-time optimisation: a brief tool with MANY ops must run BEFORE a bulk tool
+    # with ONE long op, so the operator's manual changes cluster up front and the bulk
+    # tool finishes unattended. Op-count ordering would wrongly run the single bulk op
+    # first (fewest ops); length/time ordering runs it last.
+    quick = [_op_len("engrave a", "engrave_vbit", 2.0),
+             _op_len("engrave b", "engrave_vbit", 2.0),
+             _op_len("engrave c", "engrave_vbit", 2.0)]        # 3 ops, total 6 mm
+    bulk = [_op_len("bulk profile", "flat_3175", 500.0)]       # 1 op, 500 mm
+    names = [op.name for op in schedule_bed_ops([quick, bulk])]
+    assert names[-1] == "bulk profile"                         # longest tool runs LAST
+    assert names[:3] == ["engrave a", "engrave b", "engrave c"]  # brief tool front-loaded
+
+
+def test_schedule_orders_three_tools_by_ascending_work():
+    # Three tools of increasing total length end up in that exact order, with the
+    # heaviest last — a full front-load of the manual changes.
+    a = [_op_len("drill", "drill_m4_clear", 3.0),              # least work
+         _op_len("a bulk", "flat_3175", 400.0)]                # most work
+    b = [_op_len("engrave", "engrave_vbit", 40.0),             # middle
+         _op_len("b bulk", "flat_3175", 400.0)]
+    sched = schedule_bed_ops([a, b])
+    order = [op.tool_name for op in sched]
+    assert order[0] == "drill_m4_clear"                        # briefest first
+    assert order[1] == "engrave_vbit"
+    assert order[-1] == "flat_3175" and order[-2] == "flat_3175"   # bulk batched last
+    changes = sum(1 for i in range(1, len(sched))
+                  if sched[i].tool_name != sched[i - 1].tool_name)
+    assert changes == 2                                        # 3 tools → 2 changes, all early
+
+
 # ------------------------------------------------------------------ assembly + clearance
 
 @pytest.fixture(scope="module")

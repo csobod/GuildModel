@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 
@@ -99,22 +100,40 @@ def place_ops_at_polygon_zone(
 
 # ------------------------------------------------------------------ scheduling
 
-def schedule_bed_ops(components: list[list[CamOp]]) -> list[CamOp]:
-    """Order ops across components to minimise tool changes (BUILDPLAN M6.5).
+def schedule_bed_ops(
+    components: list[list[CamOp]],
+    cost: Callable[[CamOp], float] | None = None,
+) -> list[CamOp]:
+    """Order ops across components to minimise tool changes AND front-load the
+    briefest tools (BUILDPLAN M6.5 + operator-time optimisation).
 
     Hard constraint: each component's ops keep their internal order (a part's
     drilling / relief must precede its profile release). Within that, we greedily
-    stay on the current tool while any ready op needs it, and when forced to
-    change pick the ready tool with the *fewest remaining ops* — front-loading the
-    special tools (drill / engrave / pocket) and batching the bulk last. The
-    number of changes is then the minimum (one per distinct tool) whenever the
-    parts' tool orders don't conflict.
+    stay on the current tool while any ready op needs it, and when forced to change
+    pick the ready tool with the least TOTAL cutting work over the whole bed — so the
+    distinct tools come out in ascending order of work and the single longest-running
+    tool is LAST. On a desktop CNC with no automatic tool changer that minimises the
+    operator's *monitored* time: every manual change happens in the brief opening
+    phase, then the final tool runs the bulk of the job unattended. The change count
+    stays the minimum (one per distinct tool) whenever the parts' tool orders agree.
+
+    `cost` measures an op's work (default: its 3-D cutting length — a robust proxy for
+    time, since a tool's total length dominates its cycle contribution). Op count is a
+    secondary key, so ties (and the synthetic zero-length ops of unit tests) still order
+    deterministically, with a name tie-break for full stability.
     """
+    cost = cost if cost is not None else (lambda op: op.path_length_mm())
     pointers = [0] * len(components)
-    remaining: dict[str | None, int] = {}
+    tool_cost: dict[str | None, float] = {}
+    tool_ops: dict[str | None, int] = {}
     for comp in components:
         for op in comp:
-            remaining[op.tool_name] = remaining.get(op.tool_name, 0) + 1
+            tool_cost[op.tool_name] = tool_cost.get(op.tool_name, 0.0) + cost(op)
+            tool_ops[op.tool_name] = tool_ops.get(op.tool_name, 0) + 1
+
+    def rank(t: str | None) -> tuple:
+        # ascending: least total work first → longest-running tool last
+        return (tool_cost.get(t, 0.0), tool_ops.get(t, 0), str(t))
 
     def ready() -> list[tuple[int, CamOp]]:
         return [(i, components[i][pointers[i]])
@@ -128,11 +147,9 @@ def schedule_bed_ops(components: list[list[CamOp]]) -> list[CamOp]:
         if same:
             i, op = same[0]
         else:
-            tools = {op.tool_name for _, op in rdy}
-            current = min(tools, key=lambda t: remaining.get(t, 0))
+            current = min({op.tool_name for _, op in rdy}, key=rank)
             i, op = next((i, op) for i, op in rdy if op.tool_name == current)
         result.append(op)
-        remaining[op.tool_name] -= 1
         pointers[i] += 1
     return result
 

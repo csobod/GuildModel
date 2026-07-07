@@ -183,6 +183,11 @@ def hinge_pocket_op(
     plunge into material. The full inward cascade then clears the floor.
     """
     op = CamOp("Hinge Pockets")
+    # A non-positive ramp step never descends (max(floor_z, z - 0) == z) — guard it
+    # so a hand-edited project can't hang the worker (matching peck_drill): +inf ramps
+    # straight to the floor in one lap. The inward cascade's stepover is guarded in
+    # _inward_offsets.
+    ramp_step = params.ramp_step_mm if params.ramp_step_mm > 1e-9 else float("inf")
     for poly in hinge_polys:
         rings = _poly_rings(poly, tool_radius_mm, params.pocket_stepover_mm)
         if not rings:
@@ -197,7 +202,7 @@ def hinge_pocket_op(
         z = start_z
         path.append((*ring_xy[0], z))
         while z > floor_z + 1e-9:
-            z_next = max(floor_z, z - params.ramp_step_mm)
+            z_next = max(floor_z, z - ramp_step)
             for i in range(1, n):
                 t = i / (n - 1)
                 path.append((*ring_xy[i], z + (z_next - z) * t))
@@ -466,8 +471,12 @@ def relief_ops(
     # retract between (pecking), slow and hard on the tool. The cap is the highest
     # point of the frame = the uncut blank back; to give it a machined top, lower the
     # nosepad height a hair (a design param) rather than skim at stock height.
-    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps))
-    _emit(rough, z_rough, cut_rough)
+    # Fine and rough tile the same machining region at the same stepover, so their
+    # concentric ring set is identical — build it once and share it (each _emit only
+    # reads the rings, reversing/densifying its own copies, so sharing is safe).
+    base_rings = contour_parallel_rings(machining, params.relief_stepover_mm)
+    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps), rings=base_rings)
+    _emit(rough, z_rough, cut_rough, rings=base_rings)
     # Feature-finish band (M13): on a chamfer the contour rings are its level
     # curves, so a flat tool leaves facet ridges of stepover*tan(slope) between
     # them — 0.52 mm at 30°/0.9 mm, over the sim's 0.5 mm completeness gate.
@@ -501,6 +510,12 @@ def relief_ops(
 
 def contour_passes(top_z: float, skin_z: float, stepdown_mm: float) -> list[float]:
     """Depth passes from the stock's top level down to the onion skin."""
+    # A non-positive stepdown never advances the loop below — guard the primitive
+    # (the schema/UI floor it, but a hand-edited project, or a material/machine with
+    # max_doc_mm <= 0 clamped in through model_copy, must not hang the worker, the
+    # same guard peck_drill takes): collapse to a single full-depth pass to the skin.
+    if stepdown_mm <= 1e-9:
+        stepdown_mm = max(top_z - skin_z, 1e-9)
     zs: list[float] = []
     z = top_z
     while True:
