@@ -122,6 +122,17 @@ class DxfCanvas(QWidget):
         self._tp_visible[name] = visible
         self.update()
 
+    def recolor_toolpaths(self, colors: list[str]) -> dict[str, str]:
+        """Re-cycle the overlay op colors (Preferences ▸ Appearance palette
+        change). Returns op-name → color so the inspector table can follow."""
+        out: dict[str, str] = {}
+        for i, op in enumerate(self._toolpaths):
+            op["color"] = colors[i % len(colors)] if colors else None
+            out[op.get("name", "")] = op["color"] or ""
+        if self._toolpaths:
+            self.update()
+        return out
+
     def set_toolpath_highlight(self, name: str | None) -> None:
         self._tp_highlight = name
         self.update()

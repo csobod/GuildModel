@@ -2633,6 +2633,91 @@ machining exists (posterior-only today, working as intended).
 
 ---
 
+## 2026-07-09 — Core-safe temples + honest per-component zeros (field-fix round)
+
+Four user findings from the bench workflow (temple blanks carry an injected
+metal core to the butt end; blanks slide into the fixture with the core ends
+against one stop), all landed — **483 tests green**:
+
+1. **Per-component Program Zero no longer leaks.** A component visited for the
+   first time silently inherited whatever G54 datum was on screen
+   (`ws.program_zero` seeded `None`, and the switch-away sync then wrote the
+   stale panel value into it) — so separately-set zeros smeared into one.
+   Every model component now seeds its **own** `ProgramZero` from its schema
+   `Component` in `build_workspaces_from_gdraw`. Tab-switch persistence, the
+   3D triad, the posted work offset and the `.gmodel` round-trip were verified
+   end-to-end (headless repro + new GUI gate).
+2. **Blank-end snap is the default and every consumer honours it.**
+   `TempleParams.snap_to_blank_end` now defaults **ON** (the workflow cuts
+   from the snapped position, always). The whole-bed sim's
+   `simulate_component` was regenerating temples **un-snapped** (floor stamped
+   off its placement) — fixed. The 2D view now *back-projects* the blank frame
+   into the design frame via the new `temple_snap_transform` (`flat.py`): the
+   blank box draws where the blank really sits (butt flush on its short edge),
+   the **G54 datum marker now draws for flat parts** (was cleared), and the
+   M7.11 toolpath overlay is inverse-transformed onto the drawing (blocks:
+   overlay shifted back onto the lens; previously both drew displaced).
+3. **The profile never cuts the core end.** `clip_op_at_blank_end`
+   (`temple_ops.py`): on a snapped temple every Temple Profile pass is clipped
+   at the blank-end plane — each closed lap becomes an **open polyline** that
+   stops at the blank edge on either side of the butt (crossings interpolated,
+   ring seam re-joined), so the cutter never drags across the injected core.
+   Open passes post with the plain plunge entry (≤ one stepdown deep). The
+   un-snapped path keeps the historical closed laps.
+4. **Nesting registers the core end against the zone end.**
+   `BedPart.place_by_origin` (set for snapped temples): the placement maps the
+   **blank centre → zone centre** instead of centring the ops' bbox, so the
+   butt/core end lands registered against the zone's end — exactly how the
+   blank slides into its slot. Snapped temples also skip the un-snapped
+   `default_nest_rotation` 180° flip (stock_side already faces the core;
+   manual bed rotation still available).
+
+New gates in `tests/test_core_safe_temple.py` (11): snap-transform ↔
+placement equivalence, ring clipping (right/left/inside/seam-joined), snapped
+program never crossing the core end + un-snapped unchanged, blank-frame vs
+bbox nesting, per-component zero seeding + the GUI leak repro.
+
+---
+
+## 2026-07-11 — RC1 language/toolbar polish + deep appearance customization
+
+Pre-RC1 user round (relaunch for inspection before the installer builds) —
+**498 tests green** (+15 in `tests/test_appearance_rc1.py`):
+
+1. **Component tabs**: "Temple Right"/"Temple Left" → **"Temple R"/"Temple L"**
+   (`_COMPONENT_LABELS`) to save tab-bar width.
+2. **Viewer strip decluttered**: the "Castle:" caption is gone (the stage
+   buttons speak for themselves); **Section got an icon**
+   (`view-section.svg` — sectioned square with drafting hatching, style-guide
+   format) and joins the themed two-state icon set; all strip buttons slimmed
+   30 → 24 px wide (half the old horizontal padding).
+3. **Castle language softened in the sidebar**: params tab "Castle" →
+   **"Model"**, its group "Castle" → **"Model Properties"**. Towers / Walls /
+   Footing keep the teaching vocabulary.
+4. **Preferences ▸ Appearance** (new tab; dark-mode moved here from General):
+   - **Viewport presets carried over from GuildDraw** (Parchment / Dimmed /
+     Blueprint / Matte Dark / Plain White / Custom color + follow-UI "auto"),
+     pinned in both UI modes and applied to the 2D canvas, the worktable bed
+     canvas AND the 3D viewport background. `theme.apply_viewport` overlays
+     the CanvasPalette; supporting colors + layer variants re-pick by the
+     preset background's luminance, OUTLINE follows the preset ink.
+   - **3D light rig**: Studio (kit + key, the shipped look) / Directional
+     (dramatic relief shadows) / Flat (unshaded), with key-light **direction
+     (azimuth), height (elevation) and intensity** sliders; defaults reproduce
+     the old hardcoded key light exactly. `theme.set_lighting`/`light_position`
+     drive `Viewer3D._apply_scene_lights` in model, sim-floor and removal-block
+     scenes.
+   - **Model surface color** picker (+ reset to the theme amber) via
+     `theme.set_mesh_color`.
+   - **Toolpath-overlay palettes** (Vivid / Soft / Bold / Monochrome blue,
+     swatch previews in the combo); live recolor of the drawn overlay + the
+     Toolpaths table (`DxfCanvas.recolor_toolpaths`).
+   - Persisted as `viewport` / `render3d` / `toolpath_palette` in prefs.json;
+     `Viewer3D.refresh_appearance()` re-renders the active scene in place
+     (camera kept) on Preferences-OK or a mode flip.
+
+---
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

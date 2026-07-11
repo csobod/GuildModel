@@ -39,6 +39,7 @@ class BedCanvas(QWidget):
 
     region_clicked = Signal(str)    # zone id (left-click hit), or "" on empty space
     component_nudged = Signal(str, float, float)   # zone id, total (dx, dy) mm on release
+    component_selected = Signal(str)   # zone id of the clicked footprint, or "" (deselect)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -56,6 +57,7 @@ class BedCanvas(QWidget):
         # M7.6 nested footprints: each = dict(zone_id, role, label, paths, violated, bbox)
         self._placements: list[dict] = []
         self._nest_drag: Optional[int] = None        # index of the placement being dragged
+        self._selected_nest_idx: Optional[int] = None  # index of the selected footprint
         self._nest_last: Optional[tuple[float, float]] = None
         self._nest_total: tuple[float, float] = (0.0, 0.0)
 
@@ -84,6 +86,7 @@ class BedCanvas(QWidget):
             self._selected_id = None
         self._placements = []                # a new bed invalidates any prior nest
         self._nest_drag = None
+        self._selected_nest_idx = None
         self.fit_to_view()
 
     def refresh(self, worktable) -> None:
@@ -104,6 +107,7 @@ class BedCanvas(QWidget):
         """Show the nested component footprints (BUILDPLAN M7.6). `placements` is a
         list of dicts: `zone_id`, `role`, `label`, `paths` (machine-coord polylines),
         `violated` (bool). The footprints draw over the bed; drag one to nudge it."""
+        sel_zone = self.selected_placement_zone()   # survive the re-render (M-UX rotate)
         self._placements = []
         for pl in placements:
             paths = [list(p) for p in pl.get("paths", [])]
@@ -114,11 +118,29 @@ class BedCanvas(QWidget):
                 "bbox": self._paths_bbox(paths),
             })
         self._nest_drag = None
+        self._selected_nest_idx = next(
+            (i for i, p in enumerate(self._placements) if p["zone_id"] == sel_zone), None)
         self.update()
 
     def clear_nest(self) -> None:
         self._placements = []
         self._nest_drag = None
+        self._selected_nest_idx = None
+        self.update()
+
+    def selected_placement_zone(self) -> Optional[str]:
+        """Zone id of the currently selected footprint, or None."""
+        if (self._selected_nest_idx is not None
+                and self._selected_nest_idx < len(self._placements)):
+            return self._placements[self._selected_nest_idx]["zone_id"]
+        return None
+
+    def set_selected_placement(self, zone_id: Optional[str]) -> None:
+        """Highlight the footprint on `zone_id` (or clear). The app owns the selection
+        (it drives the rotate controls); this only reflects it on the canvas."""
+        self._selected_nest_idx = next(
+            (i for i, p in enumerate(self._placements) if p["zone_id"] == zone_id),
+            None) if zone_id else None
         self.update()
 
     @staticmethod
@@ -234,6 +256,9 @@ class BedCanvas(QWidget):
     def _draw_zones(self, painter: QPainter) -> None:
         font = QFont(self.font())
         font.setPointSize(9)
+        # Zones hosting a nested footprint hand their caption to the part's
+        # label — both drew at the zone centre, one on top of the other.
+        occupied = {pl["zone_id"] for pl in self._placements}
         for z in self._zones:
             if len(z.polygon) < 3:
                 continue
@@ -259,8 +284,9 @@ class BedCanvas(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
 
-            # label (skip tiny keep-outs to avoid clutter)
-            if BedRole(z.role) != BedRole.KEEP_OUT:
+            # label (skip tiny keep-outs to avoid clutter, and occupied zones
+            # whose nested part draws its own label there)
+            if BedRole(z.role) != BedRole.KEEP_OUT and z.id not in occupied:
                 cx = sum(p[0] for p in z.polygon) / len(z.polygon)
                 cy = sum(p[1] for p in z.polygon) / len(z.polygon)
                 sc = self._world_to_screen(cx, cy)
@@ -275,14 +301,26 @@ class BedCanvas(QWidget):
             return
         font = QFont(self.font())
         font.setPointSize(8)
-        for pl in self._placements:
+        for i, pl in enumerate(self._placements):
+            selected = i == self._selected_nest_idx
             if pl["violated"]:
                 outline = "#d83a3a"
             else:
                 _, outline = _ROLE_COLORS.get(
                     BedRole(pl["role"]) if pl["role"] is not None else BedRole.UNASSIGNED,
                     _ROLE_COLORS[BedRole.UNASSIGNED])
-            pen = QPen(QColor(outline), 2.0 if pl["violated"] else 1.4)
+            # A selected footprint draws a dashed selection ring around its bbox.
+            if selected:
+                x0, y0, x1, y1 = pl["bbox"]
+                m = 2.0                           # small mm margin so the ring clears the part
+                tl = self._world_to_screen(x0 - m, y1 + m)
+                br = self._world_to_screen(x1 + m, y0 - m)
+                sel_pen = QPen(QColor(self._palette.annotation), 1.2, Qt.PenStyle.DashLine)
+                sel_pen.setCosmetic(True)
+                painter.setPen(sel_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(tl, br))
+            pen = QPen(QColor(outline), 2.6 if selected else (2.0 if pl["violated"] else 1.4))
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -345,16 +383,24 @@ class BedCanvas(QWidget):
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton:
             wx, wy = self._screen_to_world(event.position().x(), event.position().y())
-            # A nested footprint under the cursor takes priority — drag to nudge it.
+            # A nested footprint under the cursor takes priority — click selects it
+            # (so it can be rotated), drag nudges it.
             idx = self._nest_hit_test(wx, wy)
             if idx is not None:
+                self._selected_nest_idx = idx
+                self.component_selected.emit(self._placements[idx]["zone_id"])
                 self._nest_drag = idx
                 self._nest_last = (wx, wy)
                 self._nest_total = (0.0, 0.0)
                 self.setCursor(Qt.CursorShape.SizeAllCursor)
+                self.update()
                 event.accept()
                 return
             hit = self._hit_test(wx, wy)
+            # Clicking empty space / a bare zone deselects any selected footprint.
+            if self._selected_nest_idx is not None:
+                self._selected_nest_idx = None
+                self.component_selected.emit("")
             self._selected_id = hit
             self.update()
             self.region_clicked.emit(hit or "")

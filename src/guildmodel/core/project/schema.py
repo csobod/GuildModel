@@ -356,10 +356,12 @@ class TempleParams(BaseModel):
     # Snap the temple to one end of the blank so the injected metal core (a wire
     # set into the blank along its length) runs through the whole temple — the
     # HINGE/butt end registers to a short edge of the 170 mm blank (BUILDPLAN M7).
-    # OFF (default, M11) leaves the part at its DESIGN alignment, so the cutting path
-    # matches where it sits in the 2D view; ON re-centres it on the blank (and is what
-    # makes `stock_side` meaningful). Exposed as a per-temple toggle in the dock.
-    snap_to_blank_end: bool = False
+    # ON by default (workflow decision 2026-07-09): blanks are slid into the fixture
+    # with their core ends against one stop, so the cut is always plotted from the
+    # snapped position — the 2D view back-projects the blank/datum/toolpath so it
+    # still matches the drawing. OFF leaves the part at its DESIGN alignment (legacy;
+    # the program-zero datum then assumes the drawing is centred on the blank).
+    snap_to_blank_end: bool = True
     # Which short end of the blank the HINGE/butt end registers to (M11). Cores are
     # sometimes shot from the left of the stock instead of the right; flipping the
     # side rotates the temple 180° in-plane (hinge pocket stays up) so it butts the
@@ -570,8 +572,8 @@ class ComponentKind(str, Enum):
 # Kind → presentation label (the component tab / bed-zone title, M7.3/M7.4).
 _COMPONENT_LABELS: dict[ComponentKind, str] = {
     ComponentKind.FRAME_FRONT: "Frame Front",
-    ComponentKind.TEMPLE_RIGHT: "Temple Right",
-    ComponentKind.TEMPLE_LEFT: "Temple Left",
+    ComponentKind.TEMPLE_RIGHT: "Temple R",
+    ComponentKind.TEMPLE_LEFT: "Temple L",
     ComponentKind.BASE_CURVE_RIGHT: "Base Curve R",
     ComponentKind.BASE_CURVE_LEFT: "Base Curve L",
 }

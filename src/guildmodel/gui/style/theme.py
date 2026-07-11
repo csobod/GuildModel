@@ -15,7 +15,8 @@ No widget module may contain a hex literal that is not sourced from here
 :func:`layer_color`).
 """
 from __future__ import annotations
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 
 # ---------------------------------------------------------------------------
 # Light theme — GuildDraw QSS port (framedraft/app.py:118) + GuildModel extras
@@ -148,6 +149,10 @@ QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */
 QWidget#toolbarStrip { background-color: #ffd580; border-bottom: 1px solid #d4a840; }
+/* The 3D viewer's strip buttons are icon-only squares: without this override
+   the app-wide QPushButton min-width/padding stretches them wide (their
+   setFixedWidth loses to the stylesheet box model). */
+QWidget#toolbarStrip QPushButton { padding: 1px; min-width: 0px; }
 QLabel#appTitle { font-size: 16px; font-weight: bold; background: transparent; }
 QLabel#hintLabel { font-size: 10px; color: #8a6d2f; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
@@ -297,6 +302,8 @@ QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */
 QWidget#toolbarStrip { background-color: #1a1a1a; border-bottom: 1px solid #554433; }
+/* Icon-only square strip buttons — see the light-theme note. */
+QWidget#toolbarStrip QPushButton { padding: 1px; min-width: 0px; }
 QLabel#appTitle { font-size: 16px; font-weight: bold; background: transparent; }
 QLabel#hintLabel { font-size: 10px; color: #9a9382; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
@@ -377,11 +384,33 @@ DARK = CanvasPalette(
 
 
 def palette(dark: bool) -> CanvasPalette:
-    return DARK if dark else LIGHT
+    """Painter palette for the requested UI mode, with the user's Appearance
+    overrides applied (viewport preset backdrop + model surface color).
+
+    A viewport preset pins the canvas/3D backdrop in BOTH UI modes (GuildDraw
+    parity): the base palette is then chosen by the preset background's
+    luminance — not the UI mode — so every supporting color (measure, zone,
+    stock ghost…) stays legible on the chosen backdrop.
+    """
+    base = DARK if dark else LIGHT
+    vp = _viewport
+    if vp is not None:
+        base = DARK if _luminance(vp["bg"]) < 0.5 else LIGHT
+        base = replace(
+            base,
+            canvas_bg=vp["bg"],
+            grid=vp["grid"],
+            annotation=vp["ink"],
+            placeholder=_mix(vp["bg"], vp["ink"], 0.4),
+        )
+    if _mesh_color:
+        base = replace(base, mesh_surface=_mesh_color)
+    return base
 
 
 # Layer colors come from core.layers.LAYER_STYLES (the light-canvas set).
 # Dark canvases need brighter variants or the OUTLINE layer disappears.
+_OUTLINE_LIGHT_HEX = "#1a1a1a"
 _DARK_LAYER_COLORS: dict[str, str] = {
     "#1a1a1a": "#d4cfc0",   # OUTLINE  — GuildDraw's dark geometry color
     "#1a6cbf": "#5aa0e0",   # LENS
@@ -394,7 +423,164 @@ _DARK_LAYER_COLORS: dict[str, str] = {
 
 
 def layer_color(light_hex: str, dark: bool) -> str:
-    """Theme-corrected layer color (input: the LAYER_STYLES light hex)."""
+    """Theme-corrected layer color (input: the LAYER_STYLES light hex).
+
+    With a viewport preset active the OUTLINE layer follows the preset's
+    drawing ink, and every other layer picks its light/dark variant from the
+    preset background's luminance instead of the UI mode."""
+    if _viewport is not None:
+        if light_hex.lower() == _OUTLINE_LIGHT_HEX:
+            return _viewport["ink"]
+        dark = _luminance(_viewport["bg"]) < 0.5
     if not dark:
         return light_hex
     return _DARK_LAYER_COLORS.get(light_hex.lower(), light_hex)
+
+
+# ---------------------------------------------------------------------------
+# Appearance customization (Preferences ▸ Appearance) — RC1 polish.
+#
+# Module-level like GuildDraw's framedraft/theme.py: the main window pushes
+# the persisted prefs in at startup and on Preferences-OK; every painter/VTK
+# surface re-pulls palette()/lighting() on its next refresh.
+# ---------------------------------------------------------------------------
+
+# Viewport presets carried over from GuildDraw (framedraft/theme.py
+# VIEWPORT_PRESETS — same backgrounds + inks, so the two apps feel like one
+# product). `grid` is tuned for GuildModel's full 10-mm grid, which wants a
+# fainter line than GuildDraw's single center cross.
+VIEWPORT_PRESETS: dict[str, dict[str, str]] = {
+    "parchment": {"bg": "#faf6ee", "ink": "#1f1f1f", "grid": "#e8e0c0"},
+    # Dimmed: between Parchment and dark — easy on the eyes but still light
+    # enough that the light-mode layer palette keeps its contrast.
+    "dimmed":    {"bg": "#d8d1c3", "ink": "#1f1f1f", "grid": "#c4bcab"},
+    "blueprint": {"bg": "#16324f", "ink": "#dce8f2", "grid": "#2b4664"},
+    "matte":     {"bg": "#1e1e1e", "ink": "#d4cfc0", "grid": "#333333"},
+    "white":     {"bg": "#ffffff", "ink": "#1f1f1f", "grid": "#e6e6e6"},
+}
+
+_viewport: dict[str, str] | None = None   # active preset values (bg/ink/grid)
+_mesh_color: str | None = None            # 3D part-surface override ("" = default)
+
+# 3D light rig — defaults reproduce the shipped look exactly: one key light
+# from (100, -50, 200) at 0.8 over VTK's default kit (azimuth/elevation of
+# that vector, see Viewer3D).
+LIGHTING_DEFAULTS: dict = {
+    "rig": "studio",           # studio | directional | flat
+    "azimuth_deg": -27.0,      # around +Z, 0° = +X, CCW positive
+    "elevation_deg": 61.0,     # up from the XY plane
+    "intensity": 0.8,          # key-light strength
+}
+_lighting: dict = dict(LIGHTING_DEFAULTS)
+
+# Toolpath-overlay color sets (M7.11 overlay; Preferences ▸ Appearance).
+TOOLPATH_PALETTES: dict[str, list[str]] = {
+    # the original M7.11 set
+    "vivid": ["#e0563b", "#3b86e0", "#3aa33a", "#c79a2b",
+              "#9b59b6", "#16a085", "#e08c3b", "#d6477f"],
+    "soft":  ["#c9826d", "#7a9cc9", "#7fb08a", "#c2ae7d",
+              "#a98bc0", "#7ab3ab", "#c9a07a", "#bd8aa2"],
+    "bold":  ["#e02b2b", "#1f5fe0", "#1fa01f", "#d99000",
+              "#8e2be0", "#009a9a", "#e0641f", "#e01f8e"],
+    # one hue, stepped — for makers who find the multicolor overlay noisy
+    "mono":  ["#2f6f9f", "#4a89b8", "#6ba3cc", "#8fbcdb",
+              "#3a5a78", "#5577a0", "#7c9dc0", "#274d6d"],
+}
+_toolpath_palette: str = "vivid"
+
+
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    """(r, g, b) from #rrggbb / #AARRGGBB; mid-grey on a malformed value so a
+    hand-corrupted prefs color can't crash startup (GuildDraw parity)."""
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) == 8:          # #AARRGGBB
+            h = h[2:]
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, AttributeError, IndexError):
+        return (128, 128, 128)
+
+
+def _luminance(hex_color: str) -> float:
+    r, g, b = _rgb(hex_color)
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """Blend color *a* toward *b* by t in [0, 1]."""
+    ar, ag, ab_ = _rgb(a)
+    br, bg, bb = _rgb(b)
+    return "#{:02x}{:02x}{:02x}".format(
+        round(ar + (br - ar) * t),
+        round(ag + (bg - ag) * t),
+        round(ab_ + (bb - ab_) * t))
+
+
+def apply_viewport(preset: str | None, custom_bg: str | None = None) -> None:
+    """Activate (or clear, for "auto"/None) a viewport preset.
+
+    "custom" derives a legible ink + grid from the chosen background's
+    luminance, exactly like GuildDraw's custom canvas color."""
+    global _viewport
+    if preset in (None, "", "auto"):
+        _viewport = None
+        return
+    if preset == "custom":
+        bg = custom_bg or LIGHT.canvas_bg
+        ink = "#d4cfc0" if _luminance(bg) < 0.5 else "#1f1f1f"
+        _viewport = {"bg": bg, "ink": ink, "grid": _mix(bg, ink, 0.18)}
+        return
+    vals = VIEWPORT_PRESETS.get(preset)
+    _viewport = dict(vals) if vals else None
+
+
+def viewport_preset_active() -> bool:
+    return _viewport is not None
+
+
+def set_mesh_color(hex_color: str | None) -> None:
+    """Override the 3D part-surface color in both modes (None/"" = default)."""
+    global _mesh_color
+    _mesh_color = hex_color or None
+
+
+def set_lighting(cfg: dict | None) -> None:
+    """Install the 3D light-rig config (unknown keys ignored, missing keys keep
+    their defaults — a stale prefs.json can never break the render)."""
+    global _lighting
+    cfg = cfg or {}
+    out = dict(LIGHTING_DEFAULTS)
+    if cfg.get("rig") in ("studio", "directional", "flat"):
+        out["rig"] = cfg["rig"]
+    for key, lo, hi in (("azimuth_deg", -180.0, 180.0),
+                        ("elevation_deg", 5.0, 90.0),
+                        ("intensity", 0.0, 2.0)):
+        try:
+            out[key] = min(hi, max(lo, float(cfg[key])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    _lighting = out
+
+
+def lighting() -> dict:
+    """The active 3D light-rig config (a copy)."""
+    return dict(_lighting)
+
+
+def light_position(radius: float = 230.0) -> tuple[float, float, float]:
+    """Key-light position on a sphere around the scene origin, from the
+    configured azimuth (around +Z from +X) and elevation (up from XY)."""
+    az = math.radians(_lighting["azimuth_deg"])
+    el = math.radians(_lighting["elevation_deg"])
+    c = math.cos(el) * radius
+    return (c * math.cos(az), c * math.sin(az), radius * math.sin(el))
+
+
+def set_toolpath_palette(name: str | None) -> None:
+    global _toolpath_palette
+    _toolpath_palette = name if name in TOOLPATH_PALETTES else "vivid"
+
+
+def toolpath_colors() -> list[str]:
+    """The active toolpath-overlay color cycle."""
+    return list(TOOLPATH_PALETTES[_toolpath_palette])

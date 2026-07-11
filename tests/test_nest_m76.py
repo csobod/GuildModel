@@ -18,8 +18,8 @@ from guildmodel.core.project.schema import (
 from guildmodel.core.cam.castle_ops import CamOp
 from guildmodel.core.cam.block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
 from guildmodel.core.cam.layout import (
-    BedPart, nest_components_on_worktable, ops_bbox_center,
-    worktable_clearance_violations,
+    BedPart, BedPlacement, default_nest_rotation, nest_components_on_worktable,
+    ops_bbox_center, worktable_clearance_violations,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -230,3 +230,90 @@ def test_demo_nests_on_default_bed_clear(demo_parts):
     # sanity: without the exemption the drill IS flagged (the exemption does real work)
     flagged = worktable_clearance_violations(nest.all_ops(), bed)
     assert any("Drill Holes" in v for v in flagged)
+
+
+# ------------------------------------------------------------------ placement rotation
+
+def test_bed_placement_rotate_keeps_centre_and_accumulates():
+    """A placement spins about its own footprint centre; the centre is preserved so it
+    stays on its zone, and rotation_deg accumulates and wraps at 360 (M-UX)."""
+    op = _op("Perimeter", "flat_3175",
+             [(90, 45), (110, 45), (110, 55), (90, 55), (90, 45)])   # 20x10, centre (100,50)
+    pl = BedPlacement(kind="temple_left", label="Temple L", zone_id="z",
+                      role="temple_left", dx=0.0, dy=0.0, rotation_deg=0.0, ops=[op])
+    c0 = ops_bbox_center(pl.ops)
+    pl.rotate(90)
+    assert ops_bbox_center(pl.ops) == pytest.approx(c0)              # centre preserved
+    assert pl.rotation_deg == pytest.approx(90.0)
+    xs = [p[0] for path in pl.ops[0].paths for p in path]
+    ys = [p[1] for path in pl.ops[0].paths for p in path]
+    assert (max(xs) - min(xs)) == pytest.approx(10.0)                # 20x10 -> 10x20
+    assert (max(ys) - min(ys)) == pytest.approx(20.0)
+    for _ in range(3):
+        pl.rotate(90)                                               # back to start
+    assert pl.rotation_deg == pytest.approx(0.0)                    # wraps at 360
+
+
+def test_default_nest_rotation_flips_left_temple_only():
+    assert default_nest_rotation("temple_left") == 180.0
+    assert default_nest_rotation("temple_right") == 0.0
+    assert default_nest_rotation("frame_front") == 0.0
+    assert default_nest_rotation("base_curve_left") == 0.0
+
+
+def test_left_temple_nests_flipped_to_face_the_right():
+    """With the per-kind default applied (as NestWorker does), the left temple lands
+    rotated 180° so its hinge end faces the right temple."""
+    bed = Worktable(zones=[
+        _rect_zone("zr", BedRole.TEMPLE_RIGHT, 0, 0, 200, 50),
+        _rect_zone("zl", BedRole.TEMPLE_LEFT, 0, 60, 200, 110)])
+    parts = [_part("temple_right", "R", _op("Temple Profile", "flat_3175", [(0, 0)])),
+             _part("temple_left", "L", _op("Temple Profile", "flat_3175", [(0, 0)]))]
+    for p in parts:
+        p.rotation_deg = default_nest_rotation(p.kind)
+    nest = nest_components_on_worktable(parts, bed)
+    rot = {pl.kind: pl.rotation_deg for pl in nest.placements}
+    assert rot["temple_left"] == pytest.approx(180.0)
+    assert rot["temple_right"] == pytest.approx(0.0)
+
+
+def test_gui_select_and_rotate_placement(tmp_path, monkeypatch):
+    """Clicking a footprint selects it (enabling the rotate controls); rotating spins
+    the placed ops and re-checks clearance without regenerating any program (M-UX)."""
+    pytest.importorskip("PySide6.QtWidgets")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from guildmodel.gui.app import MainWindow
+
+    bed = Worktable(zones=[_rect_zone("zl", BedRole.TEMPLE_LEFT, 0, 0, 200, 60)])
+    op = _op("Temple Profile", "flat_3175",
+             [(-70, -10), (70, -10), (70, 10), (-70, 10), (-70, -10)])
+    nest = nest_components_on_worktable([_part("temple_left", "Temple L", op)], bed)
+    pl = nest.placements[0]
+
+    try:
+        win = MainWindow()
+    except Exception as exc:                                   # pragma: no cover
+        pytest.skip(f"no usable Qt/VTK platform: {exc}")
+    win._worktable = bed
+    win._nest = nest
+    win.bed_canvas.set_worktable(bed)
+    win._refresh_nest_render()
+
+    assert not win._bed_rot_180.isEnabled()                    # nothing selected yet
+    win._on_bed_placement_selected("zl")                       # click a footprint
+    assert win._bed_rot_180.isEnabled()
+    assert "Temple L" in win._bed_sel_label.text()
+
+    before = [tuple(p) for o in pl.ops for p in o.paths[0]]
+    win._rotate_selected_placement(90.0)
+    after = [tuple(p) for o in pl.ops for p in o.paths[0]]
+    assert before != after                                     # ops actually rotated
+    assert pl.rotation_deg == pytest.approx(90.0)
+    assert win.bed_canvas.selected_placement_zone() == "zl"    # selection survives render
+
+    win._on_bed_placement_selected("")                         # deselect
+    assert not win._bed_rot_180.isEnabled()

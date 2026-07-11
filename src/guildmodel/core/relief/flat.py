@@ -127,6 +127,28 @@ def _hinge_on_plus_x(outline: Polygon, hinge_polys: list[Polygon]) -> bool:
     return abs(hx - maxx) <= abs(hx - minx)
 
 
+def temple_snap_transform(
+    outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
+    *, stock_side: str = "right", snap: bool = True,
+) -> tuple[bool, float, float]:
+    """The rigid design→blank-frame transform the snap applies (BUILDPLAN M11):
+    ``(flipped, dx, dy)`` such that a design point q maps to the blank frame as
+    ``p = (−q if flipped else q) + (dx, dy)``. The GUI inverts this to draw the
+    blank box / datum marker / toolpath overlay back in the design frame, so the
+    2D view shows exactly where the cut lands on the blank. ``snap=False`` is the
+    identity."""
+    if not snap:
+        return False, 0.0, 0.0
+    flipped = _hinge_on_plus_x(outline, hinge_polys) != (stock_side != "left")
+    if flipped:
+        from shapely.affinity import scale
+        outline = scale(outline, xfact=-1.0, yfact=-1.0, origin=(0, 0))
+        hinge_polys = [scale(h, xfact=-1.0, yfact=-1.0, origin=(0, 0))
+                       for h in hinge_polys]
+    dx, dy = temple_snap_offset(outline, hinge_polys, blank_length)
+    return flipped, dx, dy
+
+
 def place_temple_on_blank(
     outline: Polygon, hinge_polys: list[Polygon], engraving: list,
     blank_length: float, *, stock_side: str = "right", snap: bool = True,
@@ -142,11 +164,12 @@ def place_temple_on_blank(
     engraving = [list(c) for c in engraving]
     if not snap:
         return outline, hinge_polys, engraving
-    if _hinge_on_plus_x(outline, hinge_polys) != (stock_side != "left"):
+    flipped, dx, dy = temple_snap_transform(
+        outline, hinge_polys, blank_length, stock_side=stock_side, snap=True)
+    if flipped:
         outline = scale(outline, xfact=-1.0, yfact=-1.0, origin=(0, 0))
         hinge_polys = [scale(h, xfact=-1.0, yfact=-1.0, origin=(0, 0)) for h in hinge_polys]
         engraving = [[(-x, -y) for x, y in c] for c in engraving]
-    dx, dy = temple_snap_offset(outline, hinge_polys, blank_length)
     outline = _translate(outline, dx, dy)
     hinge_polys = [_translate(h, dx, dy) for h in hinge_polys]
     engraving = [[(x + dx, y + dy) for x, y in c] for c in engraving]

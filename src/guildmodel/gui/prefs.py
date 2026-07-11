@@ -16,6 +16,17 @@ _FILE = _DIR / "prefs.json"
 DEFAULTS: dict = {
     # Appearance
     "dark_mode":             False,
+    # Viewport backdrop preset for the 2D canvases + 3D viewport ("auto"
+    # follows the UI mode; other presets pin the backdrop in both modes —
+    # carried over from GuildDraw) — Preferences ▸ Appearance.
+    "viewport":              {"preset": "auto", "custom_bg": "#faf6ee"},
+    # 3D render: light rig (studio/directional/flat), key-light direction +
+    # strength, and the model surface color ("" = theme default amber).
+    "render3d":              {"rig": "studio", "azimuth_deg": -27.0,
+                              "elevation_deg": 61.0, "intensity": 0.8,
+                              "model_color": ""},
+    # Toolpath-overlay color set: vivid | soft | bold | mono.
+    "toolpath_palette":      "vivid",
     # Show the bottom log dock on startup (toggle the button to change it for
     # the session; this pref sets the default) — M4.6
     "show_log_on_start":     False,

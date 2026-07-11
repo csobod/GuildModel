@@ -65,6 +65,19 @@ def transform_ops(ops: list[CamOp], dx: float, dy: float,
     return out
 
 
+def rotate_ops_about(ops: list[CamOp], cx: float, cy: float,
+                     deg: float) -> list[CamOp]:
+    """New CamOps rotated by `deg` about the point (cx, cy) — rotation in place that
+    keeps the ops' current position (used for interactive bed rotation, where a placed
+    footprint spins about its own centre rather than the machine origin)."""
+    th = math.radians(deg)
+    c, s = math.cos(th), math.sin(th)
+    # rotate-about-(cx,cy) = rotate-about-origin then translate by (c - R·c)
+    rcx = c * cx - s * cy
+    rcy = s * cx + c * cy
+    return transform_ops(ops, cx - rcx, cy - rcy, deg)
+
+
 def zone_center(fixture: dict, zone_name: str) -> tuple[float, float]:
     """Machine-coordinate centre of a fixture blank zone."""
     z = fixture["blank_zones"][zone_name]
@@ -281,6 +294,12 @@ class BedPart:
     contour_names: set = field(default_factory=set)
     drill_names: set = field(default_factory=set)
     rotation_deg: float = 0.0
+    # Place by the DESIGN ORIGIN (the blank centre) instead of the ops' bbox centre.
+    # A blank-end-snapped temple's ops live in its blank frame (blank centred on the
+    # origin, butt on the short edge); mapping blank centre → zone centre keeps the
+    # core end registered against the zone's end, exactly how the blank slides into
+    # its slot on the worktable (2026-07-09 core-aligned nesting).
+    place_by_origin: bool = False
 
 
 @dataclass
@@ -345,6 +364,16 @@ class BedPlacement:
         self.dx += ddx
         self.dy += ddy
 
+    def rotate(self, ddeg: float) -> None:
+        """Rotate the placement in place about its own footprint centre by `ddeg`
+        (interactive bed rotation — spin a temple so it loads into a slot, or flip the
+        left temple 180° to face the right). The centre is preserved, so the part stays
+        on its zone; ``rotation_deg`` accumulates and clearance is re-checked by the
+        caller. The rotated ops post directly, so the worktable.nc matches the render."""
+        cx, cy = ops_bbox_center(self.ops)
+        self.ops = rotate_ops_about(self.ops, cx, cy, ddeg)
+        self.rotation_deg = (self.rotation_deg + ddeg) % 360.0
+
 
 @dataclass
 class BedNest:
@@ -361,6 +390,17 @@ class BedNest:
         for pl in self.placements:
             names |= pl.drill_names
         return names
+
+
+# A temple_left is the mirror of a temple_right, so it nests hinge-reversed; a 180°
+# default faces its end the same way as the right temple. A starting point only —
+# the maker rotates any placement freely on the bed (BedPlacement.rotate).
+_DEFAULT_NEST_ROTATION_DEG: dict[str, float] = {"temple_left": 180.0}
+
+
+def default_nest_rotation(kind: str) -> float:
+    """The sensible starting rotation (deg) for a component of `kind` on the bed."""
+    return _DEFAULT_NEST_ROTATION_DEG.get(kind, 0.0)
 
 
 def nest_components_on_worktable(parts: list[BedPart], worktable) -> BedNest:
@@ -396,7 +436,13 @@ def nest_components_on_worktable(parts: list[BedPart], worktable) -> BedNest:
             continue
         used[role] = i + 1
         zone = zones[i]
-        placed, (dx, dy) = place_ops_at_polygon_zone(part.ops, zone, part.rotation_deg)
+        if part.place_by_origin:
+            # Blank frame → zone: design origin (the blank centre) lands on the zone
+            # centre, so a snapped part keeps its registration against the zone end.
+            dx, dy = zone.bbox_center()
+            placed = transform_ops(part.ops, dx, dy, part.rotation_deg)
+        else:
+            placed, (dx, dy) = place_ops_at_polygon_zone(part.ops, zone, part.rotation_deg)
         placements.append(BedPlacement(
             kind=part.kind, label=part.label, zone_id=zone.id, role=role.value,
             dx=round(dx, 3), dy=round(dy, 3), rotation_deg=part.rotation_deg,

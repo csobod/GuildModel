@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QLineEdit, QScrollArea, QDockWidget,
     QToolBar, QProgressDialog, QTabBar, QComboBox,
     QListWidget, QListWidgetItem, QSpinBox, QSplitter,
+    QSlider, QColorDialog,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize, QPointF
-from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen
+from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen, QPixmap, QIcon
 
 from guildmodel.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildmodel.gui import prefs as prefs_mod
@@ -411,9 +412,16 @@ def _tools_cfg() -> dict:
     return tool_store.effective()
 
 
-# Distinct overlay colours cycled across a program's operations (M7.11).
-_TOOLPATH_COLORS = ["#e0563b", "#3b86e0", "#3aa33a", "#c79a2b",
-                    "#9b59b6", "#16a085", "#e08c3b", "#d6477f"]
+def _apply_appearance_prefs(prefs: dict) -> None:
+    """Push the persisted Appearance prefs into the theme module (startup and
+    Preferences-OK): viewport preset, 3D light rig, model surface color, and
+    the toolpath-overlay palette. Surfaces re-pull on their next refresh."""
+    vp = prefs.get("viewport") or {}
+    theme.apply_viewport(vp.get("preset", "auto"), vp.get("custom_bg"))
+    r3 = prefs.get("render3d") or {}
+    theme.set_lighting(r3)
+    theme.set_mesh_color(r3.get("model_color") or None)
+    theme.set_toolpath_palette(prefs.get("toolpath_palette"))
 
 
 def _op_overlay(ops) -> list[dict]:
@@ -806,7 +814,18 @@ class GCodeWorker(_ProgressWorker):
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
         rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+        # The ops live in the BLANK frame (snapped); back-project the overlay into
+        # the design frame so it draws on the part in the 2D view (2026-07-09).
         self.op_overlay = _op_overlay(ops)
+        if temple.snap_to_blank_end:
+            from guildmodel.core.relief.flat import temple_snap_transform
+            flipped, sdx, sdy = temple_snap_transform(
+                self.outline, self.hinge_polys, temple.blank_length_mm,
+                stock_side=temple.stock_side, snap=True)
+            sgn = -1.0 if flipped else 1.0
+            for entry in self.op_overlay:
+                entry["paths"] = [[(sgn * (x - sdx), sgn * (y - sdy)) for x, y in path]
+                                  for path in entry["paths"]]
 
         summary = ("Temple program (engrave + profile) generated and stored in the "
                    "project.\nSave the project (Ctrl+S) or File ▸ Export G-code for a "
@@ -940,7 +959,15 @@ class GCodeWorker(_ProgressWorker):
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
         rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+        # Block ops are centred on the origin (center_on_origin); shift the overlay
+        # back onto the lens as drawn so it lands on the part in the 2D view.
         self.op_overlay = _op_overlay(ops)
+        if self.block_lens is not None:
+            bx0, by0, bx1, by1 = self.block_lens.bounds
+            bcx, bcy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+            for entry in self.op_overlay:
+                entry["paths"] = [[(x + bcx, y + bcy) for x, y in path]
+                                  for path in entry["paths"]]
 
         summary = ("Base-curve forming block (drill + forming scribe + profile) "
                    "generated and stored in the project.\nSave the project (Ctrl+S) "
@@ -1496,7 +1523,9 @@ class NestWorker(_ProgressWorker):
             from guildmodel.core.cam.temple_ops import (
                 TEMPLE_CONTOUR_OPS, generate_temple_program,
             )
-            from guildmodel.core.cam.layout import BedPart, nest_components_on_worktable
+            from guildmodel.core.cam.layout import (
+                BedPart, default_nest_rotation, nest_components_on_worktable,
+            )
             from guildmodel.core.relief.castle import build_castle_relief
 
             cam = self.cam_params or CastleCamParams()
@@ -1527,12 +1556,24 @@ class NestWorker(_ProgressWorker):
                         snap=t.snap_to_blank_end)
                     ops = generate_temple_program(
                         t_outline, t_eng, t, tools, cam, hinge_polys=t_hinge)
+                    # A snapped temple's ops live in its blank frame: place blank
+                    # centre → zone centre so the core end stays registered against
+                    # the zone end, matching how the blank slides into its slot.
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
-                                         set(TEMPLE_CONTOUR_OPS), set()))
+                                         set(TEMPLE_CONTOUR_OPS), set(),
+                                         place_by_origin=t.snap_to_blank_end))
                 else:  # block
                     ops = generate_block_program(spec["lens"], spec["block"], tools, cam)
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                          set(BLOCK_CONTOUR_OPS), set(BLOCK_DRILL_OPS)))
+            # Seed each part's bed orientation (an UN-snapped temple_left flips 180°
+            # to face the right temple); the maker then rotates any placement freely
+            # (M-UX). A snapped temple's orientation is authoritative — stock_side
+            # already faced its core end, and a default spin would break the
+            # core-aligned loading the snap exists for.
+            for part in parts:
+                if not part.place_by_origin:
+                    part.rotation_deg = default_nest_rotation(part.kind)
             self._progress("Nesting onto the bed", 0.95)
             self.finished.emit(nest_components_on_worktable(parts, self.worktable))
         except _Cancelled:
@@ -1720,12 +1761,9 @@ class PrefsDialog(QDialog):
         gen_scroll.setWidget(gen_inner)
         tabs.addTab(gen_scroll, "General")
 
-        # Appearance
-        app_box = QGroupBox("Appearance")
+        # Startup (dark mode + the rest of the look moved to the Appearance tab)
+        app_box = QGroupBox("Startup")
         app_form = QFormLayout(app_box)
-        self._dark_check = QCheckBox("Enable dark mode")
-        self._dark_check.setChecked(prefs["dark_mode"])
-        app_form.addRow(self._dark_check)
         self._log_check = QCheckBox("Show log panel on startup")
         self._log_check.setChecked(prefs["show_log_on_start"])
         self._log_check.setToolTip(
@@ -1773,13 +1811,17 @@ class PrefsDialog(QDialog):
 
         gen_lay.addStretch()
 
-        # ── Tab 1 — Materials ─────────────────────────────────────────────
+        # ── Tab 1 — Appearance (mode / viewport / 3D render / toolpaths) ───
+        # Must precede the Tools tab: its ToolView preview reads _dark_check.
+        self._build_appearance_tab(tabs, prefs)
+
+        # ── Tab 2 — Materials ─────────────────────────────────────────────
         self._build_materials_tab(tabs)
 
-        # ── Tab 2 — Tools (the editable tool library, BUILDPLAN M7.8) ──────
+        # ── Tab 3 — Tools (the editable tool library, BUILDPLAN M7.8) ──────
         self._build_tools_tab(tabs)
 
-        # ── Tabs 3–4 — Hotkeys + Toolbar (customization, BUILDPLAN M7.15) ──
+        # ── Tabs 4–5 — Hotkeys + Toolbar (customization, BUILDPLAN M7.15) ──
         self._action_specs = list(getattr(parent, "_action_specs", []))
         self._hotkey_overrides = dict(prefs.get("hotkeys", {}))
         self._saved_toolbar = list(prefs.get("toolbar", []) or [])
@@ -1788,6 +1830,213 @@ class PrefsDialog(QDialog):
         if self._action_specs:
             self._build_hotkeys_tab(tabs)
             self._build_toolbar_tab(tabs)
+
+    # ── Appearance tab (viewport preset / 3D light rig / overlays) ────────
+
+    def _build_appearance_tab(self, tabs, prefs: dict) -> None:
+        ap_scroll = QScrollArea()
+        ap_scroll.setWidgetResizable(True)
+        ap_scroll.setFrameShape(ap_scroll.Shape.NoFrame)
+        ap_inner = QWidget()
+        ap_lay = QVBoxLayout(ap_inner)
+        ap_lay.setSpacing(12)
+        ap_lay.setContentsMargins(16, 16, 16, 8)
+        ap_scroll.setWidget(ap_inner)
+        tabs.addTab(ap_scroll, "Appearance")
+
+        mode_box = QGroupBox("Mode")
+        mode_form = QFormLayout(mode_box)
+        self._dark_check = QCheckBox("Enable dark mode")
+        self._dark_check.setChecked(prefs["dark_mode"])
+        mode_form.addRow(self._dark_check)
+        ap_lay.addWidget(mode_box)
+
+        # Viewport preset — GuildDraw's canvas themes, shared verbatim so the
+        # two apps feel like one product (theme.VIEWPORT_PRESETS).
+        vp = prefs.get("viewport") or {}
+        vp_box = QGroupBox("Viewport")
+        vp_form = QFormLayout(vp_box)
+        self._vp_choices = [
+            ("auto",      "Follow UI theme"),
+            ("parchment", "Parchment"),
+            ("dimmed",    "Dimmed"),
+            ("blueprint", "Blueprint"),
+            ("matte",     "Matte Dark"),
+            ("white",     "Plain White"),
+            ("custom",    "Custom…"),
+        ]
+        self._vp_combo = QComboBox()
+        for _key, label in self._vp_choices:
+            self._vp_combo.addItem(label)
+        cur_preset = vp.get("preset", "auto")
+        self._vp_combo.setCurrentIndex(next(
+            (i for i, (k, _l) in enumerate(self._vp_choices) if k == cur_preset),
+            0))
+        self._vp_combo.setToolTip(
+            "Backdrop + drawing ink for the 2D canvases and the 3D viewport,\n"
+            "independent of the UI mode. Follow UI theme = parchment in light\n"
+            "mode, matte in dark mode.")
+        self._vp_combo.currentIndexChanged.connect(self._on_vp_preset_changed)
+        vp_form.addRow("Canvas preset:", self._vp_combo)
+
+        self._vp_custom_color = vp.get("custom_bg") or "#faf6ee"
+        self._vp_color_btn = QPushButton("Canvas colour…")
+        self._vp_color_btn.setToolTip(
+            "Custom canvas colour; drawing ink is derived automatically.")
+        self._vp_color_btn.clicked.connect(self._pick_vp_color)
+        self._vp_color_btn.setEnabled(cur_preset == "custom")
+        self._update_vp_swatch()
+        vp_form.addRow("Custom:", self._vp_color_btn)
+        ap_lay.addWidget(vp_box)
+
+        # 3D render — light rig + key-light direction/strength + part colour.
+        r3 = prefs.get("render3d") or {}
+        r3_box = QGroupBox("3D render")
+        r3_form = QFormLayout(r3_box)
+        self._rig_choices = [
+            ("studio",      "Studio (soft, default)"),
+            ("directional", "Directional (dramatic)"),
+            ("flat",        "Flat (no shading)"),
+        ]
+        self._rig_combo = QComboBox()
+        for _key, label in self._rig_choices:
+            self._rig_combo.addItem(label)
+        cur_rig = r3.get("rig", "studio")
+        self._rig_combo.setCurrentIndex(next(
+            (i for i, (k, _l) in enumerate(self._rig_choices) if k == cur_rig),
+            0))
+        self._rig_combo.setToolTip(
+            "Studio adds a movable key light over VTK's soft light kit;\n"
+            "Directional keeps only the key light, for strong relief-reading\n"
+            "shadows; Flat renders unshaded silhouettes.")
+        self._rig_combo.currentIndexChanged.connect(self._on_rig_changed)
+        r3_form.addRow("Light rig:", self._rig_combo)
+
+        def _slider(lo: int, hi: int, val: float, fmt, tip: str):
+            row = QWidget()
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(8)
+            s = QSlider(Qt.Orientation.Horizontal)
+            s.setRange(lo, hi)
+            s.setValue(int(round(val)))
+            s.setToolTip(tip)
+            lbl = QLabel(fmt(s.value()))
+            lbl.setMinimumWidth(44)
+            s.valueChanged.connect(lambda v, f=fmt, l=lbl: l.setText(f(v)))
+            lay.addWidget(s, 1)
+            lay.addWidget(lbl)
+            return row, s
+
+        az_row, self._light_az = _slider(
+            -180, 180, float(r3.get("azimuth_deg", -27.0)),
+            lambda v: f"{v}°",
+            "Where the key light stands around the part\n"
+            "(0° = from the right, +X; 90° = from the back).")
+        el_row, self._light_el = _slider(
+            5, 90, float(r3.get("elevation_deg", 61.0)),
+            lambda v: f"{v}°",
+            "How high the key light sits above the table (90° = overhead).")
+        in_row, self._light_in = _slider(
+            0, 200, float(r3.get("intensity", 0.8)) * 100.0,
+            lambda v: f"{v}%",
+            "Key-light strength (the shipped default is 80%).")
+        r3_form.addRow("Light direction:", az_row)
+        r3_form.addRow("Light height:", el_row)
+        r3_form.addRow("Light intensity:", in_row)
+
+        self._model_color = str(r3.get("model_color") or "")
+        self._model_color_btn = QPushButton("Model colour…")
+        self._model_color_btn.setToolTip(
+            "Surface colour of the 3D part (default: the theme's amber\n"
+            "acetate look).")
+        self._model_color_btn.clicked.connect(self._pick_model_color)
+        mc_reset = QPushButton("Default")
+        mc_reset.setToolTip("Back to the theme's amber part colour.")
+        mc_reset.clicked.connect(self._reset_model_color)
+        mc_row = QWidget()
+        mc_lay = QHBoxLayout(mc_row)
+        mc_lay.setContentsMargins(0, 0, 0, 0)
+        mc_lay.setSpacing(8)
+        mc_lay.addWidget(self._model_color_btn, 1)
+        mc_lay.addWidget(mc_reset)
+        self._update_model_swatch()
+        r3_form.addRow("Model colour:", mc_row)
+        ap_lay.addWidget(r3_box)
+        self._on_rig_changed(self._rig_combo.currentIndex())
+
+        # Toolpath overlay palette (M7.11 overlay colours)
+        tp_box = QGroupBox("Toolpath overlay")
+        tp_form = QFormLayout(tp_box)
+        self._tp_choices = [
+            ("vivid", "Vivid (default)"),
+            ("soft",  "Soft"),
+            ("bold",  "Bold"),
+            ("mono",  "Monochrome blue"),
+        ]
+        self._tp_combo = QComboBox()
+        self._tp_combo.setIconSize(QSize(64, 12))
+        for key, label in self._tp_choices:
+            self._tp_combo.addItem(
+                self._palette_icon(theme.TOOLPATH_PALETTES[key]), label)
+        cur_tp = prefs.get("toolpath_palette", "vivid")
+        self._tp_combo.setCurrentIndex(next(
+            (i for i, (k, _l) in enumerate(self._tp_choices) if k == cur_tp),
+            0))
+        self._tp_combo.setToolTip(
+            "Colour set cycled across a program's operations on the 2D\n"
+            "toolpath overlay.")
+        tp_form.addRow("Path colours:", self._tp_combo)
+        ap_lay.addWidget(tp_box)
+
+        ap_lay.addStretch()
+
+    @staticmethod
+    def _palette_icon(colors: list[str]) -> QIcon:
+        pm = QPixmap(64, 12)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        w = 64 // len(colors)
+        for i, c in enumerate(colors):
+            p.fillRect(i * w, 0, w, 12, QColor(c))
+        p.end()
+        return QIcon(pm)
+
+    def _on_vp_preset_changed(self, idx: int) -> None:
+        self._vp_color_btn.setEnabled(self._vp_choices[idx][0] == "custom")
+
+    def _pick_vp_color(self) -> None:
+        c = QColorDialog.getColor(QColor(self._vp_custom_color), self,
+                                  "Canvas colour")
+        if c.isValid():
+            self._vp_custom_color = c.name()
+            self._update_vp_swatch()
+
+    def _update_vp_swatch(self) -> None:
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(self._vp_custom_color))
+        self._vp_color_btn.setIcon(QIcon(pm))
+
+    def _on_rig_changed(self, idx: int) -> None:
+        lit = self._rig_choices[idx][0] != "flat"
+        for s in (self._light_az, self._light_el, self._light_in):
+            s.setEnabled(lit)
+
+    def _pick_model_color(self) -> None:
+        current = self._model_color or theme.LIGHT.mesh_surface
+        c = QColorDialog.getColor(QColor(current), self, "Model surface colour")
+        if c.isValid():
+            self._model_color = c.name()
+            self._update_model_swatch()
+
+    def _reset_model_color(self) -> None:
+        self._model_color = ""
+        self._update_model_swatch()
+
+    def _update_model_swatch(self) -> None:
+        pm = QPixmap(16, 16)
+        pm.fill(QColor(self._model_color or theme.LIGHT.mesh_surface))
+        self._model_color_btn.setIcon(QIcon(pm))
 
     # ── Hotkeys tab (rebindable shortcuts, M7.15) ─────────────────────────
 
@@ -2306,6 +2555,19 @@ class PrefsDialog(QDialog):
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
             "last_output_dir": self._out_dir.text(),
+            # Appearance tab (viewport preset / 3D light rig / path palette)
+            "viewport": {
+                "preset": self._vp_choices[self._vp_combo.currentIndex()][0],
+                "custom_bg": self._vp_custom_color,
+            },
+            "render3d": {
+                "rig": self._rig_choices[self._rig_combo.currentIndex()][0],
+                "azimuth_deg": float(self._light_az.value()),
+                "elevation_deg": float(self._light_el.value()),
+                "intensity": round(self._light_in.value() / 100.0, 2),
+                "model_color": self._model_color,
+            },
+            "toolpath_palette": self._tp_choices[self._tp_combo.currentIndex()][0],
         }
         if self._hotkey_rows:                     # M7.15 — only genuine overrides
             out["hotkeys"] = self.hotkey_overrides()
@@ -2325,6 +2587,9 @@ class MainWindow(QMainWindow):
         # Persistent preferences (~/.guildmodel/prefs.json — GuildDraw pattern)
         self._prefs = prefs_mod.load()
         self._dark_mode = bool(self._prefs["dark_mode"])
+        # Appearance prefs go into the theme module before any surface is
+        # built, so the first paint already honors them.
+        _apply_appearance_prefs(self._prefs)
         self._recent_files: list[str] = [
             p for p in self._prefs.get("recent_files", []) if isinstance(p, str)
         ]
@@ -2391,6 +2656,7 @@ class MainWindow(QMainWindow):
         self._nest_specs = None           # build specs behind the nest (M7.7 bed sim)
         self._nest_thread = None
         self._nest_worker = None
+        self._selected_placement_zone = None   # zone id of the footprint being rotated (M-UX)
 
         # Active component's geometry (mirrors the active workspace)
         self._outline_poly = None
@@ -2545,11 +2811,14 @@ class MainWindow(QMainWindow):
         self.params = ParamsPanel()
         self._right_dock = QDockWidget("Parameters", self)
         self._right_dock.setObjectName("paramsDock")
-        # Context-aware sidebar: component params on a component tab, the worktable
-        # controls on the Worktable tab — both in the same dock (BUILDPLAN M7.12).
+        # Context-aware sidebar (BUILDPLAN M7.12 + UX pass): the dock follows both the
+        # active tab AND the active view. Component params on a component tab, the
+        # worktable controls on the Worktable tab, and a read-only cut verdict while
+        # the Simulation view is up — `_sync_dock_page` is the single authority.
         self._dock_stack = QStackedWidget()
         self._dock_stack.addWidget(self.params)              # 0 — component params
         self._dock_stack.addWidget(self._worktable_panel)    # 1 — worktable controls
+        self._dock_stack.addWidget(self._build_sim_panel())  # 2 — simulation verdict
         self._right_dock.setWidget(self._dock_stack)
         self._right_dock.setTitleBarWidget(QWidget())   # hide the title bar
         self._right_dock.setFeatures(
@@ -2642,6 +2911,7 @@ class MainWindow(QMainWindow):
         self.bed_canvas = BedCanvas()
         self.bed_canvas.region_clicked.connect(self._on_bed_region_clicked)
         self.bed_canvas.component_nudged.connect(self._on_component_nudged)
+        self.bed_canvas.component_selected.connect(self._on_bed_placement_selected)
         h.addWidget(self.bed_canvas, 1)
 
         # The worktable controls live in the right dock (the sidebar), so they're
@@ -2734,6 +3004,47 @@ class MainWindow(QMainWindow):
         self._bed_nest_status.setWordWrap(True)
         v.addWidget(self._bed_nest_status)
 
+        # Rotate a placed component (M-UX): click a footprint on the bed to select it,
+        # then spin it — e.g. face the left temple to the right, or orient both temples
+        # for slotted loading. The rotated part posts directly into the worktable.nc.
+        v.addSpacing(8)
+        rot_title = QLabel("Rotate placement")
+        rot_title.setObjectName("sectionTitle")
+        v.addWidget(rot_title)
+        self._bed_sel_label = QLabel("Click a component footprint on the bed to select it.")
+        self._bed_sel_label.setObjectName("mutedSmallLabel")
+        self._bed_sel_label.setWordWrap(True)
+        v.addWidget(self._bed_sel_label)
+
+        rot_row = QHBoxLayout()
+        self._bed_rot_ccw = QPushButton("⟲ 90°")
+        self._bed_rot_cw = QPushButton("⟳ 90°")
+        self._bed_rot_180 = QPushButton("180°")
+        self._bed_rot_ccw.setToolTip("Rotate the selected component 90° counter-clockwise.")
+        self._bed_rot_cw.setToolTip("Rotate the selected component 90° clockwise.")
+        self._bed_rot_180.setToolTip("Flip the selected component 180°.")
+        self._bed_rot_ccw.clicked.connect(lambda: self._rotate_selected_placement(-90.0))
+        self._bed_rot_cw.clicked.connect(lambda: self._rotate_selected_placement(90.0))
+        self._bed_rot_180.clicked.connect(lambda: self._rotate_selected_placement(180.0))
+        for b in (self._bed_rot_ccw, self._bed_rot_cw, self._bed_rot_180):
+            rot_row.addWidget(b)
+        v.addLayout(rot_row)
+
+        ang_row = QHBoxLayout()
+        ang_row.addWidget(QLabel("Angle:"))
+        self._bed_rot_spin = QDoubleSpinBox()
+        self._bed_rot_spin.setRange(0.0, 359.9)
+        self._bed_rot_spin.setDecimals(1)
+        self._bed_rot_spin.setSingleStep(5.0)
+        self._bed_rot_spin.setWrapping(True)
+        self._bed_rot_spin.setSuffix(" °")
+        self._bed_rot_spin.setToolTip(
+            "Set the selected component's absolute rotation on the bed.")
+        self._bed_rot_spin.editingFinished.connect(self._on_bed_rot_spin)
+        ang_row.addWidget(self._bed_rot_spin)
+        v.addLayout(ang_row)
+        self._set_rotation_controls_enabled(False)
+
         self._bed_gen_btn = QPushButton("Generate Worktable Program")
         self._bed_gen_btn.setToolTip(
             "Post the whole nested bed as one worktable.nc.")
@@ -2779,8 +3090,8 @@ class MainWindow(QMainWindow):
         self._refresh_worktable_panel()
         if self._nest is not None:                 # re-show a prior nest (M7.6)
             self._refresh_nest_render()
-        self._dock_stack.setCurrentIndex(1)       # worktable controls in the sidebar
         self._right_dock.setVisible(self._act_sidebar.isChecked())
+        # The dock page (→ worktable controls) is set by _switch_view / _sync_dock_page.
         self._switch_view(self._current_view)     # bed canvas, or the bed sim if cached
         self._refresh_inspector()                 # show the bed's diagnostics (M7.14)
         self.status_lbl.setText(f"Worktable — {self._worktable.display_name}")
@@ -2950,6 +3261,12 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(
             "Bed nested — " + ("all clear" if not all_viol
                                else f"{len(all_viol)} keep-out collision(s)"))
+        # Keep the selection valid (its placement may be gone after a re-nest), reflect
+        # it on the canvas, and update the rotate controls. The app owns the selection.
+        if self._selected_placement() is None:
+            self._selected_placement_zone = None
+        self.bed_canvas.set_selected_placement(self._selected_placement_zone)
+        self._sync_rotation_controls()
 
     def _on_component_nudged(self, zone_id: str, dx: float, dy: float) -> None:
         """A footprint was dragged on the bed — shift its placement and re-check
@@ -2961,6 +3278,62 @@ class MainWindow(QMainWindow):
                 pl.nudge(dx, dy)
                 break
         self._refresh_nest_render()
+
+    # ---- rotate a placed component (M-UX) ----------------------------------
+
+    def _selected_placement(self):
+        """The nest placement currently selected on the bed, or None."""
+        if self._nest is None or not self._selected_placement_zone:
+            return None
+        for pl in self._nest.placements:
+            if pl.zone_id == self._selected_placement_zone:
+                return pl
+        return None
+
+    def _set_rotation_controls_enabled(self, on: bool) -> None:
+        for w in (self._bed_rot_ccw, self._bed_rot_cw, self._bed_rot_180,
+                  self._bed_rot_spin):
+            w.setEnabled(on)
+
+    def _sync_rotation_controls(self) -> None:
+        """Reflect the selected placement on the rotate controls (label + angle)."""
+        if not hasattr(self, "_bed_sel_label"):
+            return
+        pl = self._selected_placement()
+        if pl is None:
+            self._bed_sel_label.setText(
+                "Click a component footprint on the bed to select it.")
+            self._set_rotation_controls_enabled(False)
+            return
+        self._set_rotation_controls_enabled(True)
+        self._bed_sel_label.setText(f"Selected: {pl.label}  ·  {pl.rotation_deg:.0f}°")
+        self._bed_rot_spin.blockSignals(True)
+        self._bed_rot_spin.setValue(pl.rotation_deg % 360.0)
+        self._bed_rot_spin.blockSignals(False)
+
+    def _on_bed_placement_selected(self, zone_id: str) -> None:
+        """A footprint was clicked on the bed — target the rotate controls at it."""
+        self._selected_placement_zone = zone_id or None
+        self._sync_rotation_controls()
+
+    def _rotate_selected_placement(self, ddeg: float) -> None:
+        """Rotate the selected placement by `ddeg` about its centre, then re-render +
+        re-check clearance (no program regeneration — the placed ops carry the spin)."""
+        pl = self._selected_placement()
+        if pl is None:
+            return
+        pl.rotate(ddeg)
+        self._refresh_nest_render()          # re-extract footprints + re-check clearance
+        self.append_log(f"[nest] Rotated {pl.label} to {pl.rotation_deg:.0f}°.")
+
+    def _on_bed_rot_spin(self) -> None:
+        """The absolute-angle spinbox was edited — rotate to that bed angle."""
+        pl = self._selected_placement()
+        if pl is None:
+            return
+        delta = float(self._bed_rot_spin.value()) - pl.rotation_deg
+        if abs(delta) > 1e-6:
+            self._rotate_selected_placement(delta)
 
     def _bed_safe_z(self, cam) -> float:
         """Safe rapid height above the tallest obstacle on the bed — the tallest
@@ -3477,7 +3850,9 @@ class MainWindow(QMainWindow):
             (self._act_view3d, "view-3d"),
             (self._act_simulate, "sim-cut"),
             (self._act_measure, "measure"),
-            (self._act_show_worktable, "op-fit"),
+            # Worktable is reached via its own component tab (and View ▸ Worktable /
+            # Ctrl+B); it deliberately has no toolbar icon, so if the maker adds it to
+            # the toolbar it reads as a text label rather than a second Fit magnifier.
             (self._act_fit, "op-fit"),
             (self._act_log, "toggle-log"),
             (self._act_toolpaths, "toggle-toolpaths"),
@@ -3562,11 +3937,11 @@ class MainWindow(QMainWindow):
             ("simulate", self._act_simulate, "Simulation", "view", True),
             ("measure", self._act_measure, "Measure", "view", True),
             ("show_worktable", self._act_show_worktable, "Worktable", "view", False),
-            ("fit", self._act_fit, "Fit to View", "util", True),
-            ("log", self._act_log, "Log Panel", "util", True),
-            ("toolpaths", self._act_toolpaths, "Toolpaths Panel", "util", True),
-            ("inspector", self._act_inspector, "Inspector Panel", "util", True),
-            ("sidebar", self._act_sidebar, "Parameters Panel", "util", True),
+            ("fit", self._act_fit, "Fit to View", "view", True),
+            ("log", self._act_log, "Log Panel", "panels", True),
+            ("toolpaths", self._act_toolpaths, "Toolpaths Panel", "panels", True),
+            ("inspector", self._act_inspector, "Inspector Panel", "panels", True),
+            ("sidebar", self._act_sidebar, "Parameters Panel", "panels", True),
         ]
         self._actions_by_key = {key: act for key, act, *_ in rows}
         self._action_specs = [
@@ -3900,6 +4275,9 @@ class MainWindow(QMainWindow):
             return
         p = dlg.to_prefs()
         old_preview_res = self._prefs["preview_resolution_mm"]
+        appearance_changed = any(
+            p.get(k) != self._prefs.get(k)
+            for k in ("viewport", "render3d", "toolpath_palette"))
         self._prefs.update(p)
         prefs_mod.save(self._prefs)
 
@@ -3913,9 +4291,19 @@ class MainWindow(QMainWindow):
         # tool combo so new/edited tools appear without a restart (M7.8).
         self.params.refresh_tool_lists()
 
+        # Appearance (viewport preset / light rig / model color / path palette):
+        # push into the theme module, then refresh every surface. A dark-mode
+        # flip refreshes them anyway; otherwise re-apply the current mode.
+        if appearance_changed:
+            _apply_appearance_prefs(self._prefs)
         if p["dark_mode"] != self._dark_mode:
             self._act_dark.setChecked(p["dark_mode"])
             self._apply_dark_mode(p["dark_mode"])
+        elif appearance_changed:
+            self._apply_dark_mode(self._dark_mode)
+        if appearance_changed:
+            self._recolor_toolpath_table(
+                self.canvas.recolor_toolpaths(theme.toolpath_colors()))
         if p["preview_resolution_mm"] != old_preview_res:
             # Cached stage meshes were built at the old resolution.
             self._stage_cache.clear()
@@ -3968,6 +4356,87 @@ class MainWindow(QMainWindow):
     def _bed_sim_enabled(self) -> bool:
         return self._nest is not None and bool(self._nest.placements)
 
+    # ------------------------------------------------ view-aware sidebar (UX pass)
+
+    def _build_sim_panel(self) -> QWidget:
+        """The dock's Simulation page — shown while the Simulation view is active on a
+        component (BUILDPLAN UX pass — view-aware sidebar). A read-only cut verdict so
+        the result sits where the maker's eyes already are, plus a re-run and a scrub
+        hint; the editable parameters return the moment they switch back to 2D / 3D."""
+        page = QWidget()
+        page.setObjectName("simPanel")
+        v = QVBoxLayout(page)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(8)
+
+        title = QLabel("Simulation")
+        title.setObjectName("sectionTitle")
+        v.addWidget(title)
+
+        self._sim_verdict_lbl = QLabel("No cut simulated yet.")
+        self._sim_verdict_lbl.setWordWrap(True)
+        v.addWidget(self._sim_verdict_lbl)
+
+        self._sim_summary_lbl = QLabel("")
+        self._sim_summary_lbl.setObjectName("smallLabel")
+        self._sim_summary_lbl.setWordWrap(True)
+        v.addWidget(self._sim_summary_lbl)
+
+        v.addSpacing(6)
+        self._sim_rerun_btn = QPushButton("Re-run simulation")
+        self._sim_rerun_btn.setToolTip("Re-simulate the cut for the active component.")
+        self._sim_rerun_btn.clicked.connect(lambda: self._switch_view(2, run=True))
+        v.addWidget(self._sim_rerun_btn)
+
+        hint = QLabel("Use the ▶ play control below the view to scrub the cut "
+                      "op by op. Warnings are listed in the Inspector.")
+        hint.setObjectName("mutedSmallLabel")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        v.addStretch(1)
+        return page
+
+    def _update_sim_panel(self) -> None:
+        """Fill the Simulation dock page from the active component's cut report."""
+        if getattr(self, "_sim_verdict_lbl", None) is None:
+            return
+        report = self._active_sim_report
+        if report is None:
+            self._sim_verdict_lbl.setText("No cut simulated yet — press Re-run.")
+            self._sim_verdict_lbl.setStyleSheet("font-weight: 700;")
+            self._sim_summary_lbl.setText("")
+            return
+        try:
+            status = report.status()
+            lines = report.summary_lines()
+        except Exception:               # a shape without the CutReport helpers
+            self._sim_verdict_lbl.setText("Cut simulated.")
+            self._sim_verdict_lbl.setStyleSheet("font-weight: 700;")
+            self._sim_summary_lbl.setText("")
+            return
+        text, color = {
+            "ok": ("✓ Cut verified", "#3a8c3a"),
+            "warn": ("⚠ Cut needs attention", "#c08a00"),
+            "fail": ("✗ Cut incomplete", "#c0392b"),
+        }.get(status, ("Cut result", ""))
+        self._sim_verdict_lbl.setText(text)
+        self._sim_verdict_lbl.setStyleSheet(
+            f"font-weight: 700; color: {color};" if color else "font-weight: 700;")
+        self._sim_summary_lbl.setText("\n".join(lines))
+
+    def _sync_dock_page(self) -> None:
+        """Point the right dock at the page matching the active tab + view (UX pass —
+        view-aware sidebar): worktable controls on the bed, the Simulation verdict in
+        Sim view, else the component parameters. The single authority for the dock
+        page, called at the end of every `_switch_view`."""
+        if self._on_worktable_tab():
+            self._dock_stack.setCurrentIndex(1)
+        elif self._current_view == 2:
+            self._update_sim_panel()
+            self._dock_stack.setCurrentIndex(2)
+        else:
+            self._dock_stack.setCurrentIndex(0)
+
     def _switch_view(self, view: int, *, run: bool = False) -> None:
         """Single source of truth for the central view. Renders `view`
         (0 = 2D, 1 = 3D, 2 = Sim) for the ACTIVE tab and always re-pushes that tab's
@@ -4000,6 +4469,7 @@ class MainWindow(QMainWindow):
                 view = 0
                 self.stack.setCurrentIndex(0)
         self._current_view = view
+        self._sync_dock_page()            # dock follows the view (view-aware sidebar)
         self._update_view_toggles()
 
     def _update_view_toggles(self) -> None:
@@ -4262,8 +4732,8 @@ class MainWindow(QMainWindow):
         ws = self._workspaces[index]
         self._load_active_geometry(ws)
         self._apply_workspace_to_ui(ws)
-        # Component params in the sidebar; honour the user's sidebar toggle.
-        self._dock_stack.setCurrentIndex(0)
+        # The dock PAGE is chosen by _switch_view (called from _apply_workspace_to_ui)
+        # so it follows the active view; here we only honour the sidebar toggle.
         self._right_dock.setVisible(self._act_sidebar.isChecked())
         if self.component_tabs.currentIndex() != index:
             self.component_tabs.blockSignals(True)
@@ -4678,14 +5148,25 @@ class MainWindow(QMainWindow):
 
     def _on_cam_changed(self) -> None:
         """Persist the CAM tab (material / machine / tool / strategy / feeds).
-        CAM params do not affect the 3D preview, so no rebuild is triggered."""
+
+        A frame's CAM params don't change its model, so no rebuild — but a flat part
+        (temple / base-curve block) puts its GEOMETRY on its own kind tab (blank size,
+        the blank-end snap + stock side, engrave depth, holes), and those controls also
+        fire cam_changed. They DO change the solid, so the flat preview must rebuild
+        live — otherwise toggling e.g. 'Snap to blank end' looks like it does nothing."""
         # Feeds/tool/strategy changes invalidate any stored program (M5.2).
         self._invalidate_program()
+        if self._active_is_flat():
+            self._update_stock_canvas()      # blank box follows size / snap / side
         self._update_program_zero_marker()   # 2D datum marker may have moved
         # Live-update the 3D datum triad too (no camera reset) when viewing 3D.
         if self.stack.currentIndex() == 1:
             zero, stock_z = self._active_program_zero_3d()
             self.view3d.set_program_zero(zero, stock_z)
+            # A flat part's geometry rides cam_changed → rebuild its preview (debounced;
+            # the worker reads the live temple/block params, snap included).
+            if self._active_is_flat():
+                self._rebuild_timer.start()
         try:
             self._prefs["cam_params"] = self.params.cam_params().model_dump()
             self._prefs["material_name"] = self.params.material_name()
@@ -4693,10 +5174,36 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _temple_snap_frame(self):
+        """The active temple's design→blank-frame snap transform ``(flipped, dx, dy)``
+        (a design point q lands on the blank at ``(−q if flipped else q) + (dx, dy)``),
+        or None when the active part is not a snapped temple. Drives the 2D
+        back-projection: blank box, datum marker and toolpath overlay draw in the
+        DESIGN frame exactly where the cut lands on the blank."""
+        if not self._is_temple or self._outline_poly is None:
+            return None
+        t = self.params.temple_params()
+        if not t.snap_to_blank_end:
+            return None
+        from guildmodel.core.relief.flat import temple_snap_transform
+        return temple_snap_transform(
+            self._outline_poly, self._hinge_polys, t.blank_length_mm,
+            stock_side=t.stock_side, snap=True)
+
+    @staticmethod
+    def _snap_to_design(q, frame):
+        """Map a blank-frame XY point back into the design frame (see
+        `_temple_snap_frame`): p = ±(q − (dx, dy))."""
+        flipped, dx, dy = frame
+        x, y = q[0] - dx, q[1] - dy
+        return (-x, -y) if flipped else (x, y)
+
     def _update_stock_canvas(self) -> None:
         # Flat parts (temple / base-curve block): a single-level blank framed around
         # the part (the temple's 170×30 blank, the block's 70×70 blank) — not the
-        # frame's two-level stock (BUILDPLAN M7 UX fix).
+        # frame's two-level stock (BUILDPLAN M7 UX fix). A SNAPPED temple's blank
+        # draws where the blank really sits relative to the drawing (the butt end
+        # flush on its short edge), via the inverse snap transform.
         if self._active_is_flat():
             if self._is_temple:
                 s = self.params.temple_params().stock()
@@ -4704,10 +5211,14 @@ class MainWindow(QMainWindow):
             else:
                 s = self.params.block_params().stock()
                 geom = self._lens_od
-            cx, cy = 0.0, 0.0
-            if geom is not None:
-                x0, y0, x1, y1 = geom.bounds
-                cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            frame = self._temple_snap_frame()
+            if frame is not None:
+                cx, cy = self._snap_to_design((0.0, 0.0), frame)  # the blank centre
+            else:
+                cx, cy = 0.0, 0.0
+                if geom is not None:
+                    x0, y0, x1, y1 = geom.bounds
+                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
             hl, hw = s.blank_length_mm / 2.0, s.blank_width_mm / 2.0
             self.canvas.set_stock([(cx - hl, cy - hw, cx + hl, cy + hw)])
             self._update_program_zero_marker()
@@ -4729,8 +5240,28 @@ class MainWindow(QMainWindow):
     def _update_program_zero_marker(self) -> None:
         """Draw the G54 datum where posted (0,0) lands in the design frame
         (= -work_offset): the stock-box datum, or the design origin in fixture
-        mode (BUILDPLAN M6.2). The marker is a frame concern — cleared for flat parts."""
-        if self._active_is_flat() or self._outline_poly is None:
+        mode (BUILDPLAN M6.2). Flat parts draw it too (2026-07-09): a snapped
+        temple back-projects the blank-frame datum through the inverse snap, a
+        block offsets it by the lens centre its CAM frame is centred on."""
+        if self._active_is_flat():
+            pz = self.params.cam_params().program_zero
+            label = pz.label()
+            stock = self._flat_stock()
+            q = pz.datum_world(stock)
+            if self._is_temple:
+                frame = self._temple_snap_frame()
+                if frame is None:      # un-snapped temple: the datum frame is ambiguous
+                    self.canvas.set_program_zero(None)
+                    return
+                self.canvas.set_program_zero(self._snap_to_design(q, frame), label)
+            else:
+                cx, cy = 0.0, 0.0
+                if self._lens_od is not None:
+                    x0, y0, x1, y1 = self._lens_od.bounds
+                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                self.canvas.set_program_zero((q[0] + cx, q[1] + cy), label)
+            return
+        if self._outline_poly is None:
             self.canvas.set_program_zero(None)
             return
         s = self.params.castle_params().stock
@@ -5007,6 +5538,7 @@ class MainWindow(QMainWindow):
         self._active_sim_removal = plan
         self._diag_cut_report = report            # feed cut completeness/gouge to M7.14
         self._refresh_inspector()
+        self._update_sim_panel()                  # fill the dock's Simulation verdict
         self.view3d.show_report(report)           # badge + (bed) floor sheet fallback
         self.view3d.set_plan(plan)                # volumetric block, carved along the path
         self._update_view_toggles()
@@ -5207,8 +5739,9 @@ class MainWindow(QMainWindow):
     def _show_toolpath_overlay(self, overlay: list, rows: list) -> None:
         """Colour the program's ops, draw them over the 2D design, and fill the
         toolpath inspector (BUILDPLAN M7.11)."""
+        colors = theme.toolpath_colors()
         for i, op in enumerate(overlay):
-            op["color"] = _TOOLPATH_COLORS[i % len(_TOOLPATH_COLORS)]
+            op["color"] = colors[i % len(colors)]
         self.canvas.set_toolpaths(overlay)
         self._populate_toolpath_inspector(rows, overlay)
         self._toolpath_dock.setVisible(True)
@@ -5250,6 +5783,18 @@ class MainWindow(QMainWindow):
         self._toolpath_dock.setWindowTitle(
             f"Toolpaths — {len(rows)} ops · {total_len / 1000.0:.2f} m · "
             f"{total_min:.1f} min")
+
+    def _recolor_toolpath_table(self, color_by: dict[str, str]) -> None:
+        """Follow a toolpath-palette change onto the inspector's op names
+        (Preferences ▸ Appearance); no-op while no program is shown."""
+        t = getattr(self, "_toolpath_table", None)
+        if t is None or not color_by:
+            return
+        for r in range(t.rowCount()):
+            it = t.item(r, 0)
+            name = it.data(Qt.ItemDataRole.UserRole) if it else None
+            if name and color_by.get(name):
+                it.setForeground(QColor(color_by[name]))
 
     def _on_toolpath_item_changed(self, item) -> None:
         if item.column() != 0:

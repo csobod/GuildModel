@@ -10,7 +10,10 @@ A temple is a flat acetate blank — no castle relief. It gets, in cut order:
      depth below the top face, cut with a small tool (engraving bit) while the
      part is still held in the full blank.
   3. **Temple Profile** — the OUTLINE through-cut with an onion skin (exactly the
-     perimeter strategy), cut last to release the part, with the bulk tool.
+     perimeter strategy), cut last to release the part, with the bulk tool. On a
+     blank-end-snapped temple the profile is CLIPPED at the blank end
+     (`clip_op_at_blank_end`): the butt sits flush on the blank's short edge with
+     the injected metal core running to it, so the pass never crosses that end.
 
 The ops carry different tools, so the program posts a tool change between each
 (the multi-tool machinery from BUILDPLAN M6.1). All ride the same GRBL post and
@@ -84,6 +87,73 @@ def temple_profile_op(
     return op
 
 
+def clip_op_at_blank_end(op: CamOp, blank_length_mm: float,
+                         stock_side: str = "right") -> CamOp:
+    """Open the profile at the snapped blank end so the tool never crosses the
+    injected metal core (BUILDPLAN 2026-07-09 core-safe profile).
+
+    A snapped temple's butt end sits flush on the blank's short edge, and the metal
+    core runs to that edge — a closed profile lap would drag the cutter straight
+    across it and dull the tool. Clip every pass at the blank-end plane
+    (x = +L/2 for ``stock_side`` "right", −L/2 for "left"): each closed ring becomes
+    an open polyline that stops at the blank edge on either side of the butt and
+    skips the crossing entirely (the part stays attached to the off-blank end; there
+    is no stock past the edge to release). Crossing points are interpolated onto the
+    plane, and the ring seam is re-joined so each pass stays one continuous cut.
+    The post feeds open paths with a plain plunge (no ramp), which is one stepdown
+    deep at most — the same entry every drill / engrave pass uses."""
+    half = blank_length_mm / 2.0
+    sign = -1.0 if stock_side == "left" else 1.0
+    eps = 1e-9
+
+    def inside(p) -> bool:                       # tool CENTER never past the blank end
+        return sign * p[0] <= half + eps
+
+    def cross(a, b):
+        """The point where segment a→b meets the blank-end plane."""
+        t = (half - sign * a[0]) / (sign * (b[0] - a[0]))
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t)
+
+    clipped = CamOp(op.name, tool=op.tool)
+    for path in op.paths:
+        pts = list(path)
+        if len(pts) < 2:
+            continue
+        if all(inside(p) for p in pts):          # nothing to clip on this pass
+            clipped.paths.append(pts)
+            continue
+        closed = (len(pts) >= 4 and abs(pts[0][0] - pts[-1][0]) < eps
+                  and abs(pts[0][1] - pts[-1][1]) < eps)
+        if closed:
+            pts = pts[:-1]                       # walk the cycle; edges wrap below
+        n = len(pts)
+        edges = n if closed else n - 1
+        segs: list[list] = []
+        cur: list = [pts[0]] if inside(pts[0]) else []
+        for k in range(edges):
+            a, b = pts[k], pts[(k + 1) % n]
+            ain, bin_ = inside(a), inside(b)
+            if ain and bin_:
+                cur.append(b)
+            elif ain and not bin_:               # leaving: end the segment on the plane
+                cur.append(cross(a, b))
+                segs.append(cur)
+                cur = []
+            elif not ain and bin_:               # re-entering: start on the plane
+                cur = [cross(a, b), b]
+        if cur:
+            segs.append(cur)
+        # A cycle walk that started inside split one physical segment across the
+        # seam — the last runs into the first; rejoin them into one continuous cut.
+        if closed and len(segs) >= 2 and inside(pts[0]):
+            segs = [segs[-1] + segs[0][1:]] + segs[1:-1]
+        for seg in segs:
+            if len(seg) >= 2:
+                clipped.paths.append(seg)
+    return clipped
+
+
 def generate_temple_program(
     outline: Polygon,
     engraving_curves: list[list[tuple[float, float]]],
@@ -123,7 +193,14 @@ def generate_temple_program(
     if engraving_curves:
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
                               params.simplify_tol_mm))
-    ops.append(temple_profile_op(
+    profile = temple_profile_op(
         outline, profile_tool, temple.hand_finishing_allowance_mm,
-        top_z, skin_z, params))
+        top_z, skin_z, params)
+    if temple.snap_to_blank_end:
+        # The butt end sits flush on the blank's short edge with the metal core
+        # running to it — never drag the profile across it (core-safe profile).
+        profile = clip_op_at_blank_end(
+            profile, temple.blank_length_mm, temple.stock_side)
+    if profile.paths:
+        ops.append(profile)
     return ops

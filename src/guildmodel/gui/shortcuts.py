@@ -19,7 +19,7 @@ class ActionSpec:
     key: str
     label: str
     default_shortcut: str
-    group: str               # "input" | "build" | "view" | "util" — toolbar grouping
+    group: str               # "input" | "build" | "view" | "panels" — toolbar grouping
     toolbar_default: bool
 
 

@@ -1,15 +1,23 @@
 """Right-dock parameter panel — a tabbed container (BUILDPLAN M4.6 Part A).
 
-``ParamsPanel`` is a ``QTabWidget`` with four tabs, each its own scroll area
-(no fixed width, no horizontal clipping):
+``ParamsPanel`` is a ``QTabWidget`` whose tabs are shown per active component
+kind (``set_component_kind``), each its own scroll area (no fixed width, no
+horizontal clipping):
 
-  * **Frame**  — file identity, raw layer summary, layer-visibility checks,
-                 Boxing read-outs (ISO 8624);
-  * **Castle** — the parametric castle (Towers / Walls / Footing) + the Zones
-                 inspector;
-  * **Stock**  — blank + pad block;
-  * **CAM**    — material, onion skin, hand-finishing allowance, and the
-                 no-SCULPT profile fallback.
+  * **Info**    — file identity, raw layer summary, layer-visibility checks, and
+                  (frame only) the Boxing read-outs (ISO 8624);
+  * **Castle**  — the parametric castle (Towers / Walls / Footing) + the Zones
+                  inspector (frame only);
+  * **Stock**   — blank + pad block (frame only);
+  * **Temple** / **Base Curve** — that component's own blank + tools;
+  * **Cut**     — the everyday cut choices: material, feeds & speeds, the
+                  chip-load check, and the hand-finishing allowances;
+  * **Machine** — set-once machine setup: controller, Program Zero, and (frame
+                  only) per-op tools, cut strategy and the no-SCULPT fallback.
+
+Info / Cut / Machine are universal; the rest are kind-specific. The everyday
+"Cut" and the setup "Machine" tabs are the old catch-all "CAM" tab, split so a
+bench optician's routine choices aren't buried under machine setup (UX pass).
 
 Castle vocabulary (towers / walls / footing) appears only in tab/group titles
 and labels — the teaching frame. Widget identifiers and the schema built by
@@ -105,7 +113,9 @@ class _ZoneList(QListWidget):
 
 
 class ParamsPanel(QTabWidget):
-    """Tabbed parameter panel (Frame / Castle / Stock / CAM)."""
+    """Tabbed parameter panel (Info / Model / Stock / Temple / Base Curve / Cut /
+    Machine), shown per component kind. The Model tab carries the castle
+    parameters (towers / walls / footing)."""
 
     # --- signals emitted when values change ---
     castle_changed = Signal()      # any zone height / footing / pocket depth
@@ -123,23 +133,40 @@ class ParamsPanel(QTabWidget):
         self._block_material = "acetal"
 
         # Each tab is an independently scrolling column; no fixed width so the
-        # Footing label + spinbox-pair rows never clip at the right edge. The
-        # Castle/Stock, Temple and Base Curve tabs are shown per active component
-        # kind (M7.3) — Frame + CAM apply to every component.
-        self._tab_frame = self.addTab(self._scroll_tab(self._build_frame_tab), "Frame")
-        self._tab_castle = self.addTab(self._scroll_tab(self._build_castle_tab), "Castle")
+        # Footing label + spinbox-pair rows never clip at the right edge. Tabs are
+        # shown per active component kind (set_component_kind): Info / Cut / Machine
+        # apply to every component; Model (castle) + Stock are frame-only, Temple
+        # and Base Curve their own. The old catch-all "CAM" tab split into the
+        # everyday "Cut" and the setup-once "Machine" (BUILDPLAN UX pass).
+        self._tab_info = self.addTab(self._scroll_tab(self._build_info_tab), "Info")
+        self._tab_castle = self.addTab(self._scroll_tab(self._build_castle_tab), "Model")
         self._tab_stock = self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
         self._tab_temple = self.addTab(self._scroll_tab(self._build_temple_tab), "Temple")
         self._tab_block = self.addTab(self._scroll_tab(self._build_block_tab), "Base Curve")
-        self._tab_cam = self.addTab(self._scroll_tab(self._build_cam_tab), "CAM")
+        self._tab_cut = self.addTab(self._scroll_tab(self._build_cut_tab), "Cut")
+        self._tab_machine = self.addTab(self._scroll_tab(self._build_machine_tab), "Machine")
+
+        # The material seed writes across the Cut tab (feeds) and the Machine tab
+        # (stepovers), and the chip read-out reads the Machine tab's tool — so both
+        # must run only after every tab's widgets exist.
+        self.apply_material_values(material_store.cam_values(self.material.currentText()))
+        self.cam_changed.connect(self._update_chip_readout)   # keep it live (M7.10)
+        self._update_chip_readout()
         self.set_component_kind(ComponentKind.FRAME_FRONT)
 
     # ------------------------------------------------------------ kind-aware tabs
 
+    # Layers that only exist on a frame front (a temple / base curve has no lens).
+    _LENS_ONLY_LAYERS = ("LENS", "BRIDGE", "SCULPT")
+
     def set_component_kind(self, kind) -> None:
-        """Show the tabs that apply to the active component's kind (M7.3):
-        Castle + Stock for a frame front, Temple for a temple, Base Curve for a
-        base-curve template; Frame + CAM are always shown."""
+        """Show only what applies to the active component's kind (M7.3 + UX pass).
+
+        Info / Cut / Machine are universal; Model + Stock are frame-only, Temple
+        and Base Curve their own. Inside the universal tabs the frame-lens-only
+        content also hides for a temple / base-curve component: the ISO-8624 boxing
+        and lens layers on Info, and the per-op tools / cut strategy / profile
+        fallback on Machine (those describe the frame's posterior toolpaths)."""
         kind = ComponentKind(kind)
         is_frame = kind == ComponentKind.FRAME_FRONT
         is_temple = kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
@@ -148,8 +175,16 @@ class ParamsPanel(QTabWidget):
         self.setTabVisible(self._tab_stock, is_frame)
         self.setTabVisible(self._tab_temple, is_temple)
         self.setTabVisible(self._tab_block, is_block)
+        # Frame-lens-only content inside the universal Info / Machine tabs.
+        self._boxing_group.setVisible(is_frame)
+        for layer in self._LENS_ONLY_LAYERS:
+            cb = self._layer_checks.get(layer)
+            if cb is not None:
+                cb.setVisible(is_frame)
+        for grp in (self._op_tools_group, self._strategy_group, self._fallback_group):
+            grp.setVisible(is_frame)
         if not self.isTabVisible(self.currentIndex()):
-            self.setCurrentIndex(self._tab_frame)
+            self.setCurrentIndex(self._tab_info)
 
     # ------------------------------------------------------------------ tab scaffold
 
@@ -170,12 +205,12 @@ class ParamsPanel(QTabWidget):
 
     # ------------------------------------------------------------------ Frame tab
 
-    def _build_frame_tab(self, lay: QVBoxLayout) -> None:
+    def _build_info_tab(self, lay: QVBoxLayout) -> None:
         self._build_file_group(lay)
         self._build_boxing_group(lay)
 
     def _build_file_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Frame")
+        grp = QGroupBox("File")
         glay = QVBoxLayout(grp)
 
         self.source_label = QLabel("No file loaded")
@@ -219,6 +254,9 @@ class ParamsPanel(QTabWidget):
 
     def _build_boxing_group(self, lay: QVBoxLayout) -> None:
         grp = QGroupBox("Boxing Dimensions  (ISO 8624)")
+        # Lens-only measurements — hidden on temple / base-curve components, which
+        # have no lens outline (set_component_kind).
+        self._boxing_group = grp
         glay = QVBoxLayout(grp)
 
         form = QFormLayout()
@@ -361,7 +399,7 @@ class ParamsPanel(QTabWidget):
         self._refresh_style_combo()
 
     def _build_castle_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Castle")
+        grp = QGroupBox("Model Properties")
         glay = QVBoxLayout(grp)
 
         # --- Towers: the high load-bearing masses ---
@@ -865,16 +903,27 @@ class ParamsPanel(QTabWidget):
             item.setData(Qt.ItemDataRole.UserRole, z.name)
             self.zone_list.addItem(item)
 
-    # ------------------------------------------------------------------ CAM tab
+    # ---------------------------------------------------------------- Cut tab
 
-    def _build_cam_tab(self, lay: QVBoxLayout) -> None:
-        self._build_machine_tool_group(lay)
-        self._build_program_zero_group(lay)
-        self._build_strategy_group(lay)
-        self._build_cam_group(lay)
-        # Keep the chip-load read-out live (M7.10): every CAM change re-derives it.
-        self.cam_changed.connect(self._update_chip_readout)
-        self._update_chip_readout()
+    def _build_cut_tab(self, lay: QVBoxLayout) -> None:
+        """Everyday cut controls — what the material dictates and the chip-load check.
+        Universal (every component kind); the old 'CAM' tab split into Cut + Machine
+        so the maker's routine choices aren't buried under machine setup (UX pass)."""
+        self._build_material_group(lay)      # material (leads) + allowances
+        self._build_feeds_group(lay)         # feeds & speeds, from the material
+        self._build_chip_group(lay)          # chip-load / surface-speed read-out
+
+    # ------------------------------------------------------------ Machine tab
+
+    def _build_machine_tab(self, lay: QVBoxLayout) -> None:
+        """Machine setup + the frame's toolpath detail (set once / expert). Machine
+        target and Program Zero are universal; the per-op tools, cut strategy and
+        profile fallback are frame-posterior-only and hide for temple/base-curve."""
+        self._build_machine_tool_group(lay)  # controller + default tool
+        self._build_program_zero_group(lay)  # G54 work datum
+        self._build_op_tools_group(lay)      # per-op tools (frame-only)
+        self._build_strategy_group(lay)      # cut strategy (frame-only)
+        self._build_fallback_group(lay)      # profile fallback (frame-only)
 
     def _update_chip_readout(self) -> None:
         """Re-derive the chip load + surface speed for the active tool / feed /
@@ -987,8 +1036,11 @@ class ParamsPanel(QTabWidget):
         self.cam_tool.setToolTip(
             "Default tool for the program; per-op tools below override it.")
         form.addRow("Tool:", self.cam_tool)
+        # Cross-group wiring lives with the widgets themselves so the Cut / Machine
+        # tabs can be built in either order (BUILDPLAN UX pass — split CAM tab).
+        self.machine.currentIndexChanged.connect(self.cam_changed)
+        self.cam_tool.currentIndexChanged.connect(self.cam_changed)
         lay.addWidget(grp)
-        self._build_op_tools_group(lay)
 
     def _build_op_tools_group(self, lay: QVBoxLayout) -> None:
         """Per-operation tool selectors (BUILDPLAN M6.1 multi-tool jobs).
@@ -998,6 +1050,7 @@ class ParamsPanel(QTabWidget):
         pockets, the bulk tool for relief / eyewires / perimeter is the everyday
         case)."""
         grp = QGroupBox("Per-operation tools  (multi-tool jobs)")
+        self._op_tools_group = grp        # frame-only — hidden on temple / base curve
         grp.setToolTip(
             "Assign a tool per operation ('(same as Tool)' uses the default above).")
         form = QFormLayout(grp)
@@ -1044,9 +1097,91 @@ class ParamsPanel(QTabWidget):
                 _repop(cb)
         self._update_chip_readout()         # a tool's flutes/Ø may have changed (M7.10)
 
+    def _build_material_group(self, lay: QVBoxLayout) -> None:
+        """The everyday cut choices: the material (which drives the feeds & speeds)
+        and the two hand-finishing allowances. Leads the Cut tab (BUILDPLAN UX pass —
+        the maker picks a material first)."""
+        grp = QGroupBox("Material & Allowances")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.material = QComboBox()
+        self.material.addItems(material_store.names() or ["acetate"])
+        self.material.setToolTip(
+            "Load this material's feeds, speeds and stepovers into the Cut tab.")
+        form.addRow("Material:", self.material)
+
+        self.onion_skin = _spinbox(0.4, 0.0, 2.0, step=0.1, decimals=2)
+        self.onion_skin.setToolTip(
+            "Axial stock left under through-cuts (no tabs — released by hand).")
+        form.addRow("Onion skin:", self.onion_skin)
+
+        self.hand_allowance = _spinbox(0.1, 0.0, 1.0, step=0.05, decimals=2)
+        self.hand_allowance.setToolTip(
+            "Radial leave-behind stock on contour operations.")
+        form.addRow("Hand finishing allowance:", self.hand_allowance)
+
+        for w in (self.onion_skin, self.hand_allowance):
+            w.valueChanged.connect(self.cam_changed)
+        # Selecting a material repopulates feeds/speeds/stepover/stepdown.
+        self.material.currentIndexChanged.connect(self._on_material_changed)
+        lay.addWidget(grp)
+
+    def _build_feeds_group(self, lay: QVBoxLayout) -> None:
+        """Feeds, speeds and rapid clearances — populated from the material, editable."""
+        og = QGroupBox("Feeds & Speeds  (from material)")
+        of = QFormLayout(og)
+        of.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.feed_override = _spinbox(0.0, 0.0, 10000.0, step=50.0, decimals=0, suffix=" mm/min")
+        self.plunge_override = _spinbox(0.0, 0.0, 5000.0, step=25.0, decimals=0, suffix=" mm/min")
+        self.spindle_override = QSpinBox()
+        self.spindle_override.setRange(0, 60000)
+        self.spindle_override.setSingleStep(500)
+        self.spindle_override.setSuffix(" RPM")
+        self.safe_z_clearance = _spinbox(
+            CastleCamParams().safe_z_clearance_mm, 1.0, 30.0, step=0.5)
+        self.safe_z_clearance.setToolTip(
+            "Rapid clearance height above the tallest obstacle (stock or hold-downs).")
+        self.hold_down_height = _spinbox(
+            CastleCamParams().hold_down_height_mm, 0.0, 60.0, step=0.5)
+        self.hold_down_height.setToolTip(
+            "Height of the work-holding clamps above the table; rapids clear it.")
+        of.addRow("Feed override:", self.feed_override)
+        of.addRow("Plunge override:", self.plunge_override)
+        of.addRow("Spindle override:", self.spindle_override)
+        of.addRow("Safe-Z clearance:", self.safe_z_clearance)
+        of.addRow("Work-holding height:", self.hold_down_height)
+        for w in (self.feed_override, self.plunge_override,
+                  self.safe_z_clearance, self.hold_down_height):
+            w.valueChanged.connect(self.cam_changed)
+        self.spindle_override.valueChanged.connect(self.cam_changed)
+        lay.addWidget(og)
+
+    def _build_chip_group(self, lay: QVBoxLayout) -> None:
+        """Chip-load / surface-speed read-out (BUILDPLAN M7.10): the relationship
+        between the tool (flutes / diameter), the spindle, and the feed."""
+        cg = QGroupBox("Chip load  (feed per tooth)")
+        cg.setToolTip(
+            "Chip load & surface speed vs the material's window "
+            "(green = OK, amber = light, red = heavy).")
+        cf = QFormLayout(cg)
+        cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._chip_load_lbl = QLabel("—")
+        self._surface_speed_lbl = QLabel("—")
+        self._chip_status_lbl = QLabel("")
+        self._chip_status_lbl.setWordWrap(True)
+        cf.addRow("Chip load:", self._chip_load_lbl)
+        cf.addRow("Surface speed:", self._surface_speed_lbl)
+        cf.addRow(self._chip_status_lbl)
+        lay.addWidget(cg)
+
     def _build_strategy_group(self, lay: QVBoxLayout) -> None:
+        """Frame-posterior toolpath strategy (relief + through-cut passes). Frame-only —
+        temple / base-curve components carry their own tools + allowances, so this is
+        hidden for them (set_component_kind)."""
         d = CastleCamParams()
         grp = QGroupBox("Cut Strategy  (time / finish)")
+        self._strategy_group = grp
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -1075,86 +1210,17 @@ class ParamsPanel(QTabWidget):
         self.arc_tolerance.setToolTip(
             "Arc-fit tolerance for G2/G3 output (0 = linearized G1).")
         form.addRow("Arc tolerance:", self.arc_tolerance)
-        lay.addWidget(grp)
-
-        # Feeds & speeds — populated from the selected material; editable.
-        og = QGroupBox("Feeds & Speeds  (from material)")
-        of = QFormLayout(og)
-        of.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.feed_override = _spinbox(0.0, 0.0, 10000.0, step=50.0, decimals=0, suffix=" mm/min")
-        self.plunge_override = _spinbox(0.0, 0.0, 5000.0, step=25.0, decimals=0, suffix=" mm/min")
-        self.spindle_override = QSpinBox()
-        self.spindle_override.setRange(0, 60000)
-        self.spindle_override.setSingleStep(500)
-        self.spindle_override.setSuffix(" RPM")
-        self.safe_z_clearance = _spinbox(
-            CastleCamParams().safe_z_clearance_mm, 1.0, 30.0, step=0.5)
-        self.safe_z_clearance.setToolTip(
-            "Rapid clearance height above the tallest obstacle (stock or hold-downs).")
-        self.hold_down_height = _spinbox(
-            CastleCamParams().hold_down_height_mm, 0.0, 60.0, step=0.5)
-        self.hold_down_height.setToolTip(
-            "Height of the work-holding clamps above the table; rapids clear it.")
-        of.addRow("Feed override:", self.feed_override)
-        of.addRow("Plunge override:", self.plunge_override)
-        of.addRow("Spindle override:", self.spindle_override)
-        of.addRow("Safe-Z clearance:", self.safe_z_clearance)
-        of.addRow("Work-holding height:", self.hold_down_height)
-        lay.addWidget(og)
-
-        # Chip-load / surface-speed read-out (BUILDPLAN M7.10): the relationship
-        # between the tool (flutes / diameter), the spindle, and the feed.
-        cg = QGroupBox("Chip load  (feed per tooth)")
-        cg.setToolTip(
-            "Chip load & surface speed vs the material's window "
-            "(green = OK, amber = light, red = heavy).")
-        cf = QFormLayout(cg)
-        cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self._chip_load_lbl = QLabel("—")
-        self._surface_speed_lbl = QLabel("—")
-        self._chip_status_lbl = QLabel("")
-        self._chip_status_lbl.setWordWrap(True)
-        cf.addRow("Chip load:", self._chip_load_lbl)
-        cf.addRow("Surface speed:", self._surface_speed_lbl)
-        cf.addRow(self._chip_status_lbl)
-        lay.addWidget(cg)
 
         for w in (self.relief_stepover, self.contour_stepdown, self.rough_axial_stock,
-                  self.contour_ramp_angle, self.arc_tolerance, self.feed_override,
-                  self.plunge_override, self.safe_z_clearance, self.hold_down_height):
+                  self.contour_ramp_angle, self.arc_tolerance):
             w.valueChanged.connect(self.cam_changed)
-        self.spindle_override.valueChanged.connect(self.cam_changed)
-        self.machine.currentIndexChanged.connect(self.cam_changed)
-        self.cam_tool.currentIndexChanged.connect(self.cam_changed)
+        lay.addWidget(grp)
 
-    def _build_cam_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("CAM Settings")
-        glay = QVBoxLayout(grp)
-
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-        self.material = QComboBox()
-        self.material.addItems(material_store.names() or ["acetate"])
-        self.material.setToolTip(
-            "Load this material's feeds, speeds and stepovers into the CAM tab.")
-        form.addRow("Material:", self.material)
-
-        self.onion_skin = _spinbox(0.4, 0.0, 2.0, step=0.1, decimals=2)
-        self.onion_skin.setToolTip(
-            "Axial stock left under through-cuts (no tabs — released by hand).")
-        form.addRow("Onion skin:", self.onion_skin)
-
-        self.hand_allowance = _spinbox(0.1, 0.0, 1.0, step=0.05, decimals=2)
-        self.hand_allowance.setToolTip(
-            "Radial leave-behind stock on contour operations.")
-        form.addRow("Hand finishing allowance:", self.hand_allowance)
-        glay.addLayout(form)
-
-        # Fallback profile cut for DXFs without SCULPT zones (legacy path).
-        glay.addWidget(_section_label("Profile fallback  (no SCULPT)"))
-        fb = QFormLayout()
-        fb.setContentsMargins(8, 0, 0, 0)
+    def _build_fallback_group(self, lay: QVBoxLayout) -> None:
+        """Legacy profile cut for frame DXFs without SCULPT zones. Frame-only."""
+        grp = QGroupBox("Profile fallback  (no SCULPT)")
+        self._fallback_group = grp
+        fb = QFormLayout(grp)
         fb.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.tool_profile = QComboBox()
@@ -1174,21 +1240,14 @@ class ParamsPanel(QTabWidget):
         fb.addRow("Hold-down tabs:", self.tab_count)
         fb.addRow("Tab width:", self.tab_width)
         fb.addRow("Tab height:", self.tab_height)
-        glay.addLayout(fb)
 
-        for w in (self.onion_skin, self.hand_allowance,
-                  self.tool_profile, self.stepdown_profile,
+        for w in (self.tool_profile, self.stepdown_profile,
                   self.tab_count, self.tab_width, self.tab_height):
             if isinstance(w, (QDoubleSpinBox, QSpinBox)):
                 w.valueChanged.connect(self.cam_changed)
             else:
                 w.currentIndexChanged.connect(self.cam_changed)
-
-        # Selecting a material repopulates feeds/speeds/stepover/stepdown.
-        self.material.currentIndexChanged.connect(self._on_material_changed)
         lay.addWidget(grp)
-        # Seed the feeds/strategy fields from the initial material.
-        self.apply_material_values(material_store.cam_values(self.material.currentText()))
 
     # ------------------------------------------------------------------ schema
 

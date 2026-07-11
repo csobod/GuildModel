@@ -92,7 +92,7 @@ class Viewer3D(QWidget):
             ("view-iso", "Iso", "_cam_iso"), ("view-top", "Top", "_cam_top"),
             ("view-front", "Front", "_cam_front"), ("view-reset", "Reset", "_cam_reset"),
         ]:
-            b = QPushButton(); b.setFixedHeight(22); b.setFixedWidth(30)
+            b = QPushButton(); b.setFixedHeight(22); b.setFixedWidth(24)
             b.setIconSize(QSize(18, 18))
             b.setToolTip("Reset camera" if icon_name == "view-reset" else f"{label} view")
             b.clicked.connect(getattr(self, slot))
@@ -158,15 +158,12 @@ class Viewer3D(QWidget):
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(4)
 
-        stage_lbl = QLabel("Castle:"); stage_lbl.setObjectName("hintLabel")
-        lay.addWidget(stage_lbl)
-
         self._stage_group = QButtonGroup(self)
         self._stage_group.setExclusive(True)
         self._stage_buttons: dict[str, QPushButton] = {}
         self._stage_icons: dict[str, tuple[QPushButton, str]] = {}
         for label, stage, icon_name, tip in self._STAGE_BUTTONS:
-            b = QPushButton(); b.setFixedHeight(22); b.setFixedWidth(30)
+            b = QPushButton(); b.setFixedHeight(22); b.setFixedWidth(24)
             b.setIconSize(QSize(18, 18)); b.setCheckable(True); b.setEnabled(False)
             b.setToolTip(tip)
             b.clicked.connect(lambda _=False, s=stage: self.stage_changed.emit(s))
@@ -175,17 +172,20 @@ class Viewer3D(QWidget):
             self._stage_buttons[stage] = b
             self._stage_icons[icon_name] = (b, label)
         self._stage_buttons["pockets"].setChecked(True)
-        self._apply_stage_icons()
 
         # Section tool (M7.13): a draggable cutting plane that slices the model so the
         # maker can read terrace heights + footing depths.
-        self._section_btn = QPushButton("Section")
+        self._section_btn = QPushButton()
         self._section_btn.setCheckable(True)
         self._section_btn.setFixedHeight(22)
+        self._section_btn.setFixedWidth(24)
+        self._section_btn.setIconSize(QSize(18, 18))
         self._section_btn.setEnabled(False)
         self._section_btn.setToolTip(
-            "Slice the model with a draggable plane to inspect depths.")
+            "Section — slice the model with a draggable plane to inspect depths.")
         self._section_btn.toggled.connect(self._on_toggle_section)
+        self._stage_icons["view-section"] = (self._section_btn, "Section")
+        self._apply_stage_icons()
         lay.addSpacing(8)
         lay.addWidget(self._section_btn)
 
@@ -248,12 +248,56 @@ class Viewer3D(QWidget):
 
     def set_dark_mode(self, dark: bool) -> None:
         self._dark = dark
-        self._palette = theme.palette(dark)
         self._apply_camera_icons()
         self._apply_stage_icons()
-        if self._plotter is not None:
-            self._plotter.set_background(self._palette.canvas_bg)
-            self._safe_render()
+        self.refresh_appearance()
+
+    def refresh_appearance(self) -> None:
+        """Re-pull the theme palette + light rig and re-draw the current scene
+        in place, keeping the camera (dark-mode toggle / Preferences ▸
+        Appearance). Safe before the plotter exists."""
+        self._palette = theme.palette(self._dark)
+        if self._plotter is None:
+            return
+        self._plotter.set_background(self._palette.canvas_bg)
+        if self._mode == "model":
+            self._render_model(reset_camera=False)
+        else:
+            self._render_sim(reset_camera=False)
+
+    # ------------------------------------------------------------------ lighting
+
+    def _flat_shaded(self) -> bool:
+        return theme.lighting().get("rig") == "flat"
+
+    def _apply_scene_lights(self) -> None:
+        """Set the plotter's lights from the theme's rig (Preferences ▸
+        Appearance): studio = VTK's default kit + the configurable key light
+        (the shipped look); directional = the key light with only a dim
+        headlight fill, for dramatic relief-reading shadows; flat = kit only
+        (the primary surfaces render unlit via ``lighting=False``)."""
+        import pyvista as pv
+
+        cfg = theme.lighting()
+        try:
+            self._plotter.remove_all_lights()
+        except Exception:
+            pass
+        if cfg["rig"] == "directional":
+            self._plotter.add_light(pv.Light(
+                position=theme.light_position(), focal_point=(0, 0, 0),
+                intensity=max(0.1, float(cfg["intensity"]))))
+            self._plotter.add_light(pv.Light(light_type="headlight",
+                                             intensity=0.25))
+            return
+        try:
+            self._plotter.enable_lightkit()
+        except Exception:
+            pass
+        if cfg["rig"] == "studio":
+            self._plotter.add_light(pv.Light(
+                position=theme.light_position(), focal_point=(0, 0, 0),
+                intensity=float(cfg["intensity"])))
 
     # ------------------------------------------------------------------ plotter
 
@@ -423,9 +467,11 @@ class Viewer3D(QWidget):
             self._safe_render()
             return
 
+        lit = not self._flat_shaded()
         mesh_kwargs = dict(
             color=self._palette.mesh_surface, smooth_shading=True,
-            show_edges=False, lighting=True, specular=0.3, specular_power=20)
+            show_edges=False, lighting=lit, specular=0.3 if lit else 0.0,
+            specular_power=20)
         sectioned = False
         if self._section_on:
             # a draggable clip plane carves the model live so the maker can inspect the
@@ -439,8 +485,7 @@ class Viewer3D(QWidget):
                 sectioned = False
         if not sectioned:
             self._plotter.add_mesh(self._model_pv, **mesh_kwargs)
-        self._plotter.add_light(
-            pv.Light(position=(100, -50, 200), focal_point=(0, 0, 0), intensity=0.8))
+        self._apply_scene_lights()
 
         stock = self._model_stock
         if stock is not None:
@@ -635,7 +680,9 @@ class Viewer3D(QWidget):
         self._sim_mesh["colors"] = (rgb * 255).astype(np.uint8)
         self._plotter.clear()
         self._plotter.add_mesh(self._sim_mesh, scalars="colors", rgb=True,
-                               smooth_shading=False, show_edges=False, lighting=True)
+                               smooth_shading=False, show_edges=False,
+                               lighting=not self._flat_shaded())
+        self._apply_scene_lights()
 
     def _refresh_colors(self) -> None:
         """Uncut/Gouge toggle — the floor-sheet view (bed sim) only; the volumetric
@@ -739,9 +786,11 @@ class Viewer3D(QWidget):
         # Colour by elevation so cut depth reads at a glance (deep = dark, uncut =
         # bright); a fixed ramp means a region visibly darkens as it's carved away.
         grid["colors"] = self._elev_colors(grid.points[:, 2], self._removal_zmax)
+        lit = not self._flat_shaded()
         self._plotter.add_mesh(grid, scalars="colors", rgb=True,
-                               smooth_shading=True, show_edges=False, lighting=True,
-                               specular=0.15, specular_power=12)
+                               smooth_shading=True, show_edges=False, lighting=lit,
+                               specular=0.15 if lit else 0.0, specular_power=12)
+        self._apply_scene_lights()
 
         # Hold-downs (keep-outs) as red posts on the bed at the set hold-down height,
         # so the maker sees the tool + holder pass relative to them (BUILDPLAN M7.12.3).

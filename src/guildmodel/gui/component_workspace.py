@@ -147,7 +147,11 @@ def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
             enabled=c.enabled, source_workspace=c.source_workspace, forming=c.forming,
             texts=list(gc.texts),
             castle_params=c.castle, temple_params=c.temple,
-            block_params=c.base_curve_block)
+            block_params=c.base_curve_block,
+            # Every model component starts with its OWN G54 datum (M11 + 2026-07-09
+            # fix): with None here the dock's on-screen zero leaked into each
+            # component on first visit, so separately-set zeros smeared into one.
+            program_zero=c.program_zero)
         derive_workspace(ws)
         out.append(ws)
     return out, gp.active_tab
