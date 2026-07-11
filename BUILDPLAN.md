@@ -2716,6 +2716,25 @@ Pre-RC1 user round (relaunch for inspection before the installer builds) —
      `Viewer3D.refresh_appearance()` re-renders the active scene in place
      (camera kept) on Preferences-OK or a mode flip.
 
+**Second inspection pass, same day:** (a) the view-strip buttons were still wide —
+the app-wide `QPushButton { min-width:54px; padding:4px 10px }` rule overrides a
+widget's `setFixedWidth` in Qt's stylesheet box model, so a scoped
+`QWidget#toolbarStrip QPushButton { padding:1px; min-width:0px }` was added to
+both themes (`theme.py`) — the strip buttons are now true 24×22 squares; (b) a
+nested worktable component's label drew on top of its zone's role caption (both
+centred on the zone) — `BedCanvas._draw_zones` now skips a zone's caption when a
+placement occupies it, so the part label owns that spot instead. 498 tests green
+throughout.
+
+**Version stamp — `v1.0.0-rc1`.** With the field-fix + polish round accepted on
+inspection, this is the actual public release candidate (not an internal
+`-rc1a`/`-rc1b` step): `pyproject.toml` version → `1.0.0rc1`,
+`guildmodel.__version__` → `"1.0.0-rc1"`, README status line, and the installer's
+`MyAppVersion` fallback all updated to match. Built via
+`scripts\build_release.ps1` → `dist\GuildModel-1.0.0-rc1-win64.zip` +
+`dist\GuildModel-1.0.0-rc1-setup.exe`. Local artifacts only this round — no
+GitHub remote configured yet; publishing is a separate, later step.
+
 ---
 
 # Reference

@@ -11,7 +11,7 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.0.0-rc1a** — release candidate, plus the posterior finishing features
+**v1.0.0-rc1** — release candidate, plus the posterior finishing features
 (pad splay chamfer, bezeled eyewire, bridge projection relief — all optional,
 off by default).
 
