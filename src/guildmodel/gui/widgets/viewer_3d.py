@@ -26,9 +26,10 @@ import numpy as np
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QPushButton,
-    QButtonGroup, QFrame, QLabel, QCheckBox, QSizePolicy, QSlider,
+    QButtonGroup, QLabel, QCheckBox, QSizePolicy, QSlider,
 )
-from PySide6.QtCore import Qt, QSize, Signal, QTimer
+from PySide6.QtCore import Qt, QSize, Signal, QTimer, QPointF
+from PySide6.QtGui import QColor, QPainter, QPen
 
 from guildmodel.gui.style import theme
 from guildmodel.gui import icons as icons_mod
@@ -46,6 +47,35 @@ _BADGE = {
 def _hex_rgb(h: str) -> tuple[float, float, float]:
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+class _StripSep(QWidget):
+    """View-strip group divider with the main toolbar's ToolSep look: a crisp
+    1-device-px cosmetic line, inset from both ends (smaller and centered)
+    instead of a full-height QFrame, re-tinted per theme — darker amber on the
+    dark strip, charcoal on light (a bare QFrame VLine rendered white on dark)."""
+
+    _PAD = 4          # logical-px inset at the line's ends
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._color = QColor("#383838")
+        self.setFixedSize(13, 24)     # spacing cell × line span
+
+    def set_color(self, color) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = QPen(self._color)
+        pen.setCosmetic(True)          # exactly one device px at any DPI
+        p.setPen(pen)
+        r = self.rect()
+        x = r.center().x() + 0.5       # pixel-centre for a crisp vertical line
+        p.drawLine(QPointF(x, r.top() + self._PAD),
+                   QPointF(x, r.bottom() - self._PAD))
 
 
 class Viewer3D(QWidget):
@@ -100,8 +130,8 @@ class Viewer3D(QWidget):
             self._cam_buttons[icon_name] = (b, label)
         self._apply_camera_icons()
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
-        tb.addSpacing(6); tb.addWidget(sep); tb.addSpacing(6)
+        self._strip_sep = _StripSep()
+        tb.addSpacing(6); tb.addWidget(self._strip_sep); tb.addSpacing(6)
 
         # the mode-specific section swaps with the viewer mode (plain Qt widgets —
         # no native GL, so the stacked-widget hide is harmless)
@@ -119,6 +149,7 @@ class Viewer3D(QWidget):
         self._layout.addWidget(self._placeholder)
 
         self._plotter: Optional[object] = None    # pyvistaqt.QtInteractor (shared)
+        self._aa_pending = False                  # AA deferred until first sized render
         self._scene_bounds = None                 # XY footprint of the last scene
 
         # model-mode scene cache
@@ -208,7 +239,12 @@ class Viewer3D(QWidget):
         lay.addWidget(self._chk_uncut); lay.addWidget(self._chk_gouge)
 
         # ---- playback scrubber (BUILDPLAN M7.12) — hidden until snapshots set ----
-        self._play_btn = QPushButton("▶"); self._play_btn.setFixedSize(24, 22)
+        self._play_btn = QPushButton("▶")
+        # Sized + font-sized by the #playButton rules in style/theme.py — the
+        # strip-scoped QSS shrinks ordinary buttons to 24-px camera squares,
+        # which left the play glyph tiny. No setFixedSize here: QSS min-width /
+        # min-height beat a fixed size in the stylesheet box model.
+        self._play_btn.setObjectName("playButton")
         self._play_btn.setToolTip("Play / pause the cut, op by op")
         self._play_btn.clicked.connect(self._toggle_play)
         self._scrub = QSlider(Qt.Orientation.Horizontal)
@@ -250,6 +286,8 @@ class Viewer3D(QWidget):
         self._dark = dark
         self._apply_camera_icons()
         self._apply_stage_icons()
+        # Match the main toolbar's ToolSep tints (_style_toolbar_separators).
+        self._strip_sep.set_color("#8d7030" if dark else "#383838")
         self.refresh_appearance()
 
     def refresh_appearance(self) -> None:
@@ -349,16 +387,36 @@ class Viewer3D(QWidget):
             from pyvistaqt import QtInteractor
             self._plotter = QtInteractor(self)
             self._scene_bounds = None             # fresh GL context, default camera
-            self._plotter.set_background(self._palette.canvas_bg)
-            self._plotter.enable_anti_aliasing()
             self._plotter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            # Lay the interactor out BEFORE any call that renders: a freshly
+            # constructed QtInteractor has a 0×0 render window, and rendering
+            # into it raises VTK's paired FRAMEBUFFER_INCOMPLETE_ATTACHMENT
+            # errors (logged once per session, at the first Build 3D).
             self._layout.removeWidget(self._placeholder)
             self._placeholder.hide()
             self._layout.addWidget(self._plotter)
+            self._layout.activate()               # size it now, not next event-loop pass
+            self._plotter.set_background(self._palette.canvas_bg)
+            self._aa_pending = True               # AA renders immediately — defer
+            self._enable_aa_if_sized()
             return True
         except Exception as exc:
             self._placeholder.setText(f"3D viewer unavailable:\n{exc}")
             return False
+
+    def _enable_aa_if_sized(self) -> None:
+        """`enable_anti_aliasing` triggers an immediate render, so it must wait
+        until the viewport is visible with real pixels (the viewer may be built
+        while another stack page / tab is current). Runs from _ensure_plotter
+        and again from _safe_render until it succeeds once."""
+        if not self._aa_pending or self._plotter is None:
+            return
+        if not self.isHidden() and self.width() > 1 and self.height() > 1:
+            self._aa_pending = False
+            try:
+                self._plotter.enable_anti_aliasing()
+            except Exception:
+                pass
 
     def _safe_render(self) -> None:
         """Render only when this widget is the visible, non-zero-size stack page.
@@ -367,6 +425,7 @@ class Viewer3D(QWidget):
         switch, minimise, or teardown)."""
         if (self._plotter is not None and not self.isHidden()
                 and self.width() > 1 and self.height() > 1):
+            self._enable_aa_if_sized()            # deferred from _ensure_plotter
             try:
                 self._plotter.render()
             except Exception:

@@ -238,7 +238,8 @@ class ParamsPanel(QTabWidget):
 
     def _tint_layer_checks(self, dark: bool) -> None:
         for layer, cb in self._layer_checks.items():
-            color = theme.layer_color(LAYER_STYLES[layer][0], dark)
+            # By NAME, so a Preferences ▸ Layers override tints the checkbox too.
+            color = theme.layer_color_for(layer, dark)
             cb.setStyleSheet(f"color: {color}; font-size: 11px;")
 
     def set_dark_mode(self, dark: bool) -> None:

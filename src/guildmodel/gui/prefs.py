@@ -27,6 +27,20 @@ DEFAULTS: dict = {
                               "model_color": ""},
     # Toolpath-overlay color set: vivid | soft | bold | mono.
     "toolpath_palette":      "vivid",
+    # Per-layer 2D drawing-color overrides, per UI mode — Preferences ▸ Layers
+    # (GuildDraw parity). {layer: {"light": "#rrggbb"|"", "dark": ...}};
+    # "" / absent = the shipped core.layers.LAYER_STYLES color.
+    "layer_colors":          {},
+    # 2D design-canvas grid — Preferences ▸ Appearance ▸ Grid (GuildDraw
+    # parity). Shipped values reproduce the historical 10 mm dotted grid.
+    "grid": {
+        "visible":        True,
+        "spacing_mm":     10.0,
+        "major_every":    5,     # every Nth line heavier; 1 = all minor
+        "minor_color":    "",    # "" = follow the theme
+        "major_color":    "",    # "" = follow the minor color
+        "major_width_px": 1.0,
+    },
     # Show the bottom log dock on startup (toggle the button to change it for
     # the session; this pref sets the default) — M4.6
     "show_log_on_start":     False,
@@ -58,7 +72,18 @@ def load() -> dict:
     try:
         if _FILE.exists():
             data = json.loads(_FILE.read_text(encoding="utf-8"))
-            return {**DEFAULTS, **data}
+            merged = {**DEFAULTS, **data}
+            # Deep-merge nested dicts so new default keys survive old prefs
+            # files (GuildDraw's rule). EVERY nested dict pref must be listed
+            # here — a missing entry means old files silently clobber new
+            # defaults. ("toolbar" is a list, not a dict — excluded.)
+            for key in ("viewport", "render3d", "grid", "layer_colors",
+                        "cam_params", "hotkeys"):
+                if isinstance(data.get(key), dict):
+                    merged[key] = {**DEFAULTS[key], **data[key]}
+                else:
+                    merged[key] = dict(DEFAULTS[key])
+            return merged
     except Exception:
         pass
     return dict(DEFAULTS)

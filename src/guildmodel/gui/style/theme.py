@@ -153,6 +153,11 @@ QWidget#toolbarStrip { background-color: #ffd580; border-bottom: 1px solid #d4a8
    the app-wide QPushButton min-width/padding stretches them wide (their
    setFixedWidth loses to the stylesheet box model). */
 QWidget#toolbarStrip QPushButton { padding: 1px; min-width: 0px; }
+/* The sim-playback button is the exception: a comfortable target with a
+   readable ▶ glyph (the square-button shrink left it tiny). */
+QWidget#toolbarStrip QPushButton#playButton {
+    font-size: 14px; padding: 0px; min-width: 34px; min-height: 20px;
+}
 QLabel#appTitle { font-size: 16px; font-weight: bold; background: transparent; }
 QLabel#hintLabel { font-size: 10px; color: #8a6d2f; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
@@ -304,6 +309,10 @@ QCheckBox { spacing: 5px; }
 QWidget#toolbarStrip { background-color: #1a1a1a; border-bottom: 1px solid #554433; }
 /* Icon-only square strip buttons — see the light-theme note. */
 QWidget#toolbarStrip QPushButton { padding: 1px; min-width: 0px; }
+/* Sim-playback button: comfortable target + readable glyph (see light theme). */
+QWidget#toolbarStrip QPushButton#playButton {
+    font-size: 14px; padding: 0px; min-width: 34px; min-height: 20px;
+}
 QLabel#appTitle { font-size: 16px; font-weight: bold; background: transparent; }
 QLabel#hintLabel { font-size: 10px; color: #9a9382; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
@@ -435,6 +444,43 @@ def layer_color(light_hex: str, dark: bool) -> str:
     if not dark:
         return light_hex
     return _DARK_LAYER_COLORS.get(light_hex.lower(), light_hex)
+
+
+# Per-layer color overrides (Preferences ▸ Layers — GuildDraw parity). The
+# maker can pin each design layer's drawing color per UI mode; "" / absent
+# falls through to the shipped LAYER_STYLES color via layer_color().
+_layer_overrides: dict[str, dict] = {}
+
+
+def set_layer_overrides(cfg: dict | None) -> None:
+    """Install {layer: {"light": "#rrggbb"|"", "dark": ...}} from prefs."""
+    global _layer_overrides
+    _layer_overrides = {k: dict(v) for k, v in (cfg or {}).items()
+                        if isinstance(v, dict)}
+
+
+def layer_overrides() -> dict:
+    """The active per-layer override map (a copy)."""
+    return {k: dict(v) for k, v in _layer_overrides.items()}
+
+
+def layer_color_for(layer: str, dark: bool) -> str:
+    """The 2D-canvas color for a design layer by NAME: the user's override for
+    the effective mode when set, else the shipped color via layer_color().
+
+    The effective mode follows a pinned viewport preset's backdrop luminance —
+    the same rule layer_color applies — so the override that wins is the one
+    the maker tuned for that backdrop."""
+    eff_dark = dark
+    if _viewport is not None:
+        eff_dark = _luminance(_viewport["bg"]) < 0.5
+    ov = _layer_overrides.get(layer) or {}
+    user = ov.get("dark" if eff_dark else "light") or ""
+    if user:
+        return user
+    from guildmodel.core.layers import LAYER_STYLES
+    light_hex = LAYER_STYLES.get(layer, ("#888888", 1.0))[0]
+    return layer_color(light_hex, dark)
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +620,39 @@ def light_position(radius: float = 230.0) -> tuple[float, float, float]:
     el = math.radians(_lighting["elevation_deg"])
     c = math.cos(el) * radius
     return (c * math.cos(az), c * math.sin(az), radius * math.sin(el))
+
+
+GRID_DEFAULTS: dict = {
+    # 2D design-canvas grid (Preferences ▸ Appearance ▸ Grid). Shipped values
+    # reproduce the historical hardcoded grid: 10 mm dotted minor lines, a
+    # slightly heavier major every 5th (new), colors from the palette.
+    "visible":        True,
+    "spacing_mm":     10.0,
+    "major_every":    5,      # every Nth line is a major; <= 1 = all minor
+    "minor_color":    "",     # "" = follow the theme (palette().grid)
+    "major_color":    "",     # "" = follow the minor color
+    "major_width_px": 1.0,
+}
+_grid_cfg: dict = dict(GRID_DEFAULTS)
+
+
+def set_grid(cfg: dict | None) -> None:
+    """Install the 2D-canvas grid config from prefs (missing keys keep their
+    defaults — a stale prefs.json can never break the canvas)."""
+    global _grid_cfg
+    out = dict(GRID_DEFAULTS)
+    for k in GRID_DEFAULTS:
+        if cfg and k in cfg:
+            out[k] = cfg[k]
+    out["spacing_mm"] = min(100.0, max(0.5, float(out["spacing_mm"])))
+    out["major_every"] = max(1, int(out["major_every"]))
+    out["major_width_px"] = min(4.0, max(0.5, float(out["major_width_px"])))
+    _grid_cfg = out
+
+
+def grid_config() -> dict:
+    """The active 2D-canvas grid config (a copy)."""
+    return dict(_grid_cfg)
 
 
 def set_toolpath_palette(name: str | None) -> None:

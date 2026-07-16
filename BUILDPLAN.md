@@ -2737,6 +2737,152 @@ GitHub remote configured yet; publishing is a separate, later step.
 
 ---
 
+## V1-prep round 1 — session safety net *(2026-07-16, 511 tests)*
+
+> The 2026-07-16 GuildDraw-parity audit ranked GuildModel's missing **safety
+> net** as the top V1 gap: no unsaved-changes guard, no autosave, no splash.
+> This round closes all three (GuildDraw's machinery, ported), plus two bugs
+> found on the way. Suite 498 → **511** (+13, `tests/test_session_guard.py`).
+
+1. **Unsaved-changes tracking + guard.** `MainWindow._dirty` with a title star
+   (`_update_title` replaces the scattered `setWindowTitle` calls), marked by
+   real user edits — the three ParamsPanel change signals, worktable mutations
+   (role tag / bed import / default bed / zero / hold-down / nest / nudge /
+   rotate), and a generated program held in memory (the fold-into-open-project
+   path saves instead). Programmatic restores never mark: `_restoring` counter
+   held through `__init__`'s prefs restore, `_open_project`, and
+   `_activate_workspace` (tab switches push stored params into the dock).
+   `_confirm_discard()` (Save / Discard / Cancel) guards `closeEvent` and all
+   four open paths (DXF / drawing / project / recent). Save Project, project
+   open, and fresh loads reset the clean baseline (`_post_load_baseline`).
+2. **Autosave + crash recovery.** 3-minute timer snapshots a dirty session to
+   `~/.guildmodel/autosave/recovery.gmodel` (+ `recovery.json` meta: source
+   path, timestamp) via the new UI-free `_write_gmodel` (extracted from
+   `_save_gmodel_to`); atomic `os.replace`, silent on failure, "Autosaved" in
+   the status bar. On startup `_offer_recovery` (400 ms singleShot) offers the
+   snapshot: restored work re-binds to the ORIGINAL project path (not the
+   recovery file), marks dirty, stays out of recents; declining clears the
+   slot, and so does a clean close.
+3. **Guild splash + light boot.** `gui/splash.py` — GuildDraw's parchment
+   certificate card verbatim (seal, serif, licence; `gasm_seal.svg` copied to
+   `assets/`) with the GuildModel name/version. New `gui/boot.py` shows it
+   BEFORE the heavy VTK import (the cold-start cost lives in importing
+   `gui/app.py`), then imports and builds the window; `guildmodel` entry point
+   + `main.py` now boot there (`gui.app:main` delegates for back-compat).
+4. **File-association fix.** `main()` ignored argv — double-clicking a
+   `.gmodel` launched the app but never opened the file. `boot.main` now opens
+   the first file argument via the new `MainWindow.open_path` dispatcher
+   (also backs the recent-files menu).
+5. **Recents-pollution fix.** Opening a DXF-based `.gmodel` re-imports the
+   embedded DXF through a temp file, and `_on_import_finished` added that
+   `%TEMP%\gmodel_*.dxf` to the recent-files menu; `_load_dxf` now carries
+   `from_project` through the worker round-trip and skips it.
+
+---
+
+## V1-prep round 2 — appearance parity *(2026-07-16, 519 tests)*
+
+> Cluster (b) of the GuildDraw-parity audit: the customization surfaces
+> GuildDraw ships that GuildModel lacked — per-layer colour overrides, a
+> configurable canvas grid, and the prefs deep-merge. Suite 511 → **519**
+> (+8, `tests/test_layers_grid_prefs.py`).
+
+1. **Per-layer colour overrides (Preferences ▸ Layers).** New theme API
+   `set_layer_overrides` / `layer_color_for(layer, dark)` — the override for
+   the effective mode wins (on a pinned viewport preset the backdrop's
+   luminance picks the slot, same rule as `layer_color`), else the shipped
+   `LAYER_STYLES` colour. `DxfCanvas._draw_layers` and the params-panel layer
+   checkboxes now resolve colours by NAME through it. The new Layers prefs tab
+   (after Appearance, GuildDraw's position) gives every design layer
+   Light…/Dark… swatch pickers + Reset; only genuine overrides persist
+   (`layer_colors` pref).
+2. **Configurable 2D grid (Preferences ▸ Appearance ▸ Grid).** Theme-level
+   `set_grid`/`grid_config` (clamped, stale-prefs-safe); `DxfCanvas._draw_grid`
+   honors show/hide, spacing, a heavier major line every Nth, major width, and
+   minor/major colour overrides. Shipped config reproduces the historical
+   10 mm dotted grid, now with a subtle major every 5th (50 mm) — GuildDraw's
+   convention.
+3. **Prefs deep-merge.** `prefs.load()` now deep-merges every nested dict pref
+   (`viewport`/`render3d`/`grid`/`layer_colors`/`cam_params`/`hotkeys`) over
+   its defaults, GuildDraw's rule, so an old prefs.json can never silently
+   clobber keys added later ("toolbar" is a list — excluded).
+
+---
+
+## V1-prep round 3 — ecosystem glue + module decisions *(2026-07-16, 523 tests)*
+
+> Clusters (c) and (d) of the parity audit. Suite 519 → **523** (+4,
+> `tests/test_ecosystem_c.py`). Touches all three apps; every repo's changes
+> held uncommitted for review.
+
+**Cluster (c) — the three apps as one toolchain:**
+1. **Ctrl+, opens Preferences everywhere.** GuildSend set the convention;
+   GuildModel and GuildDraw now match (action kept on `self` — a text+slot
+   `addAction`'s wrapper is Python-owned in PySide6, and dropping the last
+   reference deletes the QAction).
+2. **File ▸ Open in GuildSend** (GuildModel): hands the SAVED `.gmodel` to
+   GuildSend, whose bundle reader already ingests programs + setup sheet +
+   tools + material + tagged worktable natively — saves first when dirty,
+   enabled in lockstep with Export G-code (mirrors its `changed` signal).
+   `_find_guildsend()` tries the per-user install
+   (`%LOCALAPPDATA%\Programs\GuildSend`), PATH, then the sibling source
+   checkout's venv (developer fallback).
+3. **GuildSend receives:** `_open_job` dialog split from a new
+   `open_path(path)` dispatcher; `main()` opens a file passed on the command
+   line (double-clicked job or the GuildModel handoff). Its never-wired M0
+   splash was replaced with the family's guild-certificate card
+   (seal + serif + licence, GuildSend name) and actually shown before the
+   window build. Seal asset copied to `guildsend/resources/`.
+
+**Cluster (d) — module ⚠️ decisions from the audit:**
+4. **`io_import/svg.py` RETIRED** (git rm): the `npoint` call passed a chord
+   tolerance where svgelements expects positions — broken on any use — and
+   the M7.2 `.gdraw` reader already ingests plain GuildDraw `.svg` files
+   (`read_gdraw`'s non-ZIP branch). Zero callers, zero tests.
+5. **`mesh/twosided.py` + `mesh/stl_export.py` RETIRED** (git rm): superseded
+   by `build_castle_mesh` + the GUI's trimesh STL path; no consumers outside
+   `mesh/__init__`. `mesh/section.py` (M7.13) is the package's one survivor.
+6. **`relief/pocket.py` KEPT, footgun documented:** loud docstring — no inward
+   tool-radius offset; callers pre-offset (production pockets use
+   `castle_ops.hinge_pocket_op`, which offsets). Dormant with
+   `relief/hinge.py` for the post-1.0 CHA catalog.
+7. **`geometry/symmetry.py` KEPT:** the module table's "stub" label was stale —
+   it's small working code (mirror_polygon / apply_symmetry) for the post-1.0
+   asymmetry question.
+8. **`docs/USER-GUIDE.md` WRITTEN:** the maker's guide (GuildDraw's format) —
+   opening designs, the castle, temples/blocks, cut settings, generate +
+   verify, the worktable, the GuildSend handoff, preferences, data safety,
+   fixed shortcuts.
+
+**Same-day view-strip polish (user request on inspection):** the view strip's
+divider was a bare `QFrame` VLine — full strip height, and white on the dark
+theme. Replaced with `_StripSep` (viewer_3d.py), the main toolbar's ToolSep
+look: a crisp cosmetic 1-px line, inset/centered, tinted darker-amber on dark /
+charcoal on light via `set_dark_mode` (matches `_style_toolbar_separators`).
+The sim playback ▶ button also grew 24×22 → 36×22 with a 14-px glyph — the
+strip-scoped QSS (`padding: 1px`) had left it uncomfortably small; final size
+matches the camera squares' height, wider for the glyph (user-tuned on
+inspection). Sized by a dedicated `#playButton` rule in both theme QSS blocks
+(an inline stylesheet / `setFixedSize` both lose to the stylesheet box model);
+verified by offscreen grabs of the strip in both modes.
+
+**Known issue (observed 2026-07-16, root cause still open):** two consecutive
+desktop sessions each logged ONE paired VTK `FRAMEBUFFER_INCOMPLETE_ATTACHMENT`
+error with a 0×0 renderbuffer (~1–2 min in — around first 3D/sim use).
+Non-fatal; sessions continued and closed cleanly. A scripted repro (plotter
+created on a hidden stack page, AA enabled immediately — the prior code path)
+did NOT reproduce it: a hidden widget isn't 0×0, so the zero-size render likely
+comes from a minimize or teardown moment instead. Hardening applied anyway
+(safe, semantics-preserving, repro-verified clean): `_ensure_plotter` now lays
+the interactor out before any rendering call and defers
+`enable_anti_aliasing` to the first sized render (`_enable_aa_if_sized`, also
+re-checked from `_safe_render`). **Third occurrence (post-hardening, 28 min
+into a session — so NOT the AA-at-creation path):** always exactly two renders
+~13 ms apart at one instant. A `_FboProbe` logging handler is now installed
+(app.py, diagnostic-only, remove once root-caused): when VTK logs the error it
+snapshots view/tab/minimized/viewer-size/mode to stderr + the app log — the
+next occurrence carries its own repro data.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

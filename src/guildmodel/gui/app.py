@@ -7,6 +7,9 @@ STL / Generate G-code) drive a determinate progress dialog with stage
 labels and stage-boundary cancellation (Part B).
 """
 from __future__ import annotations
+import datetime
+import json
+import logging
 import os
 import sys
 import traceback
@@ -422,6 +425,8 @@ def _apply_appearance_prefs(prefs: dict) -> None:
     theme.set_lighting(r3)
     theme.set_mesh_color(r3.get("model_color") or None)
     theme.set_toolpath_palette(prefs.get("toolpath_palette"))
+    theme.set_layer_overrides(prefs.get("layer_colors"))
+    theme.set_grid(prefs.get("grid"))
 
 
 def _op_overlay(ops) -> list[dict]:
@@ -1815,7 +1820,10 @@ class PrefsDialog(QDialog):
         # Must precede the Tools tab: its ToolView preview reads _dark_check.
         self._build_appearance_tab(tabs, prefs)
 
-        # ── Tab 2 — Materials ─────────────────────────────────────────────
+        # ── Tab 2 — Layers (per-layer colour overrides, GuildDraw parity) ──
+        self._build_layers_tab(tabs, prefs)
+
+        # ── Tab 3 — Materials ─────────────────────────────────────────────
         self._build_materials_tab(tabs)
 
         # ── Tab 3 — Tools (the editable tool library, BUILDPLAN M7.8) ──────
@@ -1989,6 +1997,60 @@ class PrefsDialog(QDialog):
         tp_form.addRow("Path colours:", self._tp_combo)
         ap_lay.addWidget(tp_box)
 
+        # 2D-canvas grid (GuildDraw parity). Shipped values = the historical
+        # 10 mm dotted grid, plus a heavier major line every 5th.
+        gr = prefs.get("grid") or {}
+        grid_box = QGroupBox("Grid  (2D canvas)")
+        grid_form = QFormLayout(grid_box)
+        self._grid_visible = QCheckBox("Show grid")
+        self._grid_visible.setChecked(bool(gr.get("visible", True)))
+        grid_form.addRow(self._grid_visible)
+        self._grid_spacing = QDoubleSpinBox()
+        self._grid_spacing.setRange(0.5, 100.0)
+        self._grid_spacing.setSingleStep(0.5)
+        self._grid_spacing.setDecimals(1)
+        self._grid_spacing.setSuffix(" mm")
+        self._grid_spacing.setValue(float(gr.get("spacing_mm", 10.0)))
+        self._grid_spacing.setToolTip("Grid line spacing on the design canvas.")
+        grid_form.addRow("Spacing:", self._grid_spacing)
+        self._grid_major = QSpinBox()
+        self._grid_major.setRange(1, 20)
+        self._grid_major.setValue(int(gr.get("major_every", 5)))
+        self._grid_major.setToolTip(
+            "Every Nth line is drawn heavier (a major division).\n"
+            "1 = a uniform grid with no major lines.")
+        grid_form.addRow("Major every:", self._grid_major)
+        self._grid_width = QDoubleSpinBox()
+        self._grid_width.setRange(0.5, 4.0)
+        self._grid_width.setSingleStep(0.5)
+        self._grid_width.setDecimals(1)
+        self._grid_width.setSuffix(" px")
+        self._grid_width.setValue(float(gr.get("major_width_px", 1.0)))
+        self._grid_width.setToolTip("Line weight of the major grid lines (screen pixels).")
+        grid_form.addRow("Major width:", self._grid_width)
+        # Grid line colours: "" = follow the theme (mirrors the model-colour swatch).
+        self._grid_minor_color = str(gr.get("minor_color") or "")
+        self._grid_major_color = str(gr.get("major_color") or "")
+        self._grid_minor_btn = QPushButton("Minor colour…")
+        self._grid_minor_btn.clicked.connect(lambda: self._pick_grid_color("minor"))
+        self._grid_major_btn = QPushButton("Major colour…")
+        self._grid_major_btn.clicked.connect(lambda: self._pick_grid_color("major"))
+        grid_reset = QPushButton("Theme default")
+        grid_reset.setToolTip("Clear both grid colour overrides — the grid "
+                              "follows the theme again.")
+        grid_reset.clicked.connect(self._reset_grid_colors)
+        grid_colors_row = QWidget()
+        gc_lay = QHBoxLayout(grid_colors_row)
+        gc_lay.setContentsMargins(0, 0, 0, 0)
+        gc_lay.setSpacing(6)
+        gc_lay.addWidget(self._grid_minor_btn)
+        gc_lay.addWidget(self._grid_major_btn)
+        gc_lay.addWidget(grid_reset)
+        gc_lay.addStretch()
+        grid_form.addRow("Colours:", grid_colors_row)
+        self._update_grid_swatches()
+        ap_lay.addWidget(grid_box)
+
         ap_lay.addStretch()
 
     @staticmethod
@@ -2037,6 +2099,115 @@ class PrefsDialog(QDialog):
         pm = QPixmap(16, 16)
         pm.fill(QColor(self._model_color or theme.LIGHT.mesh_surface))
         self._model_color_btn.setIcon(QIcon(pm))
+
+    # ── Grid colours (Appearance ▸ Grid) ──────────────────────────────────
+
+    def _pick_grid_color(self, which: str) -> None:
+        current = (self._grid_minor_color if which == "minor"
+                   else self._grid_major_color) or theme.LIGHT.grid
+        c = QColorDialog.getColor(QColor(current), self,
+                                  f"Grid {which} colour")
+        if not c.isValid():
+            return
+        if which == "minor":
+            self._grid_minor_color = c.name()
+        else:
+            self._grid_major_color = c.name()
+        self._update_grid_swatches()
+
+    def _reset_grid_colors(self) -> None:
+        self._grid_minor_color = ""
+        self._grid_major_color = ""
+        self._update_grid_swatches()
+
+    def _update_grid_swatches(self) -> None:
+        for color, btn in ((self._grid_minor_color, self._grid_minor_btn),
+                           (self._grid_major_color, self._grid_major_btn)):
+            pm = QPixmap(16, 16)
+            pm.fill(QColor(color or theme.LIGHT.grid))
+            btn.setIcon(QIcon(pm))
+
+    # ── Layers tab (per-layer colour overrides — GuildDraw parity) ────────
+
+    def _build_layers_tab(self, tabs, prefs: dict) -> None:
+        from guildmodel.core.layers import LAYER_STYLES
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setSpacing(10)
+        lay.setContentsMargins(16, 16, 16, 8)
+        scroll.setWidget(inner)
+        tabs.addTab(scroll, "Layers")
+
+        note = QLabel(
+            "Drawing colour per design layer, for each UI mode. Reset returns "
+            "a layer to the shipped colour. With a pinned viewport preset the "
+            "override matching the backdrop's brightness applies.")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        # {layer: {"light": "#rrggbb"|"", "dark": ...}} — only real overrides
+        # survive into to_prefs().
+        self._layer_colors: dict[str, dict] = {}
+        for layer, cfg in (prefs.get("layer_colors") or {}).items():
+            if isinstance(cfg, dict) and (cfg.get("light") or cfg.get("dark")):
+                self._layer_colors[layer] = {"light": cfg.get("light") or "",
+                                             "dark": cfg.get("dark") or ""}
+
+        grp = QGroupBox("Layer colours")
+        form = QFormLayout(grp)
+        self._layer_btns: dict[tuple[str, str], QPushButton] = {}
+        for layer in LAYER_STYLES:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+            for mode, label in (("light", "Light…"), ("dark", "Dark…")):
+                btn = QPushButton(label)
+                btn.clicked.connect(
+                    lambda _=False, l=layer, m=mode: self._pick_layer_color(l, m))
+                self._layer_btns[(layer, mode)] = btn
+                h.addWidget(btn)
+            reset = QPushButton("Reset")
+            reset.setToolTip("Back to the shipped colour in both modes.")
+            reset.clicked.connect(
+                lambda _=False, l=layer: self._reset_layer_color(l))
+            h.addWidget(reset)
+            h.addStretch()
+            form.addRow(f"{layer}:", row)
+            self._update_layer_swatches(layer)
+        lay.addWidget(grp)
+        lay.addStretch()
+
+    def _layer_swatch_color(self, layer: str, mode: str) -> str:
+        """The colour the swatch shows: the pending override for that mode, or
+        the shipped per-mode colour (raw — the dialog edits per-mode values)."""
+        ov = (self._layer_colors.get(layer) or {}).get(mode) or ""
+        if ov:
+            return ov
+        from guildmodel.core.layers import LAYER_STYLES
+        return theme.layer_color(LAYER_STYLES[layer][0], mode == "dark")
+
+    def _pick_layer_color(self, layer: str, mode: str) -> None:
+        c = QColorDialog.getColor(
+            QColor(self._layer_swatch_color(layer, mode)), self,
+            f"{layer} colour ({mode} mode)")
+        if not c.isValid():
+            return
+        self._layer_colors.setdefault(layer, {"light": "", "dark": ""})[mode] = c.name()
+        self._update_layer_swatches(layer)
+
+    def _reset_layer_color(self, layer: str) -> None:
+        self._layer_colors.pop(layer, None)
+        self._update_layer_swatches(layer)
+
+    def _update_layer_swatches(self, layer: str) -> None:
+        for mode in ("light", "dark"):
+            pm = QPixmap(16, 16)
+            pm.fill(QColor(self._layer_swatch_color(layer, mode)))
+            self._layer_btns[(layer, mode)].setIcon(QIcon(pm))
 
     # ── Hotkeys tab (rebindable shortcuts, M7.15) ─────────────────────────
 
@@ -2568,6 +2739,17 @@ class PrefsDialog(QDialog):
                 "model_color": self._model_color,
             },
             "toolpath_palette": self._tp_choices[self._tp_combo.currentIndex()][0],
+            "grid": {
+                "visible": self._grid_visible.isChecked(),
+                "spacing_mm": round(self._grid_spacing.value(), 1),
+                "major_every": int(self._grid_major.value()),
+                "minor_color": self._grid_minor_color,
+                "major_color": self._grid_major_color,
+                "major_width_px": round(self._grid_width.value(), 1),
+            },
+            # Only genuine overrides persist (an all-"" entry is a reset).
+            "layer_colors": {k: dict(v) for k, v in self._layer_colors.items()
+                             if (v.get("light") or v.get("dark"))},
         }
         if self._hotkey_rows:                     # M7.15 — only genuine overrides
             out["hotkeys"] = self.hotkey_overrides()
@@ -2583,6 +2765,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("GuildModel  —  Frame CAM")
         self.setMinimumSize(1200, 780)
+
+        # Unsaved-changes tracking (GuildDraw pattern): _dirty drives the title
+        # star, the close/open guards, and the autosave timer. _restoring > 0
+        # suppresses _mark_dirty during programmatic restores (startup prefs,
+        # project open, component-tab activation) so only real user edits count.
+        self._dirty = False
+        self._restoring = 1          # released at the end of __init__
+        self._baseline_dirty_once = False   # recovery: next load baselines dirty
 
         # Persistent preferences (~/.guildmodel/prefs.json — GuildDraw pattern)
         self._prefs = prefs_mod.load()
@@ -2726,6 +2916,20 @@ class MainWindow(QMainWindow):
         # CAM params, which fires cam_changed → handlers that read the geometry state
         # above. Connecting earlier crashed at startup ('_is_temple' not yet set).
         self._connect_signals()
+        self._restoring = 0          # startup restore done — edits now mark dirty
+
+        # Autosave + crash recovery (GuildDraw pattern): snapshot dirty work to
+        # a recovery slot every few minutes; offer to restore it on startup.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(self._AUTOSAVE_MS)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._autosave_timer.start()
+        QTimer.singleShot(400, self._offer_recovery)
+
+        # Diagnostic only (BUILDPLAN known issue): snapshot window state when
+        # VTK logs its once-per-session 0×0-framebuffer error.
+        self._fbo_probe = _FboProbe(self)
+        logging.getLogger().addHandler(self._fbo_probe)
 
     # ------------------------------------------------------------------ theme
 
@@ -3127,6 +3331,7 @@ class MainWindow(QMainWindow):
         self._clear_nest()                 # a new bed invalidates any prior nest
         self.bed_canvas.set_worktable(wt)
         self._refresh_worktable_panel()
+        self._mark_dirty()
         self.append_log(
             f"[worktable] {Path(path_str).name}: {len(wt.zones)} regions — "
             "click each and tag its role.")
@@ -3144,6 +3349,7 @@ class MainWindow(QMainWindow):
         self._clear_nest()
         self.bed_canvas.set_worktable(self._worktable)
         self._refresh_worktable_panel()
+        self._mark_dirty()
         self.status_lbl.setText("Loaded the Guild standard bed")
 
     # ---- nesting (BUILDPLAN M7.6) ------------------------------------------
@@ -3214,6 +3420,7 @@ class MainWindow(QMainWindow):
             for p in nest.unplaced:
                 self.append_log(f"[nest]   {p.label}: no free {p.kind} zone — unplaced")
         self._refresh_nest_render()
+        self._mark_dirty()
 
     def _on_nest_error(self, tb: str) -> None:
         self._close_progress()
@@ -3278,6 +3485,7 @@ class MainWindow(QMainWindow):
                 pl.nudge(dx, dy)
                 break
         self._refresh_nest_render()
+        self._mark_dirty()
 
     # ---- rotate a placed component (M-UX) ----------------------------------
 
@@ -3325,6 +3533,7 @@ class MainWindow(QMainWindow):
         pl.rotate(ddeg)
         self._refresh_nest_render()          # re-extract footprints + re-check clearance
         self.append_log(f"[nest] Rotated {pl.label} to {pl.rotation_deg:.0f}°.")
+        self._mark_dirty()
 
     def _on_bed_rot_spin(self) -> None:
         """The absolute-angle spinbox was edited — rotate to that bed angle."""
@@ -3352,6 +3561,7 @@ class MainWindow(QMainWindow):
         (the collision check + the program's safe-Z depend on it, M7.12.3)."""
         if self._worktable is not None:
             self._worktable.hold_down_height_mm = float(val)
+            self._mark_dirty()
         self._bed_removal = None
         self._bed_report = None
         self._update_view_toggles()
@@ -3364,6 +3574,7 @@ class MainWindow(QMainWindow):
         from guildmodel.core.project.schema import ProgramZero
         mode, x_ref, y_ref = self._bed_zero_combo.itemData(idx)
         self._worktable.program_zero = ProgramZero(mode=mode, x_ref=x_ref, y_ref=y_ref)
+        self._mark_dirty()
 
     def _on_generate_worktable_nest(self) -> None:
         """Post the whole nested bed as one ``worktable.nc`` (BUILDPLAN M7.7).
@@ -3503,6 +3714,8 @@ class MainWindow(QMainWindow):
             self._save_gmodel_to(self._project_path, announce=False)
             self.append_log(
                 f"[project] Updated {self._project_path.name} with the worktable program.")
+        else:
+            self._mark_dirty()       # program held in memory until Save Project
         self.status_lbl.setText("Worktable G-code ready")
         QMessageBox.information(self, "Worktable program", summary)
 
@@ -3661,6 +3874,7 @@ class MainWindow(QMainWindow):
         self.bed_canvas.refresh(self._worktable)
         self._refresh_worktable_panel(keep_selection=zid)
         self.append_log(f"[worktable] {zid} → {bed_role_label(z.role)}")
+        self._mark_dirty()
 
     def _refresh_worktable_panel(self, keep_selection=None) -> None:
         from guildmodel.core.project.schema import bed_role_label
@@ -3769,6 +3983,17 @@ class MainWindow(QMainWindow):
             "Generate the base-curve heat-forming block from the frame's lens")
         self._act_block.setEnabled(False)
         self._act_block.triggered.connect(self._on_generate_block)
+
+        self._act_send = QAction("Open in GuildSend", self)
+        self._act_send.setToolTip(
+            "Hand the saved .gmodel job to GuildSend, the ecosystem's sender —\n"
+            "programs, setup sheet, tools, and the tagged worktable travel whole")
+        self._act_send.setEnabled(False)          # tracks Export G-code
+        self._act_send.triggered.connect(self._on_open_in_guildsend)
+        # A stored program enables both actions — mirror the single authority
+        # instead of duplicating every setEnabled site.
+        self._act_export_nc.changed.connect(
+            lambda: self._act_send.setEnabled(self._act_export_nc.isEnabled()))
 
         self._act_worktable = QAction("Generate Worktable Program", self)
         self._act_worktable.setToolTip(
@@ -3930,6 +4155,7 @@ class MainWindow(QMainWindow):
             ("gcode", self._act_gcode, "Generate G-code", "build", True),
             ("export_nc", self._act_export_nc, "Export G-code", "build", True),
             ("export", self._act_export, "Export STL", "build", True),
+            ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),
             ("block", self._act_block, "Generate Base-Curve Block", "build", False),
             ("worktable_gen", self._act_worktable, "Generate Worktable Program", "build", False),
             ("view2d", self._act_view2d, "2D View", "view", True),
@@ -3981,6 +4207,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
         file_menu.addSeparator()
+        file_menu.addAction(self._act_send)
+        file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
         quit_act.setShortcut("Ctrl+Q")
         quit_act.triggered.connect(self.close)
@@ -4005,7 +4233,13 @@ class MainWindow(QMainWindow):
         self._act_dark.triggered.connect(self._on_toggle_dark_mode)
         settings_menu.addAction(self._act_dark)
         settings_menu.addSeparator()
-        settings_menu.addAction("Preferences…", self._open_preferences)
+        # Ctrl+, — the ecosystem-wide Preferences shortcut (GuildSend set the
+        # convention; GuildDraw and GuildModel now match). Kept on self: a
+        # text+slot addAction's wrapper is Python-owned in PySide6, and losing
+        # the last reference deletes the underlying QAction.
+        self._act_prefs = settings_menu.addAction(
+            "Preferences…", self._open_preferences)
+        self._act_prefs.setShortcut(QKeySequence("Ctrl+,"))
 
         help_menu = mb.addMenu("&Help")
         about_act = QAction("&About GuildModel", self)
@@ -4040,8 +4274,143 @@ class MainWindow(QMainWindow):
         prefs_mod.save(self._prefs)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        self._clear_autosave()
         self._save_window_state()
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------ unsaved changes
+
+    def _update_title(self) -> None:
+        """Window title: the open project (or source design) plus a dirty star."""
+        if self._project_path is not None:
+            name = self._project_path.name
+        else:
+            name = self._source_name or "Frame CAM"
+        star = "*" if self._dirty else ""
+        self.setWindowTitle(f"GuildModel  —  {name}{star}")
+
+    def _mark_dirty(self) -> None:
+        if self._restoring:
+            return
+        if not self._dirty:
+            self._dirty = True
+            self._update_title()
+
+    def _clear_dirty(self) -> None:
+        self._dirty = False
+        self._update_title()
+
+    def _confirm_discard(self) -> bool:
+        """If there are unsaved changes, offer Save / Discard / Cancel.
+
+        Returns True when it is safe to proceed (saved, discarded, or clean).
+        """
+        if not self._dirty:
+            return True
+        r = QMessageBox.warning(
+            self, "Unsaved changes",
+            "This project has unsaved changes.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if r == QMessageBox.StandardButton.Cancel:
+            return False
+        if r == QMessageBox.StandardButton.Save:
+            self._on_save_project()
+            return not self._dirty   # False if the save dialog was cancelled
+        return True   # Discard
+
+    def _post_load_baseline(self) -> None:
+        """Set the dirty baseline after a design finishes loading: clean for a
+        fresh open/import or a project reopen; dirty when the load restored the
+        crash-recovery snapshot (recovered work is unsaved by definition)."""
+        if self._baseline_dirty_once:
+            self._baseline_dirty_once = False
+            self._dirty = True
+            self._update_title()
+        else:
+            self._clear_dirty()
+
+    # ------------------------------------------------------------------ autosave + crash recovery
+
+    _AUTOSAVE_MS = 180_000   # 3 minutes
+
+    @staticmethod
+    def _autosave_dir() -> Path:
+        # Resolved lazily (not a class constant) so a redirected home — e.g.
+        # the test harness's per-test HOME — is honored.
+        return Path.home() / ".guildmodel" / "autosave"
+
+    def _autosave_paths(self) -> tuple[Path, Path]:
+        d = self._autosave_dir()
+        return d / "recovery.gmodel", d / "recovery.json"
+
+    def _do_autosave(self) -> None:
+        """Timer tick: snapshot dirty work to the recovery slot.
+
+        Must never interrupt the user — failures are silent; success shows a
+        brief status note.
+        """
+        if not self._dirty:
+            return
+        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
+            return                    # nothing loaded — nothing worth recovering
+        rec, meta = self._autosave_paths()
+        try:
+            self._autosave_dir().mkdir(parents=True, exist_ok=True)
+            tmp = Path(str(rec) + ".tmp")
+            self._write_gmodel(tmp)
+            os.replace(tmp, rec)
+            meta.write_text(json.dumps({
+                "source_path": str(self._project_path) if self._project_path else None,
+                "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }), encoding="utf-8")
+            self.statusBar().showMessage("Autosaved", 2000)
+        except Exception:
+            pass
+
+    def _clear_autosave(self) -> None:
+        for p in self._autosave_paths():
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _offer_recovery(self) -> None:
+        """On startup: if a recovery autosave exists, offer to restore it."""
+        rec, meta = self._autosave_paths()
+        if not rec.exists():
+            return
+        source = None
+        when = "an unknown time"
+        try:
+            info = json.loads(meta.read_text(encoding="utf-8"))
+            source = info.get("source_path")
+            when = info.get("saved_at", when)
+        except Exception:
+            pass
+        name = os.path.basename(source) if source else "an unsaved project"
+        r = QMessageBox.question(
+            self, "Recover unsaved work?",
+            f"GuildModel found autosaved work from {when}\n({name}).\n\n"
+            "Restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            self._clear_autosave()
+            return
+        self._baseline_dirty_once = True   # recovered work is unsaved
+        self._open_project(rec, remember=False)
+        # The recovered content belongs to the original project, not the
+        # recovery file: restore the real path and mark it unsaved.
+        self._project_path = (Path(source) if source and os.path.isfile(source)
+                              else None)
+        self._update_title()
 
     # ------------------------------------------------------------------ log
 
@@ -4091,6 +4460,14 @@ class MainWindow(QMainWindow):
             prefs_mod.save(self._prefs)
             self._rebuild_recent_menu()
             return
+        if not self._confirm_discard():
+            return
+        self.open_path(path)
+
+    def open_path(self, path: str) -> None:
+        """Open any supported file by suffix — a .gmodel project, a .gdraw/.svg
+        drawing, or a DXF. Used by the recent-files menu and by a file passed on
+        the command line (the installer's file association)."""
         lower = path.lower()
         if lower.endswith(".gmodel"):
             self._open_project(Path(path))
@@ -4139,13 +4516,11 @@ class MainWindow(QMainWindow):
             proj.components = comps
         return proj
 
-    def _save_gmodel_to(self, path: Path, announce: bool = True) -> bool:
+    def _write_gmodel(self, path: Path) -> None:
+        """Assemble the current session and write it to ``path``. No UI side
+        effects (raises on failure) — shared by Save and the autosave snapshot."""
         from guildmodel.core.project.gmodel import save_gmodel
         from guildmodel.core.post.machine import load_machine_profile
-        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
-            QMessageBox.warning(self, "No design",
-                                "Open a drawing (.gdraw) or import a DXF before saving a project.")
-            return False
         cam = self.params.cam_params()
         config_dir = Path(__file__).parent.parent / "config"
         machine = self._last_machine
@@ -4154,20 +4529,27 @@ class MainWindow(QMainWindow):
                 machine = load_machine_profile(cam.machine_name, config_dir).model_dump()
             except Exception:
                 machine = None
+        save_gmodel(
+            path, project=self._build_project_schema(),
+            dxf_bytes=self._source_dxf_bytes,
+            gdraw_bytes=self._source_gdraw_bytes,
+            programs=self._last_programs or None,
+            machine=machine, setup=self._last_setup, report=self._last_report,
+        )
+
+    def _save_gmodel_to(self, path: Path, announce: bool = True) -> bool:
+        if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
+            QMessageBox.warning(self, "No design",
+                                "Open a drawing (.gdraw) or import a DXF before saving a project.")
+            return False
         try:
-            save_gmodel(
-                path, project=self._build_project_schema(),
-                dxf_bytes=self._source_dxf_bytes,
-                gdraw_bytes=self._source_gdraw_bytes,
-                programs=self._last_programs or None,
-                machine=machine, setup=self._last_setup, report=self._last_report,
-            )
+            self._write_gmodel(path)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
         self._project_path = path
         self._add_recent(str(path))
-        self.setWindowTitle(f"GuildModel  —  {path.name}")
+        self._clear_dirty()          # saved — title refreshes without the star
         # Green only once a program is actually stored in the .gmodel (M5.2).
         self._program_stored = bool(self._last_programs)
         self._refresh_readiness()
@@ -4209,13 +4591,15 @@ class MainWindow(QMainWindow):
             prefs_mod.save(self._prefs)
 
     def _on_open_project(self) -> None:
+        if not self._confirm_discard():
+            return
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open GuildModel project", self._prefs["last_output_dir"],
             "GuildModel project (*.gmodel);;All files (*)")
         if path_str:
             self._open_project(Path(path_str))
 
-    def _open_project(self, path: Path) -> None:
+    def _open_project(self, path: Path, *, remember: bool = True) -> None:
         from guildmodel.core.project.gmodel import GModelError, load_gmodel
         try:
             bundle = load_gmodel(path)
@@ -4223,6 +4607,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", f"{path.name}:\n{exc}")
             return
         proj = bundle.project
+        # A programmatic restore, not user edits — don't let the param setters
+        # or the rebuild below mark the freshly-opened project dirty.
+        self._restoring += 1
+        try:
+            self._open_project_body(bundle, proj, path, remember)
+        finally:
+            self._restoring -= 1
+
+    def _open_project_body(self, bundle, proj, path: Path, remember: bool) -> None:
         # Restore params first so the post-import rebuild uses them.
         self.params.set_material(proj.cam.material.name)
         self.params.set_castle_params(proj.castle)
@@ -4239,8 +4632,9 @@ class MainWindow(QMainWindow):
         self._mesh_built = False
         self._program_stored = bundle.has_program()
         self._act_export_nc.setEnabled(bundle.has_program())
-        self._add_recent(str(path))
-        self.setWindowTitle(f"GuildModel  —  {path.name}")
+        if remember:
+            self._add_recent(str(path))
+        self._update_title()
         self.append_log(
             f"[project] Opened {path.name} "
             f"({'with program' if bundle.has_program() else 'no program yet'})")
@@ -4265,6 +4659,7 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "No DXF",
                                 "This project has no embedded design; parameters restored only.")
+            self._post_load_baseline()
 
     # ------------------------------------------------------------------ preferences
 
@@ -4277,7 +4672,8 @@ class MainWindow(QMainWindow):
         old_preview_res = self._prefs["preview_resolution_mm"]
         appearance_changed = any(
             p.get(k) != self._prefs.get(k)
-            for k in ("viewport", "render3d", "toolpath_palette"))
+            for k in ("viewport", "render3d", "toolpath_palette",
+                      "layer_colors", "grid"))
         self._prefs.update(p)
         prefs_mod.save(self._prefs)
 
@@ -4326,6 +4722,10 @@ class MainWindow(QMainWindow):
         self.params.stock_changed.connect(self._on_stock_changed)
         self.params.zone_hovered.connect(self._on_zone_hover)
         self.params.cam_changed.connect(self._on_cam_changed)
+        # Any user param edit means unsaved work (suppressed during restores).
+        self.params.castle_changed.connect(self._mark_dirty)
+        self.params.stock_changed.connect(self._mark_dirty)
+        self.params.cam_changed.connect(self._mark_dirty)
         self.view3d.stage_changed.connect(self._on_stage_changed)
         self.view3d.playback_step_changed.connect(self._on_playback_step)
         self.view3d.collision_paused.connect(self._on_collision_paused)
@@ -4715,6 +5115,16 @@ class MainWindow(QMainWindow):
     def _activate_workspace(self, index: int) -> None:
         """Make component ``index`` active: persist the current one, swap the
         working set, and re-render the shared views/dock/actions (M7.3)."""
+        # Activation pushes the component's stored params into the dock — a
+        # programmatic restore, not a user edit; it must not mark the project
+        # dirty even where a setter's change signal slips through.
+        self._restoring += 1
+        try:
+            self._activate_workspace_body(index)
+        finally:
+            self._restoring -= 1
+
+    def _activate_workspace_body(self, index: int) -> None:
         if not (0 <= index < len(self._workspaces)):
             return
         if self._active_ws != index:
@@ -4744,6 +5154,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ DXF import
 
     def _on_open(self) -> None:
+        if not self._confirm_discard():
+            return
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open DXF file", "", "DXF files (*.dxf);;All files (*)",
         )
@@ -4752,6 +5164,8 @@ class MainWindow(QMainWindow):
         self._load_dxf(Path(path_str))
 
     def _on_open_model(self) -> None:
+        if not self._confirm_discard():
+            return
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open GuildDraw drawing", self._prefs.get("last_output_dir") or "",
             "GuildDraw drawing (*.gdraw);;GuildDraw SVG (*.svg);;All files (*)")
@@ -4807,11 +5221,12 @@ class MainWindow(QMainWindow):
         self._dxf_loaded = True
         self._activate_workspace(0)
         if not from_project:
-            self.setWindowTitle(f"GuildModel  —  {path.name}")
+            self._update_title()
             self.status_lbl.setText(
                 f"Loaded drawing: {path.name}  ({len(populated)} of {len(workspaces)} "
                 f"components) — Build 3D to model them all")
             self._add_recent(str(path))
+        self._post_load_baseline()   # a just-loaded design is the clean baseline
 
     def _inject_gdraw_engraving(self, workspaces) -> None:
         """Outline GuildDraw engraving *text objects* into ENGRAVING polylines.
@@ -4892,6 +5307,9 @@ class MainWindow(QMainWindow):
             # No program for the fresh design yet — disable loose export.
             self._act_export_nc.setEnabled(False)
 
+        # Remembered for _on_import_finished: a .gmodel re-import of the embedded
+        # DXF (a temp file) must not land in the recent-files menu.
+        self._import_from_project = from_project
         self._import_worker = ImportWorker(path)
         self._import_thread = QThread()
         self._import_worker.moveToThread(self._import_thread)
@@ -4970,8 +5388,10 @@ class MainWindow(QMainWindow):
         self._dxf_loaded = True
         self._activate_workspace(0)
         self.status_lbl.setText(f"Loaded: {fname}")
-        if self._import_worker is not None:
+        if self._import_worker is not None and not self._import_from_project:
             self._add_recent(str(self._import_worker.path))
+            self._update_title()
+        self._post_load_baseline()   # a just-loaded design is the clean baseline
 
     def _on_import_error(self, tb: str) -> None:
         self.append_log("[ERROR] Import failed:\n" + tb)
@@ -5875,6 +6295,8 @@ class MainWindow(QMainWindow):
             if self._project_path is not None:
                 self._save_gmodel_to(self._project_path, announce=False)
                 self.append_log(f"[project] Updated {self._project_path.name} with the new program.")
+            else:
+                self._mark_dirty()   # program held in memory until Save Project
         # Fold this program's checks into the Inspector (M7.14). A fresh program
         # supersedes any prior cut report, so clear it until the sim re-runs.
         if w is not None:
@@ -5912,6 +6334,39 @@ class MainWindow(QMainWindow):
             self._partition is not None and self._partition.matched
             and self._lens_od is not None)
         self.status_lbl.setText("G-code cancelled")
+
+    def _on_open_in_guildsend(self) -> None:
+        """Hand the job to GuildSend (the ecosystem's sender). The saved
+        .gmodel travels whole — GuildSend reads it natively: programs, setup
+        sheet, tools, material, and the tagged worktable (its M7.2 bundle
+        path), so nothing is lost to a loose .nc export."""
+        if not self._last_programs:
+            QMessageBox.information(
+                self, "Open in GuildSend",
+                "Generate a program first — GuildSend runs the stored G-code.")
+            return
+        if self._project_path is None or self._dirty:
+            # The handoff is the file on disk; make sure it holds this session.
+            self._on_save_project()
+            if self._project_path is None or self._dirty:
+                return                            # save dialog cancelled
+        cmd = _find_guildsend()
+        if cmd is None:
+            QMessageBox.warning(
+                self, "GuildSend not found",
+                "GuildSend isn't installed (or isn't in its usual place).\n\n"
+                "Install GuildSend, then use File ▸ Open in GuildSend again —\n"
+                "or open the saved .gmodel from GuildSend's File ▸ Open Job.")
+            return
+        import subprocess
+        try:
+            subprocess.Popen(cmd + [str(self._project_path)])
+        except OSError as exc:
+            QMessageBox.warning(self, "Open in GuildSend",
+                                f"Could not launch GuildSend:\n{exc}")
+            return
+        self.append_log(f"[send] Opened {self._project_path.name} in GuildSend.")
+        self.status_lbl.setText(f"Sent to GuildSend — {self._project_path.name}")
 
     def _on_export_nc(self) -> None:
         """Write the generated program(s) to standalone .nc file(s) on demand
@@ -6044,6 +6499,56 @@ class MainWindow(QMainWindow):
 
 # ------------------------------------------------------------------ entry point
 
+class _FboProbe(logging.Handler):
+    """Diagnostic for the once-per-session VTK 0×0-framebuffer error (see the
+    BUILDPLAN known issue). VTK routes render errors through Python logging;
+    when the framebuffer one arrives, snapshot what the window was doing so
+    the next occurrence pinpoints the trigger. Remove once root-caused."""
+
+    def __init__(self, win) -> None:
+        super().__init__()
+        self._win = win
+
+    def emit(self, record) -> None:  # noqa: D102
+        try:
+            if "ramebuffer" not in record.getMessage():
+                return
+            w = self._win
+            v = w.view3d
+            msg = (f"[fbo-probe] view={w._current_view} "
+                   f"tab={w.component_tabs.currentIndex()} "
+                   f"minimized={w.isMinimized()} active={w.isActiveWindow()} "
+                   f"v3d hidden={v.isHidden()} size={v.width()}x{v.height()} "
+                   f"mode={v.mode()}")
+            print(msg, file=sys.__stderr__)
+            QTimer.singleShot(0, lambda m=msg: w.append_log(m))
+        except Exception:
+            pass   # a diagnostic must never break a render
+
+
+def _find_guildsend() -> Optional[list]:
+    """Locate GuildSend as a launchable command, or None.
+
+    Tried in order: the per-user install (Inno's ``{localappdata}\\Programs``
+    default), a ``guildsend`` on PATH (pip/venv install), then — for
+    developers — the sibling source checkout run through its own venv."""
+    import shutil
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        exe = Path(local) / "Programs" / "GuildSend" / "GuildSend.exe"
+        if exe.is_file():
+            return [str(exe)]
+    which = shutil.which("guildsend")
+    if which:
+        return [which]
+    sibling = Path(__file__).resolve().parents[3].parent / "GuildSend"
+    for py_name in ("pythonw.exe", "python.exe"):
+        py = sibling / ".venv" / "Scripts" / py_name
+        if py.is_file() and (sibling / "main.py").is_file():
+            return [str(py), str(sibling / "main.py")]
+    return None
+
+
 def _app_icon():
     """The GuildModel app/window icon, or None if the asset is missing.
 
@@ -6062,27 +6567,11 @@ def _app_icon():
 
 
 def main() -> None:
-    # Share one OpenGL context across the 3D-preview + cut-sim render windows
-    # (must be set before the QApplication exists). Qt+VTK best practice for apps
-    # embedding multiple QtInteractors — reduces wglMakeCurrent / context-loss
-    # failures on Windows when switching views or after the display sleeps.
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-    app = QApplication(sys.argv)
-    app.setApplicationName("GuildModel")
-    app.setOrganizationName("Guild")
-    from guildmodel import __version__
-    app.setApplicationVersion(__version__)
-    _icon = _app_icon()
-    if _icon is not None:
-        app.setWindowIcon(_icon)
-    app.setStyleSheet(theme.stylesheet(prefs_mod.load()["dark_mode"]))
-
-    win = MainWindow()
-    if _icon is not None:
-        win.setWindowIcon(_icon)
-    win.show()
-
-    sys.exit(app.exec())
+    """Back-compat entry (``python -m guildmodel.gui.app``). The real boot
+    sequence — splash before the heavy VTK import — lives in gui/boot.py,
+    which the ``guildmodel`` entry point and main.py use directly."""
+    from guildmodel.gui.boot import main as boot_main
+    boot_main()
 
 
 if __name__ == "__main__":

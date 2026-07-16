@@ -36,7 +36,8 @@ packaging = [
 ]
 
 [project.scripts]
-guildmodel = "guildmodel.gui.app:main"
+# boot, not app: the splash must show before the heavy VTK import (gui/boot.py)
+guildmodel = "guildmodel.gui.boot:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/guildmodel"]

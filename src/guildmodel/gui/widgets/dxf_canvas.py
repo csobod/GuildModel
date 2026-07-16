@@ -288,10 +288,20 @@ class DxfCanvas(QWidget):
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _PLACEHOLDER_TEXT)
 
     def _draw_grid(self, painter: QPainter) -> None:
-        """Light 10-mm grid."""
-        grid_mm = 10.0
-        pen = QPen(QColor(self._palette.grid), 0.5, Qt.PenStyle.DotLine)
-        painter.setPen(pen)
+        """Grid from the theme's config (Preferences ▸ Appearance ▸ Grid):
+        spacing, a heavier major line every Nth, optional color overrides.
+        Shipped config = the historical light 10-mm dotted grid."""
+        cfg = theme.grid_config()
+        if not cfg["visible"]:
+            return
+        grid_mm = float(cfg["spacing_mm"])
+        major_every = int(cfg["major_every"])
+        minor = QColor(cfg["minor_color"] or self._palette.grid)
+        major = QColor(cfg["major_color"] or cfg["minor_color"]
+                       or self._palette.grid)
+        minor_pen = QPen(minor, 0.5, Qt.PenStyle.DotLine)
+        major_pen = QPen(major, float(cfg["major_width_px"]),
+                         Qt.PenStyle.DotLine)
 
         # find world bounds of the widget
         x0, y0 = self._screen_to_world(0, 0)
@@ -299,10 +309,14 @@ class DxfCanvas(QWidget):
         xmin, xmax = sorted([x0, x1])
         ymin, ymax = sorted([y0, y1])
 
+        def _is_major(coord_mm: float) -> bool:
+            return major_every > 1 and round(coord_mm / grid_mm) % major_every == 0
+
         # vertical lines
         gx = math.floor(xmin / grid_mm) * grid_mm
         while gx <= xmax:
             sp = self._world_to_screen(gx, 0)
+            painter.setPen(major_pen if _is_major(gx) else minor_pen)
             painter.drawLine(int(sp.x()), 0, int(sp.x()), self.height())
             gx += grid_mm
 
@@ -310,6 +324,7 @@ class DxfCanvas(QWidget):
         gy = math.floor(ymin / grid_mm) * grid_mm
         while gy <= ymax:
             sp = self._world_to_screen(0, gy)
+            painter.setPen(major_pen if _is_major(gy) else minor_pen)
             painter.drawLine(0, int(sp.y()), self.width(), int(sp.y()))
             gy += grid_mm
 
@@ -370,10 +385,9 @@ class DxfCanvas(QWidget):
         for layer, curves in self._layers.items():
             if not self._visible.get(layer, True):
                 continue
-            color_hex, width = LAYER_STYLES.get(
-                layer, (self._palette.annotation, 1.0)
-            )
-            color_hex = theme.layer_color(color_hex, self._dark)
+            _, width = LAYER_STYLES.get(layer, (self._palette.annotation, 1.0))
+            # By NAME, so the maker's Preferences ▸ Layers override wins.
+            color_hex = theme.layer_color_for(layer, self._dark)
             pen = QPen(QColor(color_hex), width)
             pen.setCosmetic(True)   # width in screen px regardless of zoom
             painter.setPen(pen)

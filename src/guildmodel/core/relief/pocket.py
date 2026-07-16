@@ -1,4 +1,14 @@
-"""Hinge / shield pocket generator."""
+"""Hinge / shield pocket generator (dormant — CHA-catalog companion).
+
+Production hinge pockets are cut by ``cam.castle_ops.hinge_pocket_op`` (a
+pocketing cascade WITH inward tool-radius offsets); this module is kept with
+``relief/hinge.py`` for the post-1.0 catalog work.
+
+WARNING — no inward tool-radius offset: :func:`hinge_pocket` traces the given
+polygon's boundary at full depth as-is. The CALLER must pre-offset the polygon
+inward by the tool radius, or the cut pocket comes out one tool radius
+oversize all around.
+"""
 from __future__ import annotations
 from shapely.geometry import Polygon
 
