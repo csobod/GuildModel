@@ -16,8 +16,10 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 # tool types the geometry understands. `vbit` carries an included angle for the
-# M7.9 visualizer / engraving profile; the others map to ToolProfile kinds.
-TOOL_TYPES = ("flat", "ball", "toroid", "vbit")
+# M7.9 visualizer / engraving profile; `groove` is a side-cutting V-form (the
+# lens-bevel drageoir, V1) — never swept by the top-down cut sim; the others
+# map to ToolProfile kinds.
+TOOL_TYPES = ("flat", "ball", "toroid", "vbit", "groove")
 
 # Optional per-tool feed/limit fields (None = fall back to the material preset).
 _FEED_FIELDS = ("feed_rate_mmpm", "plunge_rate_mmpm", "spindle_rpm", "max_doc_mm")
@@ -28,10 +30,13 @@ class ToolSpec(BaseModel):
     the tool_store map; this model holds the geometry + feeds."""
 
     display_name: str = ""
-    type: str = "flat"                       # flat | ball | toroid | vbit
+    type: str = "flat"                       # flat | ball | toroid | vbit | groove
     diameter_mm: float = 3.175
     corner_radius_mm: float = 0.0            # toroid corner radius
     included_angle_deg: float = 0.0          # vbit included (tip) angle
+    groove_depth_mm: float = 0.0             # groove form: radial V depth
+    groove_width_mm: float = 0.0             # groove form: V opening height
+    neck_diameter_mm: float = 0.0            # groove form: relieved neck above the head
     flutes: int = 1
     flute_length_mm: float = 0.0             # usable cutting depth (0 = unspecified)
     shank_diameter_mm: float = 0.0
@@ -69,6 +74,11 @@ class ToolSpec(BaseModel):
         }
         if self.type == "vbit" and self.included_angle_deg:
             out["included_angle_deg"] = self.included_angle_deg
+        if self.type == "groove":
+            out["groove_depth_mm"] = self.groove_depth_mm
+            out["groove_width_mm"] = self.groove_width_mm
+            if self.neck_diameter_mm:
+                out["neck_diameter_mm"] = self.neck_diameter_mm
         if self.flute_length_mm:
             out["flute_length_mm"] = self.flute_length_mm
         if self.shank_diameter_mm:

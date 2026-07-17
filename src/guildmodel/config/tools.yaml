@@ -84,6 +84,24 @@ flat_3mm:
   flutes: 2
   notes: "Profile cut and hinge pockets."
 
+groove_drageoir:
+  display_name: "6 mm Lens Groove Cutter (fraise drageoir)"
+  type: groove
+  diameter_mm: 6.0              # cutting head diameter at the V apex
+  radius_mm: 3.0
+  flutes: 3
+  flute_length_mm: 2.0          # the form head's height (side-cutting)
+  groove_depth_mm: 0.75         # radial V depth of the form
+  groove_width_mm: 2.0          # V opening height at the rim face
+  neck_diameter_mm: 3.5         # relieved neck above the head
+  shank_diameter_mm: 6.0
+  feed_rate_mmpm: 400.0
+  plunge_rate_mmpm: 300.0
+  spindle_rpm: 18000
+  notes: "Side-cutting V-form for the lens bevel groove (V1) — matches the
+    Fraisesoutillages N°2 'fraise drageoir' (6 mm head, ~106° included V,
+    2 mm flute). RPM is clamped to the machine profile at post time."
+
 flat_6mm:
   display_name: "6 mm Flat End Mill"
   type: flat

@@ -24,7 +24,9 @@ from __future__ import annotations
 from shapely.geometry import Polygon
 
 from ..project.schema import CastleCamParams, TempleParams
-from .castle_ops import CamOp, _rdp, contour_op, hinge_pocket_op, resolve_tool
+from .castle_ops import (
+    CamOp, _rdp, contour_op, hinge_pocket_op, order_paths_for_travel,
+    resolve_tool)
 
 Point3 = tuple[float, float, float]
 
@@ -46,6 +48,12 @@ def engrave_op(
         pts: list[Point3] = [(float(x), float(y), float(depth_z)) for x, y in curve]
         if len(pts) >= 2:
             op.paths.append(_rdp(pts, simplify_tol_mm))
+    # Strokes arrive in draw/file order; cut them nearest-neighbour instead —
+    # multi-stroke text otherwise hops the length of the part between strokes
+    # (measured 6× the necessary air on a 40-stroke engraving). A pure
+    # permutation: every stroke's geometry and direction are unchanged (the
+    # M12.1 guarantee).
+    op.paths = order_paths_for_travel(op.paths)
     return op
 
 

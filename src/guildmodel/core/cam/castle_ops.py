@@ -713,6 +713,87 @@ class DepthReachWarning:
                 f"the shank would rub (use a longer tool or a shallower pass)")
 
 
+# Radial clearance the drageoir head keeps off the channel walls when it
+# plunges (each side), before feeding out into the rim (V1 lens groove).
+GROOVE_ENTRY_CLEARANCE_MM = 0.3
+
+
+def lens_groove_op(
+    lens_polys: list[Polygon],
+    groove,                        # LensGrooveParams
+    tool: dict,
+) -> CamOp:
+    """Side-cut the lens-bevel V with a drageoir (V1): one constant-Z climb
+    loop per lens, tool center offset so the form's apex lands ON the lens
+    contour — the groove bottom IS the boxed dimension. The path plunges
+    inside the already-widened eyewire channel (clear of both walls), feeds
+    radially out to engagement, runs the loop, and feeds back in; the posted Z
+    is the TOOL TIP (the maker touches off the tip on the datum), apex =
+    tip + form half-width."""
+    op = CamOp("Lens Groove", tool=tool)
+    head_r = float(tool.get("radius_mm") or 3.0)
+    form_w = float(tool.get("groove_width_mm") or groove.width_mm)
+    depth = float(groove.depth_mm)
+    tip_z = float(groove.anterior_offset_mm) - form_w / 2.0
+    pull = depth + GROOVE_ENTRY_CLEARANCE_MM
+    for lens in lens_polys:
+        center = lens.buffer(-head_r, join_style="round")
+        if center.is_empty:
+            continue
+        if center.geom_type == "MultiPolygon":
+            center = max(center.geoms, key=lambda g: g.area)
+        ring = [(float(x), float(y)) for x, y in center.exterior.coords]
+        # Climb (CW spindle): an inside contour runs CCW — the eyewire sense
+        # (M12.5); the buffered exterior's winding isn't guaranteed.
+        area2 = sum(x0 * y1 - x1 * y0
+                    for (x0, y0), (x1, y1) in zip(ring, ring[1:]))
+        if area2 < 0:
+            ring.reverse()
+        cx, cy = center.centroid.x, center.centroid.y
+        sx, sy = ring[0]
+        d = math.hypot(sx - cx, sy - cy) or 1.0
+        entry = (sx + (cx - sx) / d * pull, sy + (cy - sy) / d * pull)
+        pts = [entry] + ring + [entry]
+        op.paths.append([(x, y, tip_z) for x, y in pts])
+    return op
+
+
+def groove_channel_width_mm(tool: dict) -> float:
+    """The eyewire-channel width the drageoir needs to descend freely: its
+    head plus entry clearance on both sides (feeding out only ADDS inner
+    clearance, so the requirement is depth-independent)."""
+    return (float(tool.get("diameter_mm") or 6.0)
+            + 2.0 * GROOVE_ENTRY_CLEARANCE_MM)
+
+
+def groove_warnings(groove, tool: dict, wall_top_z: float) -> list[str]:
+    """Soft checks the GUI/log surface before cutting a groove (V1)."""
+    out: list[str] = []
+    if (tool.get("type") or "") != "groove":
+        out.append(
+            f"Lens Groove is assigned '{tool.get('display_name') or '?'}' — "
+            "assign a groove-type (drageoir) form cutter.")
+    form_d = float(tool.get("groove_depth_mm") or 0.0)
+    form_w = float(tool.get("groove_width_mm") or 0.0)
+    if form_d and groove.depth_mm > form_d + 1e-6:
+        out.append(
+            f"Groove depth {groove.depth_mm:.2f} mm exceeds the tool form's "
+            f"{form_d:.2f} mm — the cut groove will be the tool's shape.")
+    if form_w and abs(groove.width_mm - form_w) > 0.05:
+        out.append(
+            f"Groove width {groove.width_mm:.2f} mm ≠ the tool form's "
+            f"{form_w:.2f} mm — the cut groove will be the tool's shape.")
+    if groove.anterior_offset_mm + groove.width_mm / 2.0 >= wall_top_z:
+        out.append(
+            "Groove flank reaches the eyewire wall top — lower the anterior "
+            "offset or narrow the groove.")
+    if groove.anterior_offset_mm - groove.width_mm / 2.0 <= 0.0:
+        out.append(
+            "Groove flank reaches the anterior face — raise the anterior "
+            "offset or narrow the groove.")
+    return out
+
+
 def depth_reach_warnings(
     ops: list[CamOp], stock_top_mm: float,
 ) -> list[DepthReachWarning]:
@@ -727,6 +808,8 @@ def depth_reach_warnings(
         t = op.tool
         if not t:
             continue
+        if (t.get("type") or "") == "groove":
+            continue   # side cutter: its head rides at depth by design (V1)
         flute = float(t.get("flute_length_mm") or 0.0)
         if flute <= 0:
             continue
@@ -832,7 +915,8 @@ def generate_castle_program(
     """
     params = params or CastleCamParams()
     stock = castle.stock
-    body = relief.partition.body
+    body = relief.mask_body           # aperture holes when the lens groove is on
+    groove = relief.groove            # LensGrooveParams | None (V1)
     skin = castle.onion_skin_mm
     allowance = castle.hand_finishing_allowance_mm
     top_z = stock.total_pad_height_mm
@@ -871,16 +955,53 @@ def generate_castle_program(
     rough.tool, fine.tool = rough_tool, fine_tool
     ops += [rough, fine]
 
-    # 4 — eyewires (lens holes are the body's interior rings)
+    # 4 — eyewires (lens holes are the body's interior rings; with the groove
+    # on these are the UNDERSIZED apertures — the rim lip)
     _p("Eyewires", 4)
     eyewire_tool = _tool_for("Eyewires")
-    lenses = [Polygon(ring) for ring in body.interiors]
+    apertures = [Polygon(ring) for ring in body.interiors]
+    def _groove_tool() -> dict:
+        # Explicit op_tools wins, then the groove param's tool, then the
+        # shipped drageoir. (Not in POSTERIOR_OPS — see the schema note.)
+        name = (params.op_tools.get("Lens Groove")
+                or getattr(groove, "tool", "") or "groove_drageoir")
+        return resolve_tool(name, tools_cfg or {}, default=tool)
+
+    contour_polys: list[Polygon] = []
+    if groove is not None:
+        # Widen the channel so the drageoir head descends freely: extra inner
+        # rings, interleaved per lens so each eyewire finishes ring-major.
+        groove_tool = _groove_tool()
+        need = groove_channel_width_mm(groove_tool)
+        slot = eyewire_tool["radius_mm"] * 2.0
+        widen = max(0.0, need - slot)
+        n_extra = int(math.ceil(widen / (slot * 0.9))) if widen > 0 else 0
+        for ap in apertures:
+            contour_polys.append(ap)
+            for k in range(1, n_extra + 1):
+                inner = ap.buffer(-(widen * k / n_extra), join_style="round")
+                if inner.is_empty:
+                    continue
+                if inner.geom_type == "MultiPolygon":
+                    inner = max(inner.geoms, key=lambda g: g.area)
+                contour_polys.append(inner)
+    else:
+        contour_polys = apertures
     op4 = contour_op(
-        "Eyewires", lenses, "inside", eyewire_tool["radius_mm"],
+        "Eyewires", contour_polys, "inside", eyewire_tool["radius_mm"],
         allowance, top_z, skin, params,
     )
     op4.tool = eyewire_tool
     ops.append(op4)
+
+    # 4b — lens bevel groove (V1, optional): side-cut the V into each rim lip
+    # with the drageoir, bottoming exactly on the original LENS contour. Runs
+    # AFTER the eyewires open the channel, BEFORE the perimeter releases the
+    # part. Not a contour op: entry is a radial feed, never a ramp.
+    if groove is not None and relief.groove_lens_polys:
+        op4b = lens_groove_op(relief.groove_lens_polys, groove, _groove_tool())
+        if op4b.paths:
+            ops.append(op4b)
 
     # 5 — perimeter
     _p("Perimeter", 5)
@@ -900,6 +1021,7 @@ _OP_STRATEGIES = {
     "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
     "Fine Relief": "Raster drop-cutter",
     "Eyewires": "Contour 2D (inside) · onion skin",
+    "Lens Groove": "Groove side-cut · radial entry (drageoir)",
     "Perimeter": "Contour 2D (outside) · onion skin",
     "Engraving": "Engrave · trace at depth",
     "Temple Profile": "Contour 2D (outside) · onion skin",

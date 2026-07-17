@@ -48,6 +48,17 @@ The sidebar shows what the active component needs: for a frame front —
 - **Model** — per-zone tower heights, footing radius, hinge-pocket depth, and
   the optional posterior finishing features: pad-splay chamfer, bezeled
   eyewire, and bridge projection relief (all off by default).
+- **Lens Bevel Groove** (off by default) — the drageoir V-groove in each
+  eyewire wall that seats the lens bevel. You set the apex height from the
+  anterior face and the groove's depth and width (the included angle shows
+  read-only — the shipped 6 mm *fraise drageoir* form is ≈106°). GuildModel
+  handles the geometry automatically: the visible aperture is cut smaller by
+  the groove depth so the groove bottom lands exactly on your drawn LENS
+  contour (the boxed size stays honest), and the eyewire channel is widened
+  so the grooving tool's head can descend and feed sideways into the rim.
+  The groove appears in the 3D model and the exported STL, adds a "Lens
+  Groove" operation between Eyewires and Perimeter, and needs a groove-type
+  form cutter in the tool library.
 - **Stock** — blank dimensions and the pad block.
 - **Build 3D** builds every loaded component's model in one pass (each tab
   caches its own mesh). The view strip has camera presets (Iso / Top / Front /

@@ -97,6 +97,28 @@ class StockDefinition(BaseModel):
         return self.blank_thickness_mm + pad
 
 
+class LensGrooveParams(BaseModel):
+    """Lens bevel groove — the drageoir V-groove in each eyewire wall (V1).
+
+    The groove seats the lens bevel: its BOTTOM lands exactly on the LENS
+    contour (the boxed dimension stays honest), so with the groove enabled the
+    visible aperture (the rim lip) is cut smaller by ``depth_mm`` and the
+    groove is cut outward from it with a side-cutting grooving tool (fraise
+    drageoir). The eyewire channel is widened automatically so the tool's head
+    can descend into the open channel and feed radially into the wall.
+    ``anterior_offset_mm`` positions the groove APEX above the anterior face
+    (Z = 0, the design-frame convention). ``width_mm``/``depth_mm`` describe
+    the V (included angle = 2·atan((width/2)/depth), shown read-only in the
+    GUI); defaults match the shipped ``groove_drageoir`` form cutter. Off by
+    default: the bare-castle gates hold, and many makers groove by hand.
+    """
+    enabled: bool = False
+    anterior_offset_mm: float = 1.5   # apex height above the anterior face
+    depth_mm: float = 0.75            # radial cut into the rim (= lip undersize)
+    width_mm: float = 2.0             # V opening height at the rim face
+    tool: str = "groove_drageoir"     # side-cutting form tool
+
+
 class PadSplayParams(BaseModel):
     """Posterior chamfer under the bridge — the frame's "pad splay" (M13.1).
 
@@ -167,11 +189,16 @@ class CastleParams(BaseModel):
     pad_splay: PadSplayParams = Field(default_factory=PadSplayParams)
     eyewire_bezel: EyewireBezelParams = Field(default_factory=EyewireBezelParams)
     bridge_relief: BridgeReliefParams = Field(default_factory=BridgeReliefParams)
+    lens_groove: LensGrooveParams = Field(default_factory=lambda: LensGrooveParams())
 
 
 # Canonical posterior op names, in machining order. These are the keys for the
 # per-operation tool assignment (BUILDPLAN M6.1) and the labels the post / sim /
-# cut-time model already canonicalize on.
+# cut-time model already canonicalize on. The optional "Lens Groove" op (V1) is
+# deliberately NOT listed: `tools_in_use()` iterates this tuple, and a groove
+# entry would make every job read as multi-tool even with the groove off. Its
+# tool comes from `LensGrooveParams.tool` (an explicit `op_tools["Lens Groove"]`
+# still overrides).
 POSTERIOR_OPS: tuple[str, ...] = (
     "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
 )

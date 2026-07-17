@@ -2854,6 +2854,102 @@ GitHub remote configured yet; publishing is a separate, later step.
    verify, the worktable, the GuildSend handoff, preferences, data safety,
    fixed shortcuts.
 
+---
+
+## Toolpath-efficiency re-audit *(2026-07-16, 524 tests)*
+
+> User question: does generation still produce the most efficient path?
+> Method: profile a freshly generated demo front at current defaults
+> (F1200 / stepdown 4.0, Nomad dynamics), verify each M12 win empirically,
+> hypothesis-test the remaining overhead.
+
+**Verified still optimal:** per-op path ordering (a from-scratch greedy
+nearest-neighbour reorder matches the emitted order to the mm in every op),
+spiral stitching (48 → 26+22 relief entries), arc fitting live (386 G2/G3
+lines posted), feeds/DOC at their deliberate ceilings.
+
+**Where the 6.53 min cycle goes:** pure cutting floor 3.69 min + entries/
+ramps/links 0.60 + **accel/junction losses ≈ 1.0 min** + rapids 0.56.
+The junction loss is physics, not waste: relief is 0.3 mm-fidelity chords
+(≈50 % of segments < 0.5 mm) and GRBL can't corner through them at F1200.
+Falsified the simplification counter-move — RDP at 0.01 mm merges only
+65 / 3991 relief segments (the chords follow real curvature); recovering
+that minute would trade surface fidelity. Not taken. M12's rejections
+(trochoidal, rest-machining) reconfirmed.
+
+**Gap found + FIXED: engraving stroke order.** `engrave_op` cut strokes in
+draw/file order — on a synthetic 40-stroke temple text that is 1352 mm of
+inter-stroke air vs 220 mm ordered (6×). Now routed through
+`order_paths_for_travel` (pure permutation, geometry/direction untouched;
++1 test in test_path_order_m12.py). M12 missed it because the demo front
+has no engraving.
+
+**Declined by user:** a 0.15 mm/tooth "performance" material preset — makers
+tune feeds for their own machine; the M7.10 chip-load read-out already guides
+them.
+
+---
+
+## M14 — Lens bevel groove / drageoir *(2026-07-17, user-requested V1 feature)*
+
+> Toggleable V-groove in each eyewire wall to seat the lens bevel, cut with a
+> side-cutting grooving form tool (the Fraisesoutillages N°2 "fraise
+> drageoir", user's Fusion tool library). Off by default — every bare-castle
+> gate (M2 STL / M3 NC / multitool) holds bit-for-bit, verified.
+
+**The geometric contract** (the user's "just enough material removed"):
+1. The groove BOTTOM lands exactly on the drawn LENS contour — the boxed
+   dimension stays honest — so the visible aperture (the rim lip) is cut
+   SMALLER by `depth_mm`. One change point: `build_castle_relief` shrinks the
+   mask holes (`_undersized_lens_body`) and everything keys off
+   `relief.mask_body` (raster mask, conformed mesh wall, eyewire contour);
+   the original lens polys ride on `relief.groove_lens_polys`. The lip
+   annulus has no zone → the existing orphan nearest-zone fill gives it the
+   neighbouring eyewire-wall height.
+2. The eyewires cut a TOOL-WIDTH slot around a retained plug — a 6 mm
+   drageoir head can't descend into a 3.175 mm channel. With the groove on,
+   the Eyewires op interleaves extra inner rings per lens
+   (`groove_channel_width_mm` = head + 2×0.3 mm clearance, depth-independent:
+   feeding out only ADDS inner clearance).
+3. **Lens Groove op** (after Eyewires, before Perimeter): one constant-Z
+   climb loop per lens at tool-center = lens ⊖ head_r (the form apex cuts TO
+   the lens contour); radial entry/exit inside the cleared channel — never a
+   ramp or plunge into material; posted Z = TOOL TIP (touch off the tip),
+   apex = tip + form half-width. Constant-Z → arc-fit applies.
+
+**Schema:** `LensGrooveParams` (enabled / anterior_offset 1.5 / depth 0.75 /
+width 2.0 / tool) on `CastleParams.lens_groove`. Deliberately NOT in
+POSTERIOR_OPS — `tools_in_use()` iterates it and a groove entry would make
+every job multi-tool with the groove off; the workers instead force
+tool_settings whenever `relief.groove` is set, and the tool resolves
+op_tools["Lens Groove"] → `groove.tool` → shipped default.
+
+**Tooling:** `groove_drageoir` shipped in tools.yaml (6 mm head, 2 mm flute,
+0.75 form depth, 3.5 neck, 3 flutes, 400/300/18000 from the vendor preset);
+`ToolSpec` gains type "groove" + groove_depth/width/neck fields.
+`depth_reach_warnings` skips groove tools (the head rides at depth by
+design); new `groove_warnings` flags a non-groove tool, params exceeding the
+tool's form, and flanks breaking the wall top / anterior face.
+
+**Mesh (STL-printable):** `_groove_rim` replaces the straight aperture-wall
+ribbon with a four-band strip through three new vertex rings — flank top,
+APEX pushed outward onto the original lens contour (`nearest_points`), flank
+bottom — watertight by shared ring vertices; clamped flanks collapse to
+zero-area faces that `process=True` removes. Groove-off takes the exact old
+code path.
+
+**Sim:** the drageoir cuts SIDEWAYS — a top-down Z-buffer sweep of its loop
+would falsely carve the rim lip from above. The grouped path extraction drops
+moves tagged with a groove-TYPE tool (exact: a form cutter never shares a
+tool slot); the channel it rides in is verified by the eyewire sweep.
+
+**GUI:** "Lens Bevel Groove" group on the Model tab (toggle, apex-from-
+anterior, depth, width, derived included-angle read-out ≈106° at the shipped
+form, tool combo fed by the tool store); persists per component and through
+the `.gmodel`.
+
+Suite 524 → **534** (+10, tests/test_lens_groove.py).
+
 **Same-day view-strip polish (user request on inspection):** the view strip's
 divider was a bare `QFrame` VLine — full strip height, and white on the dark
 theme. Replaced with `_StripSep` (viewer_3d.py), the main toolbar's ToolSep

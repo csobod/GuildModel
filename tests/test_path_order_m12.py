@@ -64,3 +64,22 @@ def test_stitch_connector_rides_the_surface():
     assert len(out) == 1
     mids = [q for q in out[0] if 2.0 < q[0] < 5.0]
     assert mids and all(abs(q[2] - 5.0) < 1e-6 for q in mids)   # stays on the surface
+
+
+# ── engraving strokes cut nearest-neighbour (V1-prep toolpath re-audit) ────────
+def test_engrave_strokes_ordered_for_travel():
+    """Engraving strokes arrive in draw/file order; the op must cut them
+    nearest-neighbour — multi-stroke text otherwise hops the length of the
+    part between strokes (measured 6× the necessary air)."""
+    from guildmodel.core.cam.temple_ops import engrave_op
+    # two clusters, interleaved in "file order" like real draw order
+    strokes = [[(0.0, 0.0), (1.0, 0.0)], [(50.0, 0.0), (51.0, 0.0)],
+               [(2.0, 0.0), (3.0, 0.0)], [(52.0, 0.0), (53.0, 0.0)]]
+    op = engrave_op(strokes, depth_z=3.7, tool={"name": "engrave_vbit",
+                                                "diameter_mm": 0.5})
+    assert _travel(op.paths) < _travel(
+        [[(x, y, 3.7) for x, y in s] for s in strokes])
+    xs = [p[0][0] for p in op.paths]
+    assert xs == sorted(xs)                   # near strokes grouped, one sweep
+    assert all(len(p) == 2 for p in op.paths)  # geometry untouched
+    assert all(p[0][2] == 3.7 for p in op.paths)

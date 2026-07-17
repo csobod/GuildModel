@@ -48,8 +48,8 @@ from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BridgeReliefParams, CastleCamParams, CastleParams,
     ComponentKind, DEFAULT_OP_TOOLS, EyewireBezelParams, FootingFillet,
-    FootingSchedule, PadSplayParams, POSTERIOR_OPS, ProgramZero,
-    StockDefinition, TempleParams, ZoneThicknesses,
+    FootingSchedule, LensGrooveParams, PadSplayParams, POSTERIOR_OPS,
+    ProgramZero, StockDefinition, TempleParams, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -598,6 +598,75 @@ class ParamsPanel(QTabWidget):
 
         lay.addWidget(grp)
 
+        # --- Lens bevel groove (V1): the drageoir V in each eyewire wall ---
+        grp = QGroupBox("Lens Bevel Groove")
+        glay = QVBoxLayout(grp)
+        lg = LensGrooveParams()
+        self.groove_enable = QCheckBox("Cut lens bevel groove (drageoir)")
+        self.groove_enable.setChecked(lg.enabled)
+        self.groove_enable.setToolTip(
+            "V-groove each eyewire wall to seat the lens bevel. The visible\n"
+            "aperture (the rim lip) is cut smaller by the groove depth so the\n"
+            "groove bottom lands exactly on the drawn LENS contour, and the\n"
+            "eyewire channel is widened so the grooving tool's head can enter.\n"
+            "Needs a groove-type form cutter — the shipped 6 mm fraise drageoir.")
+        glay.addWidget(self.groove_enable)
+        gform = QFormLayout()
+        gform.setContentsMargins(8, 0, 0, 0)
+        gform.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.groove_offset = _spinbox(lg.anterior_offset_mm, 0.3, 6.0,
+                                      step=0.1, decimals=2)
+        self.groove_offset.setToolTip(
+            "Groove apex height above the anterior (front) face.")
+        self.groove_depth = _spinbox(lg.depth_mm, 0.2, 2.0, step=0.05, decimals=2)
+        self.groove_depth.setToolTip(
+            "Radial depth into the rim — also how much smaller the visible\n"
+            "aperture is than the drawn lens.")
+        self.groove_width = _spinbox(lg.width_mm, 0.5, 4.0, step=0.1, decimals=2)
+        self.groove_width.setToolTip("V opening height at the rim face.")
+        self.groove_angle_lbl = QLabel("")
+        self.groove_angle_lbl.setObjectName("hintLabel")
+        self.groove_angle_lbl.setToolTip(
+            "Included V angle, derived from depth and width — match it to the\n"
+            "grooving tool's form (the shipped drageoir is ≈106°).")
+        self.groove_tool = QComboBox()
+        self.groove_tool.addItems(_tool_names())
+        idx = self.groove_tool.findText(lg.tool)
+        if idx >= 0:
+            self.groove_tool.setCurrentIndex(idx)
+        self.groove_tool.setToolTip(
+            "The side-cutting form tool for the groove (a groove-type tool).")
+        gform.addRow("Apex from anterior:", self.groove_offset)
+        gform.addRow("Depth:", self.groove_depth)
+        gform.addRow("Width:", self.groove_width)
+        gform.addRow("Included angle:", self.groove_angle_lbl)
+        gform.addRow("Tool:", self.groove_tool)
+        glay.addLayout(gform)
+
+        self.groove_enable.toggled.connect(self._on_groove_toggled)
+        self.groove_enable.toggled.connect(self.castle_changed)
+        for sb in (self.groove_offset, self.groove_depth, self.groove_width):
+            sb.valueChanged.connect(self._update_groove_angle)
+            sb.valueChanged.connect(self.castle_changed)
+        self.groove_tool.currentIndexChanged.connect(self.castle_changed)
+        self._on_groove_toggled(lg.enabled)
+        self._update_groove_angle()
+
+        lay.addWidget(grp)
+
+    def _on_groove_toggled(self, on: bool) -> None:
+        """Grey out the groove controls when the groove is off."""
+        for w in (self.groove_offset, self.groove_depth, self.groove_width,
+                  self.groove_tool):
+            w.setEnabled(on)
+
+    def _update_groove_angle(self) -> None:
+        """Included V angle read-out: 2·atan((width/2) / depth)."""
+        import math as _math
+        d = max(self.groove_depth.value(), 1e-6)
+        ang = 2.0 * _math.degrees(_math.atan((self.groove_width.value() / 2.0) / d))
+        self.groove_angle_lbl.setText(f"{ang:.0f}°")
+
     def _bridge_relief_spinboxes(self) -> list[QDoubleSpinBox]:
         return [self.bridge_relief_width, self.bridge_relief_depth,
                 self.bridge_relief_taper, self.bridge_relief_clamp]
@@ -1092,7 +1161,7 @@ class ParamsPanel(QTabWidget):
         for cb in getattr(self, "op_tool_combos", {}).values():
             _repop(cb, sentinel=True)
         for attr in ("temple_engrave_tool", "temple_hinge_tool", "temple_profile_tool",
-                     "block_profile_tool", "block_drill_tool"):
+                     "block_profile_tool", "block_drill_tool", "groove_tool"):
             cb = getattr(self, attr, None)
             if cb is not None:
                 _repop(cb)
@@ -1313,6 +1382,13 @@ class ParamsPanel(QTabWidget):
                 taper_angle_deg=self.bridge_relief_taper.value(),
                 anterior_clamp_mm=self.bridge_relief_clamp.value(),
             ),
+            lens_groove=LensGrooveParams(
+                enabled=self.groove_enable.isChecked(),
+                anterior_offset_mm=self.groove_offset.value(),
+                depth_mm=self.groove_depth.value(),
+                width_mm=self.groove_width.value(),
+                tool=self.groove_tool.currentText() or "groove_drageoir",
+            ),
         )
 
     def set_castle_params(self, c: CastleParams) -> None:
@@ -1353,6 +1429,9 @@ class ParamsPanel(QTabWidget):
             (self.bridge_relief_depth, c.bridge_relief.depth_mm),
             (self.bridge_relief_taper, c.bridge_relief.taper_angle_deg),
             (self.bridge_relief_clamp, c.bridge_relief.anterior_clamp_mm),
+            (self.groove_offset, c.lens_groove.anterior_offset_mm),
+            (self.groove_depth, c.lens_groove.depth_mm),
+            (self.groove_width, c.lens_groove.width_mm),
         ]
         for sb, val in pairs:
             sb.blockSignals(True)
@@ -1362,14 +1441,22 @@ class ParamsPanel(QTabWidget):
                         (self.splay_enable, c.pad_splay.enabled),
                         (self.splay_toric, c.pad_splay.toric),
                         (self.bezel_enable, c.eyewire_bezel.enabled),
-                        (self.bridge_relief_enable, c.bridge_relief.enabled)):
+                        (self.bridge_relief_enable, c.bridge_relief.enabled),
+                        (self.groove_enable, c.lens_groove.enabled)):
             cb.blockSignals(True)
             cb.setChecked(val)
             cb.blockSignals(False)
+        self.groove_tool.blockSignals(True)
+        gi = self.groove_tool.findText(c.lens_groove.tool)
+        if gi >= 0:
+            self.groove_tool.setCurrentIndex(gi)
+        self.groove_tool.blockSignals(False)
         self._on_pad_block_toggled(c.stock.use_pad_block)
         self._on_splay_toggled(c.pad_splay.enabled)
         self._on_bezel_toggled(c.eyewire_bezel.enabled)
         self._on_bridge_relief_toggled(c.bridge_relief.enabled)
+        self._on_groove_toggled(c.lens_groove.enabled)
+        self._update_groove_angle()
         self.castle_changed.emit()
         self.stock_changed.emit()
 

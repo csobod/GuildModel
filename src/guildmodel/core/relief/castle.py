@@ -62,6 +62,20 @@ class CastleRelief:
     # pass adds band-confined rings at a chamfer-derived stepover from these.
     feature_band: "np.ndarray | None" = None
     feature_max_slope_deg: float = 0.0
+    # Lens bevel groove (V1): when enabled, the mask / mesh / eyewire holes are
+    # the UNDERSIZED apertures (rim lip = lens − depth) and the groove bottom
+    # lands on the original LENS contours kept here. `groove` holds the
+    # LensGrooveParams (None = off); `mask_body_override` is the aperture body.
+    groove: "object | None" = None
+    groove_lens_polys: list[Polygon] = dc_field(default_factory=list)
+    mask_body_override: "Polygon | None" = None
+
+    @property
+    def mask_body(self) -> Polygon:
+        """The body whose rings bound the mask / mesh rim / eyewires: the
+        aperture body when the lens groove is on, else the partition's."""
+        return (self.mask_body_override if self.mask_body_override is not None
+                else self.partition.body)
 
     @property
     def Xs(self) -> np.ndarray:
@@ -220,6 +234,20 @@ def build_castle_relief(
         heights = {z.name: castle.zones.for_kind(z.kind) for z in partition.zones}
 
     body = partition.body
+    # Lens bevel groove (V1): shrink each lens hole by the groove depth so the
+    # rim LIP is the visible aperture and the groove bottom lands exactly on
+    # the LENS contour (the boxed dimension). One change here propagates
+    # everywhere at once — the raster mask, the conformed mesh wall, and the
+    # eyewire contour all key off relief.mask_body. The annulus of lip cells
+    # this exposes has no zone; the orphan nearest-zone fill below adopts the
+    # neighbouring eyewire-wall height for it.
+    groove = getattr(castle, "lens_groove", None)
+    groove_on = bool(groove is not None and getattr(groove, "enabled", False)
+                     and groove.depth_mm > 0)
+    groove_lens_polys: list[Polygon] = []
+    if groove_on:
+        groove_lens_polys = [Polygon(r) for r in body.interiors]
+        body = _undersized_lens_body(body, groove.depth_mm)
     minx, miny, maxx, maxy = body.bounds
     ox, oy = minx - margin, miny - margin
     rows = max(2, int(round((maxy - miny + 2 * margin) / resolution)))
@@ -336,7 +364,25 @@ def build_castle_relief(
         partition=partition, pocket_polys=list(hinge_polys),
         surface_field=surface_field,
         feature_band=feature_band, feature_max_slope_deg=feature_slope,
+        groove=groove if groove_on else None,
+        groove_lens_polys=groove_lens_polys,
+        mask_body_override=body if groove_on else None,
     )
+
+
+def _undersized_lens_body(body: Polygon, depth_mm: float) -> Polygon:
+    """The body with each lens hole shrunk inward by the groove depth — the
+    rim lip. A hole that vanishes at this depth is kept closed (degenerate
+    designs; the groove lint flags it)."""
+    holes = []
+    for ring in body.interiors:
+        hole = Polygon(ring).buffer(-depth_mm)
+        if hole.is_empty:
+            continue
+        if hole.geom_type == "MultiPolygon":
+            hole = max(hole.geoms, key=lambda g: g.area)
+        holes.append(list(hole.exterior.coords))
+    return Polygon(list(body.exterior.coords), holes)
 
 
 # ------------------------------------------------------------------ stages
@@ -497,7 +543,9 @@ def _conform_rim(
     """Snap silhouette vertices onto the true outline / lens / pocket rings."""
     res = relief.field.resolution
     max_snap = 1.5 * res
-    body = relief.partition.body
+    # Aperture rings when the lens groove is on. getattr: the temple/block
+    # FlatRelief duck-types into this mesher without the groove fields.
+    body = getattr(relief, "mask_body", None) or relief.partition.body
 
     # Mask boundary (outline + lens-hole rims): move top and anterior twins
     # together so the rim wall stays a vertical ribbon.
@@ -581,15 +629,24 @@ def build_castle_mesh(
         return_index=True, return_counts=True,
     )
     boundary = edges[first_idx[counts == 1]]      # directed as in the top face
-    a, b = boundary[:, 0], boundary[:, 1]
-    rim = np.vstack([
-        np.column_stack([b, a, a + n]),
-        np.column_stack([b, a + n, b + n]),
-    ])
 
     if conform:
         _report(progress, "Conforming rim to curves", 0.97)
         verts = _conform_rim(relief, verts, vid, n, boundary)
+
+    # Lens bevel groove (V1): the aperture walls get a PROFILED ribbon — a V
+    # notch whose apex pushes out to the original LENS contour — instead of the
+    # straight top→anterior quad, so the STL shows the real groove. getattr:
+    # the temple/block FlatRelief duck-types in without the groove fields.
+    if (getattr(relief, "groove", None) is not None
+            and getattr(relief, "groove_lens_polys", None)):
+        verts, rim = _groove_rim(relief, verts, boundary, n)
+    else:
+        a, b = boundary[:, 0], boundary[:, 1]
+        rim = np.vstack([
+            np.column_stack([b, a, a + n]),
+            np.column_stack([b, a + n, b + n]),
+        ])
 
     mesh = trimesh.Trimesh(
         vertices=verts, faces=np.vstack([top, bottom, rim]), process=True
@@ -598,3 +655,70 @@ def build_castle_mesh(
         mesh.invert()
     _report(progress, "Mesh ready", 1.0)
     return mesh
+
+
+def _groove_rim(relief: CastleRelief, verts: np.ndarray,
+                boundary: np.ndarray, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Rim faces with the lens-bevel V notch on the aperture walls.
+
+    Aperture-ring rim vertices gain three profile rings — flank top, apex
+    (pushed outward onto the original LENS contour), flank bottom — and their
+    boundary edges become a four-band strip; every other boundary edge keeps
+    the plain vertical quad. Bands share ring vertices, so the solid stays
+    watertight; degenerate bands (clamped flanks) collapse to zero-area faces
+    that trimesh's `process=True` removes."""
+    from shapely.geometry import Point
+    from shapely.ops import nearest_points
+    from shapely.prepared import prep
+
+    groove = relief.groove
+    z_apex = float(groove.anterior_offset_mm)
+    half_w = float(groove.width_mm) / 2.0
+
+    rim_ids = np.unique(boundary)
+    lens_prepared = [(poly, prep(poly)) for poly in relief.groove_lens_polys]
+
+    # Which rim vertices sit on an aperture ring, and on which lens: the
+    # aperture ring lies strictly inside its lens polygon; the outline (and
+    # any pocket rim) does not.
+    slot: dict[int, int] = {}
+    lens_of: dict[int, int] = {}
+    for vid_ in rim_ids.tolist():
+        p = Point(verts[vid_, 0], verts[vid_, 1])
+        for li, (poly, prepared) in enumerate(lens_prepared):
+            if prepared.contains(p):
+                lens_of[vid_] = li
+                slot[vid_] = len(slot)
+                break
+
+    m = len(slot)
+    base = len(verts)
+    gt = np.zeros((m, 3)); ap = np.zeros((m, 3)); gb = np.zeros((m, 3))
+    for vid_, k in slot.items():
+        x, y = verts[vid_, 0], verts[vid_, 1]
+        z_top = verts[vid_, 2]
+        z_gt = min(z_apex + half_w, max(z_top - 0.05, 0.05))
+        z_gb = max(z_apex - half_w, 0.05)
+        near = nearest_points(
+            relief.groove_lens_polys[lens_of[vid_]].exterior, Point(x, y))[0]
+        gt[k] = (x, y, z_gt)
+        ap[k] = (near.x, near.y, min(z_apex, z_gt))
+        gb[k] = (x, y, min(z_gb, z_gt))
+    verts = np.vstack([verts, gt, ap, gb])
+
+    def _gt(i): return base + slot[i]
+    def _ap(i): return base + m + slot[i]
+    def _gb(i): return base + 2 * m + slot[i]
+
+    faces: list[tuple[int, int, int]] = []
+    for a_, b_ in boundary.tolist():
+        if a_ in slot and b_ in slot and lens_of[a_] == lens_of[b_]:
+            rings = [(a_, b_), (_gt(a_), _gt(b_)), (_ap(a_), _ap(b_)),
+                     (_gb(a_), _gb(b_)), (a_ + n, b_ + n)]
+            for (ua, ub), (va, vb) in zip(rings, rings[1:]):
+                faces.append((ub, ua, va))
+                faces.append((ub, va, vb))
+        else:
+            faces.append((b_, a_, a_ + n))
+            faces.append((b_, a_ + n, b_ + n))
+    return verts, np.array(faces, dtype=np.int64)

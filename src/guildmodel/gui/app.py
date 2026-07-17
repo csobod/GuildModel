@@ -577,11 +577,25 @@ class GCodeWorker(_ProgressWorker):
         for v in violations:
             self.progress.emit(f"[gcode] WARNING: {v}")
 
+        # Lens bevel groove (V1): soft checks — form-tool mismatch, flanks
+        # breaking the wall top / anterior face.
+        if getattr(relief, "groove", None) is not None:
+            from guildmodel.core.cam.castle_ops import groove_warnings
+            g_tool = next((op.tool for op in ops if op.name == "Lens Groove"),
+                          None) or tool
+            heights = [castle.zones.for_kind(z.kind)
+                       for z in relief.partition.zones]
+            for w in groove_warnings(relief.groove, g_tool,
+                                     min(heights) if heights else 0.0):
+                self.progress.emit(f"[gcode] WARNING groove: {w}")
+
         # Multi-tool jobs (BUILDPLAN M6.1): assemble per-tool feeds (tool override
         # or material, clamped to the machine) and the Tn map; single-tool jobs
-        # leave tool_settings None and post exactly as before.
+        # leave tool_settings None and post exactly as before. A lens-groove job
+        # is ALWAYS multi-tool: the drageoir op is not in POSTERIOR_OPS, so
+        # is_multi_tool() alone can't see it (V1).
         tool_settings = None
-        if cam.is_multi_tool():
+        if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
             tool_settings, ts_warns = build_tool_settings(
                 ops, tools_cfg,
                 default_feed=clamp.feed_rate_mmpm,
@@ -1291,9 +1305,10 @@ class SimWorker(_ProgressWorker):
                 tools_cfg=tools_cfg)
 
             # Multi-tool jobs (M6.1): post with per-tool change blocks and sweep
-            # each move with its own tool profile, so the sim matches the real cut.
+            # each move with its own tool profile, so the sim matches the real
+            # cut. A lens-groove job is ALWAYS multi-tool (see GCodeWorker).
             tool_settings = None
-            if cam.is_multi_tool():
+            if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
                 tool_settings, _ = build_tool_settings(
                     ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
                     default_plunge=mat["plunge_rate_mmpm"],
@@ -1327,6 +1342,13 @@ class SimWorker(_ProgressWorker):
             _swp = lambda p: self._progress("Simulating", 0.6 + 0.35 * p)
             if tool_settings:
                 groups = cutting_paths_from_program_grouped(post.to_string())
+                # The lens-groove drageoir cuts SIDEWAYS: a top-down Z-buffer
+                # sweep of its loop would falsely carve the rim lip from above.
+                # Drop groove-tool moves — the channel it rides in is verified
+                # by the eyewire sweep; the V itself is geometry (V1).
+                groups = [
+                    (p, t) for p, t in groups
+                    if not (t and tools_cfg.get(t, {}).get("type") == "groove")]
                 profiles = {n: ToolProfile.from_tool(tools_cfg[n])
                             for n in {t for _, t in groups if t and t in tools_cfg}}
                 floor = achieved_floor_grouped(
