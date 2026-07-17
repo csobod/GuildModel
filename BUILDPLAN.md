@@ -2979,6 +2979,20 @@ into a session — so NOT the AA-at-creation path):** always exactly two renders
 snapshots view/tab/minimized/viewer-size/mode to stderr + the app log — the
 next occurrence carries its own repro data.
 
+---
+
+**Version stamp — `v1.0.0-rc2` (2026-07-17).** With the V1-prep rounds
+(safety net / appearance / ecosystem glue / module decisions / USER-GUIDE),
+the toolpath re-audit fix, and M14 all landed: version → `1.0.0rc2` in
+pyproject, `1.0.0-rc2` in `guildmodel.__version__`, the installer fallback,
+and the README status. `scripts\build_release.ps1` now bakes in the off-drive
+build (the GuildSend pattern): PyInstaller + Inno work in
+`%LOCALAPPDATA%\GuildModelBuild` — Google Drive locks the frozen exe
+mid-build — and only the finished zip + setup.exe are copied back to `dist\`.
+Pre-build gremlin sweep: 534 tests green, `compileall` clean, no stray debug
+output, editable import healthy. Tag held until the user test-installs (the
+GuildDraw rc2 precedent).
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)
