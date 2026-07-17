@@ -51,7 +51,7 @@ The sidebar shows what the active component needs: for a frame front —
 - **Lens Bevel Groove** (off by default) — the drageoir V-groove in each
   eyewire wall that seats the lens bevel. You set the apex height from the
   anterior face and the groove's depth and width (the included angle shows
-  read-only — the shipped 6 mm *fraise drageoir* form is ≈106°). GuildModel
+  read-only — the shipped 5.5 mm *fraise drageoir* form is ≈106°). GuildModel
   handles the geometry automatically: the visible aperture is cut smaller by
   the groove depth so the groove bottom lands exactly on your drawn LENS
   contour (the boxed size stays honest), and the eyewire channel is widened
@@ -135,13 +135,14 @@ composites every placement into one verdict.
 
 ## 7. Sending the job
 
-**File ▸ Open in GuildSend** hands the saved `.gmodel` to GuildSend directly —
-programs, setup sheet, tools, material, and the tagged worktable all travel in
-the one file, so GuildSend can name the placements on its bed view and adopt
-the matching machine profile. (GuildModel saves first if needed, and finds
-GuildSend whether installed or run from a source checkout.)
+Save the project (Ctrl+S) and open the `.gmodel` from GuildSend's
+**File ▸ Open Job** (or double-click it, if GuildSend owns the association on
+your machine). Everything travels in the one file — programs, setup sheet,
+tools, material, and the tagged worktable — so GuildSend can name the
+placements on its bed view and adopt the matching machine profile.
 
-Prefer a bare file? Export the `.nc` and open it in GuildSend manually.
+Prefer a bare file? **File ▸ Export G-code** writes a standalone `.nc` that
+any sender can run.
 
 ## 8. Preferences & customization
 

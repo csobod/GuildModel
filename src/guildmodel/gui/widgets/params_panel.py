@@ -602,14 +602,14 @@ class ParamsPanel(QTabWidget):
         grp = QGroupBox("Lens Bevel Groove")
         glay = QVBoxLayout(grp)
         lg = LensGrooveParams()
-        self.groove_enable = QCheckBox("Cut lens bevel groove (drageoir)")
+        self.groove_enable = QCheckBox("Cut lens bevel groove")
         self.groove_enable.setChecked(lg.enabled)
         self.groove_enable.setToolTip(
             "V-groove each eyewire wall to seat the lens bevel. The visible\n"
             "aperture (the rim lip) is cut smaller by the groove depth so the\n"
             "groove bottom lands exactly on the drawn LENS contour, and the\n"
             "eyewire channel is widened so the grooving tool's head can enter.\n"
-            "Needs a groove-type form cutter — the shipped 6 mm fraise drageoir.")
+            "Needs a groove-type form cutter — the shipped 5.5 mm fraise drageoir.")
         glay.addWidget(self.groove_enable)
         gform = QFormLayout()
         gform.setContentsMargins(8, 0, 0, 0)

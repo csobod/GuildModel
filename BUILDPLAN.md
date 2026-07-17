@@ -2993,6 +2993,34 @@ Pre-build gremlin sweep: 534 tests green, `compileall` clean, no stray debug
 output, editable import healthy. Tag held until the user test-installs (the
 GuildDraw rc2 precedent).
 
+---
+
+**rc2 pre-drop fixes (2026-07-17, user inspection round; artifacts rebuilt).**
+1. **"Open in GuildSend" retired from the File menu** (commented, not deleted —
+   action/launcher/registry row kept disconnected in case the decision is
+   revisited): the three tools stand alone; GuildSend natively opens `.gmodel`
+   jobs just as GuildModel natively opens `.gdraw` drawings. USER-GUIDE §7
+   rewritten around Save → GuildSend's File ▸ Open Job.
+2. **Open hotkeys swapped:** Ctrl+O = Open Drawing (`.gdraw`, the featured
+   path — encourages the GuildDraw-native workflow; toolbar button unchanged),
+   Ctrl+Shift+O = Open DXF (the bring-your-own-CAD path).
+3. **Groove toggle label** "Cut lens bevel groove" — "(drageoir)" dropped
+   (descriptions stay English; the supplier's tool NAME keeps the French).
+4. **Drageoir dimensions corrected from the supplier's published profile:**
+   the cutting diameter is the V APEX Ø5.5 (the 6 mm is the shank) — was
+   entered as Ø6, which would have cut the groove bottom 0.25 mm shy of the
+   lens contour. tools.yaml now: apex Ø5.5 / root Ø4.0 / 2 mm form / Ø3.5
+   neck / Ø6 shank; CAM fallbacks follow. **ToolView renders the true groove
+   silhouette** (flat root tip → V apex → root → relieved neck → shank, neck
+   ≈3× form width) instead of the generic rectangle; caption shows d×w.
+5. **Bottom-row docks fixed:** Toolpaths + Inspector can share the row again —
+   `_toggle_toolpath_dock` / `_toggle_inspector_dock` re-assert the canonical
+   arrangement (Log+Toolpaths tabbed left, Inspector split right) on every
+   show, so a dragged or stale-saved layout can never wedge them into one tab
+   group; `_DOCK_STATE_VERSION` 2→3 discards existing stale layouts once;
+   the toolpath table wraps + stretches its Op column so both fit side-by-side
+   (each alone still spans the whole row).
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

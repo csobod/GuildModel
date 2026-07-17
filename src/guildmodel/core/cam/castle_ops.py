@@ -731,7 +731,7 @@ def lens_groove_op(
     is the TOOL TIP (the maker touches off the tip on the datum), apex =
     tip + form half-width."""
     op = CamOp("Lens Groove", tool=tool)
-    head_r = float(tool.get("radius_mm") or 3.0)
+    head_r = float(tool.get("radius_mm") or 2.75)
     form_w = float(tool.get("groove_width_mm") or groove.width_mm)
     depth = float(groove.depth_mm)
     tip_z = float(groove.anterior_offset_mm) - form_w / 2.0
@@ -762,7 +762,7 @@ def groove_channel_width_mm(tool: dict) -> float:
     """The eyewire-channel width the drageoir needs to descend freely: its
     head plus entry clearance on both sides (feeding out only ADDS inner
     clearance, so the requirement is depth-independent)."""
-    return (float(tool.get("diameter_mm") or 6.0)
+    return (float(tool.get("diameter_mm") or 5.5)
             + 2.0 * GROOVE_ENTRY_CLEARANCE_MM)
 
 

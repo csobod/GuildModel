@@ -43,6 +43,20 @@ def _half_cutting_profile(spec: ToolSpec, cut_h: float):
             pts.append((R, cone_h))                 # full cone, then the flute side
         else:
             pts.append((cut_h * t, cut_h))          # cone taller than the view
+    elif spec.type == "groove" and spec.groove_width_mm > 0:
+        # Side-cutting V-form (the lens-bevel drageoir): flat tip at the form
+        # ROOT radius, the V apex at half the form width (R = the apex
+        # radius), back to the root, then the relieved neck up to the shank —
+        # the supplier's published silhouette (rc2).
+        depth = min(max(spec.groove_depth_mm, 0.0), R)
+        w = spec.groove_width_mm
+        root = max(R - depth, 0.05)
+        neck = max((spec.neck_diameter_mm / 2.0) if spec.neck_diameter_mm > 0
+                   else root * 0.9, 0.05)
+        pts.append((root, 0.0))
+        pts.append((R, w / 2.0))                    # the V apex
+        pts.append((root, w))
+        pts.append((neck, w))                       # step onto the neck
     else:                                            # flat
         pts.append((R, 0.0))
     if pts[-1][1] < cut_h:                            # straight flute up to the top
@@ -87,6 +101,10 @@ class ToolView(QWidget):
             t = math.tan(math.radians(spec.included_angle_deg / 2.0))
             if t > 1e-6:
                 cut_h = max(cut_h, R / t)
+        elif spec.type == "groove" and spec.groove_width_mm > 0:
+            # head + relieved neck before the shank (the drageoir's neck runs
+            # ~3× the form width — the supplier's proportions)
+            cut_h = 4.0 * spec.groove_width_mm
         shank_r = max(spec.shank_diameter_mm / 2.0, R)
         shank_h = 0.45 * cut_h
         total_h = cut_h + shank_h
@@ -131,6 +149,8 @@ class ToolView(QWidget):
         cap = f"Ø{spec.diameter_mm:.3g} mm · {spec.type}"
         if spec.type == "vbit" and spec.included_angle_deg:
             cap += f" {spec.included_angle_deg:.0f}°"
+        elif spec.type == "groove" and spec.groove_width_mm:
+            cap += f" {spec.groove_depth_mm:.3g}×{spec.groove_width_mm:.3g} mm"
         p.setPen(QColor(pal.annotation))
         p.drawText(rect.adjusted(4, 4, -4, -4),
                    Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, cap)

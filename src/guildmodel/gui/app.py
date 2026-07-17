@@ -52,7 +52,7 @@ class _Cancelled(Exception):
 # Saved dock/toolbar layout version (QMainWindow.save/restoreState). Bump whenever
 # the default dock arrangement changes so a stale saved layout is dropped rather than
 # overriding the new default. v2 (M11): the inspector is split beside the toolpaths.
-_DOCK_STATE_VERSION = 2
+_DOCK_STATE_VERSION = 3   # 3: bottom-row split re-established (rc2 dock fix)
 
 
 class ToolSep(QWidget):
@@ -3079,6 +3079,12 @@ class MainWindow(QMainWindow):
             QTableWidget.SelectionMode.SingleSelection)
         self._toolpath_table.itemChanged.connect(self._on_toolpath_item_changed)
         self._toolpath_table.itemSelectionChanged.connect(self._on_toolpath_selection)
+        # Fit beside the Inspector: wrap text and let the op column absorb the
+        # width instead of forcing a wide fixed table (rc2 dock fix).
+        self._toolpath_table.setWordWrap(True)
+        tp_hh = self._toolpath_table.horizontalHeader()
+        tp_hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        tp_hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
 
         from guildmodel.gui.widgets.inspector import InspectorPanel
         self._inspector = InspectorPanel()
@@ -3953,15 +3959,18 @@ class MainWindow(QMainWindow):
         # move it from the default left edge to the top).
         tb.orientationChanged.connect(lambda *_: self._style_toolbar_separators())
 
+        # The .gdraw drawing is the featured open (Ctrl+O, toolbar) — GuildDraw
+        # is the ecosystem's native design source; a bare DXF stays available
+        # on Ctrl+Shift+O for makers with their own CAD workflow (rc2).
         self._act_open = QAction("Open DXF", self)
-        self._act_open.setShortcut(QKeySequence.StandardKey.Open)
-        self._act_open.setToolTip("Open a GuildDraw DXF…  (Ctrl+O)")
+        self._act_open.setShortcut("Ctrl+Shift+O")
+        self._act_open.setToolTip("Open a DXF…  (Ctrl+Shift+O)")
         self._act_open.triggered.connect(self._on_open)
 
         self._act_open_model = QAction("Open Drawing…", self)
-        self._act_open_model.setShortcut("Ctrl+Shift+O")
+        self._act_open_model.setShortcut(QKeySequence.StandardKey.Open)
         self._act_open_model.setToolTip(
-            "Open a GuildDraw drawing (.gdraw)  (Ctrl+Shift+O)")
+            "Open a GuildDraw drawing (.gdraw)  (Ctrl+O)")
         self._act_open_model.triggered.connect(self._on_open_model)
 
         self._act_open_project = QAction("Open Project…", self)
@@ -4006,6 +4015,12 @@ class MainWindow(QMainWindow):
         self._act_block.setEnabled(False)
         self._act_block.triggered.connect(self._on_generate_block)
 
+        # "Open in GuildSend" RETIRED from the menu (rc2, user decision): the
+        # three tools stand alone — GuildSend natively opens .gmodel jobs, just
+        # as GuildModel natively opens .gdraw drawings — so a cross-launch
+        # button is unnecessary coupling. The action, its launcher
+        # (_on_open_in_guildsend / _find_guildsend), and the hotkey-registry row
+        # are kept but disconnected in case the decision is revisited.
         self._act_send = QAction("Open in GuildSend", self)
         self._act_send.setToolTip(
             "Hand the saved .gmodel job to GuildSend, the ecosystem's sender —\n"
@@ -4076,12 +4091,12 @@ class MainWindow(QMainWindow):
 
         self._act_toolpaths = QAction("Toolpaths", self, checkable=True)
         self._act_toolpaths.setToolTip("Show/hide the toolpaths panel")
-        self._act_toolpaths.toggled.connect(self._toolpath_dock.setVisible)
+        self._act_toolpaths.toggled.connect(self._toggle_toolpath_dock)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
         self._act_inspector = QAction("Inspector", self, checkable=True)
         self._act_inspector.setToolTip("Show/hide the inspector panel")
-        self._act_inspector.toggled.connect(self._inspector_dock.setVisible)
+        self._act_inspector.toggled.connect(self._toggle_inspector_dock)
         self._inspector_dock.visibilityChanged.connect(self._act_inspector.setChecked)
 
         # (action, icon-name) for the runtime recolor hook (text fallback if
@@ -4112,6 +4127,26 @@ class MainWindow(QMainWindow):
         self._tool_seps: list[ToolSep] = []
         self._build_action_registry()
         self._rebuild_toolbar()
+
+    # Bottom-row dock arrangement (rc2 fix): a dragged or stale-saved layout
+    # could leave Toolpaths and Inspector in ONE tab group, making them
+    # impossible to show side-by-side. Every show re-asserts the canonical
+    # arrangement — Log+Toolpaths tabbed on the left, Inspector split beside
+    # them — so both can share the row; with only one visible, Qt gives it the
+    # whole row. Idempotent, so the action/visibility echo loop is harmless.
+
+    def _toggle_toolpath_dock(self, on: bool) -> None:
+        self._toolpath_dock.setVisible(on)
+        if on:
+            self.tabifyDockWidget(self._log_dock, self._toolpath_dock)
+            self._toolpath_dock.raise_()
+
+    def _toggle_inspector_dock(self, on: bool) -> None:
+        self._inspector_dock.setVisible(on)
+        if on:
+            self.splitDockWidget(self._log_dock, self._inspector_dock,
+                                 Qt.Orientation.Horizontal)
+            self._inspector_dock.raise_()
 
     def _rebuild_toolbar(self) -> None:
         """(Re)assemble the toolbar from the effective action order (M7.15): the saved
@@ -4177,7 +4212,7 @@ class MainWindow(QMainWindow):
             ("gcode", self._act_gcode, "Generate G-code", "build", True),
             ("export_nc", self._act_export_nc, "Export G-code", "build", True),
             ("export", self._act_export, "Export STL", "build", True),
-            ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),
+            # ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),  # retired rc2
             ("block", self._act_block, "Generate Base-Curve Block", "build", False),
             ("worktable_gen", self._act_worktable, "Generate Worktable Program", "build", False),
             ("view2d", self._act_view2d, "2D View", "view", True),
@@ -4229,8 +4264,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
         file_menu.addSeparator()
-        file_menu.addAction(self._act_send)
-        file_menu.addSeparator()
+        # file_menu.addAction(self._act_send)   # retired rc2 — see _act_send note
+        # file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
         quit_act.setShortcut("Ctrl+Q")
         quit_act.triggered.connect(self.close)
@@ -5915,8 +5950,7 @@ class MainWindow(QMainWindow):
             if self._current_view != 0:
                 self._switch_view(0)
             self.canvas.set_toolpath_highlight(ref)
-            self._toolpath_dock.show()
-            self._toolpath_dock.raise_()
+            self._toggle_toolpath_dock(True)       # canonical bottom-row arrangement
         elif kind == "view" and ref == "sim":
             self._switch_view(2, run=True)
         elif kind == "collision":
@@ -6186,7 +6220,7 @@ class MainWindow(QMainWindow):
             op["color"] = colors[i % len(colors)]
         self.canvas.set_toolpaths(overlay)
         self._populate_toolpath_inspector(rows, overlay)
-        self._toolpath_dock.setVisible(True)
+        self._toggle_toolpath_dock(True)           # canonical bottom-row arrangement
         if self._act_toolpaths is not None:
             self._act_toolpaths.setChecked(True)
         self._switch_view(0)                       # 2D outline so the paths show

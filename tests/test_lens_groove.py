@@ -84,7 +84,9 @@ def test_schema_default_off_and_roundtrip():
 def test_shipped_drageoir_tool(tools_cfg):
     t = tools_cfg["groove_drageoir"]
     assert t["type"] == "groove"
-    assert t["diameter_mm"] == 6.0
+    # Supplier's published profile: the CUTTING diameter is the V apex Ø5.5
+    # (the 6 mm is the shank); root Ø4.0 = apex − 2×form depth.
+    assert t["diameter_mm"] == 5.5
     assert t["groove_depth_mm"] == 0.75 and t["groove_width_mm"] == 2.0
     from guildmodel.core.cam.tooling import ToolSpec
     spec = ToolSpec.from_dict(t)
