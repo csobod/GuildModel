@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "guildmodel"
-# Display/tag version is 1.0.0-rc1 — "rc1" alone is already PEP 440-valid.
-version = "1.0.0rc1"
+# Display/tag version is 1.0.0-rc2 — "rc2" alone is already PEP 440-valid.
+version = "1.0.0rc2"
 description = "Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

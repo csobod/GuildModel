@@ -11,19 +11,23 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.0.0-rc1** — release candidate, plus the posterior finishing features
-(pad splay chamfer, bezeled eyewire, bridge projection relief — all optional,
-off by default).
+**v1.0.0-rc2** — release candidate. On top of rc1's posterior finishing
+features (pad splay chamfer, bezeled eyewire, bridge projection relief), rc2
+adds the V1-prep rounds: a session safety net (unsaved-changes guard,
+autosave/crash recovery, guild splash), appearance customization (per-layer
+colours, configurable grid), the File ▸ Open in GuildSend handoff, a maker's
+guide (`docs/USER-GUIDE.md`), and the **lens bevel groove** — a toggleable
+drageoir V-groove in each eyewire wall (optional, off by default).
 
 The **frame-front workflow is hardware-proven**: a frame front has been cut on
 real acetate end-to-end (GuildDraw DXF → castle relief → five-op GRBL program →
-cut on a Carbide 3D Nomad). This is the core of the tool and the focus of RC1.
+cut on a Carbide 3D Nomad). This is the core of the tool.
 
-The **temple, base-curve-block, and worktable-nesting paths are beta** — fully
-built and verified in cut-simulation, but not yet hardware-validated on real
-stock. They work; treat their first real cuts as you would any new program
-(air-cut, then a test piece). The two-sided (cut-and-flip) workflow is planned
-for a later release.
+The **temple, base-curve-block, worktable-nesting, and lens-groove paths are
+beta** — fully built and verified in cut-simulation, but not yet
+hardware-validated on real stock. They work; treat their first real cuts as
+you would any new program (air-cut, then a test piece). The two-sided
+(cut-and-flip) workflow is planned for a later release.
 
 See `BUILDPLAN.md` for the full milestone history and roadmap.
 
