@@ -4109,7 +4109,7 @@ class MainWindow(QMainWindow):
         self._act_log = QAction("Log", self, checkable=True)
         self._act_log.setChecked(True)
         self._act_log.setToolTip("Show/hide the log panel")
-        self._act_log.toggled.connect(self._log_dock.setVisible)
+        self._act_log.triggered.connect(self._toggle_log_dock)
         self._log_dock.visibilityChanged.connect(self._act_log.setChecked)
 
         # triggered, NOT toggled: dragging a dock makes Qt hide/re-show it
@@ -4164,6 +4164,24 @@ class MainWindow(QMainWindow):
     # Qt gives it the whole row. The re-arrangement is DEFERRED (singleShot 0)
     # so it can never run inside a Qt dock-drag cascade, and a floating panel
     # is left where the user put it.
+
+    def _toggle_log_dock(self, on: bool) -> None:
+        # The log shares a tab group with Toolpaths: shown BEHIND the front
+        # tab, Qt reports it not-visible — isVisible() can't express the
+        # user's intent there, so track it explicitly. Same triggered +
+        # deferred-arrange pattern as the other bottom panels.
+        self._log_want = on
+        self._log_dock.setVisible(on)
+        if on:
+            QTimer.singleShot(0, self._arrange_log_dock)
+
+    def _arrange_log_dock(self) -> None:
+        if not getattr(self, "_log_want", True):
+            return
+        if not self._log_dock.isFloating():
+            self._log_dock.setVisible(True)
+            self._log_dock.raise_()             # front tab → visible → checked
+        self._act_log.setChecked(True)
 
     def _toggle_toolpath_dock(self, on: bool) -> None:
         self._toolpath_dock.setVisible(on)
