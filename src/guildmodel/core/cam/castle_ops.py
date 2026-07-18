@@ -758,6 +758,46 @@ def lens_groove_op(
     return op
 
 
+def verify_groove_op(op: CamOp, lens_polys: list[Polygon], groove,
+                     tool: dict) -> list[str]:
+    """Exact geometric verification of the side-cut Lens Groove op (V1).
+
+    The top-down sim sweep deliberately skips this op — its removal is an
+    undercut a Z-buffer cannot represent — so it is verified symbolically
+    instead, which is STRONGER for this op class: one constant-Z loop per
+    lens whose form apex lands ON the lens contour (the groove bottom is the
+    boxed dimension), entered radially clear of the wall. Empty result =
+    verified; any string is a defect in the generated geometry."""
+    from shapely.geometry import Point
+    out: list[str] = []
+    head_r = float(tool.get("radius_mm") or 2.75)
+    form_w = float(tool.get("groove_width_mm") or groove.width_mm)
+    want_tip = float(groove.anterior_offset_mm) - form_w / 2.0
+    if len(op.paths) != len(lens_polys):
+        out.append(f"Lens Groove: {len(op.paths)} loop(s) for "
+                   f"{len(lens_polys)} lens(es)")
+    for i, (path, lens) in enumerate(zip(op.paths, lens_polys), start=1):
+        zs = {round(p[2], 6) for p in path}
+        if len(zs) != 1 or abs(next(iter(zs)) - want_tip) > 1e-6:
+            out.append(f"Lens Groove loop {i}: not one constant-Z pass at "
+                       f"the form tip ({want_tip:.3f} mm)")
+        ring = path[1:-1]
+        if len(ring) < 3:
+            out.append(f"Lens Groove loop {i}: degenerate loop")
+            continue
+        dev = max(abs(lens.exterior.distance(Point(p[0], p[1])) - head_r)
+                  for p in ring)
+        if dev > 0.08:
+            out.append(f"Lens Groove loop {i}: form apex misses the lens "
+                       f"contour by up to {dev:.2f} mm")
+        ex, ey = path[0][0], path[0][1]
+        pull = math.hypot(ex - ring[0][0], ey - ring[0][1])
+        if pull < float(groove.depth_mm):
+            out.append(f"Lens Groove loop {i}: entry not pulled clear of "
+                       f"the wall ({pull:.2f} mm)")
+    return out
+
+
 def groove_channel_width_mm(tool: dict) -> float:
     """The eyewire-channel width the drageoir needs to descend freely: its
     head plus entry clearance on both sides (feeding out only ADDS inner

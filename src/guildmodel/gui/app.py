@@ -1377,7 +1377,30 @@ class SimWorker(_ProgressWorker):
                     base_spacing=f.resolution),
                 stock_hf.z, f.origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, tool)
-            self.finished.emit(report, report.summary_lines(), plan)
+
+            # Lens groove (V1): the side-cut op is outside the Z-buffer sweep
+            # (its ToolProfile kernel stamps nothing) — verify it geometrically
+            # instead and hand the viewer its true rings to mark in the scene.
+            lines = report.summary_lines()
+            g_op = next((o for o in ops if o.name == "Lens Groove"), None)
+            if g_op is not None and getattr(relief, "groove", None) is not None:
+                from guildmodel.core.cam.castle_ops import verify_groove_op
+                issues = verify_groove_op(
+                    g_op, relief.groove_lens_polys, relief.groove,
+                    g_op.tool or tool)
+                if issues:
+                    lines += [f"⚠ {w}" for w in issues]
+                else:
+                    lines.append(
+                        "Lens Groove: side-cut op verified geometrically "
+                        "(apex on the lens contour; outside the top-down sweep)")
+                z_apex = float(relief.groove.anterior_offset_mm)
+                plan.groove_rings = [
+                    [(float(x), float(y), z_apex)
+                     for x, y in lens.exterior.coords]
+                    for lens in relief.groove_lens_polys]
+
+            self.finished.emit(report, lines, plan)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:

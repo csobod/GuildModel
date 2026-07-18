@@ -3021,6 +3021,27 @@ GuildDraw rc2 precedent).
    the toolpath table wraps + stretches its Op column so both fit side-by-side
    (each alone still spans the whole row).
 
+**Groove-in-sim representation (2026-07-17, user report; the hybrid answer).**
+The playback/removal block was carving a Ø5.5 FLAT swath along the groove loop
+— `ToolProfile` had no "groove" kind, so the kernel fell through to flat, and
+the M14 verify-exclusion only filtered the achieved-floor sweep, not the
+removal plan (nor the bed sim). An undercut is unrepresentable in ANY
+Z-buffer/heightfield sim (one z per column — CAMotics has the same wall; the
+general fix is a dexel/tri-dexel solid, post-V1 at best). The V1 hybrid:
+1. **Empty groove kernel** (`toolsim.ToolProfile.kernel`): a groove-type tool
+   stamps NOTHING — every Z-buffer consumer (floor verify, playback block,
+   whole-bed sim) is honest at the root, and the playback tool marker still
+   traces the loop at the right speed.
+2. **Exact geometric verification** (`castle_ops.verify_groove_op`): one
+   constant-Z loop per lens at the form tip, apex ON the lens contour
+   (≤0.08 mm), radial entry pulled clear — STRONGER than a raster sweep for
+   this op class. Result feeds the sim summary: pass = an explicit
+   "verified geometrically" line; any defect = ⚠ lines.
+3. **Visible marker**: `RemovalPlan.groove_rings` → the sim view draws each
+   lens contour at apex height as a thin measure-blue ring tube — the groove's
+   true bottom, rendered as annotation rather than pretended material.
+Suite 534 → 537 (kernel-empty / geometric-verify / plan-field tests).
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

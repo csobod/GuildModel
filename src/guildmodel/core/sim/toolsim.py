@@ -43,6 +43,15 @@ class ToolProfile:
     def kernel(self, resolution: float):
         """Return (di, dj, dz) integer cell offsets within the tool radius and
         the drop-profile height at each, for a grid of the given resolution."""
+        if self.kind == "groove":
+            # Side-cutting form (the lens-bevel drageoir, V1): its removal is
+            # an UNDERCUT a top-down Z-buffer cannot represent — sweeping it
+            # as any drop profile would falsely shave the rim lip from above.
+            # It stamps NOTHING here; the Lens Groove op is verified
+            # geometrically instead (castle_ops.verify_groove_op) and marked
+            # explicitly in the sim view.
+            e = np.zeros(0, dtype=np.intp)
+            return e, e.copy(), np.zeros(0, dtype=np.float64)
         R = self.radius_mm
         r_px = max(1, int(round(R / resolution)))
         jj, ii = np.mgrid[-r_px:r_px + 1, -r_px:r_px + 1]

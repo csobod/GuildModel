@@ -860,6 +860,21 @@ class Viewer3D(QWidget):
             self._plotter.add_mesh(post, color="#c83c32", opacity=0.9,
                                    smooth_shading=True)
 
+        # Verified lens-groove rings (V1): the side-cut V is an undercut the
+        # Z-buffer block can't show, so its true path — the groove bottom ON
+        # the lens contour at apex height — is marked as a thin ring, in the
+        # measure blue so it reads as annotation, not as material.
+        for k, ring in enumerate(getattr(pb, "groove_rings", None) or []):
+            pts = np.asarray(ring, dtype=np.float64)
+            if len(pts) >= 2 and np.allclose(pts[0], pts[-1]):
+                pts = pts[:-1]                    # shapely rings repeat the seam
+            if len(pts) < 3:
+                continue
+            tube = pv.lines_from_points(pts, close=True).tube(radius=0.3)
+            self._plotter.add_mesh(tube, color=self._palette.measure,
+                                   opacity=0.95, name=f"grooveRing{k}",
+                                   smooth_shading=True)
+
     def _update_step_label(self) -> None:
         if self._plan is None:
             self._step_label.setText("")

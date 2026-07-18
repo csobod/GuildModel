@@ -320,6 +320,9 @@ class RemovalPlan:
     op_tool_geom: dict = field(default_factory=dict)
     keyframes: list = field(default_factory=list, repr=False)
     keep_outs: list = field(default_factory=list)
+    # Verified lens-groove rings (V1): the side-cut V is outside the Z-buffer
+    # block, so the GUI draws its true path — one (x, y, z_apex) ring per lens.
+    groove_rings: list = field(default_factory=list)
     collision_pos: np.ndarray = field(default=None, repr=False)
     hold_down_height_mm: float = 0.0
 

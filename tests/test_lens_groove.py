@@ -218,6 +218,54 @@ def test_posted_program_announces_drageoir(ops_on, tools_cfg, relief_on):
     assert len(kept) < len(groups)
 
 
+def test_groove_kernel_stamps_nothing(tools_cfg):
+    """The side-cutting form is an undercut a Z-buffer can't represent — its
+    sweep kernel must be EMPTY so no sim view (floor verify, playback block,
+    bed sim) ever false-carves the rim lip from above."""
+    import numpy as np
+    from guildmodel.core.sim.toolsim import ToolProfile, achieved_floor
+    prof = ToolProfile.from_tool(tools_cfg["groove_drageoir"])
+    di, dj, dz = prof.kernel(0.3)
+    assert len(di) == 0 and len(dj) == 0 and len(dz) == 0
+    # a full sweep along a groove loop leaves the floor untouched
+    floor = achieved_floor([[(5.0, 5.0, 1.5), (25.0, 5.0, 1.5)]], prof,
+                           (0.0, 0.0), (100, 100), 0.3, init_z=8.0)
+    assert np.all(floor == 8.0)
+
+
+def test_verify_groove_op_geometrically(ops_on, relief_on, tools_cfg):
+    from guildmodel.core.cam.castle_ops import verify_groove_op
+    g_op = next(op for op in ops_on if op.name == "Lens Groove")
+    g = relief_on.groove
+    tool = tools_cfg["groove_drageoir"]
+    assert verify_groove_op(g_op, relief_on.groove_lens_polys, g, tool) == []
+
+    # tamper: shift one loop's Z — the constant-Z check must flag it
+    import copy
+    bad = copy.deepcopy(g_op)
+    bad.paths[0] = [(x, y, z + 0.4) for x, y, z in bad.paths[0]]
+    issues = verify_groove_op(bad, relief_on.groove_lens_polys, g, tool)
+    assert any("constant-Z" in w for w in issues)
+
+    # tamper: shrink one loop inward — the apex-on-contour check must flag it
+    bad2 = copy.deepcopy(g_op)
+    cx = sum(p[0] for p in bad2.paths[0]) / len(bad2.paths[0])
+    cy = sum(p[1] for p in bad2.paths[0]) / len(bad2.paths[0])
+    bad2.paths[0] = [(cx + (x - cx) * 0.9, cy + (y - cy) * 0.9, z)
+                     for x, y, z in bad2.paths[0]]
+    issues2 = verify_groove_op(bad2, relief_on.groove_lens_polys, g, tool)
+    assert any("apex" in w for w in issues2)
+
+
+def test_removal_plan_carries_groove_rings():
+    from guildmodel.core.sim.playback import RemovalPlan
+    import numpy as np
+    plan = RemovalPlan(stock_top=np.zeros((2, 2)), origin=(0.0, 0.0),
+                       resolution=1.0, positions=np.zeros((0, 3)),
+                       seg_bounds=[0], seg_kernel=[], seg_label=[])
+    assert plan.groove_rings == []
+
+
 def test_groove_warnings(tools_cfg):
     from guildmodel.core.cam.castle_ops import groove_warnings
     from guildmodel.core.project.schema import LensGrooveParams
