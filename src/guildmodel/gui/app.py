@@ -4112,14 +4112,19 @@ class MainWindow(QMainWindow):
         self._act_log.toggled.connect(self._log_dock.setVisible)
         self._log_dock.visibilityChanged.connect(self._act_log.setChecked)
 
+        # triggered, NOT toggled: dragging a dock makes Qt hide/re-show it
+        # mid-drag → visibilityChanged → setChecked → toggled — and a
+        # splitDockWidget from inside that cascade re-docks the widget out
+        # from under Qt's drag handler (native crash). `triggered` only fires
+        # on a real user click, never from programmatic setChecked.
         self._act_toolpaths = QAction("Toolpaths", self, checkable=True)
         self._act_toolpaths.setToolTip("Show/hide the toolpaths panel")
-        self._act_toolpaths.toggled.connect(self._toggle_toolpath_dock)
+        self._act_toolpaths.triggered.connect(self._toggle_toolpath_dock)
         self._toolpath_dock.visibilityChanged.connect(self._act_toolpaths.setChecked)
 
         self._act_inspector = QAction("Inspector", self, checkable=True)
         self._act_inspector.setToolTip("Show/hide the inspector panel")
-        self._act_inspector.toggled.connect(self._toggle_inspector_dock)
+        self._act_inspector.triggered.connect(self._toggle_inspector_dock)
         self._inspector_dock.visibilityChanged.connect(self._act_inspector.setChecked)
 
         # (action, icon-name) for the runtime recolor hook (text fallback if
@@ -4153,20 +4158,30 @@ class MainWindow(QMainWindow):
 
     # Bottom-row dock arrangement (rc2 fix): a dragged or stale-saved layout
     # could leave Toolpaths and Inspector in ONE tab group, making them
-    # impossible to show side-by-side. Every show re-asserts the canonical
-    # arrangement — Log+Toolpaths tabbed on the left, Inspector split beside
-    # them — so both can share the row; with only one visible, Qt gives it the
-    # whole row. Idempotent, so the action/visibility echo loop is harmless.
+    # impossible to show side-by-side. Every user-driven show re-asserts the
+    # canonical arrangement — Log+Toolpaths tabbed on the left, Inspector
+    # split beside them — so both can share the row; with only one visible,
+    # Qt gives it the whole row. The re-arrangement is DEFERRED (singleShot 0)
+    # so it can never run inside a Qt dock-drag cascade, and a floating panel
+    # is left where the user put it.
 
     def _toggle_toolpath_dock(self, on: bool) -> None:
         self._toolpath_dock.setVisible(on)
         if on:
+            QTimer.singleShot(0, self._arrange_toolpath_dock)
+
+    def _arrange_toolpath_dock(self) -> None:
+        if self._toolpath_dock.isVisible() and not self._toolpath_dock.isFloating():
             self.tabifyDockWidget(self._log_dock, self._toolpath_dock)
             self._toolpath_dock.raise_()
 
     def _toggle_inspector_dock(self, on: bool) -> None:
         self._inspector_dock.setVisible(on)
         if on:
+            QTimer.singleShot(0, self._arrange_inspector_dock)
+
+    def _arrange_inspector_dock(self) -> None:
+        if self._inspector_dock.isVisible() and not self._inspector_dock.isFloating():
             self.splitDockWidget(self._log_dock, self._inspector_dock,
                                  Qt.Orientation.Horizontal)
             self._inspector_dock.raise_()

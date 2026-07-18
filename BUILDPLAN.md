@@ -3042,6 +3042,18 @@ general fix is a dexel/tri-dexel solid, post-V1 at best). The V1 hybrid:
    true bottom, rendered as annotation rather than pretended material.
 Suite 534 → 537 (kernel-empty / geometric-verify / plan-field tests).
 
+**Dock-drag crash fix (2026-07-17, user repro: dragging the Inspector out
+with both bottom panels shown → native crash, exit 0xC0000005).** The rc2
+dock re-arrangement was connected to the actions' `toggled` — but a dock
+DRAG makes Qt hide/re-show the widget mid-drag → `visibilityChanged` →
+`setChecked` → `toggled` → `splitDockWidget` re-docked the widget from
+inside Qt's own drag cascade (use-after-free). Fix: connect `triggered`
+(fires only on a real user click, never from programmatic setChecked),
+DEFER the re-arrangement via `QTimer.singleShot(0, …)` so it can never run
+inside a Qt-internal call stack, and skip it for a floating panel (the
+maker's drag-out is respected). Lesson: never mutate dock layout from a
+`visibilityChanged`/`toggled` cascade.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)
