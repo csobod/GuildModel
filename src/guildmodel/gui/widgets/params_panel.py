@@ -128,6 +128,9 @@ class ParamsPanel(QTabWidget):
         self.setMinimumWidth(300)
 
         self._partition = None    # CastlePartition from the last import
+        # Per-zone height overrides keyed by Zone.name, for zones the per-kind
+        # defaults don't suit. Cleared when the drawing no longer has the zone.
+        self._zone_overrides: dict[str, float] = {}
         self._temple_fixture_zone = "temple_right"
         self._block_fixture_zone = "bc_template_right"
         self._block_material = "acetal"
@@ -430,6 +433,10 @@ class ParamsPanel(QTabWidget):
         self.zone_eyewire_inferior = _spinbox(4.2, 0.5, 12.0, decimals=1)
         walls.addRow("Superior eyewires:", self.zone_eyewire_superior)
         walls.addRow("Inferior eyewires:", self.zone_eyewire_inferior)
+        self.zone_eyewire_superior.setToolTip(
+            "Also drives a unified (OU) superior eyewire spanning both eyes — an "
+            "aviator's brow bar. Double-click it in the Zones list to override."
+        )
         glay.addLayout(walls)
 
         # --- Footing: rolling-ball fillet pairs per step edge ---
@@ -938,9 +945,46 @@ class ParamsPanel(QTabWidget):
             lambda item: self.zone_hovered.emit(item.data(Qt.ItemDataRole.UserRole))
         )
         self.zone_list.pointer_left.connect(lambda: self.zone_hovered.emit(""))
+        self.zone_list.setToolTip(
+            "Double-click a zone to override its height for this drawing only.\n"
+            "Overridden zones are marked ✎; clear the box to go back to the "
+            "per-kind default above."
+        )
+        self.zone_list.itemDoubleClicked.connect(self._on_zone_double_clicked)
         glay.addWidget(self.zone_list)
 
+        self.zone_reset_btn = QPushButton("Clear zone overrides")
+        self.zone_reset_btn.setEnabled(False)
+        self.zone_reset_btn.clicked.connect(self._clear_zone_overrides)
+        glay.addWidget(self.zone_reset_btn)
+
         lay.addWidget(grp)
+
+    def _on_zone_double_clicked(self, item) -> None:
+        """Edit one zone's height, overriding the per-kind default. Keyed by zone
+        *name*, so a drawing with two bridge bars (an opening splitting the
+        bridge) can give each its own height."""
+        name = item.data(Qt.ItemDataRole.UserRole)
+        zone = next((z for z in self._partition.zones if z.name == name), None)
+        if zone is None:
+            return
+        current = self._zone_overrides.get(
+            name, self._castle_zone_thicknesses().for_kind(zone.kind)
+            if zone.kind != "generic" else 4.0)
+        value, ok = QInputDialog.getDouble(
+            self, "Zone height", f"{name} height (mm):", current, 0.5, 15.0, 2)
+        if not ok:
+            return
+        self._zone_overrides[name] = value
+        self._refresh_zone_list()
+        self.castle_changed.emit()
+
+    def _clear_zone_overrides(self) -> None:
+        if not self._zone_overrides:
+            return
+        self._zone_overrides.clear()
+        self._refresh_zone_list()
+        self.castle_changed.emit()
 
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
@@ -953,6 +997,14 @@ class ParamsPanel(QTabWidget):
             self.zones_status.setText(
                 f"{len(partition.zones)} zones — standard castle layout."
             )
+        elif partition.classified:
+            # Not the reference 5-cuts-per-side castle, but every zone is named,
+            # so the castle builds — an aviator's brow bar, an extra section cut.
+            kinds = ", ".join(sorted({z.kind for z in partition.zones}))
+            self.zones_status.setText(
+                f"{len(partition.zones)} zones — non-standard layout ({kinds}). "
+                "Double-click a zone to set its height."
+            )
         else:
             self.zones_status.setText(
                 "⚠ Generic zones — the castle needs the 5-cuts-per-side layout."
@@ -962,16 +1014,26 @@ class ParamsPanel(QTabWidget):
     def _refresh_zone_list(self) -> None:
         self.zone_list.clear()
         if self._partition is None:
+            self.zone_reset_btn.setEnabled(False)
             return
+        # Drop overrides for zones this drawing no longer has, so a stale entry
+        # can't silently apply to a same-named zone in a different frame.
+        live = {z.name for z in self._partition.zones}
+        self._zone_overrides = {k: v for k, v in self._zone_overrides.items()
+                                if k in live}
         zones = self._castle_zone_thicknesses()
         for z in self._partition.zones:
             if z.kind == "generic":
                 item = QListWidgetItem(f"⚠ {z.name} — unmatched")
                 item.setForeground(Qt.GlobalColor.darkRed)
+            elif z.name in self._zone_overrides:
+                item = QListWidgetItem(
+                    f"✎ {z.name} — {self._zone_overrides[z.name]:.1f} mm")
             else:
                 item = QListWidgetItem(f"{z.name} — {zones.for_kind(z.kind):.1f} mm")
             item.setData(Qt.ItemDataRole.UserRole, z.name)
             self.zone_list.addItem(item)
+        self.zone_reset_btn.setEnabled(bool(self._zone_overrides))
 
     # ---------------------------------------------------------------- Cut tab
 
@@ -1343,6 +1405,7 @@ class ParamsPanel(QTabWidget):
         })
         return CastleParams(
             zones=self._castle_zone_thicknesses(),
+            zone_height_overrides=dict(self._zone_overrides),
             footing=footing,
             hinge_pocket_depth_mm=self.hinge_pocket_depth.value(),
             stock=StockDefinition(
@@ -1394,6 +1457,7 @@ class ParamsPanel(QTabWidget):
     def set_castle_params(self, c: CastleParams) -> None:
         """Restore the Castle / Stock tabs from a CastleParams (opening a .gmodel)."""
         z = c.zones
+        self._zone_overrides = dict(c.zone_height_overrides)
         pairs = [
             (self.zone_endpiece, z.endpiece_mm), (self.zone_bridge, z.bridge_mm),
             (self.zone_nosepad, z.nosepad_mm),
@@ -1456,6 +1520,7 @@ class ParamsPanel(QTabWidget):
         self._on_bezel_toggled(c.eyewire_bezel.enabled)
         self._on_bridge_relief_toggled(c.bridge_relief.enabled)
         self._on_groove_toggled(c.lens_groove.enabled)
+        self._refresh_zone_list()      # show the restored per-zone overrides
         self._update_groove_angle()
         self.castle_changed.emit()
         self.stock_changed.emit()

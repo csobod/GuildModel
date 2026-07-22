@@ -15,10 +15,24 @@ def validate(layers: dict[str, list[Polygon]]) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
 
-    if "OUTLINE" not in layers or not layers["OUTLINE"]:
+    outline_curves = layers.get("OUTLINE", [])
+    if not outline_curves:
         errors.append("Missing required layer: OUTLINE")
-    elif len(layers["OUTLINE"]) > 1:
-        warnings.append("Multiple curves on OUTLINE layer; using the largest.")
+    elif len(outline_curves) > 1:
+        # Extra closed OUTLINE curves inside the profile are decorative openings
+        # (Hole1..HoleN); ones that fall outside it are an authoring mistake.
+        shell = max(outline_curves, key=lambda p: p.area)
+        stray = [p for p in outline_curves
+                 if p is not shell and not shell.contains(p.representative_point())]
+        holes = len(outline_curves) - 1 - len(stray)
+        if holes:
+            warnings.append(
+                f"{holes} closed curve(s) inside the OUTLINE profile — cutting them "
+                "as openings (Hole1…).")
+        if stray:
+            warnings.append(
+                f"{len(stray)} OUTLINE curve(s) fall outside the profile and are "
+                "ignored; the largest curve is the profile.")
 
     lens_curves = layers.get("LENS", [])
     if not lens_curves:

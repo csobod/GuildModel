@@ -25,8 +25,10 @@ class ZoneThicknesses(BaseModel):
     """Posterior height of each castle zone (mm from the flat anterior face).
 
     Keys match Zone.kind from geometry.regions. Towers: endpiece, bridge,
-    nosepad. Walls: eyewire_superior, eyewire_inferior. Defaults are the
-    Demo Project reference values (DEMO_PROJECT_TEARDOWN.md §3).
+    nosepad. Walls: eyewire_superior, eyewire_inferior — a wall spanning both
+    eyes (an aviator's unified brow, side "ou") is still an eyewire and rides
+    the same control. Defaults are the Demo Project reference values
+    (DEMO_PROJECT_TEARDOWN.md §3).
     """
     endpiece_mm: float = 5.5
     bridge_mm: float = 5.3
@@ -179,6 +181,10 @@ class CastleParams(BaseModel):
     API surface and keeps anatomical vocabulary.
     """
     zones: ZoneThicknesses = Field(default_factory=ZoneThicknesses)
+    # Per-zone height overrides keyed by Zone.name (not kind), for the zones a
+    # drawing produces that the per-kind defaults don't suit — a second bridge
+    # bar under a decorative opening, an asymmetric wall. Empty = use `zones`.
+    zone_height_overrides: dict[str, float] = Field(default_factory=dict)
     footing: FootingSchedule = Field(default_factory=FootingSchedule)
     hinge_pocket_depth_mm: float = 1.0       # below the endpiece zone height
     stock: StockDefinition = Field(default_factory=StockDefinition)

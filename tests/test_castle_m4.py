@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 
 RES = 0.5   # coarse grid — stage tests need topology, not the M2 gate
 
@@ -99,15 +99,26 @@ def test_pockets_stage_is_the_full_relief(demo_inputs):
 
 
 def test_stage_validation(demo_inputs):
-    from guildmodel.core.geometry.regions import CastlePartition
+    from guildmodel.core.geometry.regions import CastlePartition, Zone
     from guildmodel.core.relief.castle import build_castle_stage
 
     part, castle, hinges = demo_inputs
     with pytest.raises(ValueError, match="stage"):
         build_castle_stage(part, castle, hinges, stage="moat")
+
+    # Stages need zone *kinds* (they split towers from walls), so the gate is
+    # `classified`, not `matched` — a non-standard-but-named layout stages fine.
     unmatched = CastlePartition(body=part.body, zones=part.zones, matched=False)
-    with pytest.raises(ValueError, match="matched"):
-        build_castle_stage(unmatched, castle, hinges, stage="towers")
+    build_castle_stage(unmatched, castle, hinges, stage="towers", resolution=RES)
+
+    generic = CastlePartition(
+        body=part.body,
+        zones=[Zone(f"zone_{i + 1}", "generic", "", z.polygon)
+               for i, z in enumerate(part.zones)],
+        matched=False,
+    )
+    with pytest.raises(ValueError, match="castle zones"):
+        build_castle_stage(generic, castle, hinges, stage="towers")
 
 
 def test_stage_does_not_mutate_castle_params(demo_inputs):

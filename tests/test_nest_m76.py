@@ -23,7 +23,7 @@ from guildmodel.core.cam.layout import (
 )
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())

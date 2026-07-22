@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-DEMO = Path(__file__).parents[1] / "Demo Project"
+DEMO = Path(__file__).parents[1] / "tests" / "fixtures" / "demo"
 
 PREVIEW_RES = 0.3   # the coarsest mesh anyone sees — must already pass
 

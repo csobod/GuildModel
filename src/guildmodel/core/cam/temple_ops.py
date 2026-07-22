@@ -30,8 +30,10 @@ from .castle_ops import (
 
 Point3 = tuple[float, float, float]
 
-# The temple's through-cut op — gets the ramped lead-in in write_castle_program.
-TEMPLE_CONTOUR_OPS = {"Temple Profile"}
+# The temple's through-cut ops — get the ramped lead-in in write_castle_program.
+# "Holes" (decorative OUTLINE openings) is an inside through-cut, ramped like the
+# profile so it never plunges the tool straight to full depth.
+TEMPLE_CONTOUR_OPS = {"Temple Profile", "Holes"}
 
 
 def engrave_op(
@@ -201,6 +203,21 @@ def generate_temple_program(
     if engraving_curves:
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
                               params.simplify_tol_mm))
+    # Decorative OUTLINE openings (normalize.assemble_outline) are inside
+    # through-cuts, taken before the profile releases the part. Same tool as the
+    # profile unless pinned, so they add no tool change.
+    holes = [Polygon(r) for r in outline.interiors]
+    if holes:
+        pinned = params.op_tools.get("Holes")
+        holes_tool = (resolve_tool(pinned, tools_cfg, default=profile_tool)
+                      if pinned else profile_tool)
+        holes_op = contour_op(
+            "Holes", holes, "inside", holes_tool["radius_mm"],
+            temple.hand_finishing_allowance_mm, top_z, skin_z, params)
+        holes_op.tool = holes_tool
+        if holes_op.paths:
+            ops.append(holes_op)
+
     profile = temple_profile_op(
         outline, profile_tool, temple.hand_finishing_allowance_mm,
         top_z, skin_z, params)

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-DEMO = Path(__file__).parents[1] / "Demo Project"
+DEMO = Path(__file__).parents[1] / "tests" / "fixtures" / "demo"
 
 
 @pytest.fixture(scope="module")

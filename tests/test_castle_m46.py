@@ -11,7 +11,7 @@ import pytest
 from shapely.geometry import Point
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 ICONS = ROOT / "src" / "guildmodel" / "gui" / "resources" / "icons"
 
 

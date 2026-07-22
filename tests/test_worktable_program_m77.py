@@ -29,7 +29,7 @@ from guildmodel.core.post.grbl import GRBLPost
 from guildmodel.core.post.machine import lint_program
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())

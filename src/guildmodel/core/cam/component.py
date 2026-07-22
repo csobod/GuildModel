@@ -28,8 +28,9 @@ from .castle_ops import CamOp, generate_castle_program
 from .temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
 
 # The castle's through-cut ops (the partial-lap ramped contours) — matches the
-# default in write_castle_program.
-CASTLE_CONTOUR_OPS = {"Eyewires", "Perimeter"}
+# default in write_castle_program. "Holes" (decorative OUTLINE openings) is an
+# inside through-cut like the eyewires, so it rides the same ramped entry.
+CASTLE_CONTOUR_OPS = {"Eyewires", "Holes", "Perimeter"}
 
 
 @dataclass

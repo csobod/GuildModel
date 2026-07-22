@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from shapely.geometry import Point, Polygon
 
-DEMO = Path(__file__).parents[1] / "Demo Project"
+DEMO = Path(__file__).parents[1] / "tests" / "fixtures" / "demo"
 
 
 # ------------------------------------------------------------------ fixtures

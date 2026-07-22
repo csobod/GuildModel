@@ -70,6 +70,7 @@ def simulate_component(
     mat = mats_cfg.get(key, mats_cfg["acetate"])
     mode = spec["mode"]
     if mode == "castle":
+        from ..cam.component import CASTLE_CONTOUR_OPS
         from ..relief.castle import build_castle_relief
         castle, hinge = spec["castle"], spec["hinge"]
         tool = resolve_tool(cam.tool_name, tools_cfg, tools_cfg.get("flat_3175"))
@@ -77,7 +78,7 @@ def simulate_component(
                                      resolution=resolution, progress=progress)
         ops = generate_castle_program(relief, castle, hinge, tool,
                                       params=cam, tools_cfg=tools_cfg)
-        contour_names, drill_names = {"Eyewires", "Perimeter"}, set()
+        contour_names, drill_names = set(CASTLE_CONTOUR_OPS), set()
         top_z, peck, fallback = castle.stock.total_pad_height_mm, 1.5, tool
         init_z = top_z + 1.0
     elif mode == "temple":

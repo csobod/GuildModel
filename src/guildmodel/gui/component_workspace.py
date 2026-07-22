@@ -43,14 +43,20 @@ class ComponentWorkspace:
     program_zero: object = None     # per-component G54 datum (M11); None = panel default
 
     # derived geometry (filled by derive_workspace)
-    outline_poly: object = None
+    outline_poly: object = None      # profile WITH decorative holes as interior rings
+    outline_holes: list = field(default_factory=list)   # Hole1..HoleN, standalone
+    outline_stray: list = field(default_factory=list)   # closed OUTLINE curves outside the profile
     lens_od: object = None
     lens_os: object = None
     partition: object = None
     hinge_polys: list = field(default_factory=list)
     engraving_curves: list = field(default_factory=list)
     is_temple: bool = False
-    matched: bool = False
+    # The SCULPT cuts yielded fully-named castle zones, so the castle relief can
+    # look a height up for each one — not necessarily the *standard* 9-zone
+    # layout (that is `partition.matched`). Aviators and other non-standard
+    # frames are castle_ready but unmatched.
+    castle_ready: bool = False
     boxing: object = None
 
     # per-component mesh + generated artifacts + readiness (swapped on tab switch)
@@ -68,8 +74,8 @@ class ComponentWorkspace:
 
 def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     """Fill ``ws``'s derived geometry from ``ws.layers`` — the same extraction the
-    DXF import does (outline / lenses / OD-OS / SCULPT partition / hinges /
-    engraving / is_temple / matched / boxing). Pure shapely; no Qt.
+    DXF import does (outline / holes / lenses / OD-OS / SCULPT partition /
+    hinges / engraving / is_temple / castle_ready / boxing). Pure shapely; no Qt.
 
     A frame front has an OUTLINE + two LENS curves (+ SCULPT for the castle); a
     temple has an OUTLINE and no lenses; a base-curve template carries its single
@@ -77,7 +83,7 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     """
     from guildmodel.core.geometry.boxing import measure_from_polygon
     from guildmodel.core.geometry.regions import partition_zones
-    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.io_import.normalize import assemble_outline, points_to_polygon
 
     layers = ws.layers
 
@@ -97,8 +103,12 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
 
     ws.engraving_curves = list(layers.get("ENGRAVING", []))
 
-    outline_curves = layers.get("OUTLINE", [])
-    ws.outline_poly = points_to_polygon(outline_curves[0]) if outline_curves else None
+    # Extra closed OUTLINE curves drawn inside the profile are decorative holes
+    # (Hole1..HoleN) — they ride along as interior rings of `outline_poly`.
+    assembly = assemble_outline(layers.get("OUTLINE", []))
+    ws.outline_poly = assembly.polygon
+    ws.outline_holes = list(assembly.holes)
+    ws.outline_stray = list(assembly.stray)
 
     lens_polys = [points_to_polygon(c) for c in layers.get("LENS", []) if len(c) >= 3]
     valid_lens = [p for p in lens_polys if p.is_valid and p.area > 1.0]
@@ -119,7 +129,7 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     sculpt = layers.get("SCULPT", [])
     if ws.outline_poly is not None and len(valid_lens) >= 2 and sculpt:
         ws.partition = partition_zones(ws.outline_poly, valid_lens[:2], sculpt)
-        ws.matched = bool(ws.partition.matched)
+        ws.castle_ready = bool(ws.partition.classified)
 
     if boxing is not None:
         ws.boxing = boxing

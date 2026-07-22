@@ -18,7 +18,7 @@ from guildmodel.core.post.machine import (
 from guildmodel.core.cam.cuttime import MachineDynamics
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 CONFIG = ROOT / "src" / "guildmodel" / "config"
 
 

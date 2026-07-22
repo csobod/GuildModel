@@ -20,7 +20,7 @@ from guildmodel.core.cam.castle_ops import generate_castle_program, write_castle
 from guildmodel.core.post.grbl import GRBLPost
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 

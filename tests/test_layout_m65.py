@@ -31,7 +31,7 @@ from guildmodel.core.post.machine import lint_program
 from guildmodel.core.cam.cuttime import estimate_program, MachineDynamics
 
 ROOT = Path(__file__).parents[1]
-DEMO = ROOT / "Demo Project"
+DEMO = ROOT / "tests" / "fixtures" / "demo"
 CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())

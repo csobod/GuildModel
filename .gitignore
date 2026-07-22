@@ -20,8 +20,16 @@ Thumbs.db
 *.tmp
 *.bak
 *.log
-# Generated CAM output in the Demo Project (the reference Demo Program.nc is tracked)
-Demo Project/GuildCAM Generated*.nc
+
+# Diagnostic / troubleshooting scratch — kept local, not committed. The few
+# reference-geometry files the test suite needs are vendored under
+# tests/fixtures/ instead (see that folder). Leading slash anchors each to the
+# repo root so they can't match e.g. tests/fixtures/demo/.
+/Demo Project/
+/Demo Project 2/
+/Demo Project 3/
+/Screenshots/
+/demo/
 
 # Icon/render scratch
 assets_preview/

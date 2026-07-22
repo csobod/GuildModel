@@ -220,18 +220,22 @@ def build_castle_relief(
     """Rasterize the castle: terraces -> footing blends -> hinge pockets.
 
     heights: optional zone-name -> height override (used for generic
-    partitions / tests). Defaults to castle.zones.for_kind per zone; requires
-    partition.matched when omitted.
+    partitions / tests). Defaults to `castle.zones.for_kind` per zone, with
+    `castle.zone_height_overrides` applied on top; requires a *classified*
+    partition when omitted (every zone named anatomically — which is any frame
+    the classifier could read, not just the standard 9-zone castle).
 
     progress: optional stage-boundary hook (BUILDPLAN M4.6 Part B).
     """
     if heights is None:
-        if not partition.matched:
+        if not partition.classified:
             raise ValueError(
-                "partition did not match the standard castle layout; "
+                "the section cuts did not yield recognisable castle zones; "
                 "pass explicit zone heights"
             )
         heights = {z.name: castle.zones.for_kind(z.kind) for z in partition.zones}
+        heights.update({name: mm for name, mm in castle.zone_height_overrides.items()
+                        if name in heights})
 
     body = partition.body
     # Lens bevel groove (V1): shrink each lens hole by the groove depth so the
@@ -246,8 +250,11 @@ def build_castle_relief(
                      and groove.depth_mm > 0)
     groove_lens_polys: list[Polygon] = []
     if groove_on:
-        groove_lens_polys = [Polygon(r) for r in body.interiors]
-        body = _undersized_lens_body(body, groove.depth_mm)
+        # Only LENS apertures are grooved; decorative OUTLINE holes share
+        # `body.interiors` but take no bevel (they are through-cuts, not rims).
+        groove_lens_polys = [Polygon(r) for r in body.interiors
+                             if not partition.is_hole(r)]
+        body = _undersized_lens_body(body, groove.depth_mm, skip=partition.is_hole)
     minx, miny, maxx, maxy = body.bounds
     ox, oy = minx - margin, miny - margin
     rows = max(2, int(round((maxy - miny + 2 * margin) / resolution)))
@@ -370,12 +377,17 @@ def build_castle_relief(
     )
 
 
-def _undersized_lens_body(body: Polygon, depth_mm: float) -> Polygon:
+def _undersized_lens_body(body: Polygon, depth_mm: float,
+                          skip=lambda ring: False) -> Polygon:
     """The body with each lens hole shrunk inward by the groove depth — the
     rim lip. A hole that vanishes at this depth is kept closed (degenerate
-    designs; the groove lint flags it)."""
+    designs; the groove lint flags it). Rings for which ``skip`` is true are
+    decorative OUTLINE holes, which take no groove and so keep their size."""
     holes = []
     for ring in body.interiors:
+        if skip(ring):
+            holes.append(list(ring.coords))
+            continue
         hole = Polygon(ring).buffer(-depth_mm)
         if hole.is_empty:
             continue
@@ -413,19 +425,20 @@ def build_castle_stage(
     footing — terraces + footing blends
     pockets — the complete relief (same as build_castle_relief)
 
-    Requires a matched partition (zone kinds drive the stage split).
+    Requires a classified partition (zone kinds drive the stage split).
     """
     if stage not in CASTLE_STAGES:
         raise ValueError(f"stage must be one of {CASTLE_STAGES}, got {stage!r}")
-    if not partition.matched:
-        raise ValueError("castle stages require the standard matched zone layout")
+    if not partition.classified:
+        raise ValueError("castle stages require recognisable castle zones")
     level = CASTLE_STAGES.index(stage)
 
     heights = None
     if level < 1:
+        overrides = castle.zone_height_overrides
         heights = {
-            z.name: (castle.zones.for_kind(z.kind) if z.kind in TOWER_KINDS
-                     else STAGE_GROUND_MM)
+            z.name: (overrides.get(z.name, castle.zones.for_kind(z.kind))
+                     if z.kind in TOWER_KINDS else STAGE_GROUND_MM)
             for z in partition.zones
         }
     if level < 2:

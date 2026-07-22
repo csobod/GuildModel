@@ -649,7 +649,8 @@ class GCodeWorker(_ProgressWorker):
             post.link_keepouts = tuple(work_holding_keepouts(
                 relief.partition.body, castle.stock, post_dia / 2.0,
                 screw_head_diameter_mm=cam.screw_head_diameter_mm,
-                margin_mm=cam.screw_keepout_margin_mm))
+                margin_mm=cam.screw_keepout_margin_mm,
+                is_hole=relief.partition.is_hole))
         self._progress("Writing program", 0.95)
         write_castle_program(
             ops, post, arc_tol_mm=clamp.arc_tol_mm,
@@ -1040,6 +1041,7 @@ class GCodeWorker(_ProgressWorker):
             CastleCamParams, build_tool_settings, generate_castle_program,
             op_summaries, write_castle_program,
         )
+        from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.cam.layout import BedPart, bed_clearance_violations, build_bed_program
         from guildmodel.core.post.grbl import GRBLPost
@@ -1070,7 +1072,7 @@ class GCodeWorker(_ProgressWorker):
         block_ops = generate_block_program(self.block_lens, block, tools_cfg, cam)
 
         parts = [
-            BedPart("frame_front", "Frame", "front", frame_ops, {"Eyewires", "Perimeter"}, set()),
+            BedPart("frame_front", "Frame", "front", frame_ops, set(CASTLE_CONTOUR_OPS), set()),
             BedPart("base_curve_block", "Block", "bc_template_right", block_ops,
                     BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS),
         ]
@@ -1188,7 +1190,7 @@ class GCodeWorker(_ProgressWorker):
             return
 
         # ---- Castle path: the five-operation posterior program (M3) ----
-        if self.partition is not None and self.partition.matched:
+        if self.partition is not None and self.partition.classified:
             self._generate_castle(tools_cfg, mats_cfg, config_dir)
             return
 
@@ -1329,7 +1331,8 @@ class SimWorker(_ProgressWorker):
                     relief.partition.body, self.castle.stock,
                     (first.diameter_mm if first else tool["diameter_mm"]) / 2.0,
                     screw_head_diameter_mm=cam.screw_head_diameter_mm,
-                    margin_mm=cam.screw_keepout_margin_mm))
+                    margin_mm=cam.screw_keepout_margin_mm,
+                    is_hole=relief.partition.is_hole))
             write_castle_program(
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
@@ -1444,6 +1447,7 @@ class FlatSimWorker(_ProgressWorker):
             from guildmodel.core.cam.castle_ops import (
                 CastleCamParams, build_tool_settings, resolve_tool, write_castle_program,
             )
+            from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
             from guildmodel.core.cam.temple_ops import (
                 TEMPLE_CONTOUR_OPS, generate_temple_program,
             )
@@ -1596,7 +1600,7 @@ class NestWorker(_ProgressWorker):
                         relief, spec["castle"], spec["hinge"], default_tool,
                         params=cam, tools_cfg=tools)
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
-                                         {"Eyewires", "Perimeter"}, set()))
+                                         set(CASTLE_CONTOUR_OPS), set()))
                 elif mode == "temple":
                     from guildmodel.core.relief.flat import place_temple_on_blank
                     t = spec["temple"]
@@ -4862,9 +4866,10 @@ class MainWindow(QMainWindow):
                 and self.component_tabs.currentIndex() == self._worktable_tab_index)
 
     def _component_sim_enabled(self) -> bool:
-        """The active component can be cut-simulated (a matched frame or a flat part)."""
-        matched = self._partition is not None and self._partition.matched
-        return matched or self._active_is_flat()
+        """The active component can be cut-simulated (a buildable castle frame or
+        a flat part)."""
+        castle_ready = self._partition is not None and self._partition.classified
+        return castle_ready or self._active_is_flat()
 
     def _bed_sim_enabled(self) -> bool:
         return self._nest is not None and bool(self._nest.placements)
@@ -5193,21 +5198,21 @@ class MainWindow(QMainWindow):
                 self.params._set_program_zero(ws.program_zero)
         finally:
             self.params.blockSignals(False)
-        self.view3d.set_stage_enabled(ws.matched)
+        self.view3d.set_stage_enabled(ws.castle_ready)
         self.view3d.set_stage(ws.stage)
 
         has_outline = ws.outline_poly is not None
         # Build 3D: a matched frame castle, or a flat part — a temple (outline) or
         # a base-curve block (its lens) — via the flat-extrusion mesher (M7).
         flat_buildable = ws.is_temple or (ws.outline_poly is None and ws.lens_od is not None)
-        self._act_build.setEnabled(ws.matched or flat_buildable)
-        self._act_export.setEnabled(ws.matched)
+        self._act_build.setEnabled(ws.castle_ready or flat_buildable)
+        self._act_export.setEnabled(ws.castle_ready)
         # Cut simulation now runs on every component — a matched frame, a temple, or
         # a base-curve block (BUILDPLAN M7: machine sim on multiple components).
-        self._act_simulate.setEnabled(ws.matched or flat_buildable)
+        self._act_simulate.setEnabled(ws.castle_ready or flat_buildable)
         self._act_gcode.setEnabled(has_outline)          # frame castle or temple profile
         self._act_block.setEnabled(ws.lens_od is not None)
-        self._act_worktable.setEnabled(ws.matched and ws.lens_od is not None)
+        self._act_worktable.setEnabled(ws.castle_ready and ws.lens_od is not None)
         self._act_export_nc.setEnabled(bool(ws.last_programs))
 
         if ws.boxing is not None:
@@ -5331,6 +5336,8 @@ class MainWindow(QMainWindow):
         self.append_log(
             f"[model] {len(workspaces)} components, {len(populated)} populated: "
             + ", ".join(populated))
+        for w in workspaces:
+            self._log_outline_holes(w, prefix=f"{w.label}: ")
         self._dxf_loaded = True
         self._activate_workspace(0)
         if not from_project:
@@ -5340,6 +5347,24 @@ class MainWindow(QMainWindow):
                 f"components) — Build 3D to model them all")
             self._add_recent(str(path))
         self._post_load_baseline()   # a just-loaded design is the clean baseline
+
+    def _log_outline_holes(self, ws, prefix: str = "") -> None:
+        """Report the decorative OUTLINE openings by name (Hole1…), plus any
+        closed OUTLINE curve that fell outside the profile (an authoring
+        mistake — it is ignored rather than cut)."""
+        from guildmodel.core.io_import.normalize import hole_label
+
+        if ws.outline_holes:
+            named = ", ".join(
+                f"{hole_label(i)} {h.area:.1f} mm²"
+                for i, h in enumerate(ws.outline_holes))
+            self.append_log(
+                f"[holes] {prefix}{len(ws.outline_holes)} opening(s) inside the "
+                f"outline — {named} (cut, not grooved)")
+        if ws.outline_stray:
+            self.append_log(
+                f"[warn]  {prefix}{len(ws.outline_stray)} closed OUTLINE curve(s) "
+                "outside the profile — ignored; the largest curve is the profile.")
 
     def _inject_gdraw_engraving(self, workspaces) -> None:
         """Outline GuildDraw engraving *text objects* into ENGRAVING polylines.
@@ -5474,9 +5499,14 @@ class MainWindow(QMainWindow):
                 f"{len(ws.engraving_curves)} engraving curve(s) — "
                 f"engrave + profile program on Generate G-code."
             )
+        self._log_outline_holes(ws)
         if ws.partition is not None:
-            layout = ("standard castle layout" if ws.matched
-                      else "generic zones — castle relief needs the 5-cuts-per-side layout")
+            if ws.partition.matched:
+                layout = "standard castle layout"
+            elif ws.partition.classified:
+                layout = "non-standard layout — builds; override zone heights as needed"
+            else:
+                layout = "generic zones — castle relief needs lenses + section cuts"
             self.append_log(
                 f"[castle] {len(ws.partition.zones)} zones from "
                 f"{len(layers.get('SCULPT', []))} SCULPT cuts ({layout})"
@@ -5538,7 +5568,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 3D build
 
     def _castle_ready(self) -> bool:
-        return self._partition is not None and self._partition.matched
+        return self._partition is not None and self._partition.classified
 
     def _flat_build_mode(self) -> str | None:
         """Which flat-part 3D to build for the active component, or None for a
@@ -5557,7 +5587,7 @@ class MainWindow(QMainWindow):
         for i, ws in enumerate(self._workspaces):
             if not ws.enabled:
                 continue
-            if ws.matched or ws.is_temple or (ws.outline_poly is None and ws.lens_od is not None):
+            if ws.castle_ready or ws.is_temple or (ws.outline_poly is None and ws.lens_od is not None):
                 out.append(i)
         return out
 
@@ -5580,7 +5610,7 @@ class MainWindow(QMainWindow):
         the active working set."""
         ws = self._workspaces[i]
         kind = ws.kind.value
-        if ws.matched:
+        if ws.castle_ready:
             return {"index": i, "mode": "castle", "kind": kind, "label": ws.label,
                     "partition": ws.partition,
                     "castle": ws.castle_params or self.params.castle_params(),
@@ -5625,7 +5655,7 @@ class MainWindow(QMainWindow):
     def _on_multi_mesh_built(self, i: int, mesh, core_guide) -> None:
         """One component's mesh is ready — cache it into that component (M7 UX)."""
         ws = self._workspaces[i]
-        if ws.matched:
+        if ws.castle_ready:
             ws.stage_cache[ws.stage] = mesh       # shared with self._stage_cache iff active
         else:
             ws.stage_cache["flat"] = mesh
@@ -6192,7 +6222,7 @@ class MainWindow(QMainWindow):
         """Cut the frame front + its base-curve block in one bed program (M6.5)."""
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
-        if not (self._partition is not None and self._partition.matched
+        if not (self._partition is not None and self._partition.classified
                 and self._lens_od is not None):
             QMessageBox.warning(
                 self, "Worktable needs a full frame",
@@ -6391,7 +6421,7 @@ class MainWindow(QMainWindow):
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
         self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.matched
+            self._partition is not None and self._partition.classified
             and self._lens_od is not None)
         self.status_lbl.setText("G-code ready")
         # Capture the program + setup for the .gmodel container (M5.1). A new
@@ -6433,7 +6463,7 @@ class MainWindow(QMainWindow):
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
         self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.matched
+            self._partition is not None and self._partition.classified
             and self._lens_od is not None)
         self.status_lbl.setText("G-code generation failed — see log")
 
@@ -6443,7 +6473,7 @@ class MainWindow(QMainWindow):
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
         self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.matched
+            self._partition is not None and self._partition.classified
             and self._lens_od is not None)
         self.status_lbl.setText("G-code cancelled")
 

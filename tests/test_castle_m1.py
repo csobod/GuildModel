@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from shapely.geometry import Point, Polygon
 
-DEMO_DXF = Path(__file__).parents[1] / "Demo Project" / "GuildDraw DXF Export.dxf"
+DEMO_DXF = Path(__file__).parents[1] / "tests" / "fixtures" / "demo" / "GuildDraw DXF Export.dxf"
 
 
 # ---------------------------------------------------------------- M1.2: flip
@@ -107,7 +107,9 @@ def _rect(x0, y0, x1, y1):
     return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
 
 
-def test_nonstandard_cut_count_falls_back_to_generic():
+def test_nonstandard_cut_count_is_classified_but_not_matched():
+    """A non-standard cut count is not the reference castle, but the zones are
+    still named against the lenses — so it builds. `matched` stays narrow."""
     from guildmodel.core.geometry.regions import partition_zones
 
     outline = _rect(-50, -20, 50, 20)
@@ -119,7 +121,25 @@ def test_nonstandard_cut_count_falls_back_to_generic():
     ]
     part = partition_zones(outline, lenses, cuts)
     assert part.matched is False
+    assert part.classified is True
     assert len(part.zones) == 4
+    assert all(z.kind != "generic" for z in part.zones)
+
+
+def test_zones_fall_back_to_generic_without_lenses_to_reason_from():
+    """No LENS openings means no anatomical reference frame — the zones get
+    positional names and the castle refuses to build without explicit heights."""
+    from guildmodel.core.geometry.regions import partition_zones
+
+    outline = _rect(-50, -20, 50, 20)
+    cuts = [
+        [(-40, -21), (-40, 21)],
+        [(0, -21), (0, 21)],
+        [(40, -21), (40, 21)],
+    ]
+    part = partition_zones(outline, [], cuts)
+    assert part.matched is False
+    assert part.classified is False
     assert all(z.kind == "generic" for z in part.zones)
     assert [z.name for z in part.zones] == [f"zone_{i + 1}" for i in range(4)]
     assert all(e.name.startswith("edge_") for e in part.edges)

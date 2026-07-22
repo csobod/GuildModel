@@ -151,17 +151,24 @@ def _poly_rings(poly: Polygon, tool_radius_mm: float, stepover_mm: float) -> lis
 def work_holding_keepouts(
     body: Polygon, stock: StockDefinition, tool_radius_mm: float,
     *, screw_head_diameter_mm: float = 7.0, margin_mm: float = 2.0,
+    is_hole=lambda ring: False,
 ) -> list[tuple[float, float, float]]:
     """Keep-out circles ``(cx, cy, radius)`` the tool CENTRE must stay outside when
     a pass-link retract is lowered below safe Z (BUILDPLAN M8). They mark the
     work-holding screws standing proud of the stock — the standard Guild fixture:
     one at each stock-blank corner and one at each lens centre (the body's interior
     holes). ``radius`` = screw radius + tool radius + margin, so the tool *edge*
-    keeps ``margin`` clear of the head. Design coordinates (blank centred on origin)."""
+    keeps ``margin`` clear of the head. Design coordinates (blank centred on origin).
+
+    ``is_hole`` marks interior rings that are decorative OUTLINE openings rather
+    than lens apertures — nothing is screwed through those, so they seed no
+    keep-out (see geometry.regions.CastlePartition.is_hole)."""
     keep_r = screw_head_diameter_mm / 2.0 + tool_radius_mm + margin_mm
     hl, hw = stock.blank_length_mm / 2.0, stock.blank_width_mm / 2.0
     centers = [(hl, hw), (-hl, hw), (hl, -hw), (-hl, -hw)]      # blank corners
     for ring in body.interiors:                                 # lens centres
+        if is_hole(ring):
+            continue
         c = Polygon(ring).centroid
         centers.append((c.x, c.y))
     return [(x, y, keep_r) for x, y in centers]
@@ -999,7 +1006,13 @@ def generate_castle_program(
     # on these are the UNDERSIZED apertures — the rim lip)
     _p("Eyewires", 4)
     eyewire_tool = _tool_for("Eyewires")
-    apertures = [Polygon(ring) for ring in body.interiors]
+    # Decorative OUTLINE openings share `body.interiors` with the lens apertures
+    # but are a separate op: no groove, no rim-lip widening, just an inside
+    # through-cut (see normalize.assemble_outline).
+    is_hole = relief.partition.is_hole
+    apertures = [Polygon(r) for r in body.interiors if not is_hole(r)]
+    hole_polys = [Polygon(r) for r in body.interiors if is_hole(r)]
+
     def _groove_tool() -> dict:
         # Explicit op_tools wins, then the groove param's tool, then the
         # shipped drageoir. (Not in POSTERIOR_OPS — see the schema note.)
@@ -1034,6 +1047,23 @@ def generate_castle_program(
     op4.tool = eyewire_tool
     ops.append(op4)
 
+    # 4a — decorative OUTLINE holes, cut with the eyewire strategy right after
+    # the eyewires so they share a tool (no extra change) while the part is
+    # still held by its perimeter.
+    if hole_polys:
+        # Defaults to the eyewire tool (same inside-contour strategy) rather than
+        # the global bulk tool, so holes add no tool change unless pinned. Like
+        # "Lens Groove" this stays out of POSTERIOR_OPS — see the schema note.
+        pinned = params.op_tools.get("Holes")
+        holes_tool = (resolve_tool(pinned, tools_cfg or {}, default=eyewire_tool)
+                      if pinned else eyewire_tool)
+        op4a = contour_op(
+            "Holes", hole_polys, "inside", holes_tool["radius_mm"],
+            allowance, top_z, skin, params,
+        )
+        op4a.tool = holes_tool
+        ops.append(op4a)
+
     # 4b — lens bevel groove (V1, optional): side-cut the V into each rim lip
     # with the drageoir, bottoming exactly on the original LENS contour. Runs
     # AFTER the eyewires open the channel, BEFORE the perimeter releases the
@@ -1061,6 +1091,7 @@ _OP_STRATEGIES = {
     "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
     "Fine Relief": "Raster drop-cutter",
     "Eyewires": "Contour 2D (inside) · onion skin",
+    "Holes": "Contour 2D (inside) · onion skin",
     "Lens Groove": "Groove side-cut · radial entry (drageoir)",
     "Perimeter": "Contour 2D (outside) · onion skin",
     "Engraving": "Engrave · trace at depth",
@@ -1203,7 +1234,9 @@ def write_castle_program(
     same-tool ops naturally grouped. When `tool_settings` is None the program is
     single-tool, exactly as before.
     """
-    contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Perimeter"}
+    # "Holes" (decorative OUTLINE openings) is an inside through-cut exactly like
+    # Eyewires — it needs the same ramped lead-in, not a full-depth plunge.
+    contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Holes", "Perimeter"}
     drill_ops = drill_op_names or set()
     # On an auto-tool-change machine the M6 that follows the header raises Z itself, so
     # the header's safe-Z retract is a wasted bob before the tool change — skip it there
