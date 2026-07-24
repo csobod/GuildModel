@@ -33,4 +33,21 @@ Thumbs.db
 
 # Icon/render scratch
 assets_preview/
-src/guildcam/assets/_iconcache/
+src/guildmodel/assets/_iconcache/
+
+# Local Claude Code settings (per-machine, not shared)
+.claude/settings.local.json
+
+# Internal design/planning references — kept local, not published. Working notes
+# (teardowns, cross-app integration planning) and scratch reference geometry the
+# app and test suite do not depend on (tests vendor their own fixtures under
+# tests/fixtures/). Leading slash anchors each to the repo root.
+/DEMO_PROJECT_TEARDOWN.md
+/OLGA_TEARDOWN_AND_PLAN.md
+/INTEGRATION_NOTES.md
+/Current Development.png
+/cnc_bed.dxf
+/cnc_bed.svg
+/frame_illustration.dxf
+/frame_illustration.svg
+/hinge_th-23_front.dxf

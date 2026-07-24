@@ -11,10 +11,12 @@ real stock — and nothing else.
 > **This document is the v1.0 roadmap.** The original spike-era build plan
 > (Sessions 1–6, M0 pipeline) is archived verbatim at
 > **`docs/BUILDPLAN-spike-archive.md`**. The behavioural ground truth this
-> roadmap is built against is **`DEMO_PROJECT_TEARDOWN.md`** (the user's manual
-> Fusion 360 workflow, fully reconstructed from `Demo Project/`). OLGA
-> behavioural reverse-engineering lives in `OLGA_TEARDOWN_AND_PLAN.md`;
-> the GuildDraw-side export contract is `BUILDPLAN.md` §2 in the GuildDraw repo.
+> roadmap was built against — the maker's manual Fusion 360 workflow (the
+> `DEMO_PROJECT_TEARDOWN.md` teardown) and the OLGA behavioural
+> reverse-engineering (`OLGA_TEARDOWN_AND_PLAN.md`) — is kept in the maker's
+> local working tree and is **not** part of the published repository; the Demo
+> Project ground truth itself is vendored under `tests/fixtures/demo/`. The
+> GuildDraw-side export contract is `BUILDPLAN.md` §2 in the GuildDraw repo.
 
 ---
 
@@ -509,8 +511,9 @@ signal (M7.2); resolved for real during M8 hardware validation.
 
 ## 4. Reference workflow (the behavioural spec)
 
-`DEMO_PROJECT_TEARDOWN.md` reconstructs the user's manual Fusion 360 workflow
-end-to-end and is the acceptance target for M1–M3. Summary:
+The maker's manual Fusion 360 workflow — reconstructed end-to-end in the local
+`DEMO_PROJECT_TEARDOWN.md` teardown (kept in the working tree, not published) —
+is the acceptance target for M1–M3. Summary:
 
 - **Zones** (posterior heights): endpieces 5.5, bridge 5.3, nosepads 10.0,
   superior eyewires 4.8, inferior eyewires 4.2 mm; hinge pockets 1.0 mm deep
@@ -3202,9 +3205,9 @@ OpenCAMLib.
 ```
 guildcam/
 ├── BUILDPLAN.md                # this file
-├── DEMO_PROJECT_TEARDOWN.md    # behavioural spec (Fusion reference workflow)
-├── OLGA_TEARDOWN_AND_PLAN.md   # OLGA reverse-engineering reference
-├── Demo Project/               # ground-truth fixture set + _analyze_*.py
+├── DEMO_PROJECT_TEARDOWN.md    # behavioural spec — local only, not published
+├── OLGA_TEARDOWN_AND_PLAN.md   # OLGA reverse-engineering — local only, not published
+├── Demo Project/               # local ground-truth set (subset vendored in tests/fixtures/demo/)
 ├── docs/
 │   └── BUILDPLAN-spike-archive.md
 ├── src/guildcam/

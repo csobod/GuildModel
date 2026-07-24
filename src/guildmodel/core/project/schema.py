@@ -28,7 +28,7 @@ class ZoneThicknesses(BaseModel):
     nosepad. Walls: eyewire_superior, eyewire_inferior — a wall spanning both
     eyes (an aviator's unified brow, side "ou") is still an eyewire and rides
     the same control. Defaults are the Demo Project reference values
-    (DEMO_PROJECT_TEARDOWN.md §3).
+    (vendored under tests/fixtures/demo/).
     """
     endpiece_mm: float = 5.5
     bridge_mm: float = 5.3
@@ -59,7 +59,7 @@ class FootingFillet(BaseModel):
 class FootingSchedule(BaseModel):
     """Per-edge footing fillets, keyed by ZoneEdge.canonical (OD/OS share).
 
-    Defaults are the Demo Project reference values (teardown §4) including
+    Defaults are the Demo Project reference values, including
     the Fusion application order (timeline features 7-16).
     """
     endpiece_superior: FootingFillet = Field(default_factory=lambda: FootingFillet(exterior_mm=32.0, interior_mm=48.0, first="interior"))

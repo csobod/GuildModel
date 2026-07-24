@@ -197,7 +197,7 @@ def test_demo_relief_matches_fusion_stl(demo_relief, demo):
     body = part.body
     stl = trimesh.load(DEMO / "Model.stl")
 
-    # Registration is translation-only (bbox centers); see teardown §"frame".
+    # Registration is translation-only (bbox centers) against the reference STL.
     v = stl.vertices.copy()
     sb = stl.bounds
     v[:, 0] += (body.bounds[0] + body.bounds[2]) / 2 - (sb[0][0] + sb[1][0]) / 2

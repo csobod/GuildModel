@@ -1,4 +1,4 @@
-# GuildModel User Guide (v1.0.0-rc1)
+# GuildModel User Guide (v1.0.0)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →

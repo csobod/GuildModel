@@ -1,7 +1,7 @@
 """The five-operation posterior CAM recipe (BUILDPLAN M3).
 
-Reproduces the maker's proven Fusion 360 program (DEMO_PROJECT_TEARDOWN.md §6)
-from the castle relief, in order:
+Reproduces the maker's proven Fusion 360 program from the castle relief,
+in order:
 
   1. Hinge Pockets — while the stock is rigid; ramp entry, no straight plunge
   2. Rough Relief  — castle surface + axial stock to leave, stock-aware

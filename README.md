@@ -11,13 +11,11 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.0.0-rc2** — release candidate. On top of rc1's posterior finishing
-features (pad splay chamfer, bezeled eyewire, bridge projection relief), rc2
-adds the V1-prep rounds: a session safety net (unsaved-changes guard,
-autosave/crash recovery, guild splash), appearance customization (per-layer
-colours, configurable grid), the File ▸ Open in GuildSend handoff, a maker's
-guide (`docs/USER-GUIDE.md`), and the **lens bevel groove** — a toggleable
-drageoir V-groove in each eyewire wall (optional, off by default).
+**v1.0.0.** GuildModel builds the posterior castle relief and the
+five-operation single-tool GRBL program for a frame front, its temples, and
+per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
+maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
+(drageoir V-groove in each eyewire wall, off by default).
 
 The **frame-front workflow is hardware-proven**: a frame front has been cut on
 real acetate end-to-end (GuildDraw DXF → castle relief → five-op GRBL program →
@@ -63,9 +61,10 @@ or, without activating the venv:
 .venv\Scripts\python -m guildmodel.gui.app
 ```
 
-In a development checkout the app auto-loads
-`Demo Project/GuildDraw DXF Export.dxf`, which exercises the full castle
-pipeline (9 zones, hinge pockets, five-op G-code).
+The app opens with an empty workspace; use **File ▸ Open Drawing** (a GuildDraw
+`.gdraw`) or **File ▸ Open DXF** to load a design. A reference frame front that
+exercises the full castle pipeline (9 zones, hinge pockets, five-op G-code) is
+vendored under `tests/fixtures/demo/`.
 
 ## Running tests
 

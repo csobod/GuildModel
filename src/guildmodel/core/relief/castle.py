@@ -1,7 +1,7 @@
 """Castle relief builder (BUILDPLAN M2): terraces, footing blends, stock.
 
 Builds the posterior surface of a frame front the way the maker models it
-(DEMO_PROJECT_TEARDOWN.md): each castle zone is a flat terrace at its own
+in Fusion 360: each castle zone is a flat terrace at its own
 height (towers first, then walls), and every step edge between zones is
 blended with a rolling-ball footing fillet pair — a convex (exterior) arc
 tangent to the high terrace meeting a concave (interior) arc tangent to the

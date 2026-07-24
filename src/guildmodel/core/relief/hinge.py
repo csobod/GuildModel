@@ -2,7 +2,7 @@
 
 Models a metal hinge seat as a (optionally tilted, optionally ramped) rectangular
 pocket in the frame front or temple.  Uses the CHA.dll parameter vocabulary from
-the OLGA teardown §3:
+the OLGA plugin suite:
 
   RotationCharniere        — yaw of the hinge box about the Z axis (deg)
   EncombrementCharniere    — pocket footprint envelope (w × h, mm)

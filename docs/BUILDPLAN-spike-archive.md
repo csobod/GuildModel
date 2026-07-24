@@ -7,6 +7,12 @@
 > the redevelopment replanned the milestones around the castle pipeline.
 > Module-status claims below reflect Session 6 and are superseded by the
 > root document.
+>
+> **Note on referenced files.** The internal reference material this archive
+> names — the Fusion 360 Demo Project teardown, the OLGA behavioural analysis,
+> and the bed/hinge reference sketches — is kept in the maker's local working
+> tree and is not part of the published repository. The Demo Project ground
+> truth itself is vendored under `tests/fixtures/demo/`.
 
 Reference: `frame_modeler_project.md` (the full spec). This document tracks the session-by-session build order and current status.
 

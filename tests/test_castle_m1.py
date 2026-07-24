@@ -1,7 +1,7 @@
 """M1 tests: posterior flip, castle zone partitioning, castle schema.
 
 Ground truth is the committed Demo Project reference set
-(DEMO_PROJECT_TEARDOWN.md); these are the M1 acceptance tests from
+(tests/fixtures/demo/); these are the M1 acceptance tests from
 BUILDPLAN.md.
 """
 from pathlib import Path

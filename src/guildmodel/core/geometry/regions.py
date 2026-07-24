@@ -2,7 +2,7 @@
 
 Partitions the frame-front body (OUTLINE minus LENS holes) into castle zones
 using the SCULPT section cuts, and auto-labels them when the standard
-5-cuts-per-side pattern matches (see DEMO_PROJECT_TEARDOWN.md §2-3):
+5-cuts-per-side pattern matches:
 
     towers: endpiece_od / endpiece_os, bridge, nosepad_od / nosepad_os
     walls:  eyewire_superior_od/os, eyewire_inferior_od/os
@@ -42,7 +42,8 @@ TOWER_KINDS = ("endpiece", "bridge", "nosepad")
 WALL_KINDS = ("eyewire_superior", "eyewire_inferior")
 
 # Canonical step-edge names, keyed by the unordered pair of adjacent zone
-# kinds. These are the keys of the footing fillet schedule (teardown §4).
+# kinds. These are the keys of the footing fillet schedule
+# (project.schema.FootingSchedule).
 CANONICAL_EDGES: dict[frozenset[str], str] = {
     frozenset({"endpiece", "eyewire_superior"}): "endpiece_superior",
     frozenset({"endpiece", "eyewire_inferior"}): "endpiece_inferior",
@@ -55,7 +56,7 @@ CANONICAL_EDGES: dict[frozenset[str], str] = {
     frozenset({"nosepad", "eyewire_superior"}): "nosepad_superior",
 }
 
-#: The nine zone names of the standard castle layout (DEMO_PROJECT_TEARDOWN §2).
+#: The nine zone names of the standard castle layout.
 STANDARD_ZONE_NAMES = frozenset({
     "endpiece_od", "endpiece_os", "bridge", "nosepad_od", "nosepad_os",
     "eyewire_superior_od", "eyewire_inferior_od",
