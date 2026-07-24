@@ -1,1 +1,4 @@
 *.nc linguist-language=G-code
+
+# Shell scripts must stay LF — a CRLF script breaks bash on macOS/Linux.
+*.sh text eol=lf

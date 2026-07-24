@@ -1,0 +1,70 @@
+# Builds the macOS artifacts on GitHub's macOS runners — no local Mac needed.
+# Trigger it manually (Actions tab > "macOS build" > Run workflow), then
+# download the artifacts and attach them to the GitHub release.
+#
+# One artifact per architecture (PyInstaller does not cross-compile):
+#   - macos-14 runner        -> arm64  (Apple Silicon)
+#   - macos-15-intel runner  -> x86_64 (Intel; best-effort — GitHub is winding
+#     Intel runners down, so this leg may need a new label or can be dropped
+#     when it stops working)
+#
+# GuildModel renders 3D through PyVista/VTK, so the freeze bundles the VTK
+# dylibs and is large (~500 MB) and slower than a 2D app — hence the generous
+# timeouts below.
+name: macOS build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            required: true
+          - runner: macos-15-intel
+            arch: x86_64
+            required: false
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
+    timeout-minutes: 50             # VTK freeze + dmg is heavy; never burn hours
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev,packaging]"
+          .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
+
+      # Full suite as the gate. offscreen keeps Qt off the window server; the
+      # thread timeout method turns any native-event-loop hang into a stack
+      # dump naming the test (the default signal method cannot interrupt one).
+      - name: Test gate
+        timeout-minutes: 25
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/bin/python -m pytest tests -q --timeout=300 --timeout-method=thread
+
+      - name: Build (.app + zip + dmg)
+        env:
+          GUILDMODEL_SKIP_SMOKE: "1"   # no window session for a launch check
+          GUILDMODEL_SKIP_TESTS: "1"   # the Test gate step above already ran
+        run: bash scripts/build_release_macos.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuildModel-macos-${{ matrix.arch }}
+          path: |
+            dist/GuildModel-*-macos-*.zip
+            dist/GuildModel-*-macos-*.dmg
+          if-no-files-found: error

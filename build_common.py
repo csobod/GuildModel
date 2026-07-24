@@ -10,8 +10,11 @@ dest the frozen ``__file__`` resolution expects.
 """
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
-# App icon, relative to the spec directory (repo root).
+# App icons, relative to the spec directory (repo root). The .ico is embedded
+# in the Windows EXE; the .icns is embedded in the macOS .app BUNDLE. Both are
+# regenerated from icon.svg by scripts/make_icon.py before each freeze.
 ICON_PATH = "src/guildmodel/assets/icon.ico"
+ICNS_PATH = "src/guildmodel/assets/icon.icns"
 
 # Heavy third-party packages that ship DLLs / data files / dynamically-imported
 # submodules PyInstaller's static analysis misses. collect_all bundles all three.
