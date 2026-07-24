@@ -3054,6 +3054,97 @@ inside a Qt-internal call stack, and skip it for a floating panel (the
 maker's drag-out is respected). Lesson: never mutate dock layout from a
 `visibilityChanged`/`toggled` cascade.
 
+## Worktable tab UX round *(2026-07-23; V1 scope: M8 proven on the available CNCs, M9 two-sided deferred to V2)*
+
+> User inspection of the Worktable tab surfaced two gaps + a UX pass. Two decisions
+> recorded first: **M8 hardware round-trip is satisfied** (the reoriented flow is
+> proven on the available CNC options), and **M9 two-sided machining is deferred to
+> V2** (out of V1 scope). This round is Worktable-tab polish.
+
+1. **Load a saved `.bed`.** `load_bed` existed in core but the panel only wired
+   **Save Bed…** — there was no way back in. Added a **Load Bed…** button +
+   `_on_load_bed` (open-dialog → `load_bed` → set worktable, clear nest, refresh,
+   mark dirty), the counterpart of Save Bed.
+2. **The bed perimeter is the work envelope (user-chosen behaviour).**
+   `build_worktable_from_dxf` now detects an **enclosing outer outline** (`_find_envelope`:
+   the one polygon face whose bbox contains every other polygon face) and treats it as
+   the **work area** (`work_area` = its bbox) rather than a taggable region — so a
+   custom bed no longer yields a confusing whole-bed "matrix" face; only the inner
+   loops stay as regions. Disjoint regions with no outline keep every face (guarded by
+   `len(poly) ≥ 2` + strict containment, so the M74 disjoint-rects test is unchanged).
+   GUI: a **Bed size (work envelope)** W×H spin group edits `work_area_*` live
+   (`_on_bed_size_changed` → `BedCanvas.update_work_area`, no refit); clicking the bed
+   **perimeter** selects the envelope (`BedCanvas._perimeter_hit` on the work-area
+   border → `perimeter_clicked` → `_on_perimeter_selected` highlights the rect solid +
+   focuses the size fields).
+3. **Extra fixes (all four, user-approved):** (a) **zoom/pan no longer resets on
+   resize** — `BedCanvas` fits only when a fit is pending (`_needs_fit`, set by
+   `set_worktable`, cleared once the widget is really sized; `fit_to_view` early-returns
+   at 0-size); a plain window resize now preserves the maker's view. (b) **Remove
+   Region** button (`_on_remove_region`) drops a selected sliver / leftover face. (c) an
+   on-canvas **role legend** (`_draw_legend`) keys the colours actually present. (d)
+   placeholder + panel help text updated to mention loading a saved `.bed` and the
+   work-envelope outline.
+
+Suite 569 → **572** (+2 core envelope tests, +1 guarded GUI test in
+`tests/test_worktable_m74.py`; the GUI test is skip-guarded off-platform). Held
+uncommitted for the user's on-screen review (perimeter-click highlight + legend).
+
+## Worktable tab UX round 2 *(2026-07-24; on-screen review of round 1)*
+
+> Second Worktable pass after the maker tested round 1. Four asks, all landed.
+
+1. **Undo/redo for bed edits.** A worktable-scoped undo stack (`_wt_undo`/`_wt_redo`,
+   deep `model_copy` snapshots, capped at 30) — **↶ Undo / ↷ Redo** buttons under
+   Remove Region. `_wt_snapshot()` runs before every structural edit (Remove Region,
+   role re-tag, and any bed load/import/default-load — so an accidental "Load Guild
+   Bed" that wiped a custom bed is recoverable); `_after_wt_restore` re-binds the
+   canvas without a refit (keeps zoom). A project open clears the history.
+2. **Incomplete-bed nesting** — already worked at the engine level
+   (`nest_components_on_worktable` sends role-unmatched parts to `BedNest.unplaced`,
+   Generate enables on any placement); this round **verified + regression-tested** it
+   (a front + one-temple bed nests those two, returns temple-left + base-curve
+   unplaced, no error) for shops whose bed does one front + one temple at a time, or
+   has no base-curve zones.
+3. **User default bed.** New core helpers in `worktable.py`
+   (`user_default_bed_path` = `~/.guildmodel/default.bed`, `load/save/clear_user_default_bed`,
+   `startup_worktable` = user default ⟶ else shipped Guild). `_ensure_worktable` now
+   opens with the user's default; **Set as Default** button saves the current bed as
+   it; **Load Guild Bed** still force-loads the shipped fixture. On **saving the
+   `.gmodel` or generating the nested worktable.nc**, if the bed differs from the
+   current default, `_maybe_prompt_default_bed` offers to make it the default — once
+   per bed change (`_bed_prompt_answered`), with a **"Don't ask again"** checkbox that
+   sets the new `prompt_set_default_bed` pref (default True) off.
+4. **Button declutter.** The four stacked file buttons became a 2×2 grid — **Load
+   DXF/BED…** (one button; the open dialog dispatches on `.dxf` vs `.bed`) + **Load
+   Guild Bed** on row 1, **Save Bed…** + **Set as Default** on row 2. `_on_import_bed`
+   / `_on_load_bed` kept as thin menu/test wrappers over `_import_bed_dxf` /
+   `_load_bed_file` appliers (both funnel through `_apply_new_worktable`).
+
+Suite 572 → **575** (+2 core: incomplete-bed nest + user-default round-trip; +1
+guarded GUI: undo/redo + set-default).
+Held uncommitted for on-screen review (undo/redo buttons, the 2×2 layout, and the
+default-bed prompt on save/export).
+
+**Round-2 field fixes (2026-07-24, user on-screen review — two bugs, both pre-existing
+but surfaced during round-2 testing):**
+1. **Nesting failed / no footprints drawn.** `NestWorker.run`'s frame-front branch
+   referenced `CASTLE_CONTOUR_OPS` but never imported it (it was imported locally in
+   two *other* methods) → `NameError` the instant a frame front was nested → no
+   placements → nothing drawn (the Toolpaths panel was showing the front's own
+   per-component Generate, not a nest). The nest **tests build `BedPart` directly**, so
+   the worker's castle branch was untested. Fixed the import; **added a regression test**
+   running `NestWorker.run` on a real demo-DXF castle onto a frame-front-only bed.
+2. **Bottom docks couldn't be resized (glitched over the status bar), in every view.**
+   The Worktable sidebar panel grew tall this round (bed-size fields, Set-as-Default,
+   Undo/Redo) with **no scroll area**, forcing the shared right dock's *minimum height*
+   to **678 px** — starving the vertical layout so the bottom docks spilled over the
+   status bar. Wrapped the worktable panel in a `QScrollArea` (the params panel's
+   pattern); right-dock min dropped **678 → 130 px**. The panel scrolls internally when
+   the window is short.
+
+Suite 575 → **576** (+1 nest-worker castle-branch regression test).
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

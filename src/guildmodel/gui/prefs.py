@@ -44,6 +44,9 @@ DEFAULTS: dict = {
     # Show the bottom log dock on startup (toggle the button to change it for
     # the session; this pref sets the default) — M4.6
     "show_log_on_start":     False,
+    # Ask, when saving / exporting a changed worktable, whether to make it the
+    # default bed. The "Don't ask again" checkbox in that prompt sets this False.
+    "prompt_set_default_bed": True,
     # Recently opened files (most recent first)
     "recent_files":          [],
     # 3D preview / STL export grid resolution (mm)

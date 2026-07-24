@@ -16,10 +16,11 @@ from PySide6.QtGui import (
     QResizeEvent, QFont, QPainterPath,
 )
 
-from guildmodel.core.project.schema import BedRole
+from guildmodel.core.project.schema import BedRole, bed_role_label
 from guildmodel.gui.style import theme
 
-_PLACEHOLDER = "Import a bed DXF, or load the Guild fixture, to set up the worktable"
+_PLACEHOLDER = ("Import a bed DXF, load a saved .bed, or load the Guild fixture "
+                "to set up the worktable")
 
 # Role → (fill RGBA, outline hex). Keep-out is a red hatch; untagged a neutral grey.
 _ROLE_COLORS: dict[BedRole, tuple[tuple[int, int, int, int], str]] = {
@@ -40,6 +41,7 @@ class BedCanvas(QWidget):
     region_clicked = Signal(str)    # zone id (left-click hit), or "" on empty space
     component_nudged = Signal(str, float, float)   # zone id, total (dx, dy) mm on release
     component_selected = Signal(str)   # zone id of the clicked footprint, or "" (deselect)
+    perimeter_clicked = Signal()    # the bed outline / work-envelope border was clicked
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -53,6 +55,8 @@ class BedCanvas(QWidget):
         self._zones: list = []                       # list[WorktableZone] (duck-typed)
         self._work_area: tuple[float, float] = (300.0, 200.0)
         self._selected_id: Optional[str] = None
+        self._envelope_selected: bool = False        # the work-area perimeter is selected
+        self._needs_fit: bool = False                # a fit is pending until the widget is sized
 
         # M7.6 nested footprints: each = dict(zone_id, role, label, paths, violated, bbox)
         self._placements: list[dict] = []
@@ -84,9 +88,11 @@ class BedCanvas(QWidget):
         )
         if self._selected_id not in {z.id for z in self._zones}:
             self._selected_id = None
+        self._envelope_selected = False
         self._placements = []                # a new bed invalidates any prior nest
         self._nest_drag = None
         self._selected_nest_idx = None
+        self._needs_fit = True               # fit once the widget has a real size
         self.fit_to_view()
 
     def refresh(self, worktable) -> None:
@@ -94,8 +100,23 @@ class BedCanvas(QWidget):
         self._zones = list(worktable.zones) if worktable else []
         self.update()
 
+    def update_work_area(self, width_mm: float, height_mm: float) -> None:
+        """Resize the work envelope in place (the maker edited the bed size); the
+        maker's zoom/pan is preserved (no refit)."""
+        self._work_area = (float(width_mm), float(height_mm))
+        self.update()
+
+    def set_envelope_selected(self, selected: bool) -> None:
+        """Highlight (or clear) the work-area perimeter as the current selection."""
+        self._envelope_selected = bool(selected)
+        if selected:
+            self._selected_id = None
+        self.update()
+
     def set_selected(self, zone_id: Optional[str]) -> None:
         self._selected_id = zone_id
+        if zone_id is not None:
+            self._envelope_selected = False
         self.update()
 
     def selected_id(self) -> Optional[str]:
@@ -152,6 +173,10 @@ class BedCanvas(QWidget):
         return (min(xs), min(ys), max(xs), max(ys))
 
     def fit_to_view(self) -> None:
+        w, h = self.width(), self.height()
+        if w <= 1 or h <= 1:
+            self._needs_fit = True            # too early — retry once the widget is laid out
+            return
         w_mm, h_mm = self._work_area
         xs = [0.0, w_mm]
         ys = [0.0, h_mm]
@@ -164,10 +189,10 @@ class BedCanvas(QWidget):
         span_x = (max_x - min_x) or 1.0
         span_y = (max_y - min_y) or 1.0
 
-        w, h = self.width(), self.height()
         self._scale = min(w * 0.9 / span_x, h * 0.9 / span_y)
         cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
         self._offset = QPointF(w / 2.0 - cx * self._scale, h / 2.0 + cy * self._scale)
+        self._needs_fit = False
         self.update()
 
     # ------------------------------------------------------------------ coords
@@ -216,6 +241,20 @@ class BedCanvas(QWidget):
             return None
         return min(hits, key=lambda t: t[1])[0]
 
+    def _perimeter_hit(self, sx: float, sy: float, tol: float = 6.0) -> bool:
+        """True when a screen click lands on the work-area rectangle border — the
+        gesture that selects the bed perimeter / work envelope."""
+        w_mm, h_mm = self._work_area
+        tl = self._world_to_screen(0.0, h_mm)
+        br = self._world_to_screen(w_mm, 0.0)
+        left, right = min(tl.x(), br.x()), max(tl.x(), br.x())
+        top, bottom = min(tl.y(), br.y()), max(tl.y(), br.y())
+        on_vert = (abs(sx - left) <= tol or abs(sx - right) <= tol) and (
+            top - tol <= sy <= bottom + tol)
+        on_horiz = (abs(sy - top) <= tol or abs(sy - bottom) <= tol) and (
+            left - tol <= sx <= right + tol)
+        return on_vert or on_horiz
+
     # ------------------------------------------------------------------ painting
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -230,6 +269,7 @@ class BedCanvas(QWidget):
         self._draw_work_area(painter)
         self._draw_zones(painter)
         self._draw_nest(painter)
+        self._draw_legend(painter)
         self._draw_scale_bar(painter)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
@@ -241,7 +281,11 @@ class BedCanvas(QWidget):
 
     def _draw_work_area(self, painter: QPainter) -> None:
         w_mm, h_mm = self._work_area
-        pen = QPen(QColor(self._palette.stock_dash), 1.4, Qt.PenStyle.DashLine)
+        if self._envelope_selected:
+            # Selected: a solid, thicker highlight so the perimeter reads as "picked".
+            pen = QPen(QColor(self._palette.annotation), 2.4, Qt.PenStyle.SolidLine)
+        else:
+            pen = QPen(QColor(self._palette.stock_dash), 1.4, Qt.PenStyle.DashLine)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -345,6 +389,49 @@ class BedCanvas(QWidget):
                            else QColor(self._palette.annotation))
             painter.drawText(QPointF(sc.x() - 20, sc.y()), pl["label"])
 
+    def _draw_legend(self, painter: QPainter) -> None:
+        """A small top-left key mapping each role colour present on the bed, so the
+        tagging colours are self-explanatory."""
+        seen: list = []
+        for z in self._zones:
+            role = BedRole(z.role)
+            if role not in seen:
+                seen.append(role)
+        if not seen:
+            return
+        seen.sort(key=lambda r: list(BedRole).index(r))
+
+        font = QFont(self.font())
+        font.setPointSize(8)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        sw, pad, gap = 12, 6, 6
+        row_h = max(14, fm.height() + 2)
+        labels = [bed_role_label(r) for r in seen]
+        box_w = pad * 2 + sw + gap + max(fm.horizontalAdvance(t) for t in labels)
+        box_h = pad * 2 + row_h * len(seen)
+        x0, y0 = 12, 12
+
+        bg = QColor(self._palette.canvas_bg)
+        bg.setAlpha(220)
+        painter.setPen(QPen(QColor(self._palette.annotation), 1.0))
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(QRectF(x0, y0, box_w, box_h), 4, 4)
+
+        for i, (role, label) in enumerate(zip(seen, labels)):
+            ry = y0 + pad + i * row_h
+            rgba, outline = _ROLE_COLORS.get(role, _ROLE_COLORS[BedRole.UNASSIGNED])
+            swatch = QRectF(x0 + pad, ry + (row_h - sw) / 2.0, sw, sw)
+            if role == BedRole.KEEP_OUT:
+                painter.fillRect(swatch, QBrush(QColor(*rgba), Qt.BrushStyle.BDiagPattern))
+            else:
+                painter.fillRect(swatch, QColor(*rgba))
+            painter.setPen(QPen(QColor(outline), 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(swatch)
+            painter.setPen(QColor(self._palette.annotation))
+            painter.drawText(QPointF(x0 + pad + sw + gap, ry + fm.ascent() + 1), label)
+
     def _draw_scale_bar(self, painter: QPainter) -> None:
         bar_mm = 50.0
         bar_px = bar_mm * self._scale
@@ -396,14 +483,26 @@ class BedCanvas(QWidget):
                 self.update()
                 event.accept()
                 return
-            hit = self._hit_test(wx, wy)
-            # Clicking empty space / a bare zone deselects any selected footprint.
+            # Clicking anything deselects a selected footprint.
             if self._selected_nest_idx is not None:
                 self._selected_nest_idx = None
                 self.component_selected.emit("")
-            self._selected_id = hit
-            self.update()
-            self.region_clicked.emit(hit or "")
+            hit = self._hit_test(wx, wy)
+            if hit is not None:                       # a region wins over the perimeter
+                self._envelope_selected = False
+                self._selected_id = hit
+                self.update()
+                self.region_clicked.emit(hit)
+            elif self._perimeter_hit(event.position().x(), event.position().y()):
+                self._selected_id = None
+                self._envelope_selected = True
+                self.update()
+                self.perimeter_clicked.emit()
+            else:                                     # empty bed space
+                self._selected_id = None
+                self._envelope_selected = False
+                self.update()
+                self.region_clicked.emit("")
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -446,5 +545,8 @@ class BedCanvas(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        if self._zones:
+        # Only fit when a fit is pending (a fresh bed, or the first real layout after
+        # `set_worktable` ran while the widget was still 0-sized). A plain window
+        # resize preserves the maker's zoom/pan.
+        if self._zones and self._needs_fit:
             self.fit_to_view()

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QMessageBox, QStackedWidget,
     QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QCheckBox, QFormLayout,
-    QDoubleSpinBox, QLineEdit, QScrollArea, QDockWidget,
+    QDoubleSpinBox, QLineEdit, QScrollArea, QDockWidget, QFrame,
     QToolBar, QProgressDialog, QTabBar, QComboBox,
     QListWidget, QListWidgetItem, QSpinBox, QSplitter,
     QSlider, QColorDialog,
@@ -1580,6 +1580,7 @@ class NestWorker(_ProgressWorker):
             from guildmodel.core.cam.layout import (
                 BedPart, default_nest_rotation, nest_components_on_worktable,
             )
+            from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
             from guildmodel.core.relief.castle import build_castle_relief
 
             cam = self.cam_params or CastleCamParams()
@@ -2891,6 +2892,13 @@ class MainWindow(QMainWindow):
         # an imported bed DXF; persisted with the project.
         self._worktable = None
         self._worktable_tab_index = -1
+        # Worktable undo/redo (M7.4 UX): snapshots of the Worktable taken before a
+        # structural edit (remove region / re-tag / load a different bed).
+        self._wt_undo: list = []
+        self._wt_redo: list = []
+        # Set once the maker has answered the "make this the default bed?" prompt for
+        # the current bed state; reset on any bed change so a genuinely new bed re-asks.
+        self._bed_prompt_answered = False
         self._nest = None                 # core.cam.layout.BedNest (M7.6) once nested
         self._nest_specs = None           # build specs behind the nest (M7.7 bed sim)
         self._nest_thread = None
@@ -3070,7 +3078,16 @@ class MainWindow(QMainWindow):
         # the Simulation view is up — `_sync_dock_page` is the single authority.
         self._dock_stack = QStackedWidget()
         self._dock_stack.addWidget(self.params)              # 0 — component params
-        self._dock_stack.addWidget(self._worktable_panel)    # 1 — worktable controls
+        # The worktable panel is tall (file ops, size, region list, nest, rotate,
+        # generate) — wrap it in a scroll area so it never forces the right dock's
+        # minimum height up (which starved the bottom docks, glitching them over the
+        # status bar). The params panel scrolls per-tab for the same reason.
+        _wt_scroll = QScrollArea()
+        _wt_scroll.setWidgetResizable(True)
+        _wt_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _wt_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _wt_scroll.setWidget(self._worktable_panel)
+        self._dock_stack.addWidget(_wt_scroll)               # 1 — worktable controls
         self._dock_stack.addWidget(self._build_sim_panel())  # 2 — simulation verdict
         self._right_dock.setWidget(self._dock_stack)
         self._right_dock.setTitleBarWidget(QWidget())   # hide the title bar
@@ -3171,6 +3188,7 @@ class MainWindow(QMainWindow):
         self.bed_canvas.region_clicked.connect(self._on_bed_region_clicked)
         self.bed_canvas.component_nudged.connect(self._on_component_nudged)
         self.bed_canvas.component_selected.connect(self._on_bed_placement_selected)
+        self.bed_canvas.perimeter_clicked.connect(self._on_perimeter_selected)
         h.addWidget(self.bed_canvas, 1)
 
         # The worktable controls live in the right dock (the sidebar), so they're
@@ -3185,21 +3203,56 @@ class MainWindow(QMainWindow):
         title = QLabel("Worktable")
         title.setObjectName("sectionTitle")
         v.addWidget(title)
-        desc = QLabel("Import a bed DXF, then click each region and tag its role. "
-                      "Keep-outs are hold-downs the cutter must avoid.")
+        desc = QLabel("Import a bed DXF (or load a saved .bed / the Guild fixture), "
+                      "then click each region and tag its role. An outer outline "
+                      "around the regions is the bed's work envelope. Keep-outs are "
+                      "hold-downs the cutter must avoid.")
         desc.setWordWrap(True)
         desc.setObjectName("mutedSmallLabel")
         v.addWidget(desc)
 
-        self._bed_import_btn = QPushButton("Import Bed DXF…")
-        self._bed_import_btn.clicked.connect(self._on_import_bed)
+        # File ops, two per row (Load DXF/BED combines the DXF-import and .bed-load
+        # paths — the open dialog dispatches on the file's extension).
+        self._bed_load_btn = QPushButton("Load DXF/BED…")
+        self._bed_load_btn.setToolTip("Import a bed DXF or open a saved .bed file.")
+        self._bed_load_btn.clicked.connect(self._on_load_bed_or_dxf)
         self._bed_default_btn = QPushButton("Load Guild Bed")
+        self._bed_default_btn.setToolTip("Load the shipped Guild CNC fixture.")
         self._bed_default_btn.clicked.connect(self._on_load_default_bed)
         self._bed_save_btn = QPushButton("Save Bed…")
+        self._bed_save_btn.setToolTip("Save this worktable to a .bed file.")
         self._bed_save_btn.clicked.connect(self._on_save_bed)
-        v.addWidget(self._bed_import_btn)
-        v.addWidget(self._bed_default_btn)
-        v.addWidget(self._bed_save_btn)
+        self._bed_setdefault_btn = QPushButton("Set as Default")
+        self._bed_setdefault_btn.setToolTip(
+            "Make this bed the default that loads with every new session.")
+        self._bed_setdefault_btn.clicked.connect(self._on_set_default_bed)
+        load_row = QHBoxLayout()
+        load_row.addWidget(self._bed_load_btn)
+        load_row.addWidget(self._bed_default_btn)
+        v.addLayout(load_row)
+        save_row = QHBoxLayout()
+        save_row.addWidget(self._bed_save_btn)
+        save_row.addWidget(self._bed_setdefault_btn)
+        v.addLayout(save_row)
+
+        # Bed size = the work envelope (BUILDPLAN M7.4). Click the bed perimeter to
+        # select it; edit W × H here. A DXF's outer outline seeds this on import.
+        v.addSpacing(6)
+        size_title = QLabel("Bed size (work envelope):")
+        v.addWidget(size_title)
+        size_row = QHBoxLayout()
+        self._bed_width_spin = QDoubleSpinBox()
+        self._bed_height_spin = QDoubleSpinBox()
+        for sp, suffix in ((self._bed_width_spin, " mm W"), (self._bed_height_spin, " mm H")):
+            sp.setRange(1.0, 5000.0)
+            sp.setDecimals(1)
+            sp.setSingleStep(1.0)
+            sp.setSuffix(suffix)
+            sp.setEnabled(False)
+            sp.valueChanged.connect(self._on_bed_size_changed)
+        size_row.addWidget(self._bed_width_spin)
+        size_row.addWidget(self._bed_height_spin)
+        v.addLayout(size_row)
 
         v.addSpacing(6)
         v.addWidget(QLabel("Selected region role:"))
@@ -3213,6 +3266,26 @@ class MainWindow(QMainWindow):
         self._bed_region_list = QListWidget()
         self._bed_region_list.currentRowChanged.connect(self._on_bed_list_row)
         v.addWidget(self._bed_region_list, 1)
+
+        self._bed_remove_btn = QPushButton("Remove Region")
+        self._bed_remove_btn.setToolTip(
+            "Delete the selected region (e.g. a polygonize sliver or a leftover face).")
+        self._bed_remove_btn.setEnabled(False)
+        self._bed_remove_btn.clicked.connect(self._on_remove_region)
+        v.addWidget(self._bed_remove_btn)
+
+        undo_row = QHBoxLayout()
+        self._bed_undo_btn = QPushButton("↶ Undo")
+        self._bed_undo_btn.setToolTip("Undo the last bed edit (remove / tag / load).")
+        self._bed_undo_btn.setEnabled(False)
+        self._bed_undo_btn.clicked.connect(self._on_wt_undo)
+        self._bed_redo_btn = QPushButton("↷ Redo")
+        self._bed_redo_btn.setToolTip("Redo the last undone bed edit.")
+        self._bed_redo_btn.setEnabled(False)
+        self._bed_redo_btn.clicked.connect(self._on_wt_redo)
+        undo_row.addWidget(self._bed_undo_btn)
+        undo_row.addWidget(self._bed_redo_btn)
+        v.addLayout(undo_row)
 
         self._bed_counts = QLabel("No bed loaded")
         self._bed_counts.setObjectName("mutedSmallLabel")
@@ -3324,9 +3397,10 @@ class MainWindow(QMainWindow):
         return page
 
     def _ensure_worktable(self):
-        """The active bed, defaulting to the built-in Guild fixture (M7.4)."""
+        """The active bed, defaulting to the user's saved default bed if any, else the
+        built-in Guild fixture (M7.4)."""
         if self._worktable is None:
-            from guildmodel.core.cam.worktable import default_worktable
+            from guildmodel.core.cam.worktable import startup_worktable as default_worktable
             try:
                 self._worktable = default_worktable()
             except Exception:
@@ -3366,15 +3440,25 @@ class MainWindow(QMainWindow):
 
     # ---- bed loading -------------------------------------------------------
 
-    def _on_import_bed(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(
-            self, "Import bed DXF", self._prefs.get("last_output_dir") or "",
-            "DXF files (*.dxf);;All files (*)")
-        if not path_str:
-            return
+    def _apply_new_worktable(self, wt, *, log_msg: str = "", status_msg: str = "") -> None:
+        """Replace the active bed (import / load / default), snapshotting the old bed
+        for undo and re-arming the default-bed prompt for this new bed (M7.4)."""
+        self._wt_snapshot()                # remember the outgoing bed for Undo
+        self._worktable = wt
+        self._clear_nest()                 # a new bed invalidates any prior nest
+        self.bed_canvas.set_worktable(wt)
+        self._refresh_worktable_panel()
+        self._bed_prompt_answered = False
+        self._mark_dirty()
+        if log_msg:
+            self.append_log(log_msg)
+        if status_msg:
+            self.status_lbl.setText(status_msg)
+
+    def _import_bed_dxf(self, path: Path) -> None:
         from guildmodel.core.cam.worktable import WorktableError, build_worktable_from_dxf
         try:
-            wt = build_worktable_from_dxf(Path(path_str))
+            wt = build_worktable_from_dxf(path)
         except WorktableError as exc:
             QMessageBox.warning(self, "Import bed failed", str(exc))
             return
@@ -3382,30 +3466,228 @@ class MainWindow(QMainWindow):
             self.append_log("[worktable] import failed:\n" + traceback.format_exc())
             QMessageBox.critical(self, "Import bed failed", "See the log for details.")
             return
-        self._worktable = wt
-        self._clear_nest()                 # a new bed invalidates any prior nest
-        self.bed_canvas.set_worktable(wt)
-        self._refresh_worktable_panel()
-        self._mark_dirty()
-        self.append_log(
-            f"[worktable] {Path(path_str).name}: {len(wt.zones)} regions — "
-            "click each and tag its role.")
-        self.status_lbl.setText(
-            f"Imported bed: {Path(path_str).name}  ({len(wt.zones)} regions)")
+        self._apply_new_worktable(
+            wt,
+            log_msg=f"[worktable] {path.name}: {len(wt.zones)} regions — "
+                    "click each and tag its role.",
+            status_msg=f"Imported bed: {path.name}  ({len(wt.zones)} regions)")
+
+    def _load_bed_file(self, path: Path) -> None:
+        from guildmodel.core.cam.worktable import load_bed
+        try:
+            wt = load_bed(path)
+        except Exception:
+            self.append_log("[worktable] load failed:\n" + traceback.format_exc())
+            QMessageBox.critical(
+                self, "Load bed failed",
+                f"Could not read {path.name}. See the log for details.")
+            return
+        self._apply_new_worktable(
+            wt,
+            log_msg=f"[worktable] loaded {path.name}: {len(wt.zones)} regions",
+            status_msg=f"Loaded bed: {path.name}  ({len(wt.zones)} regions)")
+
+    def _on_load_bed_or_dxf(self) -> None:
+        """Load a bed from either a DXF (polygonized) or a saved `.bed`; the dialog
+        dispatches on the chosen file's extension (M7.4 UX consolidation)."""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Load bed (DXF or .bed)", self._prefs.get("last_output_dir") or "",
+            "Bed files (*.dxf *.bed);;DXF files (*.dxf);;Bed files (*.bed);;All files (*)")
+        if not path_str:
+            return
+        p = Path(path_str)
+        if p.suffix.lower() == ".bed":
+            self._load_bed_file(p)
+        else:
+            self._import_bed_dxf(p)
+
+    def _on_import_bed(self) -> None:
+        """Import a bed DXF (kept for the menu / tests; the toolbar uses the combined
+        Load DXF/BED button)."""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Import bed DXF", self._prefs.get("last_output_dir") or "",
+            "DXF files (*.dxf);;All files (*)")
+        if path_str:
+            self._import_bed_dxf(Path(path_str))
+
+    def _on_load_bed(self) -> None:
+        """Open a saved `.bed` worktable file (kept for the menu / tests)."""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Load bed", self._prefs.get("last_output_dir") or "",
+            "Bed files (*.bed);;All files (*)")
+        if path_str:
+            self._load_bed_file(Path(path_str))
 
     def _on_load_default_bed(self) -> None:
+        """Load the shipped Guild fixture (always the built-in bed, not the user
+        default — this is the explicit 'reset to Guild' action)."""
         from guildmodel.core.cam.worktable import default_worktable
         try:
-            self._worktable = default_worktable()
+            wt = default_worktable()
         except Exception:
             self.append_log("[worktable] could not load the Guild bed:\n"
                             + traceback.format_exc())
             return
+        self._apply_new_worktable(wt, status_msg="Loaded the Guild standard bed")
+
+    def _on_set_default_bed(self) -> None:
+        """Make the current bed the user's default (loads in every new session)."""
+        if self._worktable is None:
+            return
+        from guildmodel.core.cam.worktable import save_user_default_bed
+        try:
+            save_user_default_bed(self._worktable)
+        except Exception:
+            self.append_log("[worktable] set-default failed:\n" + traceback.format_exc())
+            QMessageBox.critical(self, "Set default failed", "See the log for details.")
+            return
+        self._bed_prompt_answered = True      # current == default; the save prompt is moot
+        self.append_log("[worktable] saved as the default bed")
+        self.status_lbl.setText("This bed is now the default")
+
+    # ---- worktable undo / redo (M7.4 UX) -----------------------------------
+
+    def _wt_snapshot(self) -> None:
+        """Push the current bed onto the undo stack before a structural edit; clears
+        the redo stack and caps the history."""
+        if self._worktable is None:
+            return
+        self._wt_undo.append(self._worktable.model_copy(deep=True))
+        del self._wt_undo[:-30]               # keep the last 30 edits
+        self._wt_redo.clear()
+        self._refresh_wt_undo_buttons()
+
+    def _refresh_wt_undo_buttons(self) -> None:
+        if hasattr(self, "_bed_undo_btn"):
+            self._bed_undo_btn.setEnabled(bool(self._wt_undo))
+            self._bed_redo_btn.setEnabled(bool(self._wt_redo))
+
+    def _on_wt_undo(self) -> None:
+        if not self._wt_undo or self._worktable is None:
+            return
+        self._wt_redo.append(self._worktable.model_copy(deep=True))
+        self._worktable = self._wt_undo.pop()
+        self._after_wt_restore("Undo")
+
+    def _on_wt_redo(self) -> None:
+        if not self._wt_redo or self._worktable is None:
+            return
+        self._wt_undo.append(self._worktable.model_copy(deep=True))
+        self._worktable = self._wt_redo.pop()
+        self._after_wt_restore("Redo")
+
+    def _after_wt_restore(self, label: str) -> None:
+        """Re-bind the canvas/panel to a bed restored by undo/redo (keeps the maker's
+        zoom — a structural change doesn't need a refit)."""
         self._clear_nest()
-        self.bed_canvas.set_worktable(self._worktable)
+        self.bed_canvas.set_selected(None)
+        self.bed_canvas.refresh(self._worktable)
+        self.bed_canvas.update_work_area(
+            self._worktable.work_area_width_mm, self._worktable.work_area_height_mm)
         self._refresh_worktable_panel()
+        self._bed_prompt_answered = False
         self._mark_dirty()
-        self.status_lbl.setText("Loaded the Guild standard bed")
+        self._refresh_wt_undo_buttons()
+        self.append_log(f"[worktable] {label}")
+
+    # ---- default-bed prompt (M7.4 UX) --------------------------------------
+
+    def _bed_differs_from_default(self) -> bool:
+        """True when the current bed is not the session default (user default, else the
+        shipped Guild bed) — the condition to offer 'set as default'."""
+        from guildmodel.core.cam.worktable import default_worktable, load_user_default_bed
+        if self._worktable is None:
+            return False
+        try:
+            base = (load_user_default_bed() or default_worktable()).model_dump(mode="json")
+        except Exception:
+            return False
+        return self._worktable.model_dump(mode="json") != base
+
+    def _maybe_prompt_default_bed(self) -> None:
+        """On save / nested-NC export of a changed bed, offer to make it the default —
+        once per bed change, and only while the maker hasn't opted out (M7.4)."""
+        if self._worktable is None or self._bed_prompt_answered:
+            return
+        if not self._prefs.get("prompt_set_default_bed", True):
+            return
+        if not self._bed_differs_from_default():
+            return
+        from guildmodel.core.cam.worktable import save_user_default_bed
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Set default bed?")
+        box.setText("This worktable differs from your default bed.")
+        box.setInformativeText(
+            "Make it your default so it loads automatically in new sessions?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        cb = QCheckBox("Don't ask again")
+        box.setCheckBox(cb)
+        res = box.exec()
+        self._bed_prompt_answered = True
+        if cb.isChecked():
+            self._prefs["prompt_set_default_bed"] = False
+            prefs_mod.save(self._prefs)
+        if res == QMessageBox.StandardButton.Yes:
+            try:
+                save_user_default_bed(self._worktable)
+                self.append_log("[worktable] set as the default bed")
+                self.status_lbl.setText("Default bed updated")
+            except Exception:
+                self.append_log("[worktable] could not write the default bed:\n"
+                                + traceback.format_exc())
+
+    def _on_bed_size_changed(self, _val: float = 0.0) -> None:
+        """Bed work-envelope W/H edited — resize the worktable in place (M7.4)."""
+        if self._worktable is None:
+            return
+        w = float(self._bed_width_spin.value())
+        h = float(self._bed_height_spin.value())
+        self._worktable.work_area_width_mm = w
+        self._worktable.work_area_height_mm = h
+        self.bed_canvas.update_work_area(w, h)
+        self._bed_removal = None            # bed sim / nest bounds depend on the envelope
+        self._bed_report = None
+        self._bed_prompt_answered = False   # a changed bed re-arms the default prompt
+        self._mark_dirty()
+
+    def _on_perimeter_selected(self) -> None:
+        """The maker clicked the bed perimeter — select the work envelope: clear any
+        region selection and focus the size fields (M7.4)."""
+        if self._worktable is None:
+            return
+        self._bed_region_list.blockSignals(True)
+        self._bed_region_list.clearSelection()
+        self._bed_region_list.setCurrentRow(-1)
+        self._bed_region_list.blockSignals(False)
+        self._bed_role_combo.setEnabled(False)
+        self._bed_remove_btn.setEnabled(False)
+        if self._bed_width_spin.isEnabled():
+            self._bed_width_spin.setFocus()
+        self.status_lbl.setText(
+            f"Bed work envelope: {self._worktable.work_area_width_mm:.0f} × "
+            f"{self._worktable.work_area_height_mm:.0f} mm")
+
+    def _on_remove_region(self) -> None:
+        """Delete the selected region from the bed (a sliver or a leftover face)."""
+        zid = self.bed_canvas.selected_id()
+        if zid is None or self._worktable is None:
+            return
+        try:
+            z = self._worktable.zone(zid)
+        except KeyError:
+            return
+        self._wt_snapshot()                # undoable
+        self._worktable.zones = [zz for zz in self._worktable.zones if zz.id != zid]
+        self._clear_nest()                 # the nest referenced the old zone set
+        self.bed_canvas.set_selected(None)
+        self.bed_canvas.refresh(self._worktable)
+        self._refresh_worktable_panel()
+        self._bed_prompt_answered = False
+        self._mark_dirty()
+        self.append_log(f"[worktable] removed region {z.label or z.id}")
 
     # ---- nesting (BUILDPLAN M7.6) ------------------------------------------
 
@@ -3773,6 +4055,7 @@ class MainWindow(QMainWindow):
             self._mark_dirty()       # program held in memory until Save Project
         self.status_lbl.setText("Worktable G-code ready")
         QMessageBox.information(self, "Worktable program", summary)
+        self._maybe_prompt_default_bed()   # offer to keep this bed as the default
 
     def _start_bed_sim(self) -> None:
         """Run the whole nested bed's cut sim off-thread (driven by the Sim view on
@@ -3910,6 +4193,7 @@ class MainWindow(QMainWindow):
         self._bed_region_list.blockSignals(False)
 
         self._bed_role_combo.setEnabled(zone_id is not None)
+        self._bed_remove_btn.setEnabled(zone_id is not None)
         if zone_id is not None and self._worktable is not None:
             z = self._worktable.zone(zone_id)
             self._bed_role_combo.blockSignals(True)
@@ -3925,9 +4209,13 @@ class MainWindow(QMainWindow):
         if zid is None or self._worktable is None or idx < 0:
             return
         role = self._bed_role_combo.itemData(idx)
+        if self._worktable.zone(zid).role == BedRole(role):
+            return                          # no-op (e.g. reselecting the same role)
+        self._wt_snapshot()                 # undoable
         z = self._worktable.set_role(zid, BedRole(role))
         self.bed_canvas.refresh(self._worktable)
         self._refresh_worktable_panel(keep_selection=zid)
+        self._bed_prompt_answered = False
         self.append_log(f"[worktable] {zid} → {bed_role_label(z.role)}")
         self._mark_dirty()
 
@@ -3943,8 +4231,17 @@ class MainWindow(QMainWindow):
                 self._bed_region_list.addItem(it)
         self._bed_region_list.blockSignals(False)
 
-        for btn in (self._bed_save_btn,):
+        for btn in (self._bed_save_btn, self._bed_setdefault_btn):
             btn.setEnabled(wt is not None)
+        self._bed_remove_btn.setEnabled(False)     # re-enabled below if a region stays selected
+        for sp in (self._bed_width_spin, self._bed_height_spin):
+            sp.setEnabled(wt is not None)
+            sp.blockSignals(True)
+        if wt is not None:
+            self._bed_width_spin.setValue(wt.work_area_width_mm)
+            self._bed_height_spin.setValue(wt.work_area_height_mm)
+        for sp in (self._bed_width_spin, self._bed_height_spin):
+            sp.blockSignals(False)
         self._bed_zero_combo.setEnabled(wt is not None)
         self._bed_zero_combo.blockSignals(True)
         if wt is not None:
@@ -4684,7 +4981,8 @@ class MainWindow(QMainWindow):
                                 "Open a drawing (.gdraw) or import a DXF before saving a project.")
             return
         if self._project_path is not None:
-            self._save_gmodel_to(self._project_path)
+            if self._save_gmodel_to(self._project_path):
+                self._maybe_prompt_default_bed()
             return
         self._on_save_project_as()
 
@@ -4706,6 +5004,7 @@ class MainWindow(QMainWindow):
         if self._save_gmodel_to(Path(path_str)):
             self._prefs["last_output_dir"] = str(Path(path_str).parent)
             prefs_mod.save(self._prefs)
+            self._maybe_prompt_default_bed()
 
     def _on_open_project(self) -> None:
         if not self._confirm_discard():
@@ -4738,6 +5037,10 @@ class MainWindow(QMainWindow):
         self.params.set_castle_params(proj.castle)
         self.params.set_cam_params(proj.cam_params)
         self._worktable = proj.worktable          # restore the tagged bed (M7.4)
+        self._wt_undo.clear()                     # a fresh project starts a clean history
+        self._wt_redo.clear()
+        self._bed_prompt_answered = False
+        self._refresh_wt_undo_buttons()
         self._last_programs = dict(bundle.programs)
         self._last_setup = bundle.setup
         self._last_machine = bundle.machine

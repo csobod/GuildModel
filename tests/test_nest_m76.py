@@ -64,6 +64,26 @@ def test_each_kind_lands_on_its_role_zone():
     assert all(pl.role == pl.kind for pl in nest.placements)
 
 
+def test_incomplete_bed_nests_only_what_fits():
+    """A bed that only holds a front + one temple nests those and returns the rest
+    unplaced — no error (some shops cut one front + one temple at a time)."""
+    bed = Worktable(zones=[
+        _rect_zone("f", BedRole.FRAME_FRONT, 0, 100, 180, 185),
+        _rect_zone("t", BedRole.TEMPLE_RIGHT, 0, 0, 180, 60),
+    ])
+    parts = [
+        _part("frame_front", "Frame", _op("Perimeter", "flat_3175", [(0, 0)])),
+        _part("temple_right", "Temple R", _op("Temple Profile", "flat_3175", [(0, 0)])),
+        _part("temple_left", "Temple L", _op("Temple Profile", "flat_3175", [(0, 0)])),
+        _part("base_curve_right", "BC R", _op("Block Profile", "flat_3175", [(0, 0)])),
+    ]
+    nest = nest_components_on_worktable(parts, bed)
+    placed = {pl.label for pl in nest.placements}
+    unplaced = {p.label for p in nest.unplaced}
+    assert placed == {"Frame", "Temple R"}
+    assert unplaced == {"Temple L", "BC R"}     # no left-temple / base-curve zones
+
+
 def test_part_centres_on_its_zone():
     bed = Worktable(zones=[_rect_zone("z", BedRole.FRAME_FRONT, 100, 50, 300, 150)])
     op = _op("Perimeter", "flat_3175", [(-10, -5), (10, 5)])     # bbox centre (0, 0)
