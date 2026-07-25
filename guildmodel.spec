@@ -42,7 +42,13 @@ exe = EXE(
     console=False,          # windowed — no terminal popup on Windows
     icon=(ICON_PATH if (sys.platform == "win32" and os.path.exists(ICON_PATH))
           else None),       # .ico is Windows-only; macOS gets .icns via BUNDLE
-    contents_directory=".", # flat layout: DLLs next to the exe
+    # Flat layout (DLLs next to the exe) avoids _internal search failures on
+    # Windows network drives. It CANNOT be flat on macOS: the exe "GuildModel"
+    # and the bundled "guildmodel" package dir are the same name on the
+    # case-insensitive filesystem, so COLLECT fails with ENOTDIR trying to
+    # mkdir guildmodel/assets inside the GuildModel exe. Use the default
+    # _internal/ there (also the standard layout for a macOS .app bundle).
+    contents_directory="." if sys.platform == "win32" else "_internal",
 )
 
 coll = COLLECT(
