@@ -3148,6 +3148,27 @@ but surfaced during round-2 testing):**
 
 Suite 575 → **576** (+1 nest-worker castle-branch regression test).
 
+## Linux Wayland: "Build 3D Model" segfaults without XWayland *(2026-07-27, field-diagnosed)*
+
+**Root cause:** PyVista/VTK's Linux OpenGL renderer (`vtkXOpenGLRenderWindow`)
+is X11-only — it has no native Wayland backend. Under Qt's native `wayland`
+platform plugin, embedding the render window into the GUI fails (`BadWindow` /
+`X_ConfigureWindow` X errors), and the process segfaults the instant **Build 3D
+Model** finishes meshing and tries to display the result. Mesh generation
+itself (`core/relief/*`, run off-thread in `MultiMeshWorker`) is unaffected —
+it's pure Python/CPU and completes before the crash; this is purely a
+display-layer issue, not a geometry bug.
+
+**Repro/fix confirmed headlessly:** booted `MainWindow`, opened the demo DXF,
+called `_on_build_3d()` directly. Reliably segfaults (exit 139, `vtkXOpenGLRenderWindow`
++ `X_ConfigureWindow BadWindow` on stderr) under the default Wayland QPA
+plugin; completes clean (mesh built, no crash) with `QT_QPA_PLATFORM=xcb`
+forcing XWayland.
+
+**Fix:** no code change — this is an environment/library gap (PyVista/VTK vs.
+native Wayland), not a GuildModel bug. Documented in the README; any
+`.desktop` launcher should set `Exec=env QT_QPA_PLATFORM=xcb …/guildmodel`.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

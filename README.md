@@ -66,6 +66,25 @@ The app opens with an empty workspace; use **File ▸ Open Drawing** (a GuildDra
 exercises the full castle pipeline (9 zones, hinge pockets, five-op G-code) is
 vendored under `tests/fixtures/demo/`.
 
+### Linux: Wayland crashes "Build 3D Model" — run under XWayland
+
+On a native Wayland session, **Build 3D Model** builds the mesh successfully
+(that part is pure Python/CPU) but then crashes the app when it tries to
+display it. PyVista/VTK's Linux renderer (`vtkXOpenGLRenderWindow`) is X11-only
+— under Qt's native `wayland` platform plugin it can't embed its render window
+(`BadWindow` / `X_ConfigureWindow` errors, then a segfault). Force Qt onto
+XWayland instead:
+
+```
+QT_QPA_PLATFORM=xcb guildmodel
+```
+
+If you're launching from a `.desktop` file, set it there:
+
+```
+Exec=env QT_QPA_PLATFORM=xcb /path/to/.venv/bin/guildmodel
+```
+
 ## Running tests
 
 ```
