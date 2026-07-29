@@ -1,0 +1,77 @@
+# Builds the Windows artifacts on GitHub's Windows runners — no Windows box
+# needed. Trigger it manually (Actions tab > "Windows build" > Run workflow),
+# then download the artifact and attach its contents to the GitHub release.
+#
+# Produces both distribution artifacts:
+#   - GuildModel-<version>-win64.zip    portable one-folder build (unzip + run)
+#   - GuildModel-<version>-setup.exe    per-user Inno Setup installer
+#
+# This runs scripts/build_release.ps1 unchanged — the same script a maker runs
+# locally — so the CI build and a hand build cannot drift apart. Inno Setup is
+# not on the runner image, so it is installed via Chocolatey into the default
+# location the script already probes.
+#
+# GuildModel renders 3D through PyVista/VTK, so the freeze bundles the VTK DLLs
+# and is large and slow — hence the generous timeouts below, matching macOS.
+#
+# NOT code-signed: Windows SmartScreen will warn on first run of the installer
+# ("More info" > "Run anyway"). Signing needs a certificate that cannot live in
+# a public repo.
+name: Windows build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # VTK freeze + Inno is heavy, and Compress-Archive over a ~500 MB one-folder
+    # build is single-threaded and slow — a wider budget than macOS. Caps a
+    # runaway job; a healthy run finishes well inside it.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -e ".[dev,packaging]"
+          .venv\Scripts\python.exe -m pip install pytest-timeout   # CI-only: per-test hang guard
+
+      # Full suite as the gate. offscreen keeps Qt off the window station; the
+      # thread timeout method turns any native-event-loop hang into a stack
+      # dump naming the test (the default signal method cannot interrupt one).
+      - name: Test gate
+        timeout-minutes: 25
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv\Scripts\python.exe -m pytest tests -q --timeout=300 --timeout-method=thread
+
+      # Not on the runner image. Chocolatey drops ISCC.exe in
+      # "C:\Program Files (x86)\Inno Setup 6\", which build_release.ps1 probes.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build (zip + installer)
+        shell: pwsh
+        env:
+          GUILDMODEL_SKIP_TESTS: "1"          # the Test gate step above already ran
+          GUILDMODEL_REQUIRE_INSTALLER: "1"   # a missing ISCC is a failure, not a warning
+        run: .\scripts\build_release.ps1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuildModel-windows-x64
+          path: |
+            dist/GuildModel-*-win64.zip
+            dist/GuildModel-*-setup.exe
+          if-no-files-found: error

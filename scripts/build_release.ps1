@@ -5,15 +5,42 @@
 #   1. GuildModel-<version>-win64.zip     portable one-folder build (unzip + run)
 #   2. GuildModel-<version>-setup.exe     per-user Inno Setup installer
 # The installer step is skipped with a warning if Inno Setup (ISCC.exe) is absent.
+#
+# No Windows machine? .github/workflows/windows-build.yml runs exactly this
+# script on a GitHub Windows runner and uploads both artifacts — the Windows
+# counterpart of the macOS workflow. Environment hooks it honours (all optional,
+# set by that workflow):
+#   GUILDMODEL_SKIP_TESTS=1         the caller already ran the suite
+#   GUILDMODEL_REQUIRE_INSTALLER=1  a missing ISCC.exe is an error, not a warning
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
-$py = Join-Path $repo ".venv\Scripts\python.exe"
 
-# 1. Test gate — never ship a build from a red suite
-& $py -m pytest tests -q
-if ($LASTEXITCODE -ne 0) { throw "Test suite failed - build aborted." }
+# Prefer the repo venv; fall back to whatever python is on PATH so a CI runner
+# that installed the deps into its own interpreter can build without one.
+$py = Join-Path $repo ".venv\Scripts\python.exe"
+if (-not (Test-Path $py)) {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        throw "No .venv\Scripts\python.exe and no python on PATH - create the venv first (see README)."
+    }
+    $py = $cmd.Source
+    Write-Host "No .venv - building with $py" -ForegroundColor Yellow
+}
+
+# Every Qt step here is headless — the suite's GUI tests, and make_icon.py's
+# SVG rasterizing (it spins up a QGuiApplication). Rendering offscreen keeps the
+# build off the window station entirely, so it behaves the same on a desktop and
+# on a CI runner, and no windows flash past during a local build.
+$env:QT_QPA_PLATFORM = "offscreen"
+
+# 1. Test gate — never ship a build from a red suite. CI runs the suite as its
+#    own workflow step (with per-test timeouts) and sets the skip.
+if ($env:GUILDMODEL_SKIP_TESTS -ne "1") {
+    & $py -m pytest tests -q
+    if ($LASTEXITCODE -ne 0) { throw "Test suite failed - build aborted." }
+}
 
 # 2. Read the version stamp from the package; derive a numeric x.y.z.w for the
 #    installer's VersionInfo (strips any pre-release suffix like -rc1).
@@ -71,6 +98,10 @@ if ($iscc) {
     $setup = Join-Path $repo "dist\GuildModel-$version-setup.exe"
     Copy-Item $setupLocal $setup -Force
     Write-Host "  installer: $setup" -ForegroundColor Green
+} elseif ($env:GUILDMODEL_REQUIRE_INSTALLER -eq "1") {
+    # CI asked for the installer, so a missing compiler is a build failure here
+    # rather than a confusing empty-artifact error two steps later.
+    throw "Inno Setup (ISCC.exe) not found and GUILDMODEL_REQUIRE_INSTALLER=1."
 } else {
     Write-Warning "Inno Setup (ISCC.exe) not found - skipped installer. Install it with: winget install JRSoftware.InnoSetup"
 }
