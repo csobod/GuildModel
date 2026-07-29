@@ -303,7 +303,7 @@ def test_nest_worker_runs_frame_front_castle_branch(tmp_path, monkeypatch):
         id="ff", role=BedRole.FRAME_FRONT,
         polygon=[(40, 50), (260, 50), (260, 150), (40, 150)])])
 
-    worker = NestWorker([spec], bed, resolution=0.6)
+    worker = NestWorker([spec], bed)
     out = {}
     worker.finished.connect(lambda nest: out.setdefault("nest", nest))
     worker.error.connect(lambda tb: out.setdefault("err", tb))

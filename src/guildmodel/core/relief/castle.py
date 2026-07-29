@@ -44,6 +44,23 @@ PREVIEW_RES_MM = 0.3
 VALIDATE_RES_MM = 0.2
 GRID_MARGIN_MM = 2.0
 
+#: The grid **anything that becomes G-code** must be rasterized on.
+#:
+#: The relief is terraces joined by footing blends a millimetre or so wide. A
+#: coarse grid aliases those blends into a staircase; the CAM's bilinear sample
+#: (`castle_ops._bilinear_sample`) then rides the staircase, and every tread
+#: becomes a Z direction reversal on a move whose XY step is one cell. Below
+#: ~0.2 mm the blends are resolved and the sampled path is smooth; at 0.3-0.4 mm
+#: Z-reversal density jumps by 4-8x and total Z travel roughly doubles.
+#:
+#: INCIDENT-2026-07-29: the worktable posting built its relief at the *preview*
+#: resolution (0.4 mm) and posted those paths verbatim, so a bed program made the
+#: Z axis reverse under full acceleration ~50 times per 100 mm of travel and had
+#: to be E-stopped on real hardware. Preview/validate grids are for pixels; this
+#: one is for steel. Every posting path shares it — do not take a resolution
+#: from user preferences on a path that ends in a `.nc`.
+CUT_RES_MM = 0.15
+
 
 @dataclass
 class CastleRelief:

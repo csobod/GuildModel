@@ -1,4 +1,5 @@
 from .castle import (
+    CUT_RES_MM,
     CastleRelief,
     build_castle_mesh,
     build_castle_relief,
@@ -9,6 +10,7 @@ from .heightfield import Heightfield
 from .pocket import hinge_pocket
 
 __all__ = [
+    "CUT_RES_MM",
     "CastleRelief",
     "Heightfield",
     "bevel_flank",

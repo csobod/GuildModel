@@ -11,21 +11,28 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.0.0.** GuildModel builds the posterior castle relief and the
+**v1.1.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
 
-The **frame-front workflow is hardware-proven**: a frame front has been cut on
-real acetate end-to-end (GuildDraw DXF → castle relief → five-op GRBL program →
-cut on a Carbide 3D Nomad). This is the core of the tool.
+> **Upgrading from v1.0.0:** worktable programs built their relief on the
+> 3D-preview grid rather than the cutting grid, which put a lot of unnecessary Z
+> motion into the toolpath. Re-nest and re-post any `worktable.nc` you still have
+> before running it — the fix is in the generator, not the file. Single-component
+> programs were unaffected.
 
-The **temple, base-curve-block, worktable-nesting, and lens-groove paths are
-beta** — fully built and verified in cut-simulation, but not yet
-hardware-validated on real stock. They work; treat their first real cuts as
-you would any new program (air-cut, then a test piece). The two-sided
-(cut-and-flip) workflow is planned for a later release.
+The **whole-bed workflow is now hardware-proven**: a complete nested worktable —
+frame front, both temples, and both base-curve forming blocks — has been cut on
+real stock in one program on the Guild CNC (LUNYEE 3020 Nova), on top of the
+existing end-to-end frame-front proof (GuildDraw DXF → castle relief → five-op
+GRBL program → cut on a Carbide 3D Nomad).
+
+Still **beta**: the **lens bevel groove** (built and verified in cut-simulation,
+off by default, not yet cut on real stock) — treat its first real cuts as you
+would any new program (air-cut, then a test piece). The two-sided (cut-and-flip)
+workflow is planned for a later release.
 
 See `BUILDPLAN.md` for the full milestone history and roadmap.
 
@@ -37,8 +44,30 @@ no Python needed to run it).
 ## Install (Windows)
 
 Download `GuildModel-<version>-setup.exe` from the release and run it. It is a
-per-user install (no admin prompt) and registers the `.gmodel` project type. To
-build the installer yourself, see `scripts/build_release.ps1`.
+per-user install (no admin prompt) and registers the `.gmodel` project type. It
+is not code-signed, so SmartScreen warns on first run — **More info ▸ Run
+anyway**.
+
+To build it yourself on Windows: `scripts\build_release.ps1` (needs
+[Inno Setup](https://jrsoftware.org/isdl.php) for the installer; it produces the
+portable `.zip` without it).
+
+## Building releases without that platform
+
+Neither release build needs a machine of its own. Both workflows are manual —
+**Actions ▸ (workflow) ▸ Run workflow** — and upload their artifacts for you to
+attach to a GitHub release:
+
+| Workflow | Runner | Artifacts |
+|---|---|---|
+| `.github/workflows/windows-build.yml` | `windows-latest` | portable `.zip` + `setup.exe` |
+| `.github/workflows/macos-build.yml` | `macos-14` (arm64), `macos-15-intel` (x86_64) | `.zip` + `.dmg` per architecture |
+
+Each runs the same release script a maker would run locally
+(`scripts\build_release.ps1` / `scripts/build_release_macos.sh`), so a CI build
+and a hand build cannot drift apart. Both gate on the full test suite first.
+PyInstaller does not cross-compile, which is why this is a matter of borrowing a
+runner rather than building everything in one place.
 
 ## Installation (development)
 

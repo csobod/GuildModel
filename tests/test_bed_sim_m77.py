@@ -102,7 +102,7 @@ def test_bed_sim_worker_composites_a_nest(tmp_path, monkeypatch):
             "lens": lens, "block": BaseCurveBlockParams()}
 
     nests = []
-    nw = NestWorker([spec], bed, cam_params=CastleCamParams(), resolution=0.6)
+    nw = NestWorker([spec], bed, cam_params=CastleCamParams())
     nw.finished.connect(lambda n: nests.append(n))
     nw.run()
     nest = nests[0]
@@ -111,8 +111,7 @@ def test_bed_sim_worker_composites_a_nest(tmp_path, monkeypatch):
     done, errs = [], []
     sw = BedSimWorker([spec], nest.placements,
                       (bed.work_area_width_mm, bed.work_area_height_mm),
-                      cam_params=CastleCamParams(), material_name="acetate",
-                      resolution=0.8)
+                      cam_params=CastleCamParams(), material_name="acetate")
     sw.finished.connect(lambda r, lines: done.append((r, lines)))
     sw.error.connect(lambda tb: errs.append(tb))
     sw.run()

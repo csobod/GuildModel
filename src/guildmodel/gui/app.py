@@ -515,8 +515,10 @@ class GCodeWorker(_ProgressWorker):
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import apply_machine_limits, lint_program, load_machine_profile
-        from guildmodel.core.relief.castle import build_castle_relief
+        from guildmodel.core.post.machine import (
+            clamp_cam_to_machine, lint_program, load_machine_profile,
+        )
+        from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
 
         p = self.params
         castle = self.castle
@@ -529,22 +531,13 @@ class GCodeWorker(_ProgressWorker):
 
         # Clamp requested feeds / spindle / depth-of-cut to the machine (the
         # material caps DOC too); choose arc vs. linearized output.
-        clamp = apply_machine_limits(
-            machine,
-            feed_rate_mmpm=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
-            plunge_rate_mmpm=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
-            spindle_rpm=cam.spindle_rpm or mat["spindle_rpm"],
-            contour_stepdown_mm=cam.contour_stepdown_mm,
-            requested_arc_tol_mm=cam.arc_tolerance_mm,
-            material_max_doc_mm=mat.get("max_doc_mm"),
-        )
+        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
         for w in clamp.warnings:
             self.progress.emit(f"[gcode] machine: {w}")
-        cam = cam.model_copy(update={"contour_stepdown_mm": clamp.contour_stepdown_mm})
 
         self.progress.emit("[gcode] Castle: building relief…")
         relief = build_castle_relief(
-            self.partition, castle, self.hinge_polys, resolution=0.15,
+            self.partition, castle, self.hinge_polys, resolution=CUT_RES_MM,
             progress=self._progress,
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
@@ -1045,9 +1038,11 @@ class GCodeWorker(_ProgressWorker):
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.cam.layout import BedPart, bed_clearance_violations, build_bed_program
         from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import lint_program, load_machine_profile
+        from guildmodel.core.post.machine import (
+            clamp_cam_to_machine, lint_program, load_machine_profile,
+        )
         from guildmodel.core.project.schema import BaseCurveBlockParams
-        from guildmodel.core.relief.castle import build_castle_relief
+        from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
 
         cam = self.cam_params or CastleCamParams()
         castle = self.castle
@@ -1059,10 +1054,17 @@ class GCodeWorker(_ProgressWorker):
             fixture = yaml.safe_load(fh)
         self.progress.emit(f"[gcode] Worktable · Machine: {machine.display_name}")
 
+        # The bed posts through the SAME machine/material clamp as the single-
+        # component program — otherwise stepdown, feeds, spindle and the arc /
+        # linearize decision reach the post unchecked (INCIDENT-2026-07-29).
+        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
+        for w in clamp.warnings:
+            self.progress.emit(f"[gcode] machine: {w}")
+
         # part 1 — the frame front (posterior cut)
         self.progress.emit("[gcode] Worktable: building the frame relief…")
         relief = build_castle_relief(self.partition, castle, self.hinge_polys,
-                                     resolution=0.15, progress=self._progress)
+                                     resolution=CUT_RES_MM, progress=self._progress)
         frame_ops = generate_castle_program(
             relief, castle, self.hinge_polys, tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"]),
             params=cam, tools_cfg=tools_cfg)
@@ -1087,8 +1089,8 @@ class GCodeWorker(_ProgressWorker):
                 f"@ ({p.x_mm:.1f}, {p.y_mm:.1f}) mm")
 
         tool_settings, ts_warns = build_tool_settings(
-            bed.ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-            default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
+            bed.ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
+            default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
             machine=machine)
         for w in ts_warns:
             self.progress.emit(f"[gcode] tool: {w}")
@@ -1108,7 +1110,7 @@ class GCodeWorker(_ProgressWorker):
         )
         self._progress("Writing worktable program", 0.92)
         write_castle_program(
-            bed.ops, post, side="Worktable", arc_tol_mm=cam.arc_tolerance_mm,
+            bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
             tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
@@ -1552,6 +1554,14 @@ class NestWorker(_ProgressWorker):
     the slow part; the resulting `BedNest` drives the bed render + clearance badge.
     Clearance itself is recomputed on the GUI thread (cheap) so a nudge can re-check
     without regenerating any program.
+
+    These ops are **posted verbatim** as `worktable.nc` (`build_nest_program`), so
+    they are built at `CUT_RES_MM` and against machine-clamped CAM params — the
+    same grid and the same limits as the single-component posting. This worker used
+    to take its grid from the 3D-preview preference, floored at 0.4 mm, which put a
+    preview-grade toolpath on real hardware (INCIDENT-2026-07-29). There is
+    deliberately no `resolution` parameter: nothing that ends in a `.nc` gets to
+    choose its own grid.
     """
 
     finished = Signal(object)    # core.cam.layout.BedNest
@@ -1559,12 +1569,13 @@ class NestWorker(_ProgressWorker):
     error = Signal(str)
 
     def __init__(self, specs, worktable, *, cam_params=None,
-                 resolution: float = 0.4) -> None:
+                 machine=None, material: dict | None = None) -> None:
         super().__init__()
         self.specs = specs
         self.worktable = worktable
         self.cam_params = cam_params
-        self.resolution = resolution
+        self.machine = machine
+        self.material = material
 
     def run(self) -> None:
         try:
@@ -1581,9 +1592,14 @@ class NestWorker(_ProgressWorker):
                 BedPart, default_nest_rotation, nest_components_on_worktable,
             )
             from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
-            from guildmodel.core.relief.castle import build_castle_relief
+            from guildmodel.core.post.machine import clamp_cam_to_machine
+            from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
 
             cam = self.cam_params or CastleCamParams()
+            if self.machine is not None:
+                cam, clamp = clamp_cam_to_machine(cam, self.machine, self.material)
+                for w in clamp.warnings:
+                    self.progress.emit(f"[nest] machine: {w}")
             tools = _tools_cfg()
             default_tool = tools.get(cam.tool_name, tools["flat_3175"])
             n = max(len(self.specs), 1)
@@ -1595,7 +1611,7 @@ class NestWorker(_ProgressWorker):
                 if mode == "castle":
                     relief = build_castle_relief(
                         spec["partition"], spec["castle"], spec["hinge"],
-                        resolution=self.resolution,
+                        resolution=CUT_RES_MM,
                         progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n))
                     ops = generate_castle_program(
                         relief, spec["castle"], spec["hinge"], default_tool,
@@ -1641,21 +1657,25 @@ class BedSimWorker(_ProgressWorker):
     """Simulate the whole nested bed (BUILDPLAN M7.7): build each placed component's
     cut sim and composite them onto one machine-coords bed grid → a `CutReport` for
     the whole worktable. Off-thread because each component rebuilds its relief; the
-    report drives the shared 3D viewer's sim mode (Uncut / Gouge overlays)."""
+    report drives the shared 3D viewer's sim mode (Uncut / Gouge overlays).
+
+    `simulate_component` re-derives each part's relief *and* its program from the
+    spec, so the sim only verifies the posted bed when it rebuilds on the posting
+    grid — at any other resolution it is checking a program that will never run
+    (INCIDENT-2026-07-29). Hence `CUT_RES_MM` and no `resolution` parameter."""
 
     finished = Signal(object, object, object)   # CutReport, summary lines, RemovalPlayback
     progress = Signal(str)
     error = Signal(str)
 
     def __init__(self, specs, placements, work_area, *, cam_params=None,
-                 material_name: str = "acetate", resolution: float = 0.4) -> None:
+                 material_name: str = "acetate") -> None:
         super().__init__()
         self.specs = specs
         self.placements = placements          # list[BedPlacement] (label → dx/dy/kind)
         self.work_area = work_area
         self.cam_params = cam_params
         self.material_name = material_name
-        self.resolution = resolution
 
     def run(self) -> None:
         try:
@@ -1666,6 +1686,8 @@ class BedSimWorker(_ProgressWorker):
                 BedRemovalPart, ComponentSim, ToolProfile, build_bed_removal_plan,
                 composite_bed_report, simulate_component, steps_from_ops,
             )
+
+            from guildmodel.core.relief.castle import CUT_RES_MM
 
             cam = self.cam_params or CastleCamParams()
             config_dir = Path(__file__).parent.parent / "config"
@@ -1682,7 +1704,7 @@ class BedSimWorker(_ProgressWorker):
                 self.progress.emit(f"[bed-sim] {spec['label']}: simulating…")
                 floor, target, inside, origin, res = simulate_component(
                     spec, cam=cam, tools_cfg=tools_cfg, mats_cfg=mats_cfg,
-                    material_name=self.material_name, resolution=self.resolution,
+                    material_name=self.material_name, resolution=CUT_RES_MM,
                     progress=lambda lbl, fr, b=base: self._progress(lbl, b + fr / n))
                 pl = place[spec["label"]]
                 comps.append(ComponentSim(floor, target, inside, origin, res,
@@ -1706,8 +1728,8 @@ class BedSimWorker(_ProgressWorker):
                 bed_parts.append(BedRemovalPart(part_steps, stock_hf, origin, pl.dx, pl.dy))
 
             self._progress("Compositing the bed", 0.96)
-            report = composite_bed_report(comps, self.work_area, resolution=self.resolution)
-            plan = build_bed_removal_plan(bed_parts, resolution=self.resolution)
+            report = composite_bed_report(comps, self.work_area, resolution=CUT_RES_MM)
+            plan = build_bed_removal_plan(bed_parts, resolution=CUT_RES_MM)
             plan.op_tool_geom = geom
             self.finished.emit(report, report.summary_lines(), plan)
         except _Cancelled:
@@ -3703,6 +3725,19 @@ class MainWindow(QMainWindow):
         self.bed_canvas.clear_nest()
         self._update_view_toggles()
 
+    def _posting_limits(self, cam):
+        """The (machine profile, material dict) any posting path must clamp against.
+
+        Nesting builds the ops and the worktable post consumes them, so both have to
+        resolve the same pair — one place to read it from (INCIDENT-2026-07-29)."""
+        import yaml
+        config_dir = Path(__file__).parent.parent / "config"
+        from guildmodel.core.post.machine import load_machine_profile
+        mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
+        mat_name = self.params.material_name()
+        return (load_machine_profile(cam.machine_name, config_dir),
+                mats_cfg.get(mat_name.split()[0].lower(), mats_cfg["acetate"]))
+
     def _on_nest_components(self) -> None:
         """Generate each built component's program and auto-place it on a role-
         matched zone of the tagged worktable (BUILDPLAN M7.6)."""
@@ -3730,10 +3765,12 @@ class MainWindow(QMainWindow):
         self.append_log(f"[nest] Nesting {len(specs)} component(s) onto "
                         f"{self._worktable.display_name}…")
 
-        res = max(0.4, self._prefs["preview_resolution_mm"])
-        self._nest_worker = NestWorker(
-            specs, self._worktable,
-            cam_params=self.params.cam_params(), resolution=res)
+        # The nest's ops ARE the worktable program — built on the posting grid,
+        # against the posting machine + material limits (INCIDENT-2026-07-29).
+        cam = self.params.cam_params()
+        machine, mat = self._posting_limits(cam)
+        self._nest_worker = NestWorker(specs, self._worktable, cam_params=cam,
+                                       machine=machine, material=mat)
         self._nest_thread = QThread()
         self._nest_worker.moveToThread(self._nest_thread)
         self._nest_thread.started.connect(self._nest_worker.run)
@@ -3919,16 +3956,16 @@ class MainWindow(QMainWindow):
         Generalises the M6.5 fixture worktable onto the user-tagged ``Worktable`` +
         the multi-component nest (M7.6): one combined, tool-change-minimised program,
         linted + keep-out-clearance-checked + cut-timed over the whole bed, stored in
-        the project. The component programs were already generated by Nest Components,
-        so this is a fast post (no relief rebuild). Per-component tabs still Generate
-        each part on its own — this is the bed-wide output."""
+        the project. The component programs were already generated by Nest Components
+        — on the posting grid, under the posting machine limits — so this is a fast
+        post (no relief rebuild). Per-component tabs still Generate each part on its
+        own — this is the bed-wide output."""
         if self._nest is None or not self._nest.placements:
             QMessageBox.information(
                 self, "Nest first",
                 "Click Nest Components to place the model on the bed, then generate "
                 "the worktable program.")
             return
-        import yaml
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, build_tool_settings, op_summaries, write_castle_program,
         )
@@ -3939,16 +3976,18 @@ class MainWindow(QMainWindow):
             build_nest_program, worktable_clearance_violations,
         )
         from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import lint_program, load_machine_profile
+        from guildmodel.core.post.machine import clamp_cam_to_machine, lint_program
 
         try:
             cam = self.params.cam_params() or CastleCamParams()
-            config_dir = Path(__file__).parent.parent / "config"
             tools_cfg = _tools_cfg()
-            mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
-            machine = load_machine_profile(cam.machine_name, config_dir)
+            machine, mat = self._posting_limits(cam)
             mat_name = self.params.material_name()
-            mat = mats_cfg.get(mat_name.split()[0].lower(), mats_cfg["acetate"])
+            # The same clamp Nest Components generated these ops under — the post
+            # must not re-open feeds/stepdown the ops were built to respect.
+            cam, clamp = clamp_cam_to_machine(cam, machine, mat)
+            for w in clamp.warnings:
+                self.append_log(f"[gcode] machine: {w}")
 
             bed = build_nest_program(self._nest)
             if not bed.ops:
@@ -3960,8 +3999,8 @@ class MainWindow(QMainWindow):
                 f"{bed.n_tool_changes} tool change(s) (grouped by tool).")
 
             tool_settings, ts_warns = build_tool_settings(
-                bed.ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-                default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
+                bed.ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
+                default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
                 machine=machine)
             for w in ts_warns:
                 self.append_log(f"[gcode] tool: {w}")
@@ -3983,7 +4022,7 @@ class MainWindow(QMainWindow):
                 plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
                 safe_z_mm=self._bed_safe_z(cam), work_offset=bed_offset)
             write_castle_program(
-                bed.ops, post, side="Worktable", arc_tol_mm=cam.arc_tolerance_mm,
+                bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
                 tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
@@ -4069,12 +4108,10 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Simulating bed…")
         self.append_log("[bed-sim] Simulating the whole nested bed…")
 
-        res = max(0.4, self._prefs["preview_resolution_mm"])
         self._sim_worker = BedSimWorker(
             self._nest_specs, self._nest.placements,
             (self._worktable.work_area_width_mm, self._worktable.work_area_height_mm),
-            cam_params=self.params.cam_params(), material_name=self.params.material_name(),
-            resolution=res)
+            cam_params=self.params.cam_params(), material_name=self.params.material_name())
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
         self._sim_thread.started.connect(self._sim_worker.run)

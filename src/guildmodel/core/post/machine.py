@@ -117,6 +117,35 @@ def apply_machine_limits(
     return ClampedOutputs(feed, plunge, int(round(spindle)), stepdown, arc_tol, warns)
 
 
+def clamp_cam_to_machine(cam, profile: MachineProfile, material: dict | None = None):
+    """Clamp a `CastleCamParams` to a machine profile + material.
+
+    The **one seam every posting path shares**. `apply_machine_limits` works in
+    loose scalars, so each posting path used to unpack the cam by hand — and the
+    worktable paths simply never did, posting a bed program from CAM params that
+    had seen neither the machine's depth-of-cut ceiling nor the material's
+    (INCIDENT-2026-07-29). Routing all of them through here means a part cannot
+    post legally on its own tab and illegally on the bed.
+
+    Returns ``(clamped_cam, ClampedOutputs)``: the cam carries the machine-legal
+    `contour_stepdown_mm` for op generation, the outputs carry the feeds, spindle
+    and arc tolerance the post header and `write_castle_program` need. Feeds fall
+    back to the material's when the cam leaves them unset, exactly as the
+    single-component path has always resolved them.
+    """
+    mat = material or {}
+    clamp = apply_machine_limits(
+        profile,
+        feed_rate_mmpm=cam.feed_rate_mmpm or mat.get("feed_rate_mmpm", 0.0),
+        plunge_rate_mmpm=cam.plunge_rate_mmpm or mat.get("plunge_rate_mmpm", 0.0),
+        spindle_rpm=cam.spindle_rpm or mat.get("spindle_rpm", 0),
+        contour_stepdown_mm=cam.contour_stepdown_mm,
+        requested_arc_tol_mm=cam.arc_tolerance_mm,
+        material_max_doc_mm=mat.get("max_doc_mm"),
+    )
+    return cam.model_copy(update={"contour_stepdown_mm": clamp.contour_stepdown_mm}), clamp
+
+
 # ------------------------------------------------------------------ linting
 
 _AXIS = re.compile(r"([XYZFS])\s*(-?\d*\.?\d+)")

@@ -22,6 +22,44 @@ real stock — and nothing else.
 
 ## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap (2026-06-18 reorientation replan): **M7 reorientation** — one `.gdraw` → a multi-component project (frame front + both temples + a per-lens base-curve template), per-component 3D workspace tabs, an interactive worktable from a tagged bed DXF, role-matched auto-nesting, and combined-or-per-component G-code (`v0.7.1`–`v0.7.6`) — then hardware round-trip M8 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M9, rename-decision + packaging/v1.0.0 M10. **M7.1 project model ✅ DONE (`v0.7.1`) + M7.2 `.gdraw` intake ✅ DONE (`v0.7.2`, 233 tests — reader + File ▸ Open Model + the component notebook: a tab per component, tab-switch rebinds the active component) + M7.3 per-component notebook ✅ DONE (`v0.7.3`, 234 tests — component tabs + kind-aware editable param dock (Temple/Base Curve tabs) + per-component param persistence) + M7.4 interactive worktable ✅ DONE (`v0.7.4`, 247 tests — `Worktable`/`WorktableZone`/`BedRole` model in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine coords; `from_fixture_dict`/`to_fixture_dict` load the Guild `guild_cnc.yaml` as the default bed and bridge back onto the M6.5 layout machinery unchanged); `core/cam/worktable.py` reads a bed DXF → `polygonize`d regions, `default_worktable`, `.bed` YAML I/O; GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords `BedCanvas` — import a bed DXF / load the Guild bed, click a region, tag its role (frame-front / temple R-L / base-curve R-L / keep-out); persisted in the `.gcam`) + M7.5 per-component 3D models ✅ DONE (`v0.7.5`, 258 tests — `core/relief/flat.py` reuses the castle mesher for flat parts: temple = outline extruded 4 mm + HINGE blind pockets + ENGRAVING grooves, snapped hinge-end to the blank + a visual injected-core bar; base-curve block = the lens shape cut from a 70×70×4.7625 acetal blank, 3 M4 through-holes (2026-06-19: CAM simplified to Drill Holes + Block Profile=lens-shape cut, forming scribe + box cut dropped); GUI `FlatMeshWorker` + Build-3D enabled per kind); next: M7.6 role-matched auto-nesting onto the tagged bed (+ polygon keep-outs, bed render/nudge), then M7.7 combined/per-component G-code**)*
 
+> **2026-07-29 — `v1.1.0`, 586 tests: WHOLE-BED WORKFLOW HARDWARE-PROVEN + the
+> safety fix that got it there.** A complete nested worktable — frame front, both
+> temples, both base-curve forming blocks — has been **cut on real stock in one
+> program** on the Guild CNC (LUNYEE 3020 Nova), running clean at the tuned
+> `$120 = 300`. That graduates worktable nesting, temples and base-curve blocks
+> out of beta in the README; the lens bevel groove is now the only beta path left
+> (plus two-sided, still planned). The bed could not be proven until the defect
+> below was fixed.
+>
+> **The safety fix: the worktable posted preview geometry.** A bed program made both
+> axes oscillate hard enough to be E-stopped on the real LUNYEE 3020, while the
+> *single-component* export of the same part had air-cut cleanly minutes earlier.
+> **Root cause:** `NestWorker` built each component's relief at
+> `max(0.4, prefs["preview_resolution_mm"])` — the 3D-preview grid — and
+> `build_nest_program` posts those ops **verbatim** as `worktable.nc`. The relief is
+> terraces joined by ~1 mm footing blends; a 0.4 mm grid aliases them into a
+> staircase, `castle_ops._bilinear_sample` rides it, and the Z axis reverses on
+> roughly every other cutting move (the bad file's median XY step is **exactly
+> 0.4000 mm** — `_densify_xy(ring, res)` fingerprinting the grid). Measured on the
+> demo part: 9.0 → 39.9 Z reversals per 100 mm going 0.15 → 0.4 mm, total Z travel
+> doubling. The single-component path was always 0.15, hence one path safe and one
+> not. **Fix:** `core/relief/castle.py` gains `CUT_RES_MM = 0.15` — *the* grid for
+> anything that becomes G-code — and `NestWorker` / `BedSimWorker` no longer take a
+> `resolution` at all, so no call site can hand a posting path a preview grid.
+> Second defect from the same report: neither worktable path ever called
+> `apply_machine_limits`, so bed programs bypassed the machine + material clamps the
+> single-component path applies; `core/post/machine.py` gains `clamp_cam_to_machine`
+> and all three posting paths now share it. Also fixed: `BedPlacement.rotate` left
+> `dx`/`dy` stale, so the setup sheet mis-reported where a rotated part sat.
+> Verified by re-posting the real Benedict bed: rough-relief reversals **55.8 →
+> 16.5** per 100 mm and fine **48.3 → 8.2**, matching the known-good standalone
+> program (16.5 / 8.3) — and where XY coincides, Z is now bit-identical to it.
+> New `tests/test_worktable_cut_parity.py` (10) gates all three properties,
+> including a teeth-check that a preview-grade relief still trips the Z-thrash gate.
+> **Upgrade note for users:** the fix is in the generator, not the file — any
+> `worktable.nc` produced before `v1.1.0` must be re-nested, re-posted and
+> re-verified before it is run.
+
 > **2026-06-22 — M7.12 DONE (`v0.7.12`, 324 tests):** *watch the cut.* The
 > twice-deferred cut-sim playback scrubber. New headless `core/sim/playback.py`
 > (`simulate_steps` accumulates the tool-profile Z-buffer op by op, snapshotting the
@@ -3212,7 +3250,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **197 green** (smoke 16 + M1 10 + M2 11 + M3 12 + M4 8 + M4.5 7 + M4.6 23 + CAM-quality 7 + cuttime 5 + machine 12 + materials 5 + cut-completeness 5 + gcam 6 + readiness 9 + multitool 14 + program-zero 12 + temple 12 + base-curve block 11 + **worktable 11**, incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.5 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill/bed-schedule gates) |
+| `tests/` | ✅ | **586 green** (incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.5 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill/bed-schedule gates + **`test_worktable_cut_parity.py`**: the bed program is the single-component program *placed* — one posting grid (`CUT_RES_MM`), one machine clamp, Z untouched by placement, and a bounded Z-reversal density per 100 mm of travel; see the 2026-07-29 safety fix) |
 
 ## Dependency list (v1 — unchanged)
 

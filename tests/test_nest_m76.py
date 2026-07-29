@@ -211,7 +211,7 @@ def test_nest_worker_and_gui_render_and_nudge(tmp_path, monkeypatch):
     lens = Polygon([(0, 0), (40, 0), (40, 26), (0, 26)])      # a cheap stand-in lens
     spec = {"mode": "block", "kind": "base_curve_right", "label": "BC R",
             "lens": lens, "block": BaseCurveBlockParams()}
-    worker = NestWorker([spec], bed, cam_params=CastleCamParams(), resolution=0.6)
+    worker = NestWorker([spec], bed, cam_params=CastleCamParams())
     done, errs = [], []
     worker.finished.connect(lambda nest: done.append(nest))
     worker.error.connect(lambda tb: errs.append(tb))

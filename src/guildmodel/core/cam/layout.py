@@ -369,9 +369,22 @@ class BedPlacement:
         (interactive bed rotation — spin a temple so it loads into a slot, or flip the
         left temple 180° to face the right). The centre is preserved, so the part stays
         on its zone; ``rotation_deg`` accumulates and clearance is re-checked by the
-        caller. The rotated ops post directly, so the worktable.nc matches the render."""
+        caller. The rotated ops post directly, so the worktable.nc matches the render.
+
+        ``dx``/``dy`` are re-derived, not left behind: a placement is the affine
+        ``p → R(rotation_deg)·p + (dx, dy)`` from the design frame, and that has to
+        keep describing where the part actually sits — the setup sheet reports it to
+        the operator, and it is what lets the ops be rebuilt at posting fidelity.
+        Rotating about the footprint centre ``c`` composes as
+        ``R(φ)·R(θ) = R(θ+φ)`` with ``d' = R(φ)·(d − c) + c``.
+        """
         cx, cy = ops_bbox_center(self.ops)
         self.ops = rotate_ops_about(self.ops, cx, cy, ddeg)
+        th = math.radians(ddeg)
+        c, s = math.cos(th), math.sin(th)
+        ddx, ddy = self.dx - cx, self.dy - cy
+        self.dx = c * ddx - s * ddy + cx
+        self.dy = s * ddx + c * ddy + cy
         self.rotation_deg = (self.rotation_deg + ddeg) % 360.0
 
 
