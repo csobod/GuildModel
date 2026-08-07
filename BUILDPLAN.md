@@ -3940,7 +3940,35 @@ from the underside — `surface_z_at(..., face="bottom")`. No second heightfield
 no `thickness()` invariant keeping two 2.5D surfaces from eating each other.
 That was M17's scaffolding and it is simply gone.
 
-**Still to come as bodies:** pad splay, bridge relief, lens groove.
+**Pad splay — the smoothing inventory, left out rather than ported.**
+`_splay_crest_tables` is the report's §1.4 list in one function: a slope limiter
+on the crest offset, `uniform_filter1d` on the tangents and again on the anchor
+heights, an EDT-filled surface so cells outside the body cannot crater the
+crest, a cosine feather, and `crest_blend_mm` defaulting to a **mandatory 2 mm
+round-over**. None of it is carried over — the crest is a real edge here and
+wants to be sharp. What is kept is the geometry those filters were protecting:
+the crest as an inward offset of the outline, the lens-rim clearance clamp (real
+geometry, not a smoothing fix), the toric angle blend, and the end feather as a
+depth taper. `crest_blend_mm` returns later as the optional round-over it should
+always have been.
+
+Against the raster with its blend also set to 0: **rms 13.2 um, 90.6% of cells
+within 5 um, 98.6% within 50 um**, valid and watertight. With the raster's
+blend left at its 2 mm default the divergence grows exactly as it should
+(954 -> 1,457 cells over 50 um) — that is the blur, measured.
+
+**One bug, and the wrong diagnosis first.** The initial build anchored the
+chamfer at the *outline edge*; the splay is defined as falling **from the
+crest**, which sits up to 6 mm inboard. Over that distance the surface climbs
+out of the bridge footing into the nosepad tower, so the drop was measured from
+the wrong datum — 0.11 mm rms shallow, 0.97 mm at worst. It presented as a large
+positive bias (the solid keeping material the raster removed), which looked
+exactly like the missing crest round-over; setting the raster's blend to 0
+changed rms by 0.4 um and disproved that in one run. **Anchor at whatever the
+feature's own definition pins it to** — the splay at its crest, the bezel at its
+rim, and those are opposite ends of the band.
+
+**Still to come as bodies:** bridge relief, lens groove.
 
 **Performance is now the visible problem.** The bare castle builds in ~9 s; with
 the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move

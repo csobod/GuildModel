@@ -52,7 +52,7 @@ from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
 
 __all__ = ["apply_edge_features", "apply_hinge_pockets",
-           "apply_posterior_features", "bezel_cutter", "edge_feature_cutters"]
+           "apply_posterior_features", "bezel_cutter", "edge_feature_cutters", "splay_cutter"]
 
 #: Sections lofted around an aperture ring for a bezel. The demo's lens rings
 #: are ~132 mm round, so this is one section per ~0.73 mm — past the point where
@@ -214,6 +214,13 @@ def bezel_cutter(solid: TopoDS_Shape, body: Polygon, ring,
 def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
                              castle: CastleParams, top: float) -> TopoDS_Shape:
     """Every enabled posterior finishing feature, as boolean subtractions."""
+    splay = castle.pad_splay
+    if splay.enabled:
+        try:
+            solid = cut(solid, splay_cutter(solid, partition.body, splay))
+        except BooleanError:
+            pass
+
     bezel = castle.eyewire_bezel
     if bezel.cuts_posterior():
         cutters = []
@@ -364,3 +371,105 @@ def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
     if cutters:
         solid = cut(solid, fuse_all(cutters))
     return solid
+
+
+# ---------------------------------------------------------------- pad splay
+
+def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
+                 ) -> TopoDS_Shape:
+    """The pad splay as a swept chamfer along the outline's bottom-center run.
+
+    **Most of the raster's implementation does not survive, and should not.**
+    `_splay_crest_tables` is an inventory of fixes for sampling artifacts — a
+    slope limiter on the crest offset, `uniform_filter1d` on the tangents and
+    again on the anchor heights, an EDT-filled surface to stop cells outside the
+    body cratering the crest, and a cosine feather. All were traced to one field
+    finding ("jagged points where the cut terminates", 2026-07-02) and all of
+    them make the feature *less* crisp to hide a staircase that does not exist
+    here. What is kept is the geometry they were protecting:
+
+    * the crest as an inward offset of the outline, `crest_deviation_center_mm`
+      at the bottom-center falling to `crest_deviation_end_mm` at each run end;
+    * the clearance clamp that keeps the crest off the lens rims — real
+      geometry, not a smoothing fix;
+    * the toric angle blend;
+    * the feather, as a depth taper at each end.
+
+    `crest_blend_mm` is **not** applied. In the raster it defaults to a
+    mandatory 2 mm round-over whose only job is to stop the crest shading as a
+    jagged ridge; here the crest is a real edge and wants to be sharp. It
+    returns later as the optional round-over it should always have been.
+    """
+    from shapely import distance as _distance, points as _points
+    from shapely.ops import unary_union
+
+    from ..relief.features import _bottom_center_station, _splay_angles_deg
+
+    ring, L, s0 = _bottom_center_station(body)
+    run = min(float(p.run_mm), 0.45 * L)
+    if run <= res_hint or p.crest_deviation_center_mm <= 0.0:
+        raise BooleanError("degenerate pad splay")
+
+    n = max(9, int(run * 2.0 * EDGE_SECTIONS_PER_MM))
+    u = np.linspace(-run, run, n)
+    au = np.abs(u)
+    stations = np.mod(s0 + u, L)
+
+    pts, tans = [], []
+    eps = max(3.0 * res_hint, 0.75)
+    for s in stations:
+        q = ring.interpolate(float(s))
+        a = ring.interpolate(float((s - eps) % L))
+        b = ring.interpolate(float((s + eps) % L))
+        t = np.array([b.x - a.x, b.y - a.y])
+        t /= max(np.linalg.norm(t), 1e-12)
+        pts.append([q.x, q.y])
+        tans.append(t)
+    pts, tans = np.array(pts), np.array(tans)
+    inward = _inward(body, pts, tans)
+
+    # Crest offset: centre -> end, held clear of the lens rims.
+    c = (p.crest_deviation_center_mm
+         + (p.crest_deviation_end_mm - p.crest_deviation_center_mm) * (au / run))
+    rims = (unary_union([LineString(r) for r in body.interiors])
+            if body.interiors else None)
+    if rims is not None and not rims.is_empty:
+        c = np.minimum(c, 0.8 * _distance(_points(pts), rims))
+    c = np.maximum(c, 0.0)
+
+    tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
+    feather = min(max(float(p.feather_mm), 0.0), run)
+    if feather > 0.0:
+        w = np.where(au <= run - feather, 1.0,
+                     0.5 * (1.0 + np.cos(np.pi * (au - (run - feather)) / feather)))
+    else:
+        w = np.ones_like(au)
+
+    drops = np.maximum(c * tan_t * w, MIN_TAPER_DROP_MM)
+    widths = np.maximum(c, MIN_TAPER_DROP_MM)
+    # Anchored at the CREST, not at the outline edge — the splay is defined as
+    # falling *from* the crest toward the edge, and the crest sits up to
+    # `crest_deviation_center_mm` (6 mm by default) inboard. Over that distance
+    # the surface climbs out of the bridge footing and into the nosepad tower,
+    # so anchoring at the edge measures the drop from the wrong datum and leaves
+    # the cut ~0.1 mm rms shallow, up to 0.97 mm at the nosepads.
+    #
+    # Note this is the opposite choice from the bezel, and deliberately so: the
+    # bezel's promise is a constant depth *at the rim*, the splay's is a crest
+    # at the local surface height. Each is anchored where its own definition
+    # pins it.
+    anchors = surface_z_at(solid, pts + inward * np.maximum(c, _RIM_PROBE_MM)[:, None])
+    top = float(anchors.max()) + CUT_MARGIN_MM
+
+    sections = [
+        _edge_section(q, nn, float(a), float(wd), float(dr), "chamfer", 0.0,
+                      top, True)
+        for q, nn, a, wd, dr in zip(pts, inward, anchors, widths, drops)
+    ]
+    ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
+    for wire in sections:
+        ts.AddWire(wire)
+    ts.Build()
+    if not ts.IsDone():
+        raise BooleanError("pad splay loft did not complete")
+    return ts.Shape()

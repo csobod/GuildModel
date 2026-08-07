@@ -519,3 +519,71 @@ def test_edge_feature_taper_never_collapses_a_section(demo_partition):
         profile="chamfer", width_mm=2.0, angle_deg=45.0)]
     solid = build_castle_solid(demo_partition, castle, [])
     assert is_valid(solid)
+
+
+def test_pad_splay_as_a_swept_chamfer(demo_partition, demo_hinges):
+    """The splay, with its compensating blur left out rather than ported.
+
+    `_splay_crest_tables` is the report's smoothing inventory in one function —
+    a slope limiter, two `uniform_filter1d` passes, an EDT-filled anchor
+    surface, and a mandatory 2 mm crest round-over. None of it is here: the
+    crest is a real edge and wants to be sharp. What is kept is the geometry
+    those filters were protecting — the crest offset, the lens-rim clearance
+    clamp, the toric angle blend and the end feather.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import (build_castle_solid, is_valid,
+                                       solid_to_relief, volume)
+    from guildmodel.core.solid.tessellate import tessellate
+
+    castle = CastleParams()
+    castle.pad_splay.enabled = True
+    castle.pad_splay.crest_blend_mm = 0.0      # compare like with like
+
+    plain = build_castle_solid(demo_partition, CastleParams(), demo_hinges)
+    solid = build_castle_solid(demo_partition, castle, demo_hinges)
+
+    assert is_valid(solid)
+    assert volume(solid) < volume(plain), "the splay must remove material"
+    assert tessellate(solid).to_trimesh().is_watertight
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+    d = (derived.field.z - raster.field.z)[raster.inside]
+    assert np.sqrt((d ** 2).mean()) < 0.03
+    assert (np.abs(d) <= 0.05).mean() > 0.97
+
+
+def test_pad_splay_is_anchored_at_the_crest(demo_partition, demo_hinges):
+    """Regression on the datum, which is the whole of this feature's accuracy.
+
+    The splay falls *from the crest* toward the outline edge, and the crest sits
+    up to `crest_deviation_center_mm` (6 mm) inboard. Anchoring at the outline
+    edge instead measures the drop from the wrong height — over 6 mm the surface
+    climbs out of the bridge footing into the nosepad tower — and left the cut
+    0.11 mm rms shallow, up to 0.97 mm at the nosepads.
+
+    Note this is the opposite anchor from the bezel, deliberately: each feature
+    is anchored where its own definition pins it.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import build_castle_solid, solid_to_relief
+
+    castle = CastleParams()
+    castle.pad_splay.enabled = True
+    castle.pad_splay.crest_blend_mm = 0.0
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(
+        build_castle_solid(demo_partition, castle, demo_hinges),
+        demo_partition, castle, resolution=CUT_RES_MM)
+
+    d = (derived.field.z - raster.field.z)[raster.inside]
+    # Edge-anchoring showed as a large POSITIVE bias: the solid systematically
+    # kept material the raster removed. Crest-anchoring removes the bias.
+    assert abs(d.mean()) < 0.01, "systematic depth bias — wrong anchor datum?"
