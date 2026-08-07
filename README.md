@@ -127,35 +127,37 @@ The app opens with an empty workspace; use **File ▸ Open Drawing** (a GuildDra
 exercises the full castle pipeline (9 zones, hinge pockets, five-op G-code) is
 vendored under `tests/fixtures/demo/`.
 
-### Linux: Wayland crashes "Build 3D Model" — run under XWayland
+### Linux / Wayland — handled automatically
 
-On a native Wayland session, **Build 3D Model** builds the mesh successfully
-(that part is pure Python/CPU) but then crashes the app when it tries to
-display it. PyVista/VTK's Linux renderer (`vtkXOpenGLRenderWindow`) is X11-only
-— under Qt's native `wayland` platform plugin it can't embed its render window
-(`BadWindow` / `X_ConfigureWindow` errors, then a segfault). Force Qt onto
-XWayland instead:
+**You should not have to do anything here.** Both of the workarounds this
+section used to ask for are now applied by the app at startup; the detail below
+is for anyone who wants to override them or is debugging.
+
+PyVista/VTK's Linux renderer (`vtkXOpenGLRenderWindow`) is X11-only. Under Qt's
+native `wayland` plugin it cannot embed its render window — `BadWindow` on
+`X_ConfigureWindow`, then a segfault the moment you build a 3D model. So on a
+Wayland session GuildModel selects the `xcb` plugin (XWayland) for itself before
+Qt starts. Re-tested 2026-08-07 on VTK 9.6.2 / PySide6 6.11.1 / KDE Plasma:
+still required, not a stale workaround.
+
+Running under XWayland means Qt is told the screen is 96 DPI whatever the panel
+actually is, and there is no compositor scale to fall back on, so the UI comes
+out small — about 68% of intended size on a 141 DPI laptop panel. GuildModel
+measures the panel's true DPI and scales both the application font *and* the
+stylesheet to match. (Scaling the stylesheet is the part `QT_FONT_DPI` cannot
+do: Qt stylesheet `px` is a device-independent unit that ignores font DPI, and
+this app pins every font size in `px`. That is why the old `QT_FONT_DPI` advice
+only half-worked.)
+
+To override, set any of these and the app will leave the scale alone:
 
 ```
-QT_QPA_PLATFORM=xcb guildmodel
+QT_SCALE_FACTOR=1.25 guildmodel      # or QT_FONT_DPI, QT_SCREEN_SCALE_FACTORS
+QT_QPA_PLATFORM=wayland guildmodel   # force the native plugin (3D will crash)
 ```
 
-If you're launching from a `.desktop` file, set it there:
-
-```
-Exec=env QT_QPA_PLATFORM=xcb /path/to/.venv/bin/guildmodel
-```
-
-**On a HiDPI screen, add a font DPI too.** XWayland reports 96 DPI regardless of
-the panel, and Qt has no compositor to ask for a fractional scale, so text comes
-out small — on a 141 DPI laptop panel it renders at about 68% of intended size.
-Check yours with `xrdb -query | grep dpi` (96 means it is unset) and compute
-`horizontal pixels / (width in mm / 25.4)`:
-
-```
-QT_QPA_PLATFORM=xcb QT_FONT_DPI=141 guildmodel        # text only
-QT_QPA_PLATFORM=xcb QT_SCALE_FACTOR=1.47 guildmodel   # scale the whole UI
-```
+Or pin it in **Preferences** — the `ui_scale` setting takes `"auto"` (the
+default), or a number; `1.0` turns scaling off entirely.
 
 ## Running tests
 

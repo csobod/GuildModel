@@ -251,7 +251,29 @@ def test_splash_card_renders(qapp):
     assert not pm.isNull()
     assert pm.width() > 0 and pm.height() > 0
     s = GuildSplash(1.0)                          # constructs without showing
-    assert s.pixmap() is not None
+    assert not s._pixmap.isNull()
+    assert s.size() == pm.size() / pm.devicePixelRatio()
+
+
+def test_splash_card_scales(qapp):
+    """The card grows with the UI scale — on a HiDPI panel it must not sit as a
+    postage stamp in front of a correctly-sized app."""
+    from guildmodel.gui.splash import _render_card
+
+    one = _render_card(1.0, 1.0)
+    big = _render_card(1.0, 1.5)
+    assert big.width() == pytest.approx(one.width() * 1.5, abs=2)
+
+
+def test_splash_is_not_a_qsplashscreen():
+    """`QSplashScreen.show()` costs a flat ~1010 ms on XWayland/KWin against
+    1.0 ms for a plain frameless widget with the same pixmap and flags — a
+    second of dead time in the exact window the splash exists to explain, and
+    most of why it read as a black rectangle. Guard the substitution."""
+    from PySide6.QtWidgets import QSplashScreen
+    from guildmodel.gui.splash import GuildSplash
+
+    assert not issubclass(GuildSplash, QSplashScreen)
 
 
 def test_boot_module_is_light():
@@ -267,3 +289,101 @@ def test_boot_module_is_light():
     head = src.split("def main", 1)[0]
     assert "from guildmodel.gui.app" not in head
     assert "import guildmodel.gui.app" not in head
+
+
+# ------------------------------------------------------- display platform + DPI
+
+def test_force_x11_respects_an_explicit_platform(monkeypatch):
+    """Someone debugging the Wayland path — or a test asking for `offscreen` —
+    must be believed. Only an unset QT_QPA_PLATFORM may be filled in."""
+    from guildmodel.gui.hidpi import force_x11_on_wayland
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert force_x11_on_wayland() is False
+    assert os.environ["QT_QPA_PLATFORM"] == "wayland"
+
+
+def test_force_x11_switches_on_a_wayland_session(monkeypatch):
+    """VTK's Linux renderer is X11-only (`vtkXOpenGLRenderWindow`); under the
+    native wayland plugin it dies with BadWindow on X_ConfigureWindow. Re-tested
+    2026-08-07 on VTK 9.6.2 / PySide6 6.11.1 — still true."""
+    from guildmodel.gui.hidpi import force_x11_on_wayland
+
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert force_x11_on_wayland() is True
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+
+
+def test_force_x11_will_not_strand_a_session_without_xwayland(monkeypatch):
+    """No DISPLAY means no XWayland to fall back to. Forcing `xcb` there means
+    the app does not start at all, which is worse than 3D not working."""
+    from guildmodel.gui.hidpi import force_x11_on_wayland
+
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert force_x11_on_wayland() is False
+    assert "QT_QPA_PLATFORM" not in os.environ
+
+
+class _FakeScreen:
+    def __init__(self, physical, logical=96.0, dpr=1.0):
+        self._p, self._l, self._d = physical, logical, dpr
+
+    def physicalDotsPerInch(self):
+        return self._p
+
+    def logicalDotsPerInch(self):
+        return self._l
+
+    def devicePixelRatio(self):
+        return self._d
+
+
+def test_ui_scale_measures_the_panel(monkeypatch):
+    """The maker's hand-tuned QT_SCALE_FACTOR=1.47 on a 141.6-DPI panel is
+    exactly what the measurement produces — that is the number to reproduce."""
+    from guildmodel.gui.hidpi import ui_scale
+
+    for var in ("QT_SCALE_FACTOR", "QT_FONT_DPI", "QT_SCREEN_SCALE_FACTORS",
+                "QT_ENABLE_HIGHDPI_SCALING"):
+        monkeypatch.delenv(var, raising=False)
+    assert ui_scale(_FakeScreen(141.6), {}) == pytest.approx(1.475, abs=0.01)
+    # A ~96 DPI desktop panel is left alone rather than nudged into blur.
+    assert ui_scale(_FakeScreen(96.0), {}) == 1.0
+    assert ui_scale(_FakeScreen(102.0), {}) == 1.0        # under the threshold
+    # Where Qt already scaled, that part of the job is done.
+    assert ui_scale(_FakeScreen(192.0, dpr=2.0), {}) == 1.0
+
+
+def test_ui_scale_yields_to_the_maker(monkeypatch):
+    """An explicit env var or preference wins — never compound the two."""
+    from guildmodel.gui.hidpi import ui_scale
+
+    monkeypatch.delenv("QT_SCALE_FACTOR", raising=False)
+    assert ui_scale(_FakeScreen(141.6), {"ui_scale": 1.0}) == 1.0
+    assert ui_scale(_FakeScreen(141.6), {"ui_scale": 2.0}) == 2.0
+
+    monkeypatch.setenv("QT_SCALE_FACTOR", "1.5")
+    assert ui_scale(_FakeScreen(141.6), {}) == 1.0
+
+
+def test_stylesheet_scales_its_px_font_sizes():
+    """Qt stylesheet `px` does not follow QT_FONT_DPI, so the documented
+    env-var workaround left all 139 authored font sizes behind. Scaling the
+    sheet is what makes the UI actually grow."""
+    from guildmodel.gui.style import theme
+
+    plain = theme.stylesheet(False)
+    big = theme.stylesheet(False, 2.0)
+    assert "font-size: 13px" in plain
+    assert "font-size: 26px" in big
+    # Hairlines stay hairlines — doubling 1px borders just muddies the chrome.
+    assert big.count("1px solid") == plain.count("1px solid")
+    assert theme.stylesheet(False, 1.0) == plain

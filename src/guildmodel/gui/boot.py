@@ -6,6 +6,10 @@ repo's main.py both do) gets the guild splash card on screen the instant the
 process starts; only then is the heavy module imported and the main window
 built. ``python -m guildmodel.gui.app`` still works — its main() delegates
 here (the splash just appears later on that path, after the module import).
+
+Display-platform and UI-scale decisions live in ``gui/hidpi.py``; this module
+only sequences them, and the order matters — the platform must be chosen before
+QApplication exists, and the scale can only be measured once it does.
 """
 from __future__ import annotations
 
@@ -14,6 +18,12 @@ import sys
 
 
 def main() -> None:
+    # Before QApplication: Qt reads QT_QPA_PLATFORM when the app is constructed,
+    # so an XWayland switch is only possible here.
+    from guildmodel.gui.hidpi import (apply_ui_scale, force_x11_on_wayland,
+                                      ui_scale)
+    force_x11_on_wayland()
+
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
@@ -31,12 +41,15 @@ def main() -> None:
 
     from guildmodel.gui import prefs as prefs_mod
     from guildmodel.gui.style import theme
-    app.setStyleSheet(theme.stylesheet(prefs_mod.load()["dark_mode"]))
+    saved = prefs_mod.load()
+    scale = ui_scale(app.primaryScreen(), saved)
+    apply_ui_scale(app, scale)
+    app.setStyleSheet(theme.stylesheet(saved["dark_mode"], scale))
 
     # Show the loading splash before the slow VTK import + main-window build,
     # so the maker sees the app is starting and doesn't launch a second copy.
     from guildmodel.gui.splash import make_splash
-    splash = make_splash(app)
+    splash = make_splash(app, scale=scale)
 
     from guildmodel.gui.app import MainWindow, _app_icon   # the heavy import
     icon = _app_icon()

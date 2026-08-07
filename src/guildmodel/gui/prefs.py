@@ -16,6 +16,11 @@ _FILE = _DIR / "prefs.json"
 DEFAULTS: dict = {
     # Appearance
     "dark_mode":             False,
+    # UI scale. "auto" derives it from the panel's true DPI against the 96 Qt
+    # assumes — necessary because VTK forces the app onto XWayland, where there
+    # is no compositor scale to follow and everything renders ~68% too small on
+    # a HiDPI panel. A number pins it; 1.0 turns it off. See gui/hidpi.py.
+    "ui_scale":              "auto",
     # Viewport backdrop preset for the 2D canvases + 3D viewport ("auto"
     # follows the UI mode; other presets pin the backdrop in both modes —
     # carried over from GuildDraw) — Preferences ▸ Appearance.

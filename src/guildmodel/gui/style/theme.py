@@ -16,6 +16,7 @@ No widget module may contain a hex literal that is not sourced from here
 """
 from __future__ import annotations
 import math
+import re
 from dataclasses import dataclass, replace
 
 # ---------------------------------------------------------------------------
@@ -329,9 +330,46 @@ QTextEdit#logView {
 """
 
 
-def stylesheet(dark: bool) -> str:
-    """The full application stylesheet for the requested theme."""
-    return QSS_DARK if dark else QSS
+#: `px` values at or below this are structural hairlines — 1 px borders, 2 px
+#: spacings — and scaling them makes the chrome muddy without making anything
+#: more legible. Everything above scales.
+_SCALE_PX_FLOOR = 2
+
+_PX_RE = re.compile(r"\b(\d+)px\b")
+
+
+def scale_qss(qss: str, scale: float) -> str:
+    """Scale every `px` length in a stylesheet by `scale`.
+
+    Qt stylesheet `px` is a *device-independent* unit: it does not follow
+    `QT_FONT_DPI`, and it does not follow the screen's physical DPI either. So
+    on a HiDPI panel the QSS-styled chrome — which here is every font size, all
+    139 of them — stays pinned at its authored size while everything Qt draws
+    from the application font grows. That is why the documented
+    `QT_FONT_DPI=141` workaround only ever half-worked: it moved the default
+    font and left the stylesheet behind.
+
+    Hairlines (<= `_SCALE_PX_FLOOR`) are left alone so borders stay crisp.
+    """
+    if abs(scale - 1.0) < 0.01:
+        return qss
+
+    def bump(m: re.Match) -> str:
+        n = int(m.group(1))
+        if n <= _SCALE_PX_FLOOR:
+            return m.group(0)
+        return f"{max(1, round(n * scale))}px"
+
+    return _PX_RE.sub(bump, qss)
+
+
+def stylesheet(dark: bool, scale: float = 1.0) -> str:
+    """The full application stylesheet for the requested theme.
+
+    `scale` is the UI scale factor — see `gui.hidpi.ui_scale`. 1.0 is the
+    authored size and the historical behaviour.
+    """
+    return scale_qss(QSS_DARK if dark else QSS, scale)
 
 
 # ---------------------------------------------------------------------------
