@@ -23,6 +23,7 @@ later fillet cuts. Here that is `(terraces ∪ fills) − carves`.
 """
 from __future__ import annotations
 
+import json
 from typing import Callable, Optional
 
 import numpy as np
@@ -35,6 +36,7 @@ from .occ import (
     BooleanError,
     common,
     cut,
+    cut_many,
     extrude,
     fuse,
     fuse_all,
@@ -267,27 +269,70 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
     return out[0], out[1]
 
 
-# --------------------------------------------------------------------- build
+# ---------------------------------------------------------------- base + cache
 
-def build_castle_solid(partition: CastlePartition, castle: CastleParams,
-                       hinges: list | None = None,
-                       heights: dict[str, float] | None = None,
-                       progress: Optional[ProgressFn] = None,
-                       return_surface: bool = False):
-    """Terraces, footing blends, posterior features and hinge pockets.
+#: Most recent `castle_base` results, newest last, as
+#: `(key, source_partition, value)`. Two is deliberate: it covers A/B-ing one
+#: parameter against the previous value, which is what a slider drag does,
+#: without holding a pile of B-Rep solids alive.
+#:
+#: `source_partition` is in there only to be kept alive — the key identifies the
+#: partition by `id()`, and a collected object's id can be handed to a different
+#: one. Holding the reference makes that impossible.
+_BASE_CACHE: list[tuple[tuple, CastlePartition, tuple]] = []
+_BASE_CACHE_MAX = 2
 
-    Order mirrors the raster exactly: terraces -> footings -> posterior finishing
-    features -> hinge pockets. It has to, because the bezel anchors to the
-    surface underneath it and the pockets cut below everything.
 
-    `return_surface=True` also returns the solid **before** the pockets are cut.
-    That is the M8 `surface_field`: the relief passes follow it so they sail over
-    pockets the Hinge Pockets op has already cut, instead of diving to the floor
-    a second time.
+def _base_key(partition: CastlePartition, castle: CastleParams,
+              heights: dict[str, float] | None) -> tuple:
+    """Everything `castle_base` reads, and nothing else.
 
-    Still to come as sweeps: pad splay, brow chamfer (`EdgeFeature`), bridge
-    relief, lens groove.
+    Zone thicknesses and overrides (terrace heights), the footing schedule
+    (the blends), and the groove depth — which belongs here even though the
+    groove itself is a feature, because with the groove on the terraces are
+    built against the *shrunk* lip partition.
+
+    The partition goes in by identity, and the cache holds a strong reference to
+    it so a freed object's id cannot be reused underneath the key.
     """
+    groove = getattr(castle, "lens_groove", None)
+    return (
+        id(partition),
+        castle.zones.model_dump_json(),
+        json.dumps(castle.zone_height_overrides, sort_keys=True),
+        castle.footing.model_dump_json(),
+        bool(groove is not None and groove.enabled),
+        float(groove.depth_mm) if groove is not None else 0.0,
+        json.dumps(heights, sort_keys=True) if heights else None,
+    )
+
+
+def clear_base_cache() -> None:
+    """Drop the cached bases. Tests that time a cold build need this."""
+    _BASE_CACHE.clear()
+
+
+def castle_base(partition: CastlePartition, castle: CastleParams,
+                heights: dict[str, float] | None = None,
+                progress: Optional[ProgressFn] = None):
+    """The castle before any finishing feature: terraces plus footing blends.
+
+    Split out and cached because it is ~8 s of every rebuild on the demo frame
+    and it depends on none of the feature parameters. Dragging a bezel width or
+    a chamfer angle re-runs only what changed; the terraces and the ten footing
+    blends come back from here untouched.
+
+    Returns `(partition, heights, top, solid)` — the partition too, because with
+    the lens groove enabled it is replaced by the shrunk lip partition and every
+    feature downstream has to be built against that one, not the original.
+    """
+    key = _base_key(partition, castle, heights)
+    source = partition
+    for cached_key, _src, value in _BASE_CACHE:
+        if cached_key == key:
+            _report(progress, "Building terraces", 0.80)
+            return value
+
     h = zone_heights(partition, castle, heights)
     top = max(h.values()) + SWEEP_MARGIN_MM
 
@@ -342,18 +387,73 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     if carves:
         solid = cut(solid, fuse_all(carves))
 
-    _report(progress, "Finishing features", 0.85)
-    from .features import (apply_edge_features, apply_hinge_pockets,
-                           apply_lens_groove, apply_posterior_features)
-    solid = apply_posterior_features(solid, partition, castle, top)
-    solid = apply_edge_features(solid, partition, castle, top)
-    solid = apply_lens_groove(solid, partition, castle)
+    value = (partition, h, top, solid)
+    _BASE_CACHE.append((key, source, value))
+    del _BASE_CACHE[:-_BASE_CACHE_MAX]
+    return value
 
-    surface = solid                       # before the pockets (M8 surface_field)
-    _report(progress, "Hinge pockets", 0.92)
-    solid = apply_hinge_pockets(solid, hinges or [], castle, top)
+
+# --------------------------------------------------------------------- build
+
+def build_castle_solid(partition: CastlePartition, castle: CastleParams,
+                       hinges: list | None = None,
+                       heights: dict[str, float] | None = None,
+                       progress: Optional[ProgressFn] = None,
+                       return_surface: bool = False):
+    """Terraces, footing blends, posterior features and hinge pockets.
+
+    Order mirrors the raster exactly: terraces -> footings -> posterior finishing
+    features -> hinge pockets. It has to, because the bezel anchors to the
+    surface underneath it and the pockets cut below everything.
+
+    `return_surface=True` also returns the solid **before** the pockets are cut.
+    That is the M8 `surface_field`: the relief passes follow it so they sail over
+    pockets the Hinge Pockets op has already cut, instead of diving to the floor
+    a second time.
+
+    Still to come as sweeps: pad splay, brow chamfer (`EdgeFeature`), bridge
+    relief, lens groove.
+    """
+    partition, h, top, solid = castle_base(partition, castle, heights, progress)
+
+    _report(progress, "Finishing features", 0.85)
+    from .features import (apply_surface_features, hinge_pocket_cutters,
+                           independent_cutters)
+    # Two groups, and the split is the measured one — see `independent_cutters`.
+    # The splay and the scoop read the surface each other leaves behind, so they
+    # stay one-at-a-time; everything else sees the same target either way and so
+    # goes through a single boolean pass. Cutting them separately cost 32.9 s on
+    # the demo frame and cutting them together costs 7.5 s for the same solid.
+    solid = apply_surface_features(solid, partition, castle)
+    tools = independent_cutters(solid, partition, castle, top)
+    pockets = hinge_pocket_cutters(hinges or [], castle, top)
+
+    if return_surface:
+        # The M8 surface_field is the solid *before* the pockets, so the two
+        # groups have to be cut separately to have something to hand back.
+        solid = cut_many(solid, tools)
+        surface = solid
+        _report(progress, "Hinge pockets", 0.92)
+        solid = cut_many(solid, pockets)
+    else:
+        # Nobody wants the intermediate, so fold the pockets into the same pass.
+        # `(X \ T) \ P == X \ (T u P)` holds however the kernel spells it, and
+        # the pockets anchor on nothing, so this is the identical solid for one
+        # boolean instead of two.
+        _report(progress, "Hinge pockets", 0.92)
+        solid = cut_many(solid, tools + pockets)
+        surface = None
 
     _report(progress, "Solid ready", 1.0)
+    # The terrace guard above catches an empty union at the one stage whose
+    # volume is known positive; this catches the same class at the other end.
+    # It is not hypothetical: spiking smooth (`ruled=False`) cutter lofts
+    # produced a shape with zero faces and zero volume that `BRepCheck_Analyzer`
+    # still called valid, and without this it would have reached the Z-map.
+    if volume(solid) <= 0.0:
+        raise BooleanError(
+            "castle solid collapsed to zero volume — a boolean consumed the "
+            "whole body (an empty result can still report IsValid)")
     if not is_valid(solid):
         raise BooleanError("castle solid failed BRepCheck_Analyzer")
     return (solid, surface) if return_surface else solid

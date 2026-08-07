@@ -40,6 +40,7 @@ from ..project.schema import CastleParams, EyewireBezelParams
 from .occ import (
     BooleanError,
     cut,
+    cut_many,
     extrude,
     fuse_all,
     polygon_to_face,
@@ -51,13 +52,30 @@ from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
 
-__all__ = ["apply_edge_features", "apply_hinge_pockets",
-           "apply_posterior_features", "bezel_cutter", "edge_feature_cutters", "scoop_cutter", "splay_cutter"]
+__all__ = ["anterior_bezel_features", "apply_edge_features",
+           "apply_hinge_pockets", "apply_lens_groove",
+           "apply_posterior_features", "apply_surface_features",
+           "bezel_cutter", "bezel_cutters", "edge_feature_cutters",
+           "groove_cutters", "hinge_pocket_cutters", "independent_cutters",
+           "resolved_edge_cutters", "scoop_cutter", "splay_cutter"]
 
 #: Sections lofted around an aperture ring for a bezel. The demo's lens rings
-#: are ~132 mm round, so this is one section per ~0.73 mm — past the point where
-#: the cutter's volume stops moving (60 -> 120 -> 240 gives 3179.5 / 3188.0 /
-#: 3189.9 mm^3).
+#: are ~132 mm round, so this is one section per ~0.73 mm.
+#:
+#: **What pins this number is chord error, not volume.** Volume converges early
+#: and is therefore misleading: 120 stations removes 473.1 mm3 against 474.7 at
+#: 240, an 0.3% difference that reads as plenty of headroom. It is not. The
+#: sections are joined by ruled patches, so the cutter is a polygon inscribed in
+#: the ring, and the sagitta is what the cut surface is actually wrong by:
+#:
+#:     240 -> 1.8 um    180 -> 3.2 um    150 -> 4.6 um
+#:     120 -> 7.2 um     90 -> 12.8 um    60 -> 28.8 um
+#:
+#: `test_bezel_is_a_real_chamfer_not_an_offset` requires the solid to agree with
+#: the raster to **5 um** over >80% of in-body cells. Dropping to 120 to buy
+#: build time was tried and it fails that gate at 79.3%, exactly as the 7.2 um
+#: sagitta predicts. 180 clears it with margin, and the build time was not here
+#: anyway — see `cut_many`.
 BEZEL_STATIONS = 180
 
 #: How far a cutter reaches past the material it trims, mm.
@@ -82,13 +100,19 @@ def apply_hinge_pockets(solid: TopoDS_Shape, hinges: Iterable[Polygon],
     and the walls are vertical. No tool-radius offset here — that belongs to
     `cam.castle_ops.hinge_pocket_op`, which does the pocketing cascade.
     """
+    return cut_many(solid, hinge_pocket_cutters(hinges, castle, top))
+
+
+def hinge_pocket_cutters(hinges: Iterable[Polygon], castle: CastleParams,
+                         top: float) -> list[TopoDS_Shape]:
+    """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
+    ray, so like the groove these never care what has already been cut."""
     polys = [p for p in hinges if p is not None and not p.is_empty and p.area > 0]
     if not polys:
-        return solid
+        return []
     floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
     height = max(top - floor, CUT_MARGIN_MM)
-    cutters = [extrude(polygon_to_face(p, floor), height) for p in polys]
-    return cut(solid, fuse_all(cutters))
+    return [extrude(polygon_to_face(p, floor), height) for p in polys]
 
 
 # ------------------------------------------------------------- eyewire bezel
@@ -211,9 +235,82 @@ def bezel_cutter(solid: TopoDS_Shape, body: Polygon, ring,
     return ts.Shape()
 
 
-def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
-                             castle: CastleParams, top: float) -> TopoDS_Shape:
-    """Every enabled posterior finishing feature, as boolean subtractions."""
+def anterior_bezel_features(bezel: EyewireBezelParams) -> list:
+    """The anterior bezel band, expressed as whole-ring `EdgeFeature`s.
+
+    Exactly how the raster spells it (`relief.edges.carve_anterior_bezel`), and
+    for the same reason: the anterior band *is* a chamfer round a whole ring, so
+    describing it as one keeps a single chamfer implementation to trust instead
+    of a second copy of the same maths on the other face.
+
+    Empty `zones` is the whole ring; `blend_mm=0` because the band does not
+    feather out — it closes on itself.
+    """
+    from ..project.schema import EdgeFeature
+
+    if not bezel.cuts_anterior() or bezel.anterior_width_mm <= 0:
+        return []
+    return [
+        EdgeFeature(
+            id=f"anterior-bezel-{edge}", label="Anterior eyewire bezel",
+            face="anterior", edge=edge, profile="chamfer",
+            width_mm=bezel.anterior_width_mm, angle_deg=bezel.anterior_angle_deg,
+            min_thickness_mm=bezel.min_thickness_mm,
+            zones=[], blend_mm=0.0, mirror=False,
+        )
+        for edge in ("lens_od", "lens_os")
+    ]
+
+
+def bezel_cutters(solid: TopoDS_Shape, partition: CastlePartition,
+                  castle: CastleParams, top: float) -> list[TopoDS_Shape]:
+    """The eyewire bezel's cutters — posterior band, anterior band, or both.
+
+    The two faces are built by different machinery, and that is not an oversight
+    on either side. The posterior band is a purpose-built loft (`bezel_cutter`)
+    anchored on the surface it seats the lens against. The anterior band is a
+    plain whole-ring chamfer, which `edge_feature_cutters` already does — on the
+    underside, via `surface_z_at(..., face="bottom")`, because in a solid the
+    front of the frame is simply the other side of the same body.
+
+    Only the posterior half was ported when the solid path was built, so
+    `face="anterior"` removed 0.00 mm3 and `face="both"` removed exactly what
+    `"posterior"` did (2026-08-07 finding 3). It was a porting gap rather than a
+    missing capability — the anterior machinery was already carrying anterior
+    edge features correctly.
+    """
+    bezel = castle.eyewire_bezel
+    out = []
+    if bezel.cuts_posterior():
+        for interior in partition.body.interiors:
+            try:
+                out.append(bezel_cutter(solid, partition.body, interior, bezel, top))
+            except BooleanError:
+                continue
+    for feature in anterior_bezel_features(bezel):
+        try:
+            out.extend(edge_feature_cutters(solid, partition, feature, top))
+        except BooleanError:
+            continue
+    return out
+
+
+def apply_surface_features(solid: TopoDS_Shape, partition: CastlePartition,
+                           castle: CastleParams) -> TopoDS_Shape:
+    """The features that read the surface *another feature already cut*.
+
+    Pad splay, then bridge relief, each subtracted before the next is built —
+    and the order is load-bearing, not incidental. Both anchor on the frame's
+    centerline, so with the splay enabled the scoop's anchor ray lands on
+    material the splay has already taken away. Measured on the demo frame: the
+    scoop's thirteen anchors move by up to **2.59 mm** (0.94 mm mean) depending
+    on whether the splay has been cut yet. On a 1.2 mm-deep scoop that is not a
+    rounding difference — it is a different part.
+
+    That is why these two cannot join the single-pass group in
+    `independent_cutters`, and why this function exists separately rather than
+    being folded in for the speed.
+    """
     splay = castle.pad_splay
     if splay.enabled:
         try:
@@ -227,19 +324,52 @@ def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
             solid = cut(solid, scoop_cutter(solid, partition.body, scoop))
         except BooleanError:
             pass
-
-    bezel = castle.eyewire_bezel
-    if bezel.cuts_posterior():
-        cutters = []
-        for interior in partition.body.interiors:
-            try:
-                cutters.append(bezel_cutter(solid, partition.body, interior,
-                                            bezel, top))
-            except BooleanError:
-                continue
-        if cutters:
-            solid = cut(solid, fuse_all(cutters))
     return solid
+
+
+def independent_cutters(solid: TopoDS_Shape, partition: CastlePartition,
+                        castle: CastleParams, top: float) -> list[TopoDS_Shape]:
+    """Every cutter that can be built against one target and subtracted at once.
+
+    The membership rule is *measured*, not assumed. Firing each feature's anchor
+    rays at the post-footing solid and again at the fully-featured one, on the
+    demo frame:
+
+    | feature | anchor drift |
+    | --- | --- |
+    | pad splay | 0.0000 mm |
+    | bridge relief | **2.5898 mm** |
+    | eyewire bezel (both rings) | 0.0000 mm |
+    | brow chamfer (mirrored pair) | 0.0000 mm |
+
+    The bezel and the edge features read only terrace-and-footing surface, which
+    no other feature touches; the lens groove and the hinge pockets never read
+    the solid at all — they are pure geometry off the partition. So all of them
+    see the same target whether they are cut one at a time or together, and
+    `cut_many` gets to do it in one pass: 32.9 s -> 7.5 s on the demo frame,
+    volume delta 0.00 mm3 and the same 6,471 faces.
+
+    Only the bridge relief drifts, and `apply_surface_features` keeps it
+    sequential. **If a future feature anchors on something one of these removes,
+    it belongs there and not here** — the two are not interchangeable, and the
+    cost of getting it wrong is a quietly different part rather than an error.
+    """
+    cutters = bezel_cutters(solid, partition, castle, top)
+    cutters.extend(resolved_edge_cutters(solid, partition, castle, top))
+    cutters.extend(groove_cutters(partition, castle))
+    return cutters
+
+
+def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
+                             castle: CastleParams, top: float) -> TopoDS_Shape:
+    """Pad splay, bridge relief and eyewire bezel, subtracted one at a time.
+
+    The sequential spelling, kept because it is the reference the grouped path
+    in `build_castle_solid` is checked against — same features, same anchors,
+    same result, and a test pins that the two agree.
+    """
+    solid = apply_surface_features(solid, partition, castle)
+    return cut_many(solid, bezel_cutters(solid, partition, castle, top))
 
 
 # ------------------------------------------------- edge features (M17 / brow)
@@ -366,18 +496,22 @@ def edge_feature_cutters(solid: TopoDS_Shape, partition: CastlePartition,
     return out
 
 
-def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
-                        castle: CastleParams, top: float) -> TopoDS_Shape:
-    """Every resolved edge feature, mirrored twins included."""
+def resolved_edge_cutters(solid: TopoDS_Shape, partition: CastlePartition,
+                          castle: CastleParams, top: float) -> list[TopoDS_Shape]:
+    """Cutters for every resolved edge feature, mirrored twins included."""
     cutters: list[TopoDS_Shape] = []
     for feature in castle.resolved_edge_features():
         try:
             cutters.extend(edge_feature_cutters(solid, partition, feature, top))
         except BooleanError:
             continue
-    if cutters:
-        solid = cut(solid, fuse_all(cutters))
-    return solid
+    return cutters
+
+
+def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
+                        castle: CastleParams, top: float) -> TopoDS_Shape:
+    """Every resolved edge feature, mirrored twins included."""
+    return cut_many(solid, resolved_edge_cutters(solid, partition, castle, top))
 
 
 # ---------------------------------------------------------------- pad splay
@@ -567,7 +701,9 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
 
 # ---------------------------------------------------------------- lens groove
 
-#: Sections lofted around an aperture ring for the groove V.
+#: Sections lofted around an aperture ring for the groove V. Matched to
+#: `BEZEL_STATIONS` — same rings, same chord-error argument, and the two cutters
+#: meet at the rim, so a mismatch would put a step where they overlap.
 GROOVE_STATIONS = 180
 
 
@@ -705,15 +841,25 @@ def apply_lens_groove(solid: TopoDS_Shape, partition: CastlePartition,
     does not contain, which is why it cannot be measured, sectioned or posted
     from. Here it is a boolean like any other.
     """
+    return cut_many(solid, groove_cutters(partition, castle))
+
+
+def groove_cutters(partition: CastlePartition,
+                   castle: CastleParams) -> list[TopoDS_Shape]:
+    """One V cutter per aperture wall.
+
+    Takes no solid and fires no anchor ray — the V is positioned entirely from
+    the partition, which is why it can always join the single-pass group.
+
+    `partition` must ALREADY be the lip partition: `build_castle_solid` re-runs
+    the partitioner against the shrunk apertures before it builds the terraces,
+    so `partition.body` is the lip body and its interiors are the lip rings.
+    Shrinking again here put the V a further `depth_mm` inboard, which is open
+    aperture — the loft built, the boolean succeeded, and it removed nothing.
+    """
     groove = getattr(castle, "lens_groove", None)
     if groove is None or not groove.enabled or groove.depth_mm <= 0:
-        return solid
-    # `partition` is ALREADY the lip partition — `build_castle_solid` re-runs
-    # the partitioner against the shrunk apertures before it builds the
-    # terraces, so `partition.body` is the lip body and its interiors are the
-    # lip rings. Shrinking again here put the V a further `depth_mm` inboard,
-    # which is open aperture: the loft built, the boolean succeeded, and it
-    # removed nothing at all.
+        return []
     lip = partition.body
     cutters = []
     for interior in lip.interiors:
@@ -723,6 +869,4 @@ def apply_lens_groove(solid: TopoDS_Shape, partition: CastlePartition,
             cutters.append(groove_cutter(lip, interior, groove))
         except BooleanError:
             continue
-    if cutters:
-        solid = cut(solid, fuse_all(cutters))
-    return solid
+    return cutters
