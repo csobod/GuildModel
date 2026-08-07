@@ -4549,25 +4549,91 @@ flag.** It engages only where a caller has supplied authored curves; a partition
 built without them produces an empty `SourceCurves` and the polygonal path,
 unchanged. That is why the whole suite is unaffected.
 
-### What is still needed to see this in the app
+### Both intakes now carry the curve *(2026-08-07)*
 
-1. **Nothing user-facing supplies the curves yet.** `partition_zones` takes
-   `source_curves`, but the only caller passing it is `scripts/bench_solid.py`.
-   `gui/component_workspace.py` builds its partition from layer point-lists and
-   would need the curves carried alongside them.
-2. **`.gdraw` is the primary intake and has the same problem.** It stores
-   *cubic spline nodes* in its JSON metadata and `_flatten_spline` discards them
-   exactly as the DXF importer used to. The same treatment applies and is
-   arguably more important than the DXF path.
-3. **The lens groove drops the curves.** `lip_partition` re-partitions against
+`partition_zones` took `source_curves` and the only caller passing it was
+`scripts/bench_solid.py`, so nothing a maker could open ever built from a curve.
+Both intakes are wired now.
+
+**`.gdraw` had the same hole the DXF importer had.** It stores splines as cubic
+Bezier nodes and `_flatten_spline` threw them away. A chain of cubic Beziers *is*
+a cubic B-spline — interleave the poles, multiplicity 3 at each interior joint —
+so `geometry.curves.cubic_bezier_chain` re-spells one as the other with no
+tolerance and no error term. Verified on the aviator fixture: every ring of the
+front (outline, bridge opening, both apertures, both hinges) rebuilds with a
+worst deviation of **0.0000 nm** from its own flattening, matching the DXF path.
+
+Circles come across as exact rational quadratics. That work also turned up a
+real defect next door: `_flatten_circle` divided *circumference* by the chord
+tolerance, which is dimensionally wrong and turned a 20 mm hole into ~12,600
+points. Sagitta-based now, like `_flatten_arc` — 100 points for the same hole.
+
+The plumbing mirrors the DXF path exactly: `read_workspace_curves` returns
+points and curves index-aligned, `GdrawWorkspace` / `GdrawComponent` /
+`ComponentWorkspace` carry the pair, and `derive_workspace` folds OUTLINE and
+LENS into the partition's `source_curves` — mirroring the curves along with the
+points when it reflects a temple. `ImportWorker` uses `import_curves`.
+
+### The cost was the booleans, not the classification
+
+The first diagnosis of the curved build's 8.6 s → 23.5 s was **wrong**.
+Per-vertex classification is 0.06 s of it. The profile says booleans: 20 footing
+clips at 10.7 s, one cut at 6.3 s, 27 fuses at 4.3 s. Planar faces intersect in
+closed form; B-spline extrusions need a numerical solve, and a zone prism with
+*three* curved faces costs 0.73 s against a 56-plane prism's 0.25 s.
+
+Three things fixed it, none of them the classifier:
+
+| change | effect |
+| --- | --- |
+| `_arc_edge` segments the arc off the curve | terraces 0.95 s → 0.40 s, cold 19.96 s → 16.67 s |
+| `fuse_all` in one multi-tool pass, not a pairwise fold | 3.2 s → 0.35 s on terraces + ten fills |
+| carves via `cut_many` | 6.2 s → 2.1 s |
+
+Every one of them identical in volume, watertight before and after.
+
+The segmentation is the interesting one. `MakeEdge(curve, v0, v1, ua, ub)` trims
+in *parameter* but still references all 64 poles of the outline, so an extruded
+zone boundary carries the whole surface with a window cut in it — and the
+boolean engine and the mesher then both work on the whole surface. Cutting the
+arc out first leaves 22 poles for a third of the outline. It does **not** repair
+`volume()`: `BRepGProp` still reads ~17 mm³ light on the curved terraces, so
+`mesh_volume` remains the referee.
+
+Two traps recorded in the code, because both cost real time:
+
+* OCP exposes no `Geom_BSplineCurve.DownCast_s`, so the obvious
+  `Copy()` + `Segment()` route raises `AttributeError` — and `curved_ring_wire`
+  falls back on *any* exception, so the first "3.6× speedup" measured was the
+  polyline fallback being fast. `GeomConvert.SplitBSplineCurve_s` is the call
+  that works.
+* A descending parameter span must be handed to `MakeEdge` in its own order.
+  Normalising it makes OCCT refuse the edge — silently, via that same fallback.
+
+Rejected: **bounding-box pre-clipping** the zone prism to the sweep. It removes
+plane faces but keeps the arcs, which are what cost, so it bought 23% while
+re-cutting the very rings whose curve identity the watertight fix depends on.
+**Thread-parallelising the 20 clips**: OCP holds the GIL, measured speedup 1.02×.
+
+Demo frame, all features on: **26.7 s → 22.1 s cold, 16.7 s warm.** Bare castle
+6.1 s polygonal / 13.9 s curved, 6,772 edges against 9,942.
+
+### Still open on the curve work
+
+1. **The lens groove drops the curves.** `lip_partition` re-partitions against
    Shapely-shrunk apertures, so the shrunk rings are genuinely new geometry with
    no authored curve — correct behaviour, but it means a groove-enabled build is
-   polygonal. Offsetting the curve itself would fix it.
-4. **Cost.** With curves supplied, the cold bare-castle build goes 8.5 s → 23.9 s,
-   dominated by per-vertex classification (`GeomAPI_ProjectPointOnCurve` for
-   every ring vertex against every candidate). Warm rebuilds are unaffected
-   (0.6 s) because `castle_base` caches. Classification is the obvious target:
-   it is currently O(vertices × curves) with no spatial pruning.
+   polygonal, and since the groove is on in the ALL-FEATURES row that row is
+   currently identical curved and not. Offsetting the curve itself would fix it,
+   and it is the single highest-value remaining item: it is what stands between
+   the maker and a curved *finished* frame rather than a curved bare castle.
+2. **Cold build is still 13.9 s curved against 6.1 s polygonal.** All of the gap
+   is boolean cost against B-spline extrusions. The clips are the remaining
+   10.7 s → 3 s target; process-level parallelism (shapes serialised through
+   `BRepTools`) is the only untried lever that does not touch geometry.
+3. **Only splines and circles come across exactly.** Arcs return None because an
+   open arc is never a whole ring; if a drawing ever assembles an outline from
+   arc segments, that assumption needs revisiting.
 
 # Reference
 
