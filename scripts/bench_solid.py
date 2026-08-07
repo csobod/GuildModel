@@ -22,16 +22,29 @@ from pathlib import Path
 DEMO = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "demo"
 
 
-def demo_inputs():
-    from guildmodel.core.geometry.regions import partition_zones
-    from guildmodel.core.io_import.dxf import import_dxf
+def demo_inputs(with_curves: bool = True):
+    """The demo partition and its hinges.
+
+    `with_curves` carries the drawing's authored NURBS through to the partition,
+    which is what lets the solid be built from the curves GuildDraw drew rather
+    than from the flattened polyline. Off, this reproduces the historical
+    polygonal build for comparison.
+    """
+    from guildmodel.core.geometry.regions import curves_by_ring, partition_zones
+    from guildmodel.core.io_import.dxf import import_curves
     from guildmodel.core.io_import.normalize import points_to_polygon
 
-    raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
+    raw, curves = import_curves(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
     hinges = [points_to_polygon(c) for c in raw["HINGE"]]
-    return partition_zones(outline, lenses, raw["SCULPT"]), hinges
+
+    source: dict = {}
+    if with_curves:
+        for layer in ("OUTLINE", "LENS"):
+            source.update(curves_by_ring(raw[layer], curves[layer]))
+    return partition_zones(outline, lenses, raw["SCULPT"],
+                           source_curves=source), hinges
 
 
 def _brow_chamfer():

@@ -4517,6 +4517,58 @@ the terrace fuse appeared to "lose" was never lost. Disjoint solids cannot
 overlap, so a fuse that reports less than the sum is a measurement bug, not a
 geometry bug — worth remembering as a cheap sanity check on this kernel.
 
+### Watertight — it was never the mesher *(2026-08-07)*
+
+The non-watertight curved mesh looked like a tessellation problem and was not.
+Stage by stage, with curves on:
+
+| stage | watertight |
+| --- | --- |
+| terraces | **yes** |
+| + footing fills | no |
+
+The terraces mesh closed. The crack arrives with the fills, and the cause is a
+**mismatch, not a mesher limitation**: `footing_bodies` clips each swept fill to
+its zone with `extrude(polygon_to_face(zone.polygon))`, which was building that
+clipping prism from the *flattened polygon* while the terraces followed the
+*curve*. The clip therefore sat a chord-width inside the real boundary, the fill
+stopped just short of the terrace it blends into, and the near-coincident pair
+of faces that produced tessellated with a gap — valid solid, leaking mesh, the
+house failure mode.
+
+Threading one `SourceCurves` from `castle_base` through both `build_terraces`
+and `footing_bodies` fixes it outright: **watertight at every stage**, valid,
+and the mesh volume lands within half a cubic millimetre of the polygon build.
+No change to `tessellate` was needed. Welding was investigated first and is a
+red herring — the raw per-face vertices are already merged by `to_trimesh`'s
+`process=True`, and welding *harder* (1e-6 mm and coarser) breaks watertightness
+by merging genuinely distinct points.
+
+**`CURVED_TERRACES` is now `True`, and it is opt-in by data rather than by
+flag.** It engages only where a caller has supplied authored curves; a partition
+built without them produces an empty `SourceCurves` and the polygonal path,
+unchanged. That is why the whole suite is unaffected.
+
+### What is still needed to see this in the app
+
+1. **Nothing user-facing supplies the curves yet.** `partition_zones` takes
+   `source_curves`, but the only caller passing it is `scripts/bench_solid.py`.
+   `gui/component_workspace.py` builds its partition from layer point-lists and
+   would need the curves carried alongside them.
+2. **`.gdraw` is the primary intake and has the same problem.** It stores
+   *cubic spline nodes* in its JSON metadata and `_flatten_spline` discards them
+   exactly as the DXF importer used to. The same treatment applies and is
+   arguably more important than the DXF path.
+3. **The lens groove drops the curves.** `lip_partition` re-partitions against
+   Shapely-shrunk apertures, so the shrunk rings are genuinely new geometry with
+   no authored curve — correct behaviour, but it means a groove-enabled build is
+   polygonal. Offsetting the curve itself would fix it.
+4. **Cost.** With curves supplied, the cold bare-castle build goes 8.5 s → 23.9 s,
+   dominated by per-vertex classification (`GeomAPI_ProjectPointOnCurve` for
+   every ring vertex against every candidate). Warm rebuilds are unaffected
+   (0.6 s) because `castle_base` caches. Classification is the obvious target:
+   it is currently O(vertices × curves) with no spatial pruning.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

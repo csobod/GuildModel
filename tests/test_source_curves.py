@@ -229,27 +229,72 @@ def test_zone_faces_can_be_rebuilt_from_authored_curves(partition_with_curves):
     assert total_curved == pytest.approx(total_poly, abs=0.5)
 
 
-def test_curved_terraces_are_off_and_why(partition_with_curves):
-    """The curved castle is geometrically right and meshes non-watertight.
-
-    Guarding the flag rather than the geometry: the M2 STL gate and the CAM both
-    require a closed mesh, so `CURVED_TERRACES` stays off until `tessellate`
-    produces one across mixed spline/planar faces. If this test starts failing
-    because someone fixed the mesher, that is the moment to flip it.
-    """
-    from guildmodel.core.solid.build import CURVED_TERRACES, build_terraces
-    from guildmodel.core.solid.occ import explore
+def test_curved_terraces_collapse_edges(partition_with_curves):
+    """Arcs must collapse edges, not add them — that is the whole point."""
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.solid import zone_heights
+    from guildmodel.core.solid.build import build_terraces
+    from guildmodel.core.solid.occ import explore
     from OCP.TopAbs import TopAbs_EDGE
-
-    assert CURVED_TERRACES is False
 
     part = partition_with_curves
     heights = zone_heights(part, CastleParams())
-    plain = build_terraces(part, heights, curved=False)
-    curved = build_terraces(part, heights, curved=True)
+    n_plain = sum(1 for _ in explore(build_terraces(part, heights, curved=False),
+                                     TopAbs_EDGE))
+    n_curved = sum(1 for _ in explore(build_terraces(part, heights, curved=True),
+                                      TopAbs_EDGE))
+    assert n_curved < n_plain
 
-    n_plain = sum(1 for _ in explore(plain, TopAbs_EDGE))
-    n_curved = sum(1 for _ in explore(curved, TopAbs_EDGE))
-    assert n_curved < n_plain, "arcs must collapse edges, not add them"
+
+def test_the_curved_castle_meshes_watertight(partition_with_curves, imported):
+    """**The gate that kept `CURVED_TERRACES` off, and the fix for it.**
+
+    A leaking mesh fails the M2 STL gate and the CAM, so this is the property
+    that decides whether the curved path can be the default at all.
+
+    It looked like a tessellation bug and was not. The terraces mesh closed on
+    their own; the crack arrived with the footing fills, because
+    `footing_bodies` clipped each fill to a zone prism built from the *flattened
+    polygon* while the terraces followed the *curve*. The clip sat a chord-width
+    inside the real boundary, the fill stopped short of the terrace it blends
+    into, and that near-coincident pair of faces tessellated with a gap — a
+    valid solid with a leaking mesh, this kernel's signature failure.
+
+    So the invariant worth pinning is not "the mesher works" but **"one curve
+    set, used by everything that touches the same boundary"**.
+    """
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, clear_base_cache, is_valid
+    from guildmodel.core.solid.tessellate import tessellate
+
+    points, _ = imported
+    hinges = [points_to_polygon(c) for c in points["HINGE"]]
+
+    clear_base_cache()
+    solid = build_castle_solid(partition_with_curves, CastleParams(), hinges)
+    assert is_valid(solid)
+
+    mesh = tessellate(solid).to_trimesh()
+    assert mesh.is_watertight, "the curved castle must mesh closed"
+    assert mesh.volume == pytest.approx(7825.0, abs=5.0)
+
+
+def test_curves_only_engage_when_the_caller_supplies_them():
+    """`CURVED_TERRACES` is opt-in by *data*, not by flag.
+
+    A partition built without authored curves yields an empty `SourceCurves` and
+    the historical polygonal path, which is why turning the flag on left the
+    whole suite unmoved.
+    """
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.solid.occ import SourceCurves
+
+    raw = import_dxf(DEMO)
+    part = partition_zones(points_to_polygon(raw["OUTLINE"][0]),
+                           [points_to_polygon(c) for c in raw["LENS"]],
+                           raw["SCULPT"])
+    assert part.source_curves == {}
+    assert not SourceCurves(part)

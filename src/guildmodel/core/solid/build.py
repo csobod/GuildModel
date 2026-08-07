@@ -91,31 +91,31 @@ def zone_heights(partition: CastlePartition, castle: CastleParams,
 # ------------------------------------------------------------------ terraces
 
 #: Build zone boundaries from the drawing's authored curves instead of from the
-#: flattened polygon. **Off, and the reason is watertightness, not correctness.**
+#: flattened polygon — the model is then made of the curves GuildDraw drew,
+#: rather than of a 342-segment approximation of them.
 #:
-#: The geometry works. Zone boundaries are arcs of the outline and lens curves
-#: joined by the straight SCULPT cuts that severed them; ~94% of every zone's
-#: vertices lie on an authored curve, and rebuilding them as trimmed arcs gives
-#: nine valid faces whose areas match the polygons to +0.059 mm2 in total. The
-#: whole castle then builds valid, with 9,942 -> 8,237 edges and 4,971 -> 3,952
-#: display edges, at a mesh volume of 7825.69 mm3 against the polygon build's
-#: 7825.25 — a +0.44 mm3 surplus, which is exactly the chord deficit the true
-#: curve is supposed to recover.
+#: A zone boundary is arcs of the outline and lens curves joined by the straight
+#: SCULPT cuts that severed them; ~94% of every zone's vertices lie on an
+#: authored curve, and `occ.curved_ring_wire` rebuilds those runs as trimmed
+#: arcs. On the demo frame: 9,942 -> 8,237 edges, 4,971 -> 3,952 display edges,
+#: watertight, valid, and a mesh volume within half a cubic millimetre of the
+#: polygon build — the difference being the chord deficit the true curve
+#: recovers.
 #:
-#: What stops it is the tessellation: **the curved solid meshes non-watertight**,
-#: and at 23,774 triangles against 6,472. The M2 STL gate and the CAM both
-#: require watertight, so this cannot be the default until `tessellate` produces
-#: a closed mesh across mixed spline/planar faces. Build time also goes 7.8 s ->
-#: 18.8 s, dominated by per-vertex curve classification and by booleans on
-#: spline faces.
-#:
-#: Turning this on is one flag; fixing the mesh is the actual next task.
-CURVED_TERRACES = False
+#: **The one thing that has to stay true**: whatever builds the terraces and
+#: whatever clips the footing fills must use the SAME curve set. Clipping to a
+#: polygonal zone prism while the terraces follow the curve leaves the fill a
+#: chord-width short of the terrace it blends into, and the near-coincident
+#: faces that produces tessellate with a crack — valid solid, leaking mesh.
+#: That was the only defect in the curved build, and it is why `castle_base`
+#: builds one `SourceCurves` and threads it through both.
+CURVED_TERRACES = True
 
 
 def build_terraces(partition: CastlePartition,
                    heights: dict[str, float],
-                   curved: bool | None = None) -> TopoDS_Shape:
+                   curved: bool | None = None,
+                   source: "SourceCurves | None" = None) -> TopoDS_Shape:
     """Every zone extruded to its height and fused — the stepped castle.
 
     With `curved` (default `CURVED_TERRACES`), zone boundaries are rebuilt from
@@ -124,7 +124,10 @@ def build_terraces(partition: CastlePartition,
     building the OCCT handles nine times over would be waste.
     """
     use_curves = CURVED_TERRACES if curved is None else curved
-    source = SourceCurves(partition) if use_curves else None
+    if use_curves and source is None:
+        source = SourceCurves(partition)
+    elif not use_curves:
+        source = None
     solids = []
     for zone in partition.zones:
         poly = zone.polygon
@@ -262,12 +265,22 @@ def _sweep(pts: np.ndarray, sections) -> TopoDS_Shape:
 def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
                    heights: dict[str, float], fillet: FootingFillet,
                    top: float, zone_prisms: dict[str, TopoDS_Shape] | None = None,
-                   stations: int = FOOTING_STATIONS
+                   stations: int = FOOTING_STATIONS,
+                   source: "SourceCurves | None" = None
                    ) -> tuple[TopoDS_Shape | None, TopoDS_Shape | None]:
     """(carve, fill) swept along one SCULPT cut, each clipped to its own zone.
 
     Either may come back None when that side's span is degenerate — the raster
     skips those the same way.
+
+    `source` must be the SAME curve set the terraces were built from. The
+    clipping prisms are the zone polygons extruded, so building them from the
+    flattened polygon while the terraces follow the authored curve leaves the
+    clip a chord-width inside the real boundary. The resulting fill does not
+    quite reach the terrace it is blending into, and fusing the two produces a
+    pair of near-coincident faces that tessellates with a crack: the solid stays
+    valid and the mesh stops being watertight. That was the *only* thing wrong
+    with the curved build — the terraces themselves mesh closed.
     """
     names = zone_edge.zone_names
     if len(names) != 2 or not all(n in heights for n in names):
@@ -288,7 +301,8 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
     def prism_for(name: str) -> TopoDS_Shape:
         if name not in zone_prisms:
             poly = partition.zone(name).polygon
-            zone_prisms[name] = extrude(polygon_to_face(poly, 0.0), top)
+            zone_prisms[name] = extrude(
+                polygon_to_face(poly, 0.0, curves=source), top)
         return zone_prisms[name]
 
     out: list[TopoDS_Shape | None] = []
@@ -380,7 +394,9 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
         from .features import lip_partition
         partition = lip_partition(partition, groove.depth_mm)
         h = zone_heights(partition, castle, heights)
-    solid = build_terraces(partition, h)
+    use_curves = CURVED_TERRACES
+    source = SourceCurves(partition) if use_curves else None
+    solid = build_terraces(partition, h, curved=use_curves, source=source)
 
     # This kernel's characteristic failure is an empty result that still reports
     # IsValid(), so a boolean that quietly ate the model looks like success all
@@ -401,7 +417,7 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
             continue
         try:
             carve, fill = footing_bodies(partition, edge, h, fillet, top,
-                                         zone_prisms)
+                                         zone_prisms, source=source)
         except BooleanError:
             # A degenerate or step-less seam contributes no blend. The raster
             # path treats these the same way — `_footing_centers` returns None
