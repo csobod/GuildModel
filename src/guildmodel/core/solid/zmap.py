@@ -123,12 +123,17 @@ def solid_to_zmap(solid, origin: tuple[float, float], rows: int, cols: int,
     return z
 
 
-def _masks(partition: CastlePartition, origin, rows, cols, resolution):
+def _masks(partition: CastlePartition, origin, rows, cols, resolution,
+           body: Polygon | None = None):
     """`inside` and `zone_index`, built exactly as `build_castle_relief` does.
 
     Mirrored rather than shared because the raster builder computes them inline
     while carving; a test asserts the two agree cell for cell, which is what
     keeps this copy honest.
+
+    `body` overrides the footprint — with the lens groove on, the visible
+    aperture is the rim lip, so both paths mask against the *undersized* body
+    or they disagree over the whole annulus.
     """
     ox, oy = origin
     xs = ox + np.arange(cols) * resolution
@@ -136,7 +141,7 @@ def _masks(partition: CastlePartition, origin, rows, cols, resolution):
     Xs, Ys = np.meshgrid(xs, ys)
     fx, fy = Xs.ravel(), Ys.ravel()
 
-    body = partition.body
+    body = partition.body if body is None else body
     prepare(body)
     inside = contains_xy(body, fx, fy).reshape(rows, cols)
 
@@ -164,10 +169,17 @@ def solid_to_relief(solid, partition: CastlePartition, castle: CastleParams,
     exactly as it reads the raster builder's output. The masks are 2D and come
     from the partition either way; only `field` changes provenance.
     """
-    origin, rows, cols = grid_for(partition.body, resolution, margin)
+    groove = getattr(castle, "lens_groove", None)
+    grooved = groove is not None and groove.enabled and groove.depth_mm > 0
+    body = partition.body
+    if grooved:
+        from .features import lip_body
+        body = lip_body(body, groove.depth_mm, partition.is_hole)
+
+    origin, rows, cols = grid_for(body, resolution, margin)
     z = solid_to_zmap(solid, origin, rows, cols, resolution, deflection,
                       progress=progress)
-    inside, zone_index = _masks(partition, origin, rows, cols, resolution)
+    inside, zone_index = _masks(partition, origin, rows, cols, resolution, body)
     z = np.where(inside, z, 0.0)
 
     return CastleRelief(
@@ -175,4 +187,8 @@ def solid_to_relief(solid, partition: CastlePartition, castle: CastleParams,
         inside=inside,
         zone_index=zone_index,
         partition=partition,
+        groove=groove if grooved else None,
+        groove_lens_polys=([Polygon(r) for r in partition.body.interiors
+                            if not partition.is_hole(r)] if grooved else []),
+        mask_body_override=body if grooved else None,
     )

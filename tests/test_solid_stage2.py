@@ -650,3 +650,140 @@ def test_scoop_respects_the_anterior_clamp(demo_partition):
                               resolution=CUT_RES_MM)
     inside = derived.inside
     assert derived.field.z[inside].min() >= 1.5 - 0.05
+
+
+# ---------------------------------------------------------------- lens groove
+
+def _ray_crossings(solid, x, y):
+    """Z values where a vertical ray enters or leaves the solid."""
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+
+    it = BRepIntCurveSurface_Inter()
+    it.Init(solid, gp_Lin(gp_Pnt(float(x), float(y), -1e4),
+                          gp_Dir(0.0, 0.0, 1.0)), 1e-7)
+    zs = []
+    while it.More():
+        zs.append(it.Pnt().Z())
+        it.Next()
+    return sorted(zs)
+
+
+def test_lens_groove_is_a_real_undercut(demo_partition):
+    """The feature that most plainly justifies the rewrite.
+
+    The drageoir V is cut radially into the aperture wall, so it is an
+    **undercut**: a heightfield cannot hold it at any resolution. The raster
+    reaches it by shrinking the aperture mask and then hand-building a notched
+    rim strip in the *mesher* (`castle._groove_rim`) — geometry the model itself
+    does not contain, and therefore cannot be measured, sectioned or posted
+    from. Here it is a boolean like any other.
+
+    Proof is by ray crossings, not by surface height: a vertical ray through the
+    wall must cut FOUR surfaces — anterior, groove floor, groove roof, top — and
+    drop back to two beyond the apex. Taking min/max Z instead shows nothing at
+    all, which is precisely the blindness being fixed.
+    """
+    from shapely.geometry import LineString
+
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, is_valid
+    from guildmodel.core.solid import features as FT
+    from guildmodel.core.solid.tessellate import tessellate
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    g = castle.lens_groove
+
+    solid = build_castle_solid(demo_partition, castle, [])
+    assert is_valid(solid)
+    mesh = tessellate(solid).to_trimesh()
+    assert mesh.is_watertight
+    assert mesh.euler_number == -2
+
+    lip = FT.lip_body(demo_partition.body, g.depth_mm, demo_partition.is_hole)
+    pts, tans = FT._ring_stations(LineString(lip.interiors[0]), 40)
+    inward = FT._inward(lip, pts, tans)
+
+    deep = sum(1 for k in range(len(pts))
+               if len(_ray_crossings(solid, *(pts[k] + inward[k] * 0.35))) >= 4)
+    assert deep == len(pts), f"undercut missing at {len(pts) - deep} stations"
+
+    # Past the apex the wall is solid again.
+    beyond = _ray_crossings(solid, *(pts[0] + inward[0] * (g.depth_mm + 0.15)))
+    assert len(beyond) == 2
+
+
+def test_lens_groove_v_matches_the_cutter_spec(demo_partition):
+    """Half-width falls linearly from `width_mm / 2` at the lip face to zero at
+    `depth_mm`, so the apex lands on the original LENS contour and the boxed
+    dimension stays honest.
+
+    Pinned to microns because the first construction extended the lead-in by
+    padding Z rather than following the flanks, which cut the groove ~7% narrow
+    — 0.867 mm half-width where the spec says 0.933.
+    """
+    from shapely.geometry import LineString
+
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid
+    from guildmodel.core.solid import features as FT
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    g = castle.lens_groove
+
+    solid = build_castle_solid(demo_partition, castle, [])
+    lip = FT.lip_body(demo_partition.body, g.depth_mm, demo_partition.is_hole)
+    pts, tans = FT._ring_stations(LineString(lip.interiors[0]), 8)
+    inward = FT._inward(lip, pts, tans)
+
+    for u in (0.02, 0.25, 0.55):
+        z = _ray_crossings(solid, *(pts[0] + inward[0] * u))
+        assert len(z) >= 4
+        half_w = (z[2] - z[1]) / 2.0
+        expected = (g.width_mm / 2.0) * (1.0 - u / g.depth_mm)
+        assert half_w == pytest.approx(expected, abs=0.005)
+        # Centred on the apex height above the anterior face.
+        assert (z[1] + z[2]) / 2.0 == pytest.approx(g.anterior_offset_mm, abs=0.01)
+
+
+def test_lens_groove_zmap_matches_the_raster(demo_partition, demo_hinges):
+    """Top-down the groove is invisible, so what the Z-map must get right is the
+    rim *lip*: the aperture shrunk by `depth_mm`. Both paths mask against the
+    undersized body or they disagree over the whole annulus.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import build_castle_solid, solid_to_relief
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(
+        build_castle_solid(demo_partition, castle, demo_hinges),
+        demo_partition, castle, resolution=CUT_RES_MM)
+
+    assert np.array_equal(derived.inside, raster.inside)
+    d = (derived.field.z - raster.field.z)[raster.inside]
+    assert np.sqrt((d ** 2).mean()) < 0.01
+    assert (np.abs(d) <= 0.005).mean() > 0.99
+
+
+def test_terrace_collapse_is_caught_not_silent(demo_partition):
+    """The kernel's signature failure is an empty result that reports valid.
+
+    It has now bitten three times — the hole-winding face, the footing fill
+    clip, and the buffered lip zones — so the terrace union carries an explicit
+    volume guard. This pins that the guard exists and that the normal path
+    passes it.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, volume
+    from guildmodel.core.solid.occ import BooleanError
+
+    assert BooleanError is not None
+    solid = build_castle_solid(demo_partition, CastleParams(), [])
+    assert volume(solid) > 1000.0

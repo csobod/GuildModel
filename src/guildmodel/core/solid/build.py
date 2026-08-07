@@ -40,6 +40,7 @@ from .occ import (
     fuse_all,
     is_valid,
     polygon_to_face,
+    volume,
     spline_wire,
 )
 
@@ -291,7 +292,25 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     top = max(h.values()) + SWEEP_MARGIN_MM
 
     _report(progress, "Building terraces", 0.10)
+    # With the lens groove on, the visible aperture is the rim *lip* — cut
+    # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
+    # into the annulus the shrink exposes. The raster gets this free from its
+    # orphan-fill; a solid has to own the material.
+    groove = getattr(castle, "lens_groove", None)
+    if groove is not None and groove.enabled and groove.depth_mm > 0:
+        from .features import lip_partition
+        partition = lip_partition(partition, groove.depth_mm)
+        h = zone_heights(partition, castle, heights)
     solid = build_terraces(partition, h)
+
+    # This kernel's characteristic failure is an empty result that still reports
+    # IsValid(), so a boolean that quietly ate the model looks like success all
+    # the way to the Z-map. Terraces are the one stage whose volume is known to
+    # be positive, which makes it the cheapest place to catch it.
+    if volume(solid) <= 0.0:
+        raise BooleanError(
+            "terrace union collapsed to an empty solid — overlapping or "
+            "coincident zone faces are the usual cause")
 
     carves, fills = [], []
     zone_prisms: dict[str, TopoDS_Shape] = {}
@@ -325,9 +344,10 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
 
     _report(progress, "Finishing features", 0.85)
     from .features import (apply_edge_features, apply_hinge_pockets,
-                           apply_posterior_features)
+                           apply_lens_groove, apply_posterior_features)
     solid = apply_posterior_features(solid, partition, castle, top)
     solid = apply_edge_features(solid, partition, castle, top)
+    solid = apply_lens_groove(solid, partition, castle)
 
     surface = solid                       # before the pockets (M8 surface_field)
     _report(progress, "Hinge pockets", 0.92)

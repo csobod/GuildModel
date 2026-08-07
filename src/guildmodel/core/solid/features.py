@@ -563,3 +563,166 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     if not ts.IsDone():
         raise BooleanError("bridge relief loft did not complete")
     return ts.Shape()
+
+
+# ---------------------------------------------------------------- lens groove
+
+#: Sections lofted around an aperture ring for the groove V.
+GROOVE_STATIONS = 180
+
+
+def lip_body(body: Polygon, depth_mm: float, is_hole=lambda r: False) -> Polygon:
+    """The body with each lens aperture shrunk inward by the groove depth.
+
+    Mirrors `relief.castle._undersized_lens_body`: with the groove on, the
+    visible aperture is the rim *lip*, cut `depth_mm` smaller, and the groove is
+    cut back outward from it so its apex lands exactly on the original LENS
+    contour — which is what keeps the boxed dimension honest. Decorative OUTLINE
+    holes are through-cuts and take no groove, so they keep their size.
+    """
+    from shapely.geometry import Polygon as _P
+
+    holes = []
+    for ring in body.interiors:
+        if is_hole(ring):
+            holes.append(ring)
+            continue
+        shrunk = _P(ring).buffer(-abs(depth_mm))
+        if shrunk.is_empty:
+            holes.append(ring)                    # degenerate: keep it closed
+            continue
+        biggest = max(getattr(shrunk, "geoms", [shrunk]), key=lambda g: g.area)
+        holes.append(biggest.exterior)
+    return _P(body.exterior, holes)
+
+
+def lip_partition(partition: CastlePartition, depth_mm: float):
+    """Re-partition the frame against the *shrunk* apertures.
+
+    The terraces have to reach the rim lip, and the raster gets that for free —
+    it shrinks only the `inside` mask and lets its orphan-fill hand every newly
+    exposed annulus cell to the nearest zone. A solid has to own the material.
+
+    The obvious route — buffering each zone outward into the annulus — does not
+    survive the kernel. Even handing the annulus out as a strict partition so no
+    two zones claim the same sliver, the buffered rings carry enough
+    near-coincident geometry that fusing the terrace prisms **collapses to an
+    empty solid while still reporting `IsValid()`**. Re-running the existing
+    partitioner on shrunk lens polygons instead produces zones that tile the lip
+    body exactly, with no buffer artifacts, and it reuses code that is already
+    proven: same nine zone names, still `classified`, same ten SCULPT edges.
+    """
+    from ..geometry.regions import partition_zones
+    from shapely.geometry import Polygon as _P
+
+    holes = [r for r in partition.body.interiors if partition.is_hole(r)]
+    lenses = [_P(r) for r in partition.body.interiors
+              if not partition.is_hole(r)]
+    if not lenses:
+        return partition
+    outline = _P(partition.body.exterior, holes)
+
+    shrunk = []
+    for lens in lenses:
+        s = lens.buffer(-abs(depth_mm))
+        if s.is_empty:
+            shrunk.append(lens)                   # degenerate: leave it alone
+            continue
+        shrunk.append(max(getattr(s, "geoms", [s]), key=lambda g: g.area))
+
+    cuts = [list(e.cut.coords) for e in partition.edges]
+    lip = partition_zones(outline, shrunk, cuts)
+    if not lip.classified or len(lip.zones) != len(partition.zones):
+        raise BooleanError("re-partitioning against the rim lip changed the castle")
+    return lip
+
+
+def _groove_section(p_xy, outward, apex_z: float, depth: float, half_w: float):
+    """The V notch as a closed section in (outward-from-lip, Z).
+
+    Apex at `depth` into the wall — landing on the original LENS contour — and
+    opening `2 * half_w` tall at the lip face. Extended a little *inside* the
+    aperture (negative u, which is air) so the boolean overlaps the lip wall
+    cleanly rather than meeting it tangentially.
+    """
+    px, py = float(p_xy[0]), float(p_xy[1])
+    nx, ny = float(outward[0]), float(outward[1])
+
+    def at(u, v):
+        return gp_Pnt(px + nx * float(u), py + ny * float(u), float(v))
+
+    # The lead-in points must sit ON the V's own flanks, extrapolated back into
+    # the aperture — not offset by the lead in both axes. The half-width at u is
+    # `half_w * (1 - u / depth)`, so at u = -lead it is `half_w * (1 + lead /
+    # depth)`. Padding z by the lead instead shallows the flanks and cut the
+    # groove ~7% narrow: 0.867 mm half-width at u = 0.05 where the spec is
+    # 0.933 mm.
+    lead_hw = half_w * (1.0 + _GROOVE_LEAD_MM / depth)
+    mp = BRepBuilderAPI_MakePolygon()
+    mp.Add(at(-_GROOVE_LEAD_MM, apex_z + lead_hw))
+    mp.Add(at(depth, apex_z))
+    mp.Add(at(-_GROOVE_LEAD_MM, apex_z - lead_hw))
+    mp.Close()
+    return mp.Wire()
+
+
+#: How far the V is carried back into the open aperture before it starts
+#: cutting. Pure overlap allowance — the aperture is air.
+_GROOVE_LEAD_MM = 0.3
+
+
+def groove_cutter(body: Polygon, ring, p, stations: int = GROOVE_STATIONS
+                  ) -> TopoDS_Shape:
+    """The swept V groove for one aperture lip ring."""
+    depth, half_w = float(p.depth_mm), float(p.width_mm) / 2.0
+    if depth <= 0.0 or half_w <= 0.0:
+        raise BooleanError("degenerate lens groove")
+
+    pts, tans = _ring_stations(LineString(ring), stations)
+    outward = _inward(body, pts, tans)      # from the aperture into the wall
+    apex_z = float(p.anterior_offset_mm)
+
+    sections = [_groove_section(q, nn, apex_z, depth, half_w)
+                for q, nn in zip(pts, outward)]
+    ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
+    for wire in sections:
+        ts.AddWire(wire)
+    ts.AddWire(sections[0])
+    ts.Build()
+    if not ts.IsDone():
+        raise BooleanError("lens groove loft did not complete")
+    return ts.Shape()
+
+
+def apply_lens_groove(solid: TopoDS_Shape, partition: CastlePartition,
+                      castle: CastleParams) -> TopoDS_Shape:
+    """Cut the drageoir V into each aperture wall.
+
+    This is the feature that most plainly justifies the rewrite: the V is an
+    **undercut**, so it never existed in the heightfield at all. The raster
+    reaches it by shrinking the aperture mask and then hand-building a notched
+    rim strip in the *mesher* (`castle._groove_rim`) — geometry the model itself
+    does not contain, which is why it cannot be measured, sectioned or posted
+    from. Here it is a boolean like any other.
+    """
+    groove = getattr(castle, "lens_groove", None)
+    if groove is None or not groove.enabled or groove.depth_mm <= 0:
+        return solid
+    # `partition` is ALREADY the lip partition — `build_castle_solid` re-runs
+    # the partitioner against the shrunk apertures before it builds the
+    # terraces, so `partition.body` is the lip body and its interiors are the
+    # lip rings. Shrinking again here put the V a further `depth_mm` inboard,
+    # which is open aperture: the loft built, the boolean succeeded, and it
+    # removed nothing at all.
+    lip = partition.body
+    cutters = []
+    for interior in lip.interiors:
+        if partition.is_hole(interior):
+            continue
+        try:
+            cutters.append(groove_cutter(lip, interior, groove))
+        except BooleanError:
+            continue
+    if cutters:
+        solid = cut(solid, fuse_all(cutters))
+    return solid

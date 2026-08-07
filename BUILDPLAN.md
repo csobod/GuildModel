@@ -3981,7 +3981,45 @@ half the scoop radius an ellipse is at 0.866 of full depth where the bell is at
 0.500, so the cone cuts deeper across the middle of the band. The test asserts
 that direction, because a sign flip would mean the section was built inverted.
 
-**Still to come as a body:** the lens groove.
+**Lens groove — the undercut, and the clearest justification the rewrite has.**
+The drageoir V is cut *radially into the aperture wall*, so it is an undercut: a
+heightfield cannot hold it at any resolution. The raster reaches it by shrinking
+the aperture mask and then hand-building a notched rim strip **in the mesher**
+(`castle._groove_rim`) — geometry the model itself does not contain, and
+therefore cannot be measured, sectioned or posted from. Here it is a boolean
+like any other.
+
+**rms 2.32 um, 99.85% of cells within 5 um** — the closest agreement of any
+feature — masks identical, watertight, genus 2. Proof that the V is really there
+is by **ray crossings**, not surface height: a vertical ray through the wall cuts
+four surfaces (anterior, groove floor, groove roof, top) at 40/40 stations and
+drops back to two past the apex. Taking min/max Z shows nothing at all, which is
+exactly the blindness being fixed. The V's half-width tracks
+`width_mm/2 * (1 - u/depth_mm)` to **0.1 um** at every depth.
+
+Getting there took three wrong turns, all worth recording:
+
+1. **The annulus was `difference` where it needed `intersection`.** The lip
+   annulus is the sliver inside the original lens outline *and* material in the
+   lip body; subtracting gave the shrunk hole's interior instead, so every zone
+   stayed unchanged and the groove cut thin air.
+2. **Buffering zones into the annulus does not survive the kernel.** Even handing
+   the annulus out as a strict partition so no two zones claim the same sliver,
+   the buffered rings carry enough near-coincident geometry that fusing the
+   terrace prisms **collapsed to an empty solid while still reporting
+   `IsValid()`**. Re-running the existing partitioner against shrunk lens
+   polygons instead gives zones that tile the lip body exactly — same nine names,
+   still classified, same ten SCULPT edges — and reuses proven code.
+3. **Then the lip got shrunk twice.** `build_castle_solid` now hands
+   `apply_lens_groove` the *already-shrunk* partition, and the function shrank it
+   again, putting the V a further 0.75 mm inboard — open aperture. The loft
+   built, the boolean succeeded, and it removed nothing.
+
+**A guard now sits on the terrace union.** The empty-but-valid failure has
+appeared three times (the hole-winding face, the footing fill clip, the buffered
+lip zones), so `build_castle_solid` raises if the terraces come back at zero
+volume. It is the one stage whose volume is known to be positive, which makes it
+the cheapest place to catch the whole class.
 
 **Performance is now the visible problem.** The bare castle builds in ~9 s; with
 the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move
