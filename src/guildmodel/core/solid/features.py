@@ -52,7 +52,7 @@ from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
 
 __all__ = ["apply_edge_features", "apply_hinge_pockets",
-           "apply_posterior_features", "bezel_cutter", "edge_feature_cutters", "splay_cutter"]
+           "apply_posterior_features", "bezel_cutter", "edge_feature_cutters", "scoop_cutter", "splay_cutter"]
 
 #: Sections lofted around an aperture ring for a bezel. The demo's lens rings
 #: are ~132 mm round, so this is one section per ~0.73 mm — past the point where
@@ -218,6 +218,13 @@ def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
     if splay.enabled:
         try:
             solid = cut(solid, splay_cutter(solid, partition.body, splay))
+        except BooleanError:
+            pass
+
+    scoop = castle.bridge_relief
+    if scoop.enabled:
+        try:
+            solid = cut(solid, scoop_cutter(solid, partition.body, scoop))
         except BooleanError:
             pass
 
@@ -472,4 +479,87 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     ts.Build()
     if not ts.IsDone():
         raise BooleanError("pad splay loft did not complete")
+    return ts.Shape()
+
+
+# ------------------------------------------------------------- bridge relief
+
+#: Sections lofted per millimetre along the bridge scoop's Y run.
+SCOOP_SECTIONS_PER_MM = 2.0
+
+#: Points sampled across one scoop section.
+SCOOP_SECTION_POINTS = 28
+
+
+def _scoop_section(y: float, half_w: float, depth: float, anchor: float,
+                   top: float, n: int = SCOOP_SECTION_POINTS):
+    """One cross-section of the conic scoop, in the plane of constant y.
+
+    A half-ellipse of half-width `half_w` and depth `depth`, closed upward.
+    That is the cone the raster was imitating: the raster substitutes a cosine
+    bell — `0.5 + 0.5 cos(pi x / r)` — which the report lists among the
+    compensating blurs, chosen because it is tangent to the surface at its edges
+    and so hides the facets a sampled cone showed. A real cone meets the surface
+    at an angle, and that meeting is an edge, which is the point.
+    """
+    xs = np.linspace(-half_w, half_w, n)
+    zs = anchor - depth * np.sqrt(
+        np.maximum(1.0 - (xs / max(half_w, 1e-9)) ** 2, 0.0))
+
+    mp = BRepBuilderAPI_MakePolygon()
+    for x, z in zip(xs, zs):
+        mp.Add(gp_Pnt(float(x), float(y), float(z)))
+    mp.Add(gp_Pnt(float(half_w), float(y), float(top)))
+    mp.Add(gp_Pnt(float(-half_w), float(y), float(top)))
+    mp.Close()
+    return mp.Wire()
+
+
+def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
+    """The bridge relief as a lofted elliptical cone running on Y.
+
+    Base (widest, deepest) at the top edge of the bridge on the centreline,
+    tapering at `taper_angle_deg` per side to a tip down the lower bridge. Depth
+    scales with the local half-width, so it is a true cone imprint feathering to
+    nothing — which is what the raster's own docstring claims it builds and what
+    its cosine bell approximates.
+    """
+    half_w = float(p.width_mm) / 2.0
+    depth = float(p.depth_mm)
+    if depth <= 0.0 or half_w <= 0.0:
+        raise BooleanError("degenerate bridge relief")
+    tan_b = math.tan(math.radians(min(max(float(p.taper_angle_deg), 1.0), 89.0)))
+
+    # The base is the highest point of the body on the centreline — the top
+    # edge of the bridge over the nose.
+    minx, miny, maxx, maxy = body.bounds
+    centre = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
+    if centre.is_empty:
+        raise BooleanError("no body on the centreline")
+    y_base = max(g.bounds[3] for g in getattr(centre, "geoms", [centre]))
+    y_tip = y_base - half_w / tan_b
+
+    n = max(8, int((y_base - y_tip) * SCOOP_SECTIONS_PER_MM))
+    ys = np.linspace(y_tip, y_base, n + 1)[1:]        # skip the exact apex
+    rs = np.clip((ys - y_tip) * tan_b, 0.0, half_w)
+    ds = depth * (rs / half_w)
+    keep = rs > MIN_TAPER_DROP_MM
+    ys, rs, ds = ys[keep], rs[keep], np.maximum(ds[keep], MIN_TAPER_DROP_MM)
+    if len(ys) < 2:
+        raise BooleanError("bridge relief too small to loft")
+
+    anchors = surface_z_at(solid, np.column_stack([np.zeros_like(ys), ys]))
+    floor = float(p.anterior_clamp_mm)
+    ds = np.minimum(ds, np.maximum(anchors - floor, 0.0))
+    ds = np.maximum(ds, MIN_TAPER_DROP_MM)
+    top = float(anchors.max()) + CUT_MARGIN_MM
+
+    sections = [_scoop_section(float(y), float(r), float(d), float(a), top)
+                for y, r, d, a in zip(ys, rs, ds, anchors)]
+    ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
+    for wire in sections:
+        ts.AddWire(wire)
+    ts.Build()
+    if not ts.IsDone():
+        raise BooleanError("bridge relief loft did not complete")
     return ts.Shape()

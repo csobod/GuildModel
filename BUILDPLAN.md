@@ -3968,7 +3968,20 @@ changed rms by 0.4 um and disproved that in one run. **Anchor at whatever the
 feature's own definition pins it to** — the splay at its crest, the bezel at its
 rim, and those are opposite ends of the band.
 
-**Still to come as bodies:** bridge relief, lens groove.
+**Bridge relief — the cone its own docstring claimed.** The raster's
+cross-section is a cosine bell, `0.5 + 0.5 cos(pi x / r)`, listed among the
+report's compensating blurs: it meets the surface tangentially and so hides the
+facets a sampled cone showed. Here it is a genuine elliptical cone lofted along
+Y, depth scaling with the local half-width so it feathers to nothing at the tip
+— which is what the raster docstring says it builds.
+
+**rms 29.9 um, 98.3% of cells within 5 um**, valid and watertight. The 763
+bridge cells that differ are almost all **negative**, and predictably so: at
+half the scoop radius an ellipse is at 0.866 of full depth where the bell is at
+0.500, so the cone cuts deeper across the middle of the band. The test asserts
+that direction, because a sign flip would mean the section was built inverted.
+
+**Still to come as a body:** the lens groove.
 
 **Performance is now the visible problem.** The bare castle builds in ~9 s; with
 the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move

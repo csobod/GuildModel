@@ -587,3 +587,66 @@ def test_pad_splay_is_anchored_at_the_crest(demo_partition, demo_hinges):
     # Edge-anchoring showed as a large POSITIVE bias: the solid systematically
     # kept material the raster removed. Crest-anchoring removes the bias.
     assert abs(d.mean()) < 0.01, "systematic depth bias — wrong anchor datum?"
+
+
+def test_bridge_relief_is_a_cone_not_a_bell(demo_partition, demo_hinges):
+    """The scoop as the cone its own docstring claims, not the cosine bell.
+
+    The raster's cross-section is `0.5 + 0.5 cos(pi x / r)` — on the report's
+    list of compensating blurs, chosen because it meets the surface tangentially
+    and so hides the facets a sampled cone showed. A real cone meets the surface
+    at an angle, and that meeting is an edge.
+
+    The two differ in a predictable direction: at half the scoop radius an
+    ellipse is at 0.866 of full depth where the bell is at 0.500, so the solid
+    cuts *deeper* across the middle of the band. The assertion is on that
+    direction, since a sign flip would mean the section was built inverted.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import (build_castle_solid, is_valid,
+                                       solid_to_relief, volume)
+    from guildmodel.core.solid.tessellate import tessellate
+
+    castle = CastleParams()
+    castle.bridge_relief.enabled = True
+
+    plain = build_castle_solid(demo_partition, CastleParams(), demo_hinges)
+    solid = build_castle_solid(demo_partition, castle, demo_hinges)
+
+    assert is_valid(solid)
+    assert volume(solid) < volume(plain), "the scoop must remove material"
+    assert tessellate(solid).to_trimesh().is_watertight
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+    m = raster.inside
+    diff = derived.field.z - raster.field.z            # full grid, not masked
+    assert (np.abs(diff[m]) <= 0.005).mean() > 0.97
+
+    # Inside the scoop the cone must sit below the bell.
+    names = [z.name for z in demo_partition.zones]
+    bridge = np.array([n == "bridge" for n in names])[raster.zone_index]
+    deep = m & bridge & (np.abs(diff) > 0.05)
+    assert deep.sum() > 100, "the scoop barely touched the bridge"
+    assert (diff[deep] < 0).mean() > 0.9, "cone should cut deeper than the bell"
+
+
+def test_scoop_respects_the_anterior_clamp(demo_partition):
+    """The cut may never come closer to the front face than the clamp."""
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM
+    from guildmodel.core.solid import build_castle_solid, solid_to_relief
+
+    castle = CastleParams()
+    castle.bridge_relief.enabled = True
+    castle.bridge_relief.depth_mm = 20.0          # absurd: must clamp, not punch through
+    castle.bridge_relief.anterior_clamp_mm = 1.5
+
+    solid = build_castle_solid(demo_partition, castle, [])
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+    inside = derived.inside
+    assert derived.field.z[inside].min() >= 1.5 - 0.05
