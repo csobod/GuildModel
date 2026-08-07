@@ -787,3 +787,54 @@ def test_terrace_collapse_is_caught_not_silent(demo_partition):
     assert BooleanError is not None
     solid = build_castle_solid(demo_partition, CastleParams(), [])
     assert volume(solid) > 1000.0
+
+
+# ------------------------------------------------- known gaps (session handover)
+
+@pytest.mark.xfail(strict=True, reason=(
+    "Anterior eyewire bezel is not implemented on the solid path. The raster "
+    "builds it via relief.edges.carve_anterior_bezel (a whole-ring EdgeFeature "
+    "on the front face); core.solid.features.apply_posterior_features only "
+    "handles bezel.cuts_posterior(). Measured: face='anterior' removes 0.00 mm^3 "
+    "and face='both' removes exactly what 'posterior' does. Delete this xfail "
+    "when the anterior branch lands."))
+def test_anterior_eyewire_bezel_cuts_the_front(demo_partition, demo_hinges):
+    """The anterior bezel must remove material from the front face.
+
+    Anterior *edge features* already work — they cut from the underside via
+    `surface_z_at(..., face='bottom')` — so the machinery exists; the bezel's
+    anterior branch simply was never ported.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, volume
+
+    plain = volume(build_castle_solid(demo_partition, CastleParams(), demo_hinges))
+
+    castle = CastleParams()
+    castle.eyewire_bezel.enabled = True
+    castle.eyewire_bezel.face = "anterior"
+    cut_vol = volume(build_castle_solid(demo_partition, castle, demo_hinges))
+
+    assert cut_vol < plain - 1.0, "anterior bezel removed nothing"
+
+
+def test_anterior_edge_features_do_cut_the_front(demo_partition, demo_hinges):
+    """The counterpart that DOES work — pinned so the gap above stays specific.
+
+    In a solid the anterior face is just the underside of the same body, so an
+    anterior run needs no second heightfield and no `thickness()` invariant.
+    That is M17's scaffolding gone, and it is why the bezel gap is a porting
+    oversight rather than a missing capability.
+    """
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+    from guildmodel.core.solid import build_castle_solid, volume
+
+    plain = volume(build_castle_solid(demo_partition, CastleParams(), demo_hinges))
+
+    castle = CastleParams()
+    castle.edge_features = [EdgeFeature(
+        id="brow-front", face="anterior", edge="outline",
+        zones=["eyewire_superior_od"], width_mm=2.0, angle_deg=45.0, mirror=True)]
+    cut_vol = volume(build_castle_solid(demo_partition, castle, demo_hinges))
+
+    assert cut_vol < plain - 1.0

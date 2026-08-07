@@ -146,6 +146,17 @@ If you're launching from a `.desktop` file, set it there:
 Exec=env QT_QPA_PLATFORM=xcb /path/to/.venv/bin/guildmodel
 ```
 
+**On a HiDPI screen, add a font DPI too.** XWayland reports 96 DPI regardless of
+the panel, and Qt has no compositor to ask for a fractional scale, so text comes
+out small — on a 141 DPI laptop panel it renders at about 68% of intended size.
+Check yours with `xrdb -query | grep dpi` (96 means it is unset) and compute
+`horizontal pixels / (width in mm / 25.4)`:
+
+```
+QT_QPA_PLATFORM=xcb QT_FONT_DPI=141 guildmodel        # text only
+QT_QPA_PLATFORM=xcb QT_SCALE_FACTOR=1.47 guildmodel   # scale the whole UI
+```
+
 ## Running tests
 
 ```

@@ -4025,6 +4025,115 @@ the cheapest place to catch the whole class.
 the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move
 from "nice" to "required", and this is that point arriving.
 
+## Stage 2 — SESSION HANDOVER, on-screen review *(2026-08-07)*
+
+**Read this first when resuming.** Stage 2's modelling work is done and green
+(suite 709 + 1 xfail). What follows is the first on-screen review of it, with
+four findings — two are integration defects of mine, one is a genuine
+performance wall, one is environmental.
+
+### 1. Build time is the wall — measured, per feature
+
+Demo frame, solid path, each feature alone on top of the bare castle:
+
+| Build | Time |
+| --- | --- |
+| RASTER, preview 0.3 mm (for scale) | **0.4 s** |
+| bare castle + hinge pockets | 10.6 s |
+| + bridge relief | 11.7 s |
+| + pad splay | 17.4 s |
+| + lens groove | 20.3 s |
+| + brow chamfer (mirrored pair) | 23.4 s |
+| + eyewire bezel (posterior) | **36.4 s** |
+| **ALL FEATURES ON** | **81.6 s** |
+
+The solid is ~200x the raster preview, and **the eyewire bezel alone costs
++25.8 s** — 180 lofted sections per ring, two rings, then a boolean against a
+progressively heavier solid. Report §5.5 predicted incremental rebuild would go
+from "nice" to "required"; at 81.6 s it is required.
+
+Where to look first, in order of expected return:
+
+1. **Cache the unfilleted castle** and re-apply only the feature that changed.
+   Terraces + footings are ~10.6 s of every rebuild and change only when zone
+   heights or the footing schedule do.
+2. **The bezel's section count.** 180 was chosen for fidelity after the volume
+   stopped moving (60 -> 120 -> 240 gave 3179.5 / 3188.0 / 3189.9 mm³). 120 is
+   within 2 mm³ of 240 and should roughly halve the loft cost — measure it.
+3. **Fuse all feature cutters once, cut once.** Each feature currently does its
+   own boolean against the whole solid; the cost grows with what came before.
+4. **Debounce the params panel** so a slider drag does not queue rebuilds.
+
+**The test suite has the same disease** — 6 min -> **12 min**, because several
+Stage 2 tests build their own solid instead of sharing the module fixture. Fold
+that into the same work; it is the fastest feedback win available.
+
+### 2. The display-mode dropdown was dead — my integration gap
+
+**Cause: two build paths, only one of them wired for solids.** The toolbar's
+**Build 3D** goes `_on_build_3d` -> `_build_all` -> **`MultiMeshWorker`**, which
+was never given a solid branch and always returns raster meshes with
+`edges=None`. The solid path lives only in `MeshWorker`, reached by
+`_start_mesh_build` — stage changes and param-change rebuilds.
+
+So pressing Build 3D produced a raster model, the viewer correctly saw no edges,
+disabled the combo and pinned it to "Shaded" — and clicking it did nothing,
+exactly as reported. Meanwhile *changing a parameter* triggered a solid rebuild,
+which is why builds felt fast until features started stacking.
+
+**Fix:** give `MultiMeshWorker` the same `solid=` branch and edge emission as
+`MeshWorker`, or route both through one builder. The second is better — the
+split is what caused this.
+
+### 3. Anterior eyewire bezel does nothing on the solid path
+
+Confirmed by volume: `face="anterior"` removes **0.00 mm³**, and `face="both"`
+removes **exactly** what `"posterior"` does (474.40 mm³ either way).
+
+`core.solid.features.apply_posterior_features` only handles
+`bezel.cuts_posterior()`. The raster implements the anterior side separately, in
+`relief.edges.carve_anterior_bezel`, as a whole-ring `EdgeFeature` on the front
+face — and that was never ported.
+
+**It is a porting oversight, not a missing capability.** Anterior *edge
+features* already work (184.71 mm³ removed), cutting from the underside via
+`surface_z_at(..., face="bottom")`. The bezel should be built the same way the
+raster builds it: as a whole-ring anterior `EdgeFeature`, reusing
+`edge_feature_cutters`. **`tests/test_solid_stage2.py` carries an
+`xfail(strict=True)` that flips to passing the moment it works.**
+
+### 4. Small text is XWayland, not the app
+
+`Xft.dpi` is **96**; the panel is **141 DPI** (1920x1200 over 345 mm). Under the
+XWayland workaround Qt gets 96 and renders text at **68%** of intended size.
+Native Wayland would carry the compositor's fractional scale, but VTK forces the
+`xcb` workaround (README "Linux: Wayland crashes Build 3D Model").
+
+Launch with one of:
+
+```
+QT_QPA_PLATFORM=xcb QT_FONT_DPI=141   guildmodel     # text only
+QT_QPA_PLATFORM=xcb QT_SCALE_FACTOR=1.47 guildmodel  # whole UI
+```
+
+Documented in the README beside the existing XWayland note. Worth re-testing the
+dropdown under correct scaling too — a combo that does open can still look
+inert if its popup renders off-scale.
+
+### Resuming: suggested order
+
+1. **Unify the two mesh workers** (finding 2) — small, and it unblocks any
+   further on-screen review of the solid path.
+2. **Incremental rebuild + share the test fixtures** (finding 1) — the wall.
+3. **Anterior bezel** (finding 3) — delete the xfail.
+4. Then the rest of Stage 2's exit criteria: posted G-code equivalence on the
+   demo frame, and `BRepCheck_Analyzer` in the readiness dot.
+
+Still open from earlier, unchanged: PyInstaller packaging on Windows/macOS
+(report §9.5), determinism across OCC versions (§5.4), the `flat.py` duck-type
+(§5.3), and refitting smooth edge chains to splines at extraction time for
+Stage 4's curve-driven CAM.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)
