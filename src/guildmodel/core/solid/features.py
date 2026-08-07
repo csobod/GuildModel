@@ -48,7 +48,8 @@ from .occ import (
     surface_z_at,
 )
 
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakePolygon,
+                                BRepBuilderAPI_TransitionMode)
 from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
@@ -886,12 +887,92 @@ def _groove_section(p_xy, outward, apex_z: float, depth: float, half_w: float):
 _GROOVE_LEAD_MM = 0.3
 
 
-def groove_cutter(body: Polygon, ring, p, stations: int = GROOVE_STATIONS
-                  ) -> TopoDS_Shape:
-    """The swept V groove for one aperture lip ring."""
+def _swept_groove_cutter(body: Polygon, ring, curve, p) -> TopoDS_Shape:
+    """The V groove swept along the aperture's authored curve — 3 faces, not 540.
+
+    The loft below approximates the ring with 180 straight-sided patches; this
+    rides the curve itself, so it is both exact and vastly cheaper. On the demo
+    frame: **540 faces to 3, and the boolean that applies it 4.9 s to 0.5 s.**
+
+    **The spine is the original lens curve, not the lip.** Two reasons, and the
+    first is not negotiable: `BRepOffsetAPI_MakePipeShell` refuses a
+    `Geom_OffsetCurve` spine outright (`Standard_ConstructionError`). The second
+    is that it does not matter — a pipe shell keeps the profile perpendicular to
+    the spine, so a profile point `depth` inboard traces exactly the inward
+    offset. Sweeping the lip's profile along the contour *is* sweeping it along
+    the lip.
+
+    **The placement is read, not derived.** The profile has to sit in the frame
+    the sweep starts from, so it is built at the lip point nearest the spine's
+    start, with "outward" the direction from there back to the start. Deriving
+    that from the offset's sign instead needs OCCT's `Geom_OffsetCurve`
+    convention to be exactly what you think it is, and it is not: the lip is
+    `basis - d * (Z x T)`, not plus. Measuring costs one projection and cannot
+    go stale. `_inward` is no help here either — it probes the body, and once
+    the aperture has been shrunk the contour lies *inside* the material, so
+    every probe lands in solid and the vote is meaningless.
+    """
+    basis = getattr(curve, "basis", None)
+    if basis is None:
+        raise BooleanError("aperture has no authored curve to sweep along")
+    from shapely.ops import nearest_points
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.gp import gp_Dir
+
+    depth, half_w = float(p.depth_mm), float(p.width_mm) / 2.0
+    spine_edge = nurbs_edge(basis, 0.0)
+    adaptor = BRepAdaptor_Curve(spine_edge)
+    start = adaptor.Value(adaptor.FirstParameter())
+    head = np.array([start.X(), start.Y()])
+
+    lip_pt = nearest_points(LineString(ring), Point(*head))[0]
+    outward = head - np.array([lip_pt.x, lip_pt.y])
+    reach = float(np.linalg.norm(outward))
+    if abs(reach - depth) > 1e-6:
+        # The lip is not this curve offset by the groove depth after all, so the
+        # apex would not land on the contour. Refuse rather than cut it wrong.
+        raise BooleanError(
+            f"lip sits {reach:.4f} mm from the contour, expected {depth:.4f}")
+
+    profile = _groove_section(np.array([lip_pt.x, lip_pt.y]), outward / reach,
+                              float(p.anterior_offset_mm), depth, half_w)
+
+    ps = BRepOffsetAPI_MakePipeShell(BRepBuilderAPI_MakeWire(spine_edge).Wire())
+    # Fixed binormal, not Frenet: the V must stay upright rather than roll with
+    # the ring's curvature — the same reason `build._sweep` does this.
+    ps.SetMode(gp_Dir(0.0, 0.0, 1.0))
+    ps.SetTransitionMode(
+        BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RightCorner)
+    ps.Add(profile, False, False)
+    ps.Build()
+    if not ps.IsDone():
+        raise BooleanError("lens groove sweep did not complete")
+    if not ps.MakeSolid():
+        raise BooleanError("lens groove sweep did not close into a solid")
+    return ps.Shape()
+
+
+def groove_cutter(body: Polygon, ring, p, stations: int = GROOVE_STATIONS,
+                  curve=None) -> TopoDS_Shape:
+    """The swept V groove for one aperture lip ring.
+
+    Swept along the authored curve where the drawing supplied one
+    (`_swept_groove_cutter`), and lofted over `stations` sections otherwise.
+    The loft is the older path and stays as the fallback: a drawing made of
+    polylines has no curve to ride, and neither does an aperture whose exact
+    offset was refused (see `_offset_aperture`).
+    """
     depth, half_w = float(p.depth_mm), float(p.width_mm) / 2.0
     if depth <= 0.0 or half_w <= 0.0:
         raise BooleanError("degenerate lens groove")
+
+    if curve is not None:
+        try:
+            return _swept_groove_cutter(body, ring, curve, p)
+        except Exception:                                    # noqa: BLE001
+            pass                         # OCCT raises its own types; loft it
 
     pts, tans = _ring_stations(LineString(ring), stations)
     outward = _inward(body, pts, tans)      # from the aperture into the wall
@@ -945,7 +1026,8 @@ def groove_cutters(partition: CastlePartition,
         if partition.is_hole(interior):
             continue
         try:
-            cutters.append(groove_cutter(lip, interior, groove))
+            cutters.append(groove_cutter(lip, interior, groove,
+                                         curve=partition.ring_curve(interior)))
         except BooleanError:
             continue
     return cutters

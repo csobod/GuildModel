@@ -574,3 +574,140 @@ def test_the_grooved_curved_castle_is_still_watertight(partition_with_curves, im
     solid = build_castle_solid(partition_with_curves, castle, hinges)
     assert is_valid(solid)
     assert tessellate(solid).to_trimesh().is_watertight
+
+
+# ------------------------------------------------------- swept, not lofted
+
+def _ray_crossings(solid, x, y):
+    """Z values where a vertical ray enters or leaves the solid."""
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+
+    it = BRepIntCurveSurface_Inter()
+    it.Init(solid, gp_Lin(gp_Pnt(float(x), float(y), -1e4),
+                          gp_Dir(0.0, 0.0, 1.0)), 1e-7)
+    zs = []
+    while it.More():
+        zs.append(it.Pnt().Z())
+        it.Next()
+    return sorted(zs)
+
+
+@pytest.fixture(scope="module")
+def grooved(partition_with_curves):
+    """The lip partition and its two groove cutters, built both ways."""
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.features import groove_cutter, lip_partition
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    g = castle.lens_groove
+    lip = lip_partition(partition_with_curves, g.depth_mm)
+    rings = [r for r in lip.body.interiors if not lip.is_hole(r)]
+    lofted = [groove_cutter(lip.body, r, g) for r in rings]
+    swept = [groove_cutter(lip.body, r, g, curve=lip.ring_curve(r)) for r in rings]
+    return lip, g, lofted, swept
+
+
+def test_the_swept_groove_is_three_faces_not_five_hundred(grooved):
+    """A loft over 180 stations spends 540 faces describing one V running round
+    one ring. Riding the curve, it is three."""
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from guildmodel.core.solid.occ import explore
+
+    _lip, _g, lofted, swept = grooved
+    faces = lambda s: sum(1 for _ in explore(s, TopAbs_ShapeEnum.TopAbs_FACE))
+    assert all(faces(c) == 540 for c in lofted)
+    assert all(faces(c) == 3 for c in swept)
+
+
+def test_the_swept_groove_is_the_same_v_as_the_lofted_one(grooved):
+    """Equivalence, and in the right direction: the sweep must be a whisker
+    *larger*, because the loft is a polygon inscribed in the ring.
+
+    This is the assertion that would have caught the first attempt, which put the
+    profile on the wrong side and was 7% out — the placement is read off the lip
+    ring rather than derived from OCCT's offset-sign convention precisely
+    because that convention turned out to be the opposite of the documented one.
+    """
+    from guildmodel.core.solid.occ import mesh_volume
+
+    _lip, _g, lofted, swept = grooved
+    for a, b in zip(lofted, swept):
+        va, vb = mesh_volume(a), mesh_volume(b)
+        assert vb > va, "the exact sweep cannot be smaller than the inscribed loft"
+        assert vb == pytest.approx(va, rel=0.005)
+
+
+def test_the_swept_groove_still_matches_the_cutter_spec(partition_with_curves):
+    """The same 5 um gate `test_lens_groove_v_matches_the_cutter_spec` holds the
+    lofted V to, applied to the swept one on a curved frame — half-width falling
+    linearly from `width_mm / 2` at the lip to zero at `depth_mm`, centred on the
+    apex height. That fixture builds from `import_dxf` and so exercises the
+    fallback; nothing pinned the sweep until this.
+    """
+    from shapely.geometry import LineString
+
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, clear_base_cache
+    from guildmodel.core.solid import features as FT
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    g = castle.lens_groove
+    clear_base_cache()
+    solid = build_castle_solid(partition_with_curves, castle, [])
+
+    lip = FT.lip_partition(partition_with_curves, g.depth_mm)
+    ring = next(r for r in lip.body.interiors if not lip.is_hole(r))
+    pts, tans = FT._ring_stations(LineString(ring), 8)
+    inward = FT._inward(lip.body, pts, tans)
+
+    for u in (0.02, 0.25, 0.55):
+        z = _ray_crossings(solid, *(pts[0] + inward[0] * u))
+        assert len(z) >= 4, f"no undercut at u={u}"
+        half_w = (z[2] - z[1]) / 2.0
+        assert half_w == pytest.approx((g.width_mm / 2.0) * (1.0 - u / g.depth_mm),
+                                       abs=0.005)
+        assert (z[1] + z[2]) / 2.0 == pytest.approx(g.anterior_offset_mm, abs=0.01)
+
+
+def test_the_swept_groove_undercuts_all_the_way_round(partition_with_curves):
+    """Ray crossings at 40 stations: four surfaces inside the V, two past the
+    apex. A sweep that drifts off the ring would lose the undercut somewhere."""
+    from shapely.geometry import LineString
+
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, clear_base_cache
+    from guildmodel.core.solid import features as FT
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    g = castle.lens_groove
+    clear_base_cache()
+    solid = build_castle_solid(partition_with_curves, castle, [])
+
+    lip = FT.lip_partition(partition_with_curves, g.depth_mm)
+    ring = next(r for r in lip.body.interiors if not lip.is_hole(r))
+    pts, tans = FT._ring_stations(LineString(ring), 40)
+    inward = FT._inward(lip.body, pts, tans)
+
+    deep = sum(1 for k in range(len(pts))
+               if len(_ray_crossings(solid, *(pts[k] + inward[k] * 0.35))) >= 4)
+    assert deep == len(pts), f"undercut missing at {len(pts) - deep} stations"
+    assert len(_ray_crossings(solid, *(pts[0] + inward[0] * (g.depth_mm + 0.15)))) == 2
+
+
+def test_a_curveless_aperture_still_gets_its_groove(partition_with_curves):
+    """Opt-in by data, here as everywhere: with no authored curve the loft is
+    still what runs, and it still produces a V."""
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.features import groove_cutter, lip_partition
+    from guildmodel.core.solid.occ import explore
+
+    g = CastleParams().lens_groove
+    lip = lip_partition(partition_with_curves, g.depth_mm)
+    ring = next(r for r in lip.body.interiors if not lip.is_hole(r))
+    cutter = groove_cutter(lip.body, ring, g, curve=None)
+    assert sum(1 for _ in explore(cutter, TopAbs_ShapeEnum.TopAbs_FACE)) == 540
