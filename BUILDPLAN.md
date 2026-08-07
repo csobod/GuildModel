@@ -3871,6 +3871,59 @@ anticipated: "where they disagree, the B-Rep is presumed right and the
 difference must be explained." The test asserts the divergence is directional —
 the solid may only ever keep material the raster wrongly removed.
 
+### Features as boolean bodies — `core/solid/features.py` *(2026-08-06)*
+
+**Hinge pockets: exact.** Extrude the polygon from `endpiece_mm -
+hinge_pocket_depth_mm`, subtract. Whole-frame agreement is unchanged by adding
+them (rms 3.64 um either way) and the solid's volume lands at 7825.25 mm³
+against the raster mesh's 7825.00. `build_castle_solid(..., return_surface=True)`
+also hands back the pre-pocket solid — the M8 `surface_field`.
+
+**Eyewire bezel: a real chamfer, and this changes what the feature means.**
+Worth stating plainly because it changes shipped geometry.
+
+* The raster carves `pre(cell) - (width - d) * tan(angle)` — the surface pushed
+  down by an amount falling off with distance from the rim. That is a **variable
+  offset of whatever lies beneath**, not a chamfer. It has no flat face and no
+  edge, and is only chamfer-shaped where the surface under it is already flat.
+* The solid cuts a **ruled plane** rising inward at `angle` from
+  `rim_z - width * tan(angle)`, anchored per station by an exact vertical ray
+  fired 0.05 mm inside the rim.
+
+On a flat terrace the two are identical. Measured on the demo frame: **83.6% of
+in-body cells within 5 um, 94.7% within 50 um, rms 44 um, worst 0.70 mm.** The
+divergence is concentrated in **nosepad and bridge**, where footing blends sweep
+through the band — a plane cannot follow a swell and a variable offset must.
+That is the feature behaving like the Fusion chamfer it is named after, and it
+is what gives it an edge to be crisp at. **Flagged for the maker's judgement**
+rather than settled unilaterally: the alternative is anchoring at the band's
+inner edge, which tracks the raster more closely (rms 44 um -> and 85% within
+5 um) but lets the *rim depth* drift by the surface slope times the band width,
+up to 0.7 mm, breaking the band's one advertised promise.
+
+**Three kernel findings from building it:**
+
+* **`MakePipeShell` has a profile-count ceiling on a closed spine.** 40 and 60
+  profiles build; 80, 100, 120 and 160 all throw
+  `BRepAdaptor_Curve::No geometry`. `BRepOffsetAPI_ThruSections` takes 60, 120
+  and 240 without complaint and its volume converges, so the bezel is **lofted,
+  not swept**, and the station count can be chosen for fidelity rather than to
+  appease the kernel.
+* **A closed ring needs a periodic spine.** An open fit through stations that
+  wrap around a ring fails the same way — the first and last are neighbours and
+  the fitter has no room. `occ.closed_spline_wire` interpolates periodically.
+* **`occ.edge_points` was returning None for every edge**, via an inverted
+  `hasattr(edge, "Orientation")` guard — every `TopoDS_Shape` has `Orientation`,
+  so it never down-cast and `BRepAdaptor_Curve` rejected the shape. Latent;
+  nothing shipped depended on it.
+
+**Still to come as bodies:** pad splay, brow chamfer (`EdgeFeature`), bridge
+relief, lens groove.
+
+**Performance is now the visible problem.** The bare castle builds in ~9 s; with
+the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move
+from "nice" to "required", and this is that point arriving.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

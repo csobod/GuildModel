@@ -316,3 +316,140 @@ def test_zmap_feeds_the_cam_unchanged(solid_relief):
     # Outside the body must read as the anterior datum, not as -inf or NaN.
     assert np.all(np.isfinite(solid_relief.field.z))
     assert np.all(solid_relief.field.z[~solid_relief.inside] == 0.0)
+
+
+# ------------------------------------------------------------------ features
+
+@pytest.fixture(scope="module")
+def demo_hinges():
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+
+    raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
+    return [points_to_polygon(c) for c in raw["HINGE"]]
+
+
+def test_hinge_pockets_match_the_raster(demo_partition, demo_hinges):
+    """Pockets are a straight extrude-and-subtract, so they should be exact.
+
+    The whole-frame agreement must not move at all when pockets are added:
+    a pocket is a vertical-walled cut with an analytic floor, and both paths
+    compute the same floor from the same numbers.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import build_castle_solid, solid_to_relief
+
+    castle = CastleParams()
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    solid = build_castle_solid(demo_partition, castle, demo_hinges)
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+
+    m = raster.inside
+    d = (derived.field.z - raster.field.z)[m]
+    assert (np.abs(d) <= 0.005).mean() > 0.99
+    assert np.sqrt((d ** 2).mean()) < 0.02
+
+    # The floor is endpiece height less the pocket depth, and it is really cut.
+    # Sampled *inside* a hinge polygon: the part's global minimum is the
+    # eyewire_inferior terrace at 4.2 mm, which is below the 4.5 mm pocket floor
+    # and says nothing about whether the pocket was cut.
+    from shapely import contains_xy
+
+    floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
+    rows, cols = derived.field.z.shape
+    ox, oy = derived.field.origin
+    res = derived.field.resolution
+    xs = ox + np.arange(cols) * res
+    ys = oy + np.arange(rows) * res
+    gx, gy = np.meshgrid(xs, ys)
+
+    for poly in demo_hinges:
+        inpocket = contains_xy(poly, gx.ravel(), gy.ravel()).reshape(rows, cols) & m
+        assert inpocket.any(), "hinge polygon fell outside the body"
+        assert derived.field.z[inpocket].max() == pytest.approx(floor, abs=0.02)
+
+
+def test_hinge_pockets_leave_the_surface_solid_alone(demo_partition, demo_hinges):
+    """`return_surface` hands back the solid *before* the pockets — the M8
+    `surface_field`, which the relief passes ride so they sail over pockets the
+    Hinge Pockets op has already cut."""
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, volume
+
+    castle = CastleParams()
+    solid, surface = build_castle_solid(demo_partition, castle, demo_hinges,
+                                        return_surface=True)
+    assert volume(surface) > volume(solid), "pockets must remove material"
+
+
+def test_bezel_is_a_real_chamfer_not_an_offset(demo_partition, demo_hinges):
+    """The bezel cuts, stays valid, and agrees with the raster on flat ground.
+
+    Where it does *not* agree is the point of the rewrite, so the bounds are
+    deliberately asymmetric: tight on the fraction of cells that must match,
+    loose on the worst case. The raster's version is a variable offset of
+    whatever lies beneath; this is a ruled plane. They are identical on a flat
+    terrace and diverge across footing swells — chiefly nosepad and bridge.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import (build_castle_solid, is_valid,
+                                       solid_to_relief, volume)
+
+    castle = CastleParams()
+    castle.eyewire_bezel.enabled = True
+    plain = build_castle_solid(demo_partition, castle.model_copy(
+        update={"eyewire_bezel": CastleParams().eyewire_bezel}), demo_hinges)
+    solid = build_castle_solid(demo_partition, castle, demo_hinges)
+
+    assert is_valid(solid)
+    assert volume(solid) < volume(plain), "the bezel must remove material"
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+    m = raster.inside
+    d = (derived.field.z - raster.field.z)[m]
+    assert (np.abs(d) <= 0.005).mean() > 0.80
+    assert (np.abs(d) <= 0.05).mean() > 0.92
+
+
+def test_bezel_rim_depth_is_the_advertised_drop(demo_partition):
+    """`width * tan(angle)` below the surface at the rim, all the way round.
+
+    This is the property the rim anchoring exists to guarantee, and the one an
+    inner-edge anchor loses: it drifts by the surface slope times the band
+    width, which on this frame was worth 0.7 mm.
+    """
+    import math
+
+    from shapely.geometry import LineString
+
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid
+    from guildmodel.core.solid import features as FT
+    from guildmodel.core.solid.occ import surface_z_at
+
+    castle = CastleParams()
+    castle.eyewire_bezel.enabled = True
+    p = castle.eyewire_bezel
+    plain = build_castle_solid(demo_partition, CastleParams(), [])
+    cut_solid = build_castle_solid(demo_partition, castle, [])
+
+    ring = list(demo_partition.body.interiors)[0]
+    pts, tans = FT._ring_stations(LineString(ring), 48)
+    inward = FT._inward(demo_partition.body, pts, tans)
+    probe = pts + inward * 0.10           # just inside the rim
+
+    before = surface_z_at(plain, probe)
+    after = surface_z_at(cut_solid, probe)
+    expected = p.width_mm * math.tan(math.radians(p.angle_deg))
+
+    # Allow for the 0.10 mm probe offset riding up the chamfer, and clamping.
+    drop = before - after
+    ok = np.abs(drop - expected) < 0.15
+    assert ok.mean() > 0.85, f"rim depth held at only {100 * ok.mean():.0f}% of stations"

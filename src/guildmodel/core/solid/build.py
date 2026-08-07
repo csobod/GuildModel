@@ -269,12 +269,23 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
 # --------------------------------------------------------------------- build
 
 def build_castle_solid(partition: CastlePartition, castle: CastleParams,
+                       hinges: list | None = None,
                        heights: dict[str, float] | None = None,
-                       progress: Optional[ProgressFn] = None) -> TopoDS_Shape:
-    """Terraces plus footing blends, as a valid solid.
+                       progress: Optional[ProgressFn] = None,
+                       return_surface: bool = False):
+    """Terraces, footing blends, posterior features and hinge pockets.
 
-    Features (bezel, splay, brow chamfer, groove, hinge pockets) are not applied
-    here yet — they arrive as further boolean sweeps on top of this.
+    Order mirrors the raster exactly: terraces -> footings -> posterior finishing
+    features -> hinge pockets. It has to, because the bezel anchors to the
+    surface underneath it and the pockets cut below everything.
+
+    `return_surface=True` also returns the solid **before** the pockets are cut.
+    That is the M8 `surface_field`: the relief passes follow it so they sail over
+    pockets the Hinge Pockets op has already cut, instead of diving to the floor
+    a second time.
+
+    Still to come as sweeps: pad splay, brow chamfer (`EdgeFeature`), bridge
+    relief, lens groove.
     """
     h = zone_heights(partition, castle, heights)
     top = max(h.values()) + SWEEP_MARGIN_MM
@@ -312,7 +323,15 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     if carves:
         solid = cut(solid, fuse_all(carves))
 
+    _report(progress, "Finishing features", 0.85)
+    from .features import apply_hinge_pockets, apply_posterior_features
+    solid = apply_posterior_features(solid, partition, castle, top)
+
+    surface = solid                       # before the pockets (M8 surface_field)
+    _report(progress, "Hinge pockets", 0.92)
+    solid = apply_hinge_pockets(solid, hinges or [], castle, top)
+
     _report(progress, "Solid ready", 1.0)
     if not is_valid(solid):
         raise BooleanError("castle solid failed BRepCheck_Analyzer")
-    return solid
+    return (solid, surface) if return_surface else solid

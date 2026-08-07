@@ -84,6 +84,37 @@ def is_valid(shape: TopoDS_Shape) -> bool:
     return BRepCheck_Analyzer(shape).IsValid()
 
 
+def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
+                 tol: float = 1e-7) -> np.ndarray:
+    """Exact top-surface height above each (x, y), by vertical ray.
+
+    Used to anchor features that must ride the surface they are cut into — the
+    eyewire bezel keeps a constant width and rim depth all the way round, which
+    means following the footing swells rather than sitting at a fixed Z.
+
+    Exact against the B-Rep rather than sampled off a mesh: there are only a few
+    hundred of these per ring, so the cost is irrelevant and the anchor is the
+    one thing in the feature that must not carry a sampling error.
+    """
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+    from OCP.gp import gp_Dir, gp_Lin
+
+    inter = BRepIntCurveSurface_Inter()
+    up = gp_Dir(0.0, 0.0, 1.0)
+    out = np.full(len(pts_xy), float(missing), dtype=float)
+    for i, (x, y) in enumerate(pts_xy):
+        inter.Init(shape, gp_Lin(gp_Pnt(float(x), float(y), -1e4), up), float(tol))
+        best = None
+        while inter.More():
+            z = inter.Pnt().Z()
+            if best is None or z > best:
+                best = z
+            inter.Next()
+        if best is not None:
+            out[i] = best
+    return out
+
+
 def volume(shape: TopoDS_Shape) -> float:
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, props)
@@ -105,8 +136,12 @@ def edge_points(edge, n: int = 5) -> list[gp_Pnt] | None:
     regardless.
     """
     try:
-        ad = BRepAdaptor_Curve(TopoDS.Edge_s(edge) if not hasattr(edge, "Orientation")
-                               else edge)
+        # Always down-cast: `explore` yields TopoDS_Shape, and BRepAdaptor_Curve
+        # given a Shape raises "No geometry" rather than accepting it. The
+        # earlier `hasattr(edge, "Orientation")` guard was inverted nonsense —
+        # every TopoDS_Shape has Orientation — so this returned None for
+        # literally every edge.
+        ad = BRepAdaptor_Curve(TopoDS.Edge_s(edge))
         u0, u1 = ad.FirstParameter(), ad.LastParameter()
         if not (np.isfinite(u0) and np.isfinite(u1)):
             return None
@@ -301,6 +336,26 @@ def polyline_wire(pts_xy: np.ndarray, z: float):
     for x, y in pts_xy:
         mp.Add(gp_Pnt(float(x), float(y), float(z)))
     return mp.Wire()
+
+
+def closed_spline_wire(pts_xy: np.ndarray, z: float):
+    """A closed periodic B-spline through the points, as a one-edge wire.
+
+    For sweeping around an aperture ring. An *open* fit through the same points
+    fails here: the first and last stations are neighbours on the ring, so the
+    approximating fit has no room to resolve them and `MakePipeShell` comes back
+    with `BRepAdaptor_Curve::No geometry`. Periodic interpolation closes the
+    spine properly and leaves no seam for the sweep to trip on.
+    """
+    arr = TColgp_HArray1OfPnt(1, len(pts_xy))
+    for i, (x, y) in enumerate(pts_xy, start=1):
+        arr.SetValue(i, gp_Pnt(float(x), float(y), float(z)))
+    it = GeomAPI_Interpolate(arr, True, 1e-7)
+    it.Perform()
+    if not it.IsDone():
+        raise BooleanError("closed spine interpolation failed")
+    return BRepBuilderAPI_MakeWire(
+        BRepBuilderAPI_MakeEdge(it.Curve()).Edge()).Wire()
 
 
 def spline_wire(pts_xy: np.ndarray, z: float):
