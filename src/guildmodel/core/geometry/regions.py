@@ -91,6 +91,37 @@ class ZoneEdge:
     zone_names: tuple[str, ...]   # adjacent zone names (normally 2)
 
 
+#: Rounding for `_ring_key`, decimal places on a millimetre. Well below any
+#: machining tolerance, and coarse enough to absorb float noise from GEOS.
+_RING_KEY_DP = 6
+
+
+def _ring_key(coords) -> tuple:
+    """A hashable identity for a ring: vertex count plus bounding box.
+
+    **Deliberately invariant to where the ring starts and which way it winds.**
+    The first attempt keyed on the start point and two points around the ring,
+    and it failed on two of three rings: `outline.difference(lenses)` hands back
+    geometry whose coordinates are the same set but rotated to a different start
+    vertex, and sometimes reversed. Count and extent survive that; a start point
+    does not.
+
+    It is also correctly *fragile* in the one way that matters. If Shapely
+    genuinely modifies a ring — nodes it against an intersecting cut, inserts a
+    vertex — the count changes, the key misses, and the caller falls back to the
+    polyline. That is the right answer, because a modified ring is no longer the
+    curve the drawing authored.
+    """
+    n = len(coords)
+    if n > 1 and tuple(coords[0][:2]) == tuple(coords[-1][:2]):
+        n -= 1                            # closed or not must not change the key
+    xs = [float(p[0]) for p in coords]
+    ys = [float(p[1]) for p in coords]
+    return (n,
+            round(min(xs), _RING_KEY_DP), round(min(ys), _RING_KEY_DP),
+            round(max(xs), _RING_KEY_DP), round(max(ys), _RING_KEY_DP))
+
+
 @dataclass
 class CastlePartition:
     body: Polygon                 # OUTLINE minus LENS holes (posterior coords)
@@ -101,6 +132,31 @@ class CastlePartition:
     # tell them apart from the LENS apertures that share `body.interiors`: holes
     # get cut, but never grooved, and never seed a work-holding keep-out.
     holes: list[Polygon] = field(default_factory=list)
+    # The exact curves the drawing was made of, where the source had them
+    # (`core.geometry.curves`). Optional and purely additive: everything here
+    # works unchanged without them, and the B-Rep path uses them to build one
+    # exact edge per ring instead of one straight edge per flattened point.
+    # Keyed by ring so a caller can ask about a specific boundary — Shapely
+    # rings are not hashable, so `ring_curve` matches on the ring's coordinates.
+    source_curves: dict = field(default_factory=dict, repr=False)
+
+    def ring_curve(self, ring):
+        """The authored `NurbsCurve` for `ring`, or None.
+
+        Matched on the ring's start point and length rather than by identity:
+        `partition_zones` runs the rings through Shapely booleans, so the object
+        that comes out is never the one that went in, but an *uncut* ring — the
+        body exterior and the lens apertures — still has the same coordinates.
+        A ring that Shapely genuinely modified will not match, which is the
+        correct answer: its curve is no longer the authored one.
+        """
+        try:
+            coords = list(ring.coords)
+        except AttributeError:
+            coords = list(ring)
+        if not coords:
+            return None
+        return self.source_curves.get(_ring_key(coords))
 
     @property
     def classified(self) -> bool:
@@ -271,6 +327,7 @@ def partition_zones(
     lenses: list[Polygon],
     sculpt_cuts: list[list[tuple[float, float]]],
     extend_mm: float = _CUT_EXTEND_MM,
+    source_curves: dict | None = None,
 ) -> CastlePartition:
     """Partition the frame body into castle zones along the SCULPT cuts.
 
@@ -278,6 +335,10 @@ def partition_zones(
     sculpt_cuts: raw open SCULPT polylines (point lists, >= 2 points each)
     straight from import_dxf — they are open curves, so they never survive
     normalize() and must be passed as points.
+
+    source_curves: optional `{ring_key: NurbsCurve}` from
+    `curves_by_ring(...)` — the exact curves the drawing was authored with, for
+    the B-Rep path. Purely additive; omit it and everything behaves as before.
     """
     # Decorative openings arrive as the outline's own interior rings (see
     # normalize.assemble_outline); they survive the LENS difference untouched.
@@ -290,7 +351,8 @@ def partition_zones(
     cuts = [LineString(_extend_cut(c, extend_mm)) for c in sculpt_cuts if len(c) >= 2]
     if not cuts:
         return CastlePartition(body=body, zones=_label_generic([body]),
-                               matched=False, holes=holes)
+                               matched=False, holes=holes,
+                               source_curves=dict(source_curves or {}))
 
     merged = unary_union([body.boundary, *cuts])
     faces = [
@@ -316,4 +378,27 @@ def partition_zones(
         edges=_name_edges(cuts, zones),
         matched=matched,
         holes=holes,
+        source_curves=dict(source_curves or {}),
     )
+
+
+def curves_by_ring(point_lists, curves) -> dict:
+    """Build the `source_curves` map `partition_zones` takes.
+
+    `point_lists` and `curves` are the index-aligned pair `import_curves`
+    returns for one layer — the flattened points, and what each was flattened
+    from. Entries with no source curve are skipped, so a drawing made of
+    polylines produces an empty map and the B-Rep path behaves exactly as it
+    did before.
+
+    Keyed on the *flattened* ring because that is what survives into Shapely and
+    therefore what a later lookup will be holding. `_ring_key` already ignores
+    whether the ring repeats its first point, so one entry covers both
+    spellings.
+    """
+    out: dict = {}
+    for pts, curve in zip(point_lists, curves or []):
+        if curve is None or len(pts) < 3:
+            continue
+        out[_ring_key([tuple(p[:2]) for p in pts])] = curve
+    return out

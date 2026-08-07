@@ -4134,9 +4134,350 @@ Still open from earlier, unchanged: PyInstaller packaging on Windows/macOS
 (§5.3), and refitting smooth edge chains to splines at extraction time for
 Stage 4's curve-driven CAM.
 
+## Stage 2 — the build-time wall, measured and taken down *(2026-08-07)*
+
+**82.8 s → 24.7 s cold, 17.2 s warm, and every volume bit-identical to before.**
+Target was "under 20 s"; a warm rebuild — a maker dragging a feature slider — is
+17.2 s worst case with *every* feature on, and 0.6–5.1 s for the realistic case
+of one feature at a time. Reproduce with `scripts/bench_solid.py`, which is the
+handover's hand-timed table turned into a committed benchmark.
+
+| Build | was | cold | warm |
+| --- | --- | --- | --- |
+| bare castle + hinge pockets | 10.6 s | 8.6 s | **0.6 s** |
+| + bridge relief | 11.7 s | 9.8 s | 1.9 s |
+| + pad splay | 17.4 s | 13.4 s | 5.1 s |
+| + lens groove | 20.3 s | 10.6 s | 2.3 s |
+| + brow chamfer (mirrored pair) | 23.4 s | 10.9 s | 3.2 s |
+| + eyewire bezel (posterior) | 36.4 s | 11.6 s | 4.0 s |
+| **ALL FEATURES ON** | **81.6 s** | **24.7 s** | **17.2 s** |
+
+### The handover's diagnosis was wrong in an instructive way
+
+It named the bezel's 180 lofted sections as the thing to attack. **Profiling says
+lofting is ~9 s of the 82 s and booleans are 64 s** — `cut` alone was 7 calls and
+81% of the build. Every lever that mattered was in the boolean layer:
+
+1. **OCCT's parallel mode was simply off.** `SetRunParallel(True)` in `occ._run`:
+   82.0 s → 62.2 s, same volume, same face count. Same algorithm, more cores.
+2. **`cut_many` — one BOP pass, N tools** (`occ.py`). The old code cut each
+   feature separately, so every result carried the previous cutter's faces and
+   the target inflated 1,244 → 6,471 faces across the build; the last cuts paid
+   for all the earlier ones. One pass against an un-inflated target did the
+   bezel + edge features + groove in **7.5 s instead of 32.9 s**, volume delta
+   0.00 mm³.
+3. **`castle_base` is cached** (`build.py`). Terraces + ten footing blends are
+   ~8 s of every rebuild and depend on no feature parameter. This is the
+   incremental rebuild §5.5 predicted would become required.
+4. **`surface_z_at` re-loaded the whole shape per ray.** `Init(shape, line, tol)`
+   is O(faces) *per point*; `Load` once + `Init(curve)` per ray took the anchor
+   casts from 3.8 s to under 1 s. On a 6,000-face castle the anchor rays cost
+   more than some of the booleans they fed.
+
+### Three things that looked right and are not — do not retry as written
+
+* **"Fuse all cutters, cut once" (the handover's own #3) is a double loss.**
+  Fusing the eight demo cutters costs 23.6 s and the cut that follows 31.8 s —
+  worse than the sequential chain it replaces, because boolean cost is
+  superlinear in *both* operands. It is also a semantic change: cutters anchor
+  with `surface_z_at` on the *current* solid, so building them all against one
+  base moves the bridge relief's anchors by up to **2.59 mm**. `cut_many` gets
+  the speed without the semantics precisely by *not* fusing, and
+  `apply_surface_features` keeps splay→scoop sequential because those two
+  genuinely interact. The membership rule is measured, not assumed — the drift
+  table is in `independent_cutters`.
+* **Smooth (`ruled=False`) cutter lofts.** The obvious way to cut face counts.
+  It takes 221 s and returns a solid with **zero faces and zero volume that
+  `BRepCheck_Analyzer` calls valid** — the fourth appearance of the
+  empty-but-valid failure. `build_castle_solid` now has a closing volume guard
+  to match the terrace one; without it that would have reached the Z-map.
+* **Lowering `BEZEL_STATIONS` 180 → 120.** Volume converges early and says this
+  is free (0.3% change). It is not: the ruled patches inscribe a polygon in the
+  ring, and 120 stations is a 7.2 µm sagitta against a **5 µm** raster-agreement
+  gate. `test_bezel_is_a_real_chamfer_not_an_offset` fails it at 79.3% vs the
+  required 80%. **Chord error pins that constant, not volume** — the old comment
+  argued from volume and was misleading. Reverted, with the sagitta table.
+
+**The test suite came along for free**: 12 min → **7.5 min** on the same tests
+(8 min with this session's five new ones, at **715 green and no xfails**), and
+`tests/test_solid_stage2.py` alone runs in 75 s. The handover proposed sharing
+fixtures to fix the 12-minute suite; the tests were slow because the builds were
+slow, so most of that need evaporated. Fixture sharing is still available if the
+suite creeps back up, but it is no longer the fastest win.
+
+### Finding 2 — one builder, and edges became per-component state
+
+`gui/mesh_build.py` is new: `build_component_mesh(spec, resolution, solid)`
+returns `(mesh, edges, core_guide)` for a frame front, a temple or a
+base-curve block, and **all three workers now call it**. `MeshWorker`,
+`FlatMeshWorker` and `MultiMeshWorker` keep their own signals and threading and
+have no build logic left.
+
+The handover offered "give `MultiMeshWorker` the same solid branch, or route both
+through one builder" and preferred the second. That was right, and it
+understated the case: there were three copies, not two — `MultiMeshWorker` also
+carried a duplicate of `FlatMeshWorker`'s temple and block branches. Adding the
+solid branch to the third copy would have left the same trap set for the next
+feature.
+
+`MultiMeshWorker.built` gained an edges slot, and **`edge_cache` moved onto
+`ComponentWorkspace`**. It was the one piece of per-component render state the
+main window still owned, so tab-switching swapped `stage_cache` and left the
+edges behind. Harmless only while a single frame front was the only thing that
+could produce edges — which stopped being true the moment Build 3D started
+building solids for every component. Pinned by three tests, including one that
+drives `MultiMeshWorker` synchronously and asserts Build 3D emits edges.
+
+Also fixed in passing: `MultiMeshWorker`'s progress closure captured `label` from
+the enclosing loop rather than binding it, so every component's progress line
+reported the last component's name.
+
+### Finding 3 — the anterior bezel, ported
+
+`face="anterior"` removed **0.00 mm³** and `face="both"` removed *exactly* what
+`"posterior"` did. Now:
+
+| face | removes |
+| --- | --- |
+| posterior | 474.40 mm³ (unchanged) |
+| anterior | **291.38 mm³** (was 0.00) |
+| both | **765.78 mm³** — exactly the sum, the two bands do not overlap |
+
+Built the way the raster builds it: `anterior_bezel_features()` spells the band
+as two whole-ring `EdgeFeature`s and hands them to the existing
+`edge_feature_cutters`, which already cut from the underside via
+`surface_z_at(..., face="bottom")`. One chamfer implementation, not two. The
+strict xfail is deleted and replaced by a test that guards the *specific* old
+shape of the bug — `both` being bit-equal to `posterior`, not merely `both`
+being non-zero.
+
+### Finding 4 — nothing to do
+
+The XWayland DPI guidance was already written into the README by the handover
+commit itself (`82f4f4c`). Verified present.
+
+### Still open
+
+Stage 2's remaining exit criteria: **posted G-code equivalence on the demo
+frame**, and **`BRepCheck_Analyzer` in the readiness dot**. Then the long-running
+items, unchanged: PyInstaller packaging on Windows/macOS (report §9.5),
+determinism across OCC versions (§5.4), the `flat.py` duck-type (§5.3), and
+refitting smooth edge chains to splines at extraction time for Stage 4.
+
+Worth knowing for whoever takes the perf work further: after this round the
+remaining cold time is ~8.6 s of `castle_base` (cached after the first build) and
+~7 s of the single feature BOP pass. There is no large single lever left — the
+next gains would come from the footing blends' 20 `common` calls, or from
+extending the cache to a second seam after `apply_surface_features`.
+
+## Codebase audit + the road to Fusion parity *(2026-08-07)*
+
+Commissioned as "a deep audit of any useless or junk code" plus "what we can do
+to further work toward a Fusion 360 like experience, even if it entails major
+re-writes — we don't want to build on bandaids."
+
+### 1. The curve is destroyed on line 81 of the importer
+
+**This is the root cause of the faceting, and it is upstream of everything the
+rewrite has been arguing about.**
+
+GuildDraw exports **real NURBS**. The demo DXF carries `SPLINE` entities:
+
+| layer | degree | control points | flattened to |
+| --- | --- | --- | --- |
+| OUTLINE | 3, closed | **64** | 342 points |
+| LENS (OD) | 3, closed | 13 | 137 points |
+| LENS (OS) | 3, closed | 7 | 129 points |
+| HINGE ×2 | 3, closed | 25 each | 59 each |
+
+134 control points describe the whole frame. `io_import/dxf.py:81` calls
+`entity.flattening(chord_tol)` and replaces them with **726 points**, in the
+first few lines of the pipeline. Every stage downstream — `regions`, `relief`,
+`solid`, the CAM — has only ever seen polygons. The 3,850 one-segment edges the
+Stage 2 notes describe as a "KNOWN LIMITATION" of `ring_wire` are not a
+limitation of `ring_wire`: it is faithfully building a polygon out of a polygon
+it was handed.
+
+**This also explains why the spline spike failed.** `scripts/spike_spline_wires.py`
+fitted B-splines *to the flattened points* — reconstructing information that had
+already been thrown away two stages earlier. Hence 5.2 µm deviation (a fit
+error that should not exist), and faces that misbehaved at every tolerance. The
+spike's conclusion "do not retry as written" is right, and the words that matter
+are **as written**: re-fitting is the wrong operation.
+
+The right operation is to *not discard*. A DXF `SPLINE` carries exactly what
+`Geom_BSplineCurve` needs — control points, knots, multiplicities, degree,
+periodic flag, optional weights — so the curve can be handed to OCCT with **no
+fitting and no error at all**. That is a different proposition from the spike.
+
+What it buys, using the spike's own measurements of the same frame: edges
+**3,850 → ~244**, display edges **3,549 → 122**, an exact silhouette at any
+zoom, and — the one that decides Stage 4 — a real curve for curve-driven CAM to
+drive the tool along instead of a 342-segment polyline.
+
+It also fixes the sweeps. Every feature cutter lofts sections positioned along
+these rings, so a faceted ring makes a faceted band and the two compound.
+Chasing it with more stations does not converge (see `BEZEL_STATIONS`, where the
+5 µm gate pins the count) because the spine itself is the polygon.
+
+**Cost, honestly:** `partition_zones`, the whole of `relief/`, and the CAM all
+consume point lists. The curve has to be carried *alongside* the flattened
+representation, not instead of it, or this becomes a rewrite of everything at
+once. The natural seam is to keep the flattened points as the CAM/raster input
+they already are, and thread the curve through to `occ.ring_wire` only.
+
+### 2. It is not the GPU
+
+Tested on this machine because it was a live suspicion: **AMD Radeon 880M,
+radeonsi, Mesa 26.1.6, OpenGL 4.6 core, direct rendering — hardware
+acceleration is working.** The "SGI" string in a VTK capability dump is the GLX
+*protocol* vendor and says nothing about the renderer. Faceting is geometry, not
+rasterisation.
+
+### 3. Dead code: there is almost none
+
+Measured, not eyeballed — a static import graph over `src/`, `tests/`,
+`scripts/` and `main.py`, plus `vulture`:
+
+* **Modules with no importer anywhere: one.** `gui/preview/` — an empty package,
+  a tracked `__init__.py` and nothing else. Deleted.
+* **Modules imported only by tests: one.** `core/relief/hinge.py` (141 lines,
+  the CHA hinge-catalog machinery). BUILDPLAN reserves it for post-1.0 and v1
+  uses HINGE-layer + depth instead, so it is *reserved*, not junk — flagged, not
+  deleted. It is in git either way.
+* `vulture --min-confidence 80` over `src/` found **one** real hit, an unused
+  import in `cam/engrave_centerline.py`. Fixed. Everything below 80% is pydantic
+  model fields and dataclass attributes it cannot see through.
+
+**The Reference module table below is stale and was misleading me**: it still
+lists `mesh/twosided.py`, `mesh/stl_export.py` and `io_import/svg.py` as
+retire-candidates. All three no longer exist.
+
+So: the codebase is not carrying junk. What it is carrying is *undifferentiated*
+code.
+
+### 4. The real structural debt
+
+| Thing | Size | Why it matters |
+| --- | --- | --- |
+| `MainWindow` | **192 methods, 4,183 lines** | ~50 methods and 1,089 lines of it are CAM/G-code orchestration; 31 are project I/O. None of that is windowing. |
+| `gui/app.py` | **7,107 lines, 17 classes** | `PrefsDialog` (1,044 lines) and `GCodeWorker` (819) live here too. |
+| `build_castle_relief` call sites | **8** | Each rebuilds the relief with its own resolution/params handling — STL export, CAM, sim, bed sim, preview. Exactly the disease the three mesh workers had. |
+| raster vs solid | 2,317 vs 2,187 lines | Two full implementations of every feature. Deliberate during Stage 2 (§3.5 A/B), but it is the largest duplication in the tree and it cannot stay. |
+
+The mesh-worker unification earlier today is the template for the second and
+third rows: one builder, workers reduced to threading and signals.
+
+### 5. Recommended order, if this is to be done without bandaids
+
+1. **Carry the curve** (§1). It is the foundation the other three want, it is
+   the smallest change of the four, and it retires the `feature_angle=40.0`
+   guess, the chord-error ceiling on every sweep, and Stage 4's blocker at once.
+2. **Finish the raster→derived demotion.** Stage 2's stated architecture is that
+   the heightfield is produced by ray-casting the solid, for CAM only. Until the
+   solid path is the default and `relief/`'s feature carving is deleted, every
+   feature has to be written twice — which is how the anterior bezel came to
+   exist on one side only.
+3. **One relief builder, 8 call sites → 1.**
+4. **Split `MainWindow`.** CAM orchestration and project I/O are separable today
+   without touching behaviour; that is ~1,700 lines out of the god-object.
+
+Only after 1 and 2 does "Fusion-like" become a question about the *UI* — a
+feature tree, a timeline, rollback — rather than about whether the model is
+made of curves. Building a history tree on a polygon soup would be the bandaid.
+
+## Carrying the curve — step 1 landed *(2026-08-07)*
+
+Audit item §1. The drawing's NURBS now survive the importer and reach the
+kernel. **Exact, not fitted** — that is the whole distinction from the rejected
+spike, and it is measured rather than asserted.
+
+### What landed
+
+| Piece | What it does |
+| --- | --- |
+| `core/geometry/curves.py` | `NurbsCurve` — poles, knots, degree, periodic, weights. Kernel-neutral (the importer must never pull in OCP's 70 MB) plus `mirror_x` for the M1.2 posterior flip. |
+| `io_import/dxf.py` | `import_curves()` returns `(points, curves)`, index-aligned. `import_dxf()` is unchanged and now delegates to it, so nothing downstream had to move. |
+| `solid/occ.py` | `nurbs_edge` / `curve_ring_wire` — the transcription to `Geom_BSplineCurve`; `ring_wire(..., curve=)` and `polygon_to_face(..., curves=)` use it when a ring has one. |
+| `geometry/regions.py` | `CastlePartition.source_curves` + `ring_curve(ring)`, and `curves_by_ring()` to build the map. Additive: a drawing of polylines produces an empty map and behaves exactly as before. |
+
+**The exactness claim, measured.** Every point of the DXF's own
+`flattening(0.01)` projected onto the rebuilt curve: **worst deviation
+< 1e-6 mm**, outline and both lens rings. The re-fitting spike's 5.2 µm was a
+fit error against the curve's own approximation; with no fitting step there is
+no error term. Pinned by `tests/test_source_curves.py`.
+
+**The outline is now one edge instead of 342.** `curve_ring_wire` on the demo
+outline yields a single-edge wire where `polygon_ring_wire` yields 342.
+
+### Three things this turned up
+
+* **`_ring_key` cannot key on a start point.** `outline.difference(lenses)`
+  returns the same coordinates rotated to a different start vertex, and
+  sometimes reversed. Keying on start-plus-two-samples matched **one ring of
+  three**; keying on vertex count plus bounding box matches all three, and still
+  correctly *misses* when Shapely genuinely reshapes a ring — a reshaped ring is
+  not the authored curve any more.
+* **A B-spline carries its own winding**, unrelated to `orient(poly, 1.0)`. A
+  curve running against the ring it replaces gives a face OCCT calls invalid.
+  `ring_wire` now compares signed areas and reverses.
+* **`BRepGProp` without an `Eps` is wrong on spline-bounded faces — by 4%.** The
+  demo body face measures **1546.690 mm³ by default against 1483.750
+  adaptively**, and the error points the wrong way: it reads as if the curve
+  added 63 mm² of material. It did not. The true outline adds **0.649 mm²** over
+  the polygon inscribed in it (exactly the chord deficit) and the true apertures
+  take **0.889 mm²** back. `occ.volume` now passes `GPROP_EPS`, and `occ.area`
+  exists so nobody reaches for the raw call. Verified not to move any existing
+  figure — every row of `bench_solid.py` is unchanged to 0.1 mm³.
+  **This one nearly cost a day**: the "curve adds material" reading is exactly
+  wrong enough to look like a real geometric bug.
+
+### Step 2 — zone-boundary arcs, spiked to 7/9, NOT landed
+
+Making the *model* curved needs more than whole rings, because `build_terraces`
+builds from **zone** polygons — pieces of the rings cut by the SCULPT lines — so
+each zone boundary is outline/lens arcs joined by straight cuts. Measured on the
+demo: **~94% of every zone's vertices lie on an authored curve**, in 2–5 clean
+runs (`endpiece_od` is 54 vertices = 2 runs; `bridge` is 84 = 5).
+
+`scripts/` is not carrying this yet; the working spike is in the session
+scratchpad. State at handoff, **7 of 9 zones valid with areas matching the
+polygon to under 0.5 mm²**, via three fixes found in order:
+
+1. **Seam splitting.** A run passing the curve's start/end point shows as a
+   parameter jump; split there or the trim sweeps the complement arc (areas came
+   back negative, or 7× too large).
+2. **Explicit shared vertices.** Arc endpoints are exact curve points, straight
+   endpoints are flattened ring vertices, and they differ by up to the
+   flattening tolerance. `BRepBuilderAPI_MakeWire` stitched across that gap
+   where it could and silently produced a disordered wire where it could not —
+   still reporting `IsDone()`. Building every `TopoDS_Vertex` once and handing
+   it to both neighbours took this from 5/9 to 7/9.
+3. **Verify each span before trusting it.** Check the arc's midpoint against the
+   ring vertex it came from; a wrong-branch arc misses by millimetres. Given
+   this kernel's habit of plausible-looking wrong answers, the guard is worth
+   keeping regardless of whether span detection is perfect.
+
+**The two remaining failures are not a NURBS problem.** With every arc rejected
+by the guard — `arcs=0`, pure polyline — `eyewire_superior_od` and
+`eyewire_inferior_os` are *still* wrong (+180 and +225 mm²). The cause is in the
+spike's fallback: a rejected span emits **one straight chord across the whole
+span** instead of re-emitting the original vertices, cutting the corner off.
+Fix that first; it likely takes the count straight to 9/9, and it means the
+trimming logic itself is in better shape than the score suggests.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)
+
+> ⚠️ **This table is stale and has actively misled at least one session.** The
+> 2026-08-07 audit found it still listing `mesh/twosided.py`,
+> `mesh/stl_export.py` and `io_import/svg.py` as modules to review or retire;
+> all three were deleted long ago. It also predates `core/solid/`,
+> `gui/mesh_build.py` and `gui/hidpi.py`. Trust the import graph
+> (`vulture` + a static reachability pass) over this table; it is kept for the
+> per-milestone provenance notes in the Notes column, which are still accurate
+> about *when* things landed.
 
 Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in M-series · 🔲 stub / missing
 
@@ -4171,13 +4512,14 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🔄 to be rewritten in 
 | `project/schema.py` `save_load.py` | ✅ | `CastleParams` (M1); legacy `ReliefRecipe` removed (M4); `CastleCamParams` + `MachineProfile` + `MachineRef` on `ProjectSchema` (M4.8); **`op_tools` per-op map + `POSTERIOR_OPS`; `MachineProfile.tool_change_mode`/`tool_change_seconds`** (M6.1); **`ProgramZero` datum (datum_world/work_offset/label) on `CastleCamParams.program_zero`** (M6.2, default center/center/bottom); **`TempleParams` on `ProjectSchema.temple`** (M6.3); **`BaseCurveBlockParams` (hole_centers/stock) on `ProjectSchema.base_curve_block`** (M6.4); **`BedLayout`/`ComponentPlacement` on `ProjectSchema.bed_layout`** (M6.5) |
 | `project/gcam.py` | ✅ | **New (M5.1)** — `.gcam` ZIP project container: `save_gcam`/`load_gcam` (manifest + per-file SHA-256, atomic write), `extract_handoff` (gSender-fork subset); embeds the source DXF for self-contained reopen |
 | `config/` | ✅ | fixture (nosepad sub-zone), hinges, `flat_3175` tool, acetate feeds (M3); **`machines/` profiles: guild_cnc, carbide_nomad3, carbide_shapeoko, generic_grbl, grbl_no_arc** (M4.8); **`flat_2mm` pocket tool + optional per-tool feeds/DOC; `tool_change_mode` in machine YAML** (M6.1); **`engrave_vbit` engraving tool; `temple_right`/`temple_left` fixture zones** (M6.3); **`drill_m4_clear` (4.5 mm) drill; `acetal` material** (M6.4) |
-| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3); **File ▸ Generate Base-Curve Block + `GCodeWorker._generate_block` + `block_params()`** (M6.4); **File ▸ Generate Worktable Program + `GCodeWorker._generate_worktable` (auto-pack frame + block, combined post, bed clearance)** (M6.5) |
+| `gui/app.py` + widgets | ✅ | Castle UI (M4); theming/dark/prefs/recent/STL (M4.5); docks + icon toolbar + progress (M4.6); CAM machine/tool selectors + strategy + feeds, machine-clamp/lint + cut-time report (M4.8); material-driven feeds + write-back prompt + Materials prefs tab (M4.9); Cut Simulation workspace (`SimWorker` + Simulate toolbar button, 3rd view) (M5); **File ▸ Save/Open Project `.gcam` + embedded-DXF retention + `set_castle_params` restore** (M5.1); **readiness traffic-light** — three flags + `_refresh_readiness`/`_invalidate_program`, green only on program-stored-to-`.gcam` (M5.2); **Generate stores the program in the project by default + File ▸ Export G-code (`Ctrl+Shift+G`) for a loose `.nc`** (post-M5.2 refinement); **Per-operation tools group; generate/sim workers wire `tools_cfg` + `tool_settings` + reach warnings + tool-change cut-time** (M6.1); **Program Zero group + `DxfCanvas.set_program_zero` datum crosshair + work-offset into the generate post + setup-sheet datum** (M6.2); **temple detection on import + `GCodeWorker._generate_temple` (engrave + profile, program-zero, temple-zone clearance) + `temple_params()`** (M6.3); **File ▸ Generate Base-Curve Block + `GCodeWorker._generate_block` + `block_params()`** (M6.4); **File ▸ Generate Worktable Program + `GCodeWorker._generate_worktable` (auto-pack frame + block, combined post, bed clearance)** (M6.5); **One mesh builder** — `gui/mesh_build.py`'s `build_component_mesh` replaces the build logic in all three of `MeshWorker` / `FlatMeshWorker` / `MultiMeshWorker`; `MultiMeshWorker` gained `solid=` + an edges slot on `built`, and `edge_cache` moved onto `ComponentWorkspace` (Stage 2 review, 2026-08-07) |
 | `gui/widgets/cut_sim_view.py` | ✅ | **New (M5)** — `CutSimView` PyVista viewport: renders the simulated cut piece, Uncut/Gouge overlay toggles, pass/warn/fail badge |
 | `gui/widgets/readiness_dot.py` | ✅ | **New (M5.2)** — status-bar `ReadinessDot` (painted ~10 px circle, theme-recolored, exact tooltips) + the pure `state_for(...)` state machine |
 | `gui/material_store.py` | ✅ | **New (M4.9)** — shipped + user-override material presets (`~/.guildcam/materials.yaml`); `effective`/`cam_values`/`changed_keys`/`save_override`/`reset_material` |
 | `gui/icons.py` | ✅ | M4.6 — `_make_icon` port (SVG→two-state QIcon) + `apply_toolbar_icons`; text fallback; `sim-cut` icon added (M5) |
 | `gui/style/theme.py` `gui/prefs.py` | ✅ | M4.5 — GuildDraw QSS + CanvasPalette; `~/.guildcam/prefs.json` (M4.6 window state; M4.8 `cam_params`; M4.9 `material_name`) |
-| `tests/` | ✅ | **586 green** (incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.5 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill/bed-schedule gates + **`test_worktable_cut_parity.py`**: the bed program is the single-component program *placed* — one posting grid (`CUT_RES_MM`), one machine clamp, Z untouched by placement, and a bounded Z-reversal density per 100 mm of travel; see the 2026-07-29 safety fix) |
+| `gui/mesh_build.py` | ✅ | **New (Stage 2 review, 2026-08-07)** — the single Qt-free `build_component_mesh(spec, resolution, solid)` → `(mesh, edges, core_guide)` every mesh worker delegates to; the solid branch reaching `MultiMeshWorker` is what un-broke the display-mode dropdown |
+| `tests/` | ✅ | **715 green** (incl. STL/NC/silhouette/arc/ramp/budget/clamp/completeness gates + the `.gcam` round-trip + the readiness state machine + the M6.1–M6.5 per-op-tool/change-block/reach/datum-offset/temple-engrave/block-drill/bed-schedule gates + **`test_worktable_cut_parity.py`**: the bed program is the single-component program *placed* — one posting grid (`CUT_RES_MM`), one machine clamp, Z untouched by placement, and a bounded Z-reversal density per 100 mm of travel; see the 2026-07-29 safety fix) |
 
 ## Dependency list (v1 — unchanged)
 

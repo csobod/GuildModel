@@ -789,21 +789,17 @@ def test_terrace_collapse_is_caught_not_silent(demo_partition):
     assert volume(solid) > 1000.0
 
 
-# ------------------------------------------------- known gaps (session handover)
+# ------------------------------------ the anterior bezel (2026-08-07 finding 3)
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Anterior eyewire bezel is not implemented on the solid path. The raster "
-    "builds it via relief.edges.carve_anterior_bezel (a whole-ring EdgeFeature "
-    "on the front face); core.solid.features.apply_posterior_features only "
-    "handles bezel.cuts_posterior(). Measured: face='anterior' removes 0.00 mm^3 "
-    "and face='both' removes exactly what 'posterior' does. Delete this xfail "
-    "when the anterior branch lands."))
 def test_anterior_eyewire_bezel_cuts_the_front(demo_partition, demo_hinges):
     """The anterior bezel must remove material from the front face.
 
-    Anterior *edge features* already work — they cut from the underside via
-    `surface_z_at(..., face='bottom')` — so the machinery exists; the bezel's
-    anterior branch simply was never ported.
+    Carried a strict xfail until 2026-08-07: only `cuts_posterior()` had been
+    ported, so `face='anterior'` removed 0.00 mm3. Anterior *edge features*
+    already worked — they cut from the underside via
+    `surface_z_at(..., face='bottom')` — so this was a porting gap, and the fix
+    is to spell the band as the whole-ring `EdgeFeature` it is, exactly as the
+    raster does in `relief.edges.carve_anterior_bezel`.
     """
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.solid import build_castle_solid, volume
@@ -816,6 +812,35 @@ def test_anterior_eyewire_bezel_cuts_the_front(demo_partition, demo_hinges):
     cut_vol = volume(build_castle_solid(demo_partition, castle, demo_hinges))
 
     assert cut_vol < plain - 1.0, "anterior bezel removed nothing"
+
+
+def test_bezel_face_selects_which_side_is_cut(demo_partition, demo_hinges):
+    """`posterior` / `anterior` / `both` must be three different solids.
+
+    The specific shape of the old bug: `both` removed *exactly* what `posterior`
+    did, to the last decimal, because the anterior half was simply absent. So
+    equality between them is the regression to guard, not merely inequality with
+    the uncut frame.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, volume
+
+    def vol_for(face):
+        castle = CastleParams()
+        castle.eyewire_bezel.enabled = True
+        castle.eyewire_bezel.face = face
+        return volume(build_castle_solid(demo_partition, castle, demo_hinges))
+
+    plain = volume(build_castle_solid(demo_partition, CastleParams(), demo_hinges))
+    post, ant, both = vol_for("posterior"), vol_for("anterior"), vol_for("both")
+
+    assert post < plain and ant < plain, "each face must remove something"
+    assert abs(both - post) > 1.0, "'both' must cut more than 'posterior' alone"
+    assert abs(both - ant) > 1.0, "'both' must cut more than 'anterior' alone"
+    # Both bands together remove about what the two remove separately — they sit
+    # on opposite faces of the same rim and only interact where the frame is
+    # thin enough for the chamfers to meet.
+    assert both < min(post, ant)
 
 
 def test_anterior_edge_features_do_cut_the_front(demo_partition, demo_hinges):
@@ -838,3 +863,85 @@ def test_anterior_edge_features_do_cut_the_front(demo_partition, demo_hinges):
     cut_vol = volume(build_castle_solid(demo_partition, castle, demo_hinges))
 
     assert cut_vol < plain - 1.0
+
+
+# ------------------------------------------- one builder for every worker (2026-08-07)
+
+def test_build_component_mesh_emits_edges_on_the_solid_path(demo_partition,
+                                                            demo_hinges):
+    """The single builder every mesh worker now goes through.
+
+    `edges` is what the four Fusion-parity display modes are drawn from, so a
+    None here is exactly what makes the viewer disable the mode combo.
+    """
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.gui.mesh_build import build_component_mesh
+
+    spec = {"mode": "castle", "partition": demo_partition,
+            "castle": CastleParams(), "hinge": list(demo_hinges),
+            "stage": "pockets"}
+
+    mesh, edges, guide = build_component_mesh(spec, resolution=0.6, solid=True)
+    assert guide is None
+    assert edges, "the solid path must carry its topological edges"
+    assert len(edges) > 100, f"only {len(edges)} edges — that is not the frame"
+
+    raster_mesh, raster_edges, _ = build_component_mesh(spec, resolution=0.6)
+    assert raster_edges is None, "the raster has no edges to give"
+    assert len(raster_mesh.faces) > len(mesh.faces), (
+        "the raster mesh should be far heavier than the tessellated solid")
+
+
+def test_build_3d_reaches_the_solid_path(demo_partition, demo_hinges, monkeypatch):
+    """Regression for the 2026-08-07 finding 2: the dead display-mode dropdown.
+
+    Build 3D goes through `MultiMeshWorker`, which had never been given the
+    solid branch — so it always returned raster meshes with `edges=None`, the
+    viewer correctly disabled the combo, and clicking it did nothing. Meanwhile
+    a *parameter* change went through `MeshWorker` and did build a solid, which
+    is why the fault looked intermittent.
+
+    Driven synchronously: no threads, no VTK.
+    """
+    pytest.importorskip("PySide6.QtWidgets")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.gui.app import MultiMeshWorker
+
+    specs = [{"index": 0, "mode": "castle", "label": "Frame Front",
+              "partition": demo_partition, "castle": CastleParams(),
+              "hinge": list(demo_hinges), "stage": "pockets"}]
+
+    built, errors = [], []
+    w = MultiMeshWorker(specs, resolution=0.6, solid=True)
+    w.built.connect(lambda i, m, e, g: built.append((i, m, e, g)))
+    w.error.connect(lambda tb: errors.append(tb))
+    w.run()
+
+    assert errors == [], errors[0] if errors else ""
+    assert len(built) == 1
+    assert built[0][2], "Build 3D on the solid path must emit edges"
+
+
+def test_workspace_carries_its_own_edge_cache():
+    """Edges are per-component state and must switch with the tab.
+
+    `_edge_cache` lived on the main window while `stage_cache` lived on the
+    workspace, so tab-switching swapped the meshes and left the edges behind.
+    Survivable only while one frame front was the only thing that could produce
+    edges — and Build 3D now emits them for every component it builds as a
+    solid.
+    """
+    from guildmodel.core.project.schema import ComponentKind
+    from guildmodel.gui.component_workspace import ComponentWorkspace
+
+    def ws(kind, label):
+        return ComponentWorkspace(kind=kind, label=label, layers={})
+
+    a = ws(ComponentKind.FRAME_FRONT, "Frame Front")
+    b = ws(ComponentKind.TEMPLE_RIGHT, "Temple R")
+    assert hasattr(a, "edge_cache"), "edges must be per-component state"
+    a.edge_cache["pockets"] = [((0, 0, 0), (1, 1, 1))]
+    assert b.edge_cache == {}, "edge caches must not be shared between components"
