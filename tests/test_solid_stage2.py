@@ -453,3 +453,69 @@ def test_bezel_rim_depth_is_the_advertised_drop(demo_partition):
     drop = before - after
     ok = np.abs(drop - expected) < 0.15
     assert ok.mean() > 0.85, f"rim depth held at only {100 * ok.mean():.0f}% of stations"
+
+
+def test_brow_chamfer_edge_feature(demo_partition, demo_hinges):
+    """M17's driving shape as a solid: a chamfer over each brow, not the bridge.
+
+    This is the feature the whole rewrite was argued from — a partial-span
+    tapered chamfer, which the Stage 1 spike ranked as the likeliest thing to
+    force a fallback. It builds, it is valid and watertight, and it tracks the
+    raster to 7 um rms.
+
+    The span still comes from `span_intervals`, so M17's decision that a run is
+    named by castle zone rather than measured along the ring survives the
+    rewrite untouched — including `mirror`, which is why both eyewires appear.
+    """
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+    from guildmodel.core.solid import (build_castle_solid, is_valid,
+                                       solid_to_relief, volume)
+    from guildmodel.core.solid.tessellate import tessellate
+
+    castle = CastleParams()
+    castle.edge_features = [EdgeFeature(
+        id="brow", label="Brow chamfer", face="posterior", edge="outline",
+        zones=["eyewire_superior_od"], blend_mm=4.0, profile="chamfer",
+        width_mm=2.0, angle_deg=45.0, mirror=True)]
+
+    plain = build_castle_solid(demo_partition, CastleParams(), demo_hinges)
+    solid = build_castle_solid(demo_partition, castle, demo_hinges)
+
+    assert is_valid(solid)
+    assert volume(solid) < volume(plain), "the chamfer must remove material"
+    assert tessellate(solid).to_trimesh().is_watertight
+
+    raster = build_castle_relief(demo_partition, castle, demo_hinges,
+                                 resolution=CUT_RES_MM)
+    derived = solid_to_relief(solid, demo_partition, castle,
+                              resolution=CUT_RES_MM)
+    m = raster.inside
+    d = (derived.field.z - raster.field.z)[m]
+    assert np.sqrt((d ** 2).mean()) < 0.02
+    assert (np.abs(d) <= 0.005).mean() > 0.94
+    assert (np.abs(d) <= 0.05).mean() > 0.99
+
+
+def test_edge_feature_taper_never_collapses_a_section(demo_partition):
+    """Stage 1 §5.1: a section that tapers to a true point fails outright.
+
+    The run must still read as feathering to nothing, so the floor is 0.02 mm —
+    a fiftieth of the finishing tool's radius. This pins that the floor is in
+    force and that it is small enough to be invisible.
+    """
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+    from guildmodel.core.solid import build_castle_solid, is_valid
+    from guildmodel.core.solid.features import MIN_TAPER_DROP_MM
+
+    assert 0 < MIN_TAPER_DROP_MM <= 0.05
+
+    castle = CastleParams()
+    # blend longer than half the run: the taper law caps it, and every section
+    # in the run ends up on the ramp rather than at full depth.
+    castle.edge_features = [EdgeFeature(
+        id="feather", face="posterior", edge="outline",
+        zones=["eyewire_superior_od"], blend_mm=40.0,
+        profile="chamfer", width_mm=2.0, angle_deg=45.0)]
+    solid = build_castle_solid(demo_partition, castle, [])
+    assert is_valid(solid)

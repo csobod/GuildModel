@@ -3917,8 +3917,30 @@ up to 0.7 mm, breaking the band's one advertised promise.
   so it never down-cast and `BRepAdaptor_Curve` rejected the shape. Latent;
   nothing shipped depended on it.
 
-**Still to come as bodies:** pad splay, brow chamfer (`EdgeFeature`), bridge
-relief, lens groove.
+**Edge features (M17) — the brow chamfer, as a solid.** The feature the whole
+rewrite was argued from, and the one Stage 1 ranked likeliest to force a
+fallback. It builds: **valid, watertight, rms 6.9 um, 96.0% of in-body cells
+within 5 um and 99.5% within 50 um**, on the M17 driving shape (a 2 mm / 45 deg
+chamfer over each brow, `mirror` on, not carried across the bridge). Residual
+sits in the two `eyewire_superior` zones — the run itself, where the ruled
+chamfer parts company with the raster's variable offset — plus the 40 known
+nosepad cells.
+
+Two things carried over intact, which is the good news for the M17 design:
+
+* **The span is still named, not measured.** `edge_feature_cutters` calls the
+  same `span_intervals`, so a run named by castle zone covers the same ring
+  either way, and `mirror` still produces the pair.
+* **`MIN_TAPER_DROP_MM = 0.02`** is Stage 1's finding in production: a section
+  that tapers to a true point fails `ThruSections` outright, and a fiftieth of
+  the finishing tool's radius is invisible in acetate.
+
+**One thing the solid deletes outright:** an anterior edge feature is just a cut
+from the underside — `surface_z_at(..., face="bottom")`. No second heightfield,
+no `thickness()` invariant keeping two 2.5D surfaces from eating each other.
+That was M17's scaffolding and it is simply gone.
+
+**Still to come as bodies:** pad splay, bridge relief, lens groove.
 
 **Performance is now the visible problem.** The bare castle builds in ~9 s; with
 the bezel it is **~37 s**. Report §5.5 predicted incremental rebuild would move

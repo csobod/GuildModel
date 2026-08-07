@@ -324,8 +324,10 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
         solid = cut(solid, fuse_all(carves))
 
     _report(progress, "Finishing features", 0.85)
-    from .features import apply_hinge_pockets, apply_posterior_features
+    from .features import (apply_edge_features, apply_hinge_pockets,
+                           apply_posterior_features)
     solid = apply_posterior_features(solid, partition, castle, top)
+    solid = apply_edge_features(solid, partition, castle, top)
 
     surface = solid                       # before the pockets (M8 surface_field)
     _report(progress, "Hinge pockets", 0.92)

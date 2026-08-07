@@ -85,8 +85,14 @@ def is_valid(shape: TopoDS_Shape) -> bool:
 
 
 def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
-                 tol: float = 1e-7) -> np.ndarray:
-    """Exact top-surface height above each (x, y), by vertical ray.
+                 tol: float = 1e-7, face: str = "top") -> np.ndarray:
+    """Exact surface height above each (x, y), by vertical ray.
+
+    `face="bottom"` takes the lowest hit instead of the highest — the anterior
+    face. In a solid the front of the frame is simply the underside; it needs no
+    second heightfield and no `thickness()` invariant to keep the two from
+    eating each other, which is the 2.5D scaffolding M17 had to build and the
+    rewrite deletes.
 
     Used to anchor features that must ride the surface they are cut into — the
     eyewire bezel keeps a constant width and rim depth all the way round, which
@@ -101,13 +107,14 @@ def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
 
     inter = BRepIntCurveSurface_Inter()
     up = gp_Dir(0.0, 0.0, 1.0)
+    want_top = face != "bottom"
     out = np.full(len(pts_xy), float(missing), dtype=float)
     for i, (x, y) in enumerate(pts_xy):
         inter.Init(shape, gp_Lin(gp_Pnt(float(x), float(y), -1e4), up), float(tol))
         best = None
         while inter.More():
             z = inter.Pnt().Z()
-            if best is None or z > best:
+            if best is None or (z > best if want_top else z < best):
                 best = z
             inter.Next()
         if best is not None:
