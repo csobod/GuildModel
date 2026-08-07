@@ -65,6 +65,14 @@ class ComponentWorkspace:
     # per-component mesh + generated artifacts + readiness (swapped on tab switch)
     stage: str = "pockets"
     stage_cache: dict = field(default_factory=dict)
+    # Topological edges per stage key, parallel to `stage_cache`. Solid builds
+    # only — None on the raster path, which is what disables the display-mode
+    # combo. This lived on the main window until 2026-08-07 and was the one piece
+    # of per-component render state that tab-switching did not swap; harmless
+    # only while a single frame front was the only thing that could produce
+    # edges, and wrong the moment Build 3D started emitting them for every
+    # component.
+    edge_cache: dict = field(default_factory=dict)
     mesh_built: bool = False
     core_guide: object = None        # temple injected-core bar bounds (3D marker)
     last_programs: dict = field(default_factory=dict)

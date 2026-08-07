@@ -284,7 +284,7 @@ def test_multi_mesh_worker_builds_all_in_one_pass(tmp_path, monkeypatch):
     ]
     w = MultiMeshWorker(specs, resolution=0.6)
     built, done, errors = [], [], []
-    w.built.connect(lambda i, m, g: built.append((i, m, g)))
+    w.built.connect(lambda i, m, e, g: built.append((i, m, e, g)))
     w.finished.connect(lambda: done.append(True))
     w.error.connect(lambda tb: errors.append(tb))
     w.run()
@@ -293,8 +293,9 @@ def test_multi_mesh_worker_builds_all_in_one_pass(tmp_path, monkeypatch):
     assert done == [True]
     assert [b[0] for b in built] == [1, 3]                      # both, in order
     assert all(b[1].is_watertight for b in built)              # watertight solids
-    assert built[0][2] is not None                             # temple carries a core guide
-    assert built[1][2] is None                                 # block does not
+    assert all(b[2] is None for b in built)                    # raster path: no edges
+    assert built[0][3] is not None                             # temple carries a core guide
+    assert built[1][3] is None                                 # block does not
 
 
 def test_startup_with_saved_cam_params_does_not_raise(tmp_path, monkeypatch):

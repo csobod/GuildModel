@@ -34,6 +34,8 @@ from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen, QPixmap
 from guildmodel.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildmodel.gui import prefs as prefs_mod
 from guildmodel.gui import icons as icons_mod
+from guildmodel.gui import hidpi
+from guildmodel.gui.mesh_build import build_component_mesh
 from guildmodel.gui.style import theme
 from guildmodel.gui.widgets.dxf_canvas import DxfCanvas
 from guildmodel.gui.widgets.params_panel import ParamsPanel
@@ -188,7 +190,7 @@ class _ProgressWorker(QObject):
 # ------------------------------------------------------------------ 3D mesh build worker
 
 class MeshWorker(_ProgressWorker):
-    """Builds the castle relief mesh off the GUI thread (matched SCULPT
+    """Builds one castle relief mesh off the GUI thread (matched SCULPT
     zone layouts only — the spike's distance-based fallback is retired)."""
 
     finished = Signal(object, str, object)   # trimesh.Trimesh, stage, edges|None
@@ -199,73 +201,31 @@ class MeshWorker(_ProgressWorker):
         resolution: float = 0.3, solid: bool = False,
     ) -> None:
         super().__init__()
-        self.partition = partition
-        self.castle = castle
-        self.hinge_polys = list(hinge_polys)
+        self.spec = {"mode": "castle", "partition": partition, "castle": castle,
+                     "hinge": list(hinge_polys), "stage": stage}
         self.stage_name = stage
         self.resolution = resolution
         self.solid = solid
 
     def run(self) -> None:
         try:
-            if self.solid and self.stage_name == "pockets":
-                # The solid path only models the FULL posterior. The teaching
-                # stepper's partial stages stay on the raster builder — they are
-                # a pedagogical decomposition of the raster construction, not
-                # states the solid passes through.
-                mesh, edges = self._build_solid()
-                self.finished.emit(mesh, self.stage_name, edges)
-                return
-            from guildmodel.core.relief.castle import (
-                build_castle_mesh, build_castle_stage,
-            )
-            relief = build_castle_stage(
-                self.partition, self.castle, self.hinge_polys,
-                stage=self.stage_name, resolution=self.resolution,
-                progress=self._progress,
-            )
-            mesh = build_castle_mesh(relief, progress=self._progress)
-            self.finished.emit(mesh, self.stage_name, None)
+            mesh, edges, _guide = build_component_mesh(
+                self.spec, resolution=self.resolution, solid=self.solid,
+                progress=self._progress)
+            self.finished.emit(mesh, self.stage_name, edges)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
-    def _build_solid(self):
-        """The B-Rep path: a solid, tessellated with its real edges."""
-        from guildmodel.core.solid import build_castle_solid
-        from guildmodel.core.solid.tessellate import tessellate
-
-        solid = build_castle_solid(
-            self.partition, self.castle, self.hinge_polys,
-            progress=self._progress)
-        self._progress("Tessellating", 0.95)
-        tess = tessellate(solid)
-        return tess.to_trimesh(), tess.edges
-
-
-# Preview grid step for an engraved temple. The engraving v-groove is ~0.5 mm wide, so
-# at the frame-front preview resolution (0.3 mm) it spans <2 cells and the 3D groove
-# looks blocky/pixellated. A temple is a small part (a ~135 mm strip), so refining the
-# WHOLE temple to this step still builds in ~0.5 s while the big frame front stays coarse.
-_ENGRAVE_PREVIEW_RES_MM = 0.1
-
-
-def _temple_preview_res(base_res: float, engraving) -> float:
-    """The preview grid step for a temple: refined to `_ENGRAVE_PREVIEW_RES_MM` when it
-    carries engraving (so the grooves aren't pixellated), else the coarse `base_res`.
-    Never coarsens a user resolution that is already finer."""
-    return min(base_res, _ENGRAVE_PREVIEW_RES_MM) if engraving else base_res
-
 
 class FlatMeshWorker(_ProgressWorker):
     """Builds a flat-part solid (temple or base-curve block) off the GUI thread.
 
-    Reuses the castle mesher on a flat-extrusion relief (core/relief/flat.py): a
-    temple is the outline extruded with HINGE pockets + ENGRAVING grooves (snapped
-    to the blank end when asked), a block is the blank box with the lens scribed on
-    top and the M4 holes as through-holes. Emits the mesh + the temple core-guide
-    bounds (a 3D visual reference, or None for a block).
+    A temple is the outline extruded with HINGE pockets + ENGRAVING grooves
+    (snapped to the blank end when asked), a block is the blank box with the lens
+    scribed on top and the M4 holes as through-holes. Emits the mesh + the temple
+    core-guide bounds (a 3D visual reference, or None for a block).
     """
 
     finished = Signal(object, object)   # trimesh.Trimesh, core_guide bounds | None
@@ -274,41 +234,16 @@ class FlatMeshWorker(_ProgressWorker):
     def __init__(self, mode: str, *, outline=None, temple=None, hinge_polys=(),
                  engraving=(), lens=None, block=None, resolution: float = 0.3) -> None:
         super().__init__()
-        self.mode = mode
-        self.outline = outline
-        self.temple = temple
-        self.hinge_polys = list(hinge_polys)
-        self.engraving = list(engraving)
-        self.lens = lens
-        self.block = block
+        self.spec = {"mode": mode, "outline": outline, "temple": temple,
+                     "hinge": list(hinge_polys), "engraving": list(engraving),
+                     "lens": lens, "block": block}
         self.resolution = resolution
 
     def run(self) -> None:
         try:
-            from shapely.affinity import translate
-            from guildmodel.core.relief.castle import build_castle_mesh
-            from guildmodel.core.relief.flat import (
-                build_block_relief, build_temple_relief, temple_core_guide,
-                place_temple_on_blank,
-            )
-            if self.mode == "temple":
-                outline, hinge, eng = place_temple_on_blank(
-                    self.outline, self.hinge_polys, self.engraving,
-                    self.temple.blank_length_mm, stock_side=self.temple.stock_side,
-                    snap=self.temple.snap_to_blank_end)
-                relief = build_temple_relief(
-                    outline, self.temple, hinge, eng,
-                    resolution=_temple_preview_res(self.resolution, eng),
-                    progress=self._progress)
-                guide = temple_core_guide(outline, hinge, self.temple).bounds
-                mesh = build_castle_mesh(relief, progress=self._progress)
-                self.finished.emit(mesh, guide)
-            else:
-                relief = build_block_relief(
-                    self.lens, self.block, resolution=self.resolution,
-                    progress=self._progress)
-                mesh = build_castle_mesh(relief, progress=self._progress)
-                self.finished.emit(mesh, None)
+            mesh, _edges, guide = build_component_mesh(
+                self.spec, resolution=self.resolution, progress=self._progress)
+            self.finished.emit(mesh, guide)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
@@ -319,58 +254,42 @@ class MultiMeshWorker(_ProgressWorker):
     """Builds **every** loaded component's mesh in a *single* thread (BUILDPLAN M7
     UX: Build 3D builds all components). One worker / one thread for the whole run —
     never reassigned mid-flight — so there is no "QThread destroyed while running"
-    crash. Emits ``built(index, mesh, core_guide|None)`` as each finishes, then
-    ``finished``. ``specs`` are plain build descriptions (see _build_spec)."""
+    crash. Emits ``built(index, mesh, edges|None, core_guide|None)`` as each
+    finishes, then ``finished``. ``specs`` are plain build descriptions (see
+    _build_spec).
 
-    built = Signal(int, object, object)   # ws index, trimesh.Trimesh, core_guide|None
+    `solid` reaches this worker too. It did not used to, and that was the whole
+    of the 2026-08-07 finding 2: Build 3D came through here and so always
+    produced raster meshes with no edges, which left the display-mode combo
+    correctly disabled and apparently dead, while changing a parameter went
+    through `MeshWorker` and did build a solid.
+    """
+
+    built = Signal(int, object, object, object)   # index, mesh, edges|None, guide|None
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, specs: list[dict], resolution: float) -> None:
+    def __init__(self, specs: list[dict], resolution: float,
+                 solid: bool = False) -> None:
         super().__init__()
         self.specs = specs
         self.resolution = resolution
+        self.solid = solid
 
     def run(self) -> None:
         try:
-            from shapely.affinity import translate
-            from guildmodel.core.relief.castle import build_castle_mesh, build_castle_stage
-            from guildmodel.core.relief.flat import (
-                build_block_relief, build_temple_relief, temple_core_guide,
-                place_temple_on_blank,
-            )
             n = max(1, len(self.specs))
             for k, spec in enumerate(self.specs):
                 label = spec["label"]
 
-                def sub(lbl, frac, _k=k):
-                    self._progress(f"{label}: {lbl}", (_k + frac) / n)
+                def sub(lbl, frac, _k=k, _label=label):
+                    self._progress(f"{_label}: {lbl}", (_k + frac) / n)
 
                 sub("starting", 0.0)
-                mode = spec["mode"]
-                if mode == "castle":
-                    relief = build_castle_stage(
-                        spec["partition"], spec["castle"], spec["hinge"],
-                        stage=spec["stage"], resolution=self.resolution, progress=sub)
-                    mesh = build_castle_mesh(relief, progress=sub)
-                    self.built.emit(spec["index"], mesh, None)
-                elif mode == "temple":
-                    temple = spec["temple"]
-                    outline, hinge, eng = place_temple_on_blank(
-                        spec["outline"], spec["hinge"], spec["engraving"],
-                        temple.blank_length_mm, stock_side=temple.stock_side,
-                        snap=temple.snap_to_blank_end)
-                    relief = build_temple_relief(
-                        outline, temple, hinge, eng,
-                        resolution=_temple_preview_res(self.resolution, eng), progress=sub)
-                    guide = temple_core_guide(outline, hinge, temple).bounds
-                    mesh = build_castle_mesh(relief, progress=sub)
-                    self.built.emit(spec["index"], mesh, guide)
-                else:  # block
-                    relief = build_block_relief(
-                        spec["lens"], spec["block"], resolution=self.resolution, progress=sub)
-                    mesh = build_castle_mesh(relief, progress=sub)
-                    self.built.emit(spec["index"], mesh, None)
+                mesh, edges, guide = build_component_mesh(
+                    spec, resolution=self.resolution, solid=self.solid,
+                    progress=sub)
+                self.built.emit(spec["index"], mesh, edges, guide)
             self.finished.emit()
         except _Cancelled:
             self.cancelled.emit()
@@ -3114,7 +3033,11 @@ class MainWindow(QMainWindow):
         self._dark_mode = dark
         app = QApplication.instance()
         if app is not None:
-            app.setStyleSheet(theme.stylesheet(dark))
+            # Re-derive the UI scale rather than defaulting it: the stylesheet
+            # carries the scaled font sizes, so restyling without it would snap
+            # the whole UI back to 96-DPI sizing on a theme toggle.
+            app.setStyleSheet(theme.stylesheet(
+                dark, hidpi.ui_scale(app.primaryScreen(), self._prefs)))
         self.canvas.set_dark_mode(dark)
         self.view3d.set_dark_mode(dark)
         self.bed_canvas.set_dark_mode(dark)
@@ -5555,6 +5478,7 @@ class MainWindow(QMainWindow):
         ws = self._workspaces[i]
         ws.stage = self._stage
         ws.stage_cache = self._stage_cache
+        ws.edge_cache = self._edge_cache
         ws.mesh_built = self._mesh_built
         ws.core_guide = self._active_core_guide
         ws.last_programs = self._last_programs
@@ -5587,6 +5511,7 @@ class MainWindow(QMainWindow):
         self._is_temple = ws.is_temple
         self._stage = ws.stage
         self._stage_cache = ws.stage_cache
+        self._edge_cache = ws.edge_cache
         self._mesh_built = ws.mesh_built
         self._active_core_guide = ws.core_guide
         self._last_programs = ws.last_programs
@@ -6083,7 +6008,9 @@ class MainWindow(QMainWindow):
         self._switch_view(1)
         self.append_log(f"[3D] Building {n} component model{'s' if n != 1 else ''}…")
 
-        self._mesh_worker = MultiMeshWorker(specs, self._prefs["preview_resolution_mm"])
+        self._mesh_worker = MultiMeshWorker(
+            specs, self._prefs["preview_resolution_mm"],
+            solid=bool(self._prefs.get("use_solid_model", False)))
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
         self._mesh_thread.started.connect(self._mesh_worker.run)
@@ -6099,18 +6026,27 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(self._mesh_worker.cancel)
         self._mesh_thread.start()
 
-    def _on_multi_mesh_built(self, i: int, mesh, core_guide) -> None:
+    def _on_multi_mesh_built(self, i: int, mesh, edges, core_guide) -> None:
         """One component's mesh is ready — cache it into that component (M7 UX)."""
         ws = self._workspaces[i]
         if ws.castle_ready:
-            ws.stage_cache[ws.stage] = mesh       # shared with self._stage_cache iff active
+            key = ws.stage
+            ws.stage_cache[key] = mesh            # shared with self._stage_cache iff active
         else:
-            ws.stage_cache["flat"] = mesh
+            key = "flat"
+            ws.stage_cache[key] = mesh
             ws.core_guide = core_guide
             if i == self._active_ws:
                 self._active_core_guide = core_guide
+        # Edges belong to the component, not the window — see `edge_cache` on
+        # ComponentWorkspace. Keeping them in a window-level dict was survivable
+        # only while exactly one component could produce them. Shared with
+        # self._edge_cache iff active, exactly like stage_cache above.
+        ws.edge_cache[key] = edges
         ws.mesh_built = True
-        self.append_log(f"[3D]   {ws.label}: {len(mesh.vertices):,} verts")
+        self.append_log(
+            f"[3D]   {ws.label}: {len(mesh.vertices):,} verts"
+            + (f", {len(edges):,} edges" if edges else ""))
 
     def _on_multi_mesh_finished(self) -> None:
         self._close_progress()
@@ -6373,6 +6309,7 @@ class MainWindow(QMainWindow):
     def _on_flat_mesh_finished(self, mesh, core_guide) -> None:
         self._close_progress()
         self._stage_cache["flat"] = mesh
+        self._edge_cache["flat"] = None      # flat parts are raster-built: no edges
         self._active_core_guide = core_guide
         zero, _ = self._active_program_zero_3d()
         self.view3d.show_mesh(mesh, stock=self._flat_stock(),
