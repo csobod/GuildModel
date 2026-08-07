@@ -11,12 +11,19 @@ application startup path — import it where a solid is actually built.
 """
 from .build import build_castle_solid, build_terraces, zone_heights
 from .occ import BooleanError, is_valid, volume
+from .tessellate import Tessellation, tessellate
+from .zmap import grid_for, solid_to_relief, solid_to_zmap
 
 __all__ = [
     "BooleanError",
+    "Tessellation",
     "build_castle_solid",
     "build_terraces",
+    "grid_for",
     "is_valid",
+    "solid_to_relief",
+    "solid_to_zmap",
+    "tessellate",
     "volume",
     "zone_heights",
 ]

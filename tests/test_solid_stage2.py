@@ -217,3 +217,102 @@ def test_edge_polylines_are_deduplicated(demo_solid):
     keys = {(tuple(np.round(p[0], 6)), tuple(np.round(p[-1], 6)), len(p))
             for p in polys}
     assert len(keys) == len(polys)
+
+
+# ------------------------------------------------- the CAM adapter (§3.5 gate)
+
+@pytest.fixture(scope="module")
+def raster_relief(demo_partition):
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+
+    return build_castle_relief(demo_partition, CastleParams(), [],
+                               resolution=CUT_RES_MM)
+
+
+@pytest.fixture(scope="module")
+def solid_relief(demo_solid, demo_partition):
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM
+    from guildmodel.core.solid import solid_to_relief
+
+    return solid_to_relief(demo_solid, demo_partition, CastleParams(),
+                           resolution=CUT_RES_MM)
+
+
+def test_zmap_grid_matches_the_raster_exactly(raster_relief, solid_relief):
+    """Cell-for-cell comparability is the precondition for the whole §3.5 gate.
+
+    An off-by-one grid would make every later comparison meaningless while
+    still looking approximately right.
+    """
+    assert solid_relief.field.z.shape == raster_relief.field.z.shape
+    assert solid_relief.field.origin == raster_relief.field.origin
+    assert solid_relief.field.resolution == raster_relief.field.resolution
+
+
+def test_zmap_masks_match_the_raster(raster_relief, solid_relief):
+    """`inside` and `zone_index` are 2D and come from the partition either way.
+
+    `zmap._masks` mirrors the raster builder's inline construction; this is what
+    keeps the copy honest.
+    """
+    assert np.array_equal(solid_relief.inside, raster_relief.inside)
+    assert np.array_equal(solid_relief.zone_index, raster_relief.zone_index)
+
+
+def test_zmap_agrees_with_the_raster_surface(raster_relief, solid_relief):
+    """The gate itself: the derived Z-map reproduces the raster to microns.
+
+    Measured on the demo frame: mean +0.1 um, rms 3.6 um, 99.86% of in-body
+    cells within 5 um. Bounds here are loose enough not to be brittle and tight
+    enough that any real regression trips them.
+    """
+    m = raster_relief.inside
+    d = (solid_relief.field.z - raster_relief.field.z)[m]
+
+    assert abs(d.mean()) < 0.002, "systematic Z bias between the two paths"
+    assert np.sqrt((d ** 2).mean()) < 0.02
+    assert (np.abs(d) <= 0.005).mean() > 0.99
+    assert (np.abs(d) <= 0.10).mean() > 0.999
+
+
+def test_zmap_divergence_is_the_nosepad_artifact_only(
+        raster_relief, solid_relief, demo_partition):
+    """Where the two disagree, the solid is right — and this says why.
+
+    Every cell over 0.1 mm sits 6-7 mm past the *end* of a nosepad SCULPT cut.
+    The raster bands its footing by `distance(point, LineString)`, which wraps
+    radially around a cut's endpoint, so it blends up to 0.33 mm off the corner
+    of the nosepad tower where there is no step edge to blend at all. The swept
+    solid follows the edge and stops.
+
+    That is the distance-field artifact the B-Rep rewrite exists to remove, so
+    the assertion is directional: the solid must keep material (d > 0), never
+    remove extra.
+    """
+    m = raster_relief.inside
+    d = solid_relief.field.z - raster_relief.field.z
+    bad = m & (np.abs(d) > 0.1)
+
+    assert bad.sum() < 60, "divergence beyond the known nosepad artifact"
+    assert (d[bad] > 0).all(), "solid removed material the raster kept"
+
+    names = [z.name for z in demo_partition.zones]
+    zones = {names[i] for i in raster_relief.zone_index[bad]}
+    assert zones <= {"nosepad_od", "nosepad_os"}, f"unexpected zones: {zones}"
+
+
+def test_zmap_feeds_the_cam_unchanged(solid_relief):
+    """The adapter's contract: a CastleRelief the existing CAM can consume."""
+    from guildmodel.core.relief.castle import CUT_RES_MM, CastleRelief
+    from guildmodel.core.relief.heightfield import Heightfield
+
+    assert isinstance(solid_relief, CastleRelief)
+    assert isinstance(solid_relief.field, Heightfield)
+    assert solid_relief.field.resolution == CUT_RES_MM
+    assert solid_relief.anterior is None          # pre-M17 fast path preserved
+    assert solid_relief.field.z.dtype == np.float64
+    # Outside the body must read as the anterior datum, not as -inf or NaN.
+    assert np.all(np.isfinite(solid_relief.field.z))
+    assert np.all(solid_relief.field.z[~solid_relief.inside] == 0.0)

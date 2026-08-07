@@ -3826,6 +3826,51 @@ The spline machinery stays in `occ.py` behind `spline=False` so the experiment
 is re-runnable when OCCT moves; `test_solid_stage2.py` pins both the wire's
 fit quality and the decision.
 
+### The CAM adapter — `core/solid/zmap.py` *(2026-08-06)*
+
+**The §3.5 gate is met.** `solid_to_relief` returns a `CastleRelief` the
+existing CAM consumes unchanged. Measured against `build_castle_relief` on the
+demo frame at `CUT_RES_MM`, over 65,949 in-body cells:
+
+```
+grid            identical (316, 847), same origin
+inside          identical           zone_index  identical
+mean            +0.0001 mm          rms         0.0036 mm
+within 5 um     99.86%              within 0.1 mm   99.96%
+```
+
+Solid build ~9 s, Z-map 0.22 s. Sampling is by rasterising the tessellation with
+a max-Z reduction rather than casting a ray per cell — same answer, one
+vectorised pass per triangle, and exact within each triangle instead of sampled
+at a point. Meshed at 5 um for CAM (`CAM_DEFLECTION_MM`), not the viewer's 20.
+
+**Two bugs found by the comparison, both invisible without it:**
+
+* **Footing bands were not clipped by zone.** The raster applies a blend only
+  where `zi == ia` / `zi == ib` — inside the two neighbouring zones. The sweep
+  applied its full band to whatever it crossed, and at the scheduled radii a
+  band is ~8 mm wide, easily reaching a third zone. Now each half-blend is a
+  separate body clipped to its own zone prism.
+* **The high/low side probe flipped on some OS edges.** A single probe at the
+  cut's midpoint lands outside both neighbours often enough to matter, and
+  getting it backwards is silent — the carve is built on the low side, clipping
+  it to the high zone leaves nothing, and the step never blends. It showed as
+  1,179 cells adrift in `nosepad_os` against 11 in `nosepad_od`; that asymmetry
+  was the tell. Now voted across every station.
+
+**The residual 25 cells are a raster artifact, and the solid is right.** All of
+them sit **6–7 mm past the *end* of a nosepad SCULPT cut** — the nearest point
+on the cut is its endpoint, in all 25. The raster bands its footing by
+`distance(point, LineString)`, which wraps **radially around a cut's endpoint**,
+so it shaves up to **0.33 mm off the corner of the nosepad tower where there is
+no step edge to blend at all**. The swept solid follows the edge and stops.
+
+This is the first place the rewrite has *corrected* the shipping model rather
+than merely reproducing it, and it is exactly the class of defect §3.5
+anticipated: "where they disagree, the B-Rep is presumed right and the
+difference must be explained." The test asserts the divergence is directional —
+the solid may only ever keep material the raster wrongly removed.
+
 # Reference
 
 ## Module status (as of 2026-06-16, M6 complete — M6.5)

@@ -130,37 +130,62 @@ def _stations(cut_line, n: int) -> tuple[np.ndarray, np.ndarray]:
 
 def _orient_high_side(partition: CastlePartition, pts: np.ndarray,
                       perps: np.ndarray, names: tuple[str, ...],
-                      heights: dict[str, float]) -> np.ndarray:
+                      heights: dict[str, float], probe_mm: float = 0.2
+                      ) -> np.ndarray:
     """Flip the normals so that -u is the HIGH terrace, matching `_footing_z`.
 
-    Decided by asking which zone actually owns the ground on that side, rather
-    than by trusting the cut's direction — a SCULPT line's orientation is an
-    artifact of how it was drawn.
+    Decided by asking which zone owns the ground either side, rather than by
+    trusting the cut's direction — a SCULPT line's orientation is an artifact of
+    how it was drawn.
+
+    **Voted across every station, not probed once at the midpoint.** A single
+    probe is wrong wherever that one point happens to land outside both
+    neighbours — near a zone corner, or where the extended cut runs past the
+    body — and getting it backwards is silent: the carve section is then built
+    on the low side, clipping it to the high zone leaves nothing, and the step
+    simply never gets blended. That showed up as 1,179 cells adrift in
+    `nosepad_os` while `nosepad_od` had 11.
     """
-    mid, pn = pts[len(pts) // 2], perps[len(perps) // 2]
-    probe = Point(*(mid - pn * 0.3))
-    owner = next((z.name for z in partition.zones if z.polygon.contains(probe)),
-                 None)
-    if owner is None:
-        return perps
-    high = names[0] if heights[names[0]] > heights[names[1]] else names[1]
-    return -perps if owner != high else perps
+    hi = names[0] if heights[names[0]] > heights[names[1]] else names[1]
+    lo = names[1] if hi == names[0] else names[0]
+    hi_poly, lo_poly = partition.zone(hi).polygon, partition.zone(lo).polygon
+
+    votes = 0
+    for p, pn in zip(pts, perps):
+        minus, plus = Point(*(p - pn * probe_mm)), Point(*(p + pn * probe_mm))
+        if hi_poly.contains(minus) or lo_poly.contains(plus):
+            votes += 1
+        elif hi_poly.contains(plus) or lo_poly.contains(minus):
+            votes -= 1
+    return perps if votes >= 0 else -perps
 
 
 def _blend_section(p_xy, perp, h_high: float, h_low: float,
-                   fillet: FootingFillet, above: bool, top: float,
+                   fillet: FootingFillet, side: str, top: float,
                    n: int = 40):
-    """Closed section either side of the S-blend, in the (perp, Z) plane.
+    """Half of the S-blend as a closed section in the (perp, Z) plane.
 
-    above=True  -> the material to CARVE: everything over the blend curve.
-    above=False -> the material to FILL: everything under it, down to z = 0.
+    The two halves are separate bodies because they act on different terraces
+    and must be clipped to different zones — mirroring the raster's rule
+    exactly (`castle.py`: `on_high = (zi == ia) & (d < span_high)` and
+    `on_low = (zi == ib) & (d < span_low)`). Sweeping one full-width band and
+    applying it to whatever it crossed was wrong: a band is up to ~8 mm wide at
+    the scheduled radii and readily reaches a third zone it has no business
+    touching.
+
+    side="high" -> material to CARVE off the high terrace: above the blend
+                   curve, over s in [-span_high, 0].
+    side="low"  -> material to FILL onto the low terrace: below the blend
+                   curve, over s in [0, span_low].
     """
     span_hi, span_lo = _footing_spans(
         h_high - h_low, fillet.exterior_mm, fillet.interior_mm, fillet.first)
-    if span_hi <= 0 and span_lo <= 0:
-        raise BooleanError("degenerate footing span")
+    span = span_hi if side == "high" else span_lo
+    if span <= 0:
+        raise BooleanError(f"degenerate {side}-side footing span")
 
-    s = np.linspace(-span_hi, span_lo, n)
+    s = (np.linspace(-span_hi, 0.0, n) if side == "high"
+         else np.linspace(0.0, span_lo, n))
     z = _footing_z(s, h_high, h_low,
                    fillet.exterior_mm, fillet.interior_mm, fillet.first)
 
@@ -173,12 +198,9 @@ def _blend_section(p_xy, perp, h_high: float, h_low: float,
     mp = BRepBuilderAPI_MakePolygon()
     for si, zi in zip(s, z):
         mp.Add(at(si, zi))
-    if above:
-        mp.Add(at(s[-1], top))
-        mp.Add(at(s[0], top))
-    else:
-        mp.Add(at(s[-1], -SWEEP_MARGIN_MM))
-        mp.Add(at(s[0], -SWEEP_MARGIN_MM))
+    close_z = top if side == "high" else -SWEEP_MARGIN_MM
+    mp.Add(at(s[-1], close_z))
+    mp.Add(at(s[0], close_z))
     mp.Close()
     return mp.Wire()
 
@@ -202,27 +224,46 @@ def _sweep(pts: np.ndarray, sections) -> TopoDS_Shape:
 
 def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
                    heights: dict[str, float], fillet: FootingFillet,
-                   top: float, stations: int = FOOTING_STATIONS
-                   ) -> tuple[TopoDS_Shape, TopoDS_Shape]:
-    """(carve, fill) swept along one SCULPT cut."""
+                   top: float, zone_prisms: dict[str, TopoDS_Shape] | None = None,
+                   stations: int = FOOTING_STATIONS
+                   ) -> tuple[TopoDS_Shape | None, TopoDS_Shape | None]:
+    """(carve, fill) swept along one SCULPT cut, each clipped to its own zone.
+
+    Either may come back None when that side's span is degenerate — the raster
+    skips those the same way.
+    """
     names = zone_edge.zone_names
     if len(names) != 2 or not all(n in heights for n in names):
         raise BooleanError(f"edge {zone_edge.name!r} has no two known neighbours")
-    h_high, h_low = max(heights[names[0]], heights[names[1]]), \
-        min(heights[names[0]], heights[names[1]])
+    hi_name, lo_name = ((names[0], names[1])
+                        if heights[names[0]] > heights[names[1]]
+                        else (names[1], names[0]))
+    h_high, h_low = heights[hi_name], heights[lo_name]
     if h_high - h_low < 1e-9:
         raise BooleanError("no step across this edge")
 
     pts, perps = _stations(zone_edge.cut, stations)
     perps = _orient_high_side(partition, pts, perps, names, heights)
 
-    carve = _sweep(pts, [_blend_section(p, pn, h_high, h_low, fillet,
-                                        above=True, top=top)
-                         for p, pn in zip(pts, perps)])
-    fill = _sweep(pts, [_blend_section(p, pn, h_high, h_low, fillet,
-                                       above=False, top=top)
-                        for p, pn in zip(pts, perps)])
-    return carve, fill
+    if zone_prisms is None:
+        zone_prisms = {}
+
+    def prism_for(name: str) -> TopoDS_Shape:
+        if name not in zone_prisms:
+            poly = partition.zone(name).polygon
+            zone_prisms[name] = extrude(polygon_to_face(poly, 0.0), top)
+        return zone_prisms[name]
+
+    out: list[TopoDS_Shape | None] = []
+    for side, zone_name in (("high", hi_name), ("low", lo_name)):
+        try:
+            body = _sweep(pts, [_blend_section(p, pn, h_high, h_low, fillet,
+                                               side, top)
+                                for p, pn in zip(pts, perps)])
+            out.append(common(body, prism_for(zone_name)))
+        except BooleanError:
+            out.append(None)
+    return out[0], out[1]
 
 
 # --------------------------------------------------------------------- build
@@ -242,6 +283,7 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     solid = build_terraces(partition, h)
 
     carves, fills = [], []
+    zone_prisms: dict[str, TopoDS_Shape] = {}
     named = [e for e in partition.edges if e.canonical]
     for i, edge in enumerate(named):
         try:
@@ -249,21 +291,24 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
         except AttributeError:
             continue
         try:
-            carve, fill = footing_bodies(partition, edge, h, fillet, top)
+            carve, fill = footing_bodies(partition, edge, h, fillet, top,
+                                         zone_prisms)
         except BooleanError:
             # A degenerate or step-less seam contributes no blend. The raster
             # path treats these the same way — `_footing_centers` returns None
             # and the edge stays a hard step.
             continue
-        carves.append(carve)
-        fills.append(fill)
+        if carve is not None:
+            carves.append(carve)
+        if fill is not None:
+            fills.append(fill)
         _report(progress, "Blending footings",
                 0.10 + 0.70 * (i + 1) / max(len(named), 1))
 
-    # Composite rule, from the raster: fills first, then carves win.
+    # Composite rule, from the raster: fills first, then carves win. Each body
+    # is already clipped to the zone it belongs to, so no further clipping here.
     if fills:
-        clip = body_prism(partition, top)
-        solid = fuse(solid, common(fuse_all(fills), clip))
+        solid = fuse(solid, fuse_all(fills))
     if carves:
         solid = cut(solid, fuse_all(carves))
 
