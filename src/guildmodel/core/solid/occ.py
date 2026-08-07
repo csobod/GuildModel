@@ -34,26 +34,33 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.GeomAbs import GeomAbs_Shape
+from OCP.Geom import Geom_BSplineCurve
 from OCP.GeomAPI import GeomAPI_Interpolate, GeomAPI_PointsToBSpline
 from OCP.GProp import GProp_GProps
 from OCP.TColgp import TColgp_Array1OfPnt, TColgp_HArray1OfPnt
+from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
 from OCP.TopAbs import TopAbs_ShapeEnum
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
+from OCP.TopTools import TopTools_ListOfShape
 from OCP.gp import gp_Pnt, gp_Vec
 
 __all__ = [
     "CORNER_DEG",
     "FIT_TOL_MM",
     "BooleanError",
+    "area",
     "common",
+    "curve_ring_wire",
     "cut",
+    "cut_many",
     "edge_points",
     "explore",
     "extrude",
     "fuse",
     "fuse_all",
     "is_valid",
+    "nurbs_edge",
     "polygon_ring_wire",
     "polygon_to_face",
     "polyline_wire",
@@ -99,18 +106,27 @@ def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
     means following the footing swells rather than sitting at a fixed Z.
 
     Exact against the B-Rep rather than sampled off a mesh: there are only a few
-    hundred of these per ring, so the cost is irrelevant and the anchor is the
-    one thing in the feature that must not carry a sampling error.
+    hundred of these per ring, and the anchor is the one thing in the feature
+    that must not carry a sampling error.
+
+    The shape is `Load`ed once and each ray fired with the curve-only `Init`.
+    The three-argument `Init(shape, line, tol)` re-loads the shape *per ray*,
+    which is O(faces) every time — on a 6,000-face castle that made the anchor
+    rays cost more than some of the booleans they were feeding.
     """
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
-    from OCP.gp import gp_Dir, gp_Lin
+    from OCP.GeomAdaptor import GeomAdaptor_Curve
+    from OCP.Geom import Geom_Line
+    from OCP.gp import gp_Ax1, gp_Dir
 
     inter = BRepIntCurveSurface_Inter()
+    inter.Load(shape, float(tol))
     up = gp_Dir(0.0, 0.0, 1.0)
     want_top = face != "bottom"
     out = np.full(len(pts_xy), float(missing), dtype=float)
     for i, (x, y) in enumerate(pts_xy):
-        inter.Init(shape, gp_Lin(gp_Pnt(float(x), float(y), -1e4), up), float(tol))
+        line = Geom_Line(gp_Ax1(gp_Pnt(float(x), float(y), -1e4), up))
+        inter.Init(GeomAdaptor_Curve(line))
         best = None
         while inter.More():
             z = inter.Pnt().Z()
@@ -122,9 +138,27 @@ def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
     return out
 
 
+#: Relative precision for mass properties. The default (no `Eps`) integrates on
+#: a fixed grid, which is exact enough for planar polygonal faces and **wrong**
+#: for spline-bounded ones: the demo body face measured 1546.690 mm2 by default
+#: against 1483.750 mm2 adaptively — a 4% error, in the direction that looks
+#: like the curve added material. It did not; the curve adds 0.649 mm2 over the
+#: polygon inscribed in it, which is exactly the chord deficit and exactly what
+#: the adaptive figure shows. Every area or volume taken on geometry that may
+#: carry a real curve has to ask for the adaptive integration.
+GPROP_EPS = 1e-6
+
+
 def volume(shape: TopoDS_Shape) -> float:
     props = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, props)
+    BRepGProp.VolumeProperties_s(shape, props, GPROP_EPS)
+    return props.Mass()
+
+
+def area(shape: TopoDS_Shape) -> float:
+    """Surface area, adaptively integrated — see `GPROP_EPS`."""
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(shape, props, GPROP_EPS)
     return props.Mass()
 
 
@@ -169,6 +203,22 @@ CORNER_DEG = 25.0
 #: outline: 4.7 um worst case, 1.4 um rms — 30x tighter than the 0.15 mm raster
 #: this replaces, and invisible against any acetate machining tolerance.
 FIT_TOL_MM = 0.005
+
+
+def _signed_area(points) -> float:
+    """Shoelace area — positive counter-clockwise. Used only for its sign.
+
+    A closed B-spline's control polygon winds the same way the curve does, so
+    this answers "which way round does this go?" for a ring of coordinates and
+    for a curve's poles alike.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) < 3:
+        return 0.0
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+    return 0.5 * sum(x0 * y1 - x1 * y0
+                     for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))
 
 
 def polygon_ring_wire(coords, z: float):
@@ -285,7 +335,69 @@ def spline_ring_wire(coords, z: float, corner_deg: float = CORNER_DEG,
     return mw.Wire()
 
 
-def ring_wire(coords, z: float, spline: bool = False):
+def nurbs_edge(curve, z: float = 0.0):
+    """One `TopoDS_Edge` carrying the drawing's exact B-spline.
+
+    Not a fit. `curve` is a `core.geometry.curves.NurbsCurve` holding the poles,
+    knots, multiplicities and degree the DXF `SPLINE` was authored with, so this
+    is a transcription: the resulting edge *is* the curve GuildDraw drew.
+
+    Verified on the demo frame by projecting every point of the DXF's own
+    `flattening(0.01)` onto the rebuilt curve — **worst deviation 0.0000 nm**,
+    for the outline and both lens rings. Compare the re-fitting spike's 5.2 um
+    (BUILDPLAN "Spline ring wires"), which is the error you get for
+    reconstructing a curve from its own approximation.
+
+    Closed DXF splines arrive *clamped* with coincident first and last poles,
+    not periodic — measured, and OCCT rejects them outright as periodic
+    ("# Poles and degree mismatch"). So `Periodic=False` here is not a
+    simplification; it is what the data is.
+    """
+    vals, mults = curve.knots_and_multiplicities()
+
+    poles = TColgp_Array1OfPnt(1, len(curve.control_points))
+    for i, (x, y) in enumerate(curve.control_points, start=1):
+        poles.SetValue(i, gp_Pnt(float(x), float(y), float(z)))
+
+    knots = TColStd_Array1OfReal(1, len(vals))
+    multiplicities = TColStd_Array1OfInteger(1, len(vals))
+    for i, (v, m) in enumerate(zip(vals, mults), start=1):
+        knots.SetValue(i, float(v))
+        multiplicities.SetValue(i, int(m))
+
+    try:
+        if curve.rational:
+            weights = TColStd_Array1OfReal(1, len(curve.weights))
+            for i, w in enumerate(curve.weights, start=1):
+                weights.SetValue(i, float(w))
+            geom = Geom_BSplineCurve(poles, weights, knots, multiplicities,
+                                     int(curve.degree), False)
+        else:
+            geom = Geom_BSplineCurve(poles, knots, multiplicities,
+                                     int(curve.degree), False)
+    except Exception as exc:                       # OCCT raises its own types
+        raise BooleanError(f"B-spline construction failed: {exc}") from exc
+
+    return BRepBuilderAPI_MakeEdge(geom).Edge()
+
+
+def curve_ring_wire(curve, z: float = 0.0):
+    """A closed wire that is ONE edge — the drawing's curve, whole.
+
+    This is the payoff. The demo outline is 64 control points; flattened it is
+    342 points and therefore 342 `TopoDS_Edge`s, and the solid carries ~3,850
+    edges of which not one is a boundary of the frame in any meaningful sense.
+    Here it is a single edge, exact at any zoom, and a real curve for
+    curve-driven CAM to follow.
+    """
+    edge = nurbs_edge(curve, z)
+    mw = BRepBuilderAPI_MakeWire(edge)
+    if not mw.IsDone():
+        raise BooleanError("curve wire did not close")
+    return mw.Wire()
+
+
+def ring_wire(coords, z: float = 0.0, spline: bool = False, curve=None):
     """Closed wire at height `z`.
 
     **Polygonal by default, deliberately.** `spline_ring_wire` produces a far
@@ -307,7 +419,29 @@ def ring_wire(coords, z: float, spline: bool = False):
     for the route that gets the benefit without this risk — refit smooth edge
     chains at *extraction* time, for CAM and display, rather than changing the
     faces the booleans run on.
+
+    **`curve` is the third option, and the right one.** Where the caller can
+    hand over the drawing's own `NurbsCurve` — not a fit to these coords, the
+    authored definition — this returns a single exact edge. That is a different
+    proposition from `spline=True` above: there is no fitting step, so none of
+    the tolerance behaviour in that table applies. The polyline stays the
+    fallback for geometry that genuinely has no source curve (SCULPT cuts,
+    derived zone boundaries) and for any curve the kernel refuses.
     """
+    if curve is not None:
+        try:
+            wire = curve_ring_wire(curve, z)
+            # A B-spline carries its own direction, and it has nothing to do
+            # with how the caller wound the Shapely ring. `polygon_to_face`
+            # relies on `orient(poly, 1.0)` to get exterior-CCW / holes-CW, so a
+            # curve running the other way silently produces a face OCCT calls
+            # invalid — the failure this kernel likes to hand back with a
+            # plausible bounding box attached. Match the ring the wire replaces.
+            if _signed_area(coords) * _signed_area(curve.control_points) < 0:
+                wire.Reverse()
+            return wire
+        except BooleanError:
+            pass                      # fall through to the polyline
     if not spline:
         return polygon_ring_wire(coords, z)
     try:
@@ -316,7 +450,8 @@ def ring_wire(coords, z: float, spline: bool = False):
         return polygon_ring_wire(coords, z)
 
 
-def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False):
+def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False,
+                    curves=None):
     """Planar face at height `z`, holes included.
 
     The hole wires must wind **opposite** to the outer wire, and must be added
@@ -326,11 +461,21 @@ def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False):
     error. `orient(poly, 1.0)` normalises to exterior-CCW / holes-CW regardless
     of how the caller's polygon was wound, so this does not depend on Shapely's
     incoming convention.
+
+    `curves` is anything with a `ring_curve(ring)` method — in practice a
+    `CastlePartition` — used to look up the authored `NurbsCurve` behind each
+    ring. Where one is found the wire is a single exact edge instead of one
+    edge per flattened vertex; where it is not, nothing changes.
     """
     poly = orient(poly, 1.0)
-    mf = BRepBuilderAPI_MakeFace(ring_wire(poly.exterior.coords, z, spline))
+
+    def wire_for(ring):
+        curve = curves.ring_curve(ring) if curves is not None else None
+        return ring_wire(ring.coords, z, spline, curve=curve)
+
+    mf = BRepBuilderAPI_MakeFace(wire_for(poly.exterior))
     for interior in poly.interiors:
-        mf.Add(ring_wire(interior.coords, z, spline))
+        mf.Add(wire_for(interior))
     return mf.Face()
 
 
@@ -383,6 +528,11 @@ def spline_wire(pts_xy: np.ndarray, z: float):
 # ------------------------------------------------------------------ booleans
 
 def _run(op, label: str) -> TopoDS_Shape:
+    # OCCT's boolean core is thread-parallel and it is simply off by default.
+    # Measured on the demo frame's all-features build: 82.0 s -> 62.2 s, with a
+    # bit-identical result (same volume, same face count). There is no accuracy
+    # trade here — it is the same algorithm on more cores.
+    op.SetRunParallel(True)
     op.Build()
     if not op.IsDone():
         raise BooleanError(f"{label}: operation did not complete")
@@ -391,6 +541,47 @@ def _run(op, label: str) -> TopoDS_Shape:
 
 def cut(a: TopoDS_Shape, b: TopoDS_Shape) -> TopoDS_Shape:
     return _run(BRepAlgoAPI_Cut(a, b), "cut")
+
+
+def cut_many(target: TopoDS_Shape, tools: list[TopoDS_Shape]) -> TopoDS_Shape:
+    """Subtract every tool in ONE boolean pass.
+
+    Not the same thing as `cut(target, fuse_all(tools))`, and not the same thing
+    as cutting them one at a time — both of those were measured and both are
+    worse:
+
+    * **Fuse first, then cut.** Fusing the demo frame's eight feature cutters
+      into a single tool costs 23.6 s on its own and the cut that follows costs
+      31.8 s. OCCT's boolean cost is superlinear in the complexity of *both*
+      operands, so building one enormous tool is the wrong direction.
+    * **One cut per tool.** Each result carries the previous tool's faces, so
+      the target inflates as you go — 1,244 -> 6,471 faces across the demo
+      build, and the last cuts pay for all the earlier ones. Cutting the groove
+      out of the inflated 5,349-face solid cost 9.6 s; the same groove against
+      the un-inflated target is part of a 7.5 s pass that does two other
+      features as well.
+
+    One pass with N tools keeps the target at its original complexity and lets
+    the kernel intersect everything once: 32.9 s -> 7.5 s for the demo frame's
+    bezel + edge features + groove, with a volume delta of 0.00 mm3.
+
+    **The caller owns the ordering question.** This is only equivalent to
+    sequential cutting when the tools do not depend on one another — see
+    `build_castle_solid`, where the features that read the surface beneath them
+    stay sequential and only the independent ones come here.
+    """
+    if not tools:
+        return target
+    if len(tools) == 1:
+        return cut(target, tools[0])
+    op = BRepAlgoAPI_Cut()
+    args, tool_list = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(target)
+    for t in tools:
+        tool_list.Append(t)
+    op.SetArguments(args)
+    op.SetTools(tool_list)
+    return _run(op, "cut_many")
 
 
 def fuse(a: TopoDS_Shape, b: TopoDS_Shape) -> TopoDS_Shape:
