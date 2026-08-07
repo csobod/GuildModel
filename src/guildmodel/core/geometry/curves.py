@@ -38,7 +38,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["NurbsCurve", "circle_curve", "cubic_bezier_chain", "mirror_x", "mirror_y"]
+__all__ = ["NurbsCurve", "OffsetCurve", "circle_curve", "cubic_bezier_chain",
+           "mirror_x", "mirror_y"]
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,49 @@ class NurbsCurve:
                                    n + 1)                        # periodic, tight
 
 
-def mirror_x(curve: NurbsCurve) -> NurbsCurve:
+@dataclass(frozen=True)
+class OffsetCurve:
+    """A curve running parallel to `basis` at a fixed distance, in the XY plane.
+
+    **Why this is a type and not a fitted `NurbsCurve`.** The exact offset of a
+    B-spline is not a B-spline — only lines and circles offset to their own kind
+    — so writing one down as poles and knots means approximating, and the whole
+    point of `NurbsCurve` is that nothing here approximates. Saying instead
+    *"the lens curve, 0.6 mm in"* is exact, and the kernel has a matching
+    representation (`Geom_OffsetCurve`) that evaluates it without ever fitting.
+
+    This exists for the rim lip. With the lens groove on, the visible aperture
+    is the lens contour shrunk by the groove depth; `features.lip_partition`
+    used to get that from a Shapely buffer of the *flattened* ring, which is an
+    approximation of an approximation and left the aperture polygonal even when
+    the drawing was curved.
+
+    `distance` is signed in OCCT's convention — the offset direction is
+    `Z x tangent`, so the sign that points inward depends on which way the curve
+    winds, and the two lens rings of the demo frame wind opposite ways.
+    `lip_partition` therefore picks the sign by measuring, not by assuming.
+    """
+
+    basis: NurbsCurve
+    distance: float
+    layer: str = ""
+
+    @property
+    def control_points(self) -> np.ndarray:
+        """The basis hull.
+
+        Read only for the curve's *winding* (`occ.ring_wire`), which a parallel
+        offset preserves — so the basis answers correctly and there is nothing
+        to compute. It is emphatically not a control polygon of this curve.
+        """
+        return self.basis.control_points
+
+    @property
+    def closed(self) -> bool:
+        return self.basis.closed
+
+
+def mirror_x(curve):
     """The curve with x negated.
 
     The importer's `posterior=True` flip (BUILDPLAN M1.2, the single flip point
@@ -110,22 +153,30 @@ def mirror_x(curve: NurbsCurve) -> NurbsCurve:
     mirroring its control points: knots, degree and weights are unaffected,
     because the basis functions do not move when the hull does.
     """
-    cp = curve.control_points.copy()
-    cp[:, 0] = -cp[:, 0]
-    return NurbsCurve(control_points=cp, knots=curve.knots, degree=curve.degree,
-                      closed=curve.closed, weights=curve.weights,
-                      layer=curve.layer)
+    return _mirrored(curve, 0)
 
 
-def mirror_y(curve: NurbsCurve) -> NurbsCurve:
+def mirror_y(curve):
     """The curve with y negated.
 
     The `.gdraw` reader's scene → posterior transform is (x, y) → (-x, -y) —
     GuildDraw scene space is Y-down — so that path needs both mirrors where the
     DXF path (already Y-up) needs only :func:`mirror_x`.
     """
+    return _mirrored(curve, 1)
+
+
+def _mirrored(curve, axis: int):
+    if isinstance(curve, OffsetCurve):
+        # A reflection reverses handedness, so the `Z x tangent` direction flips
+        # and the signed distance has to flip with it — otherwise the mirrored
+        # aperture would be offset outward. No importer produces an offset
+        # today; this keeps the operation total rather than silently wrong if
+        # one ever does.
+        return OffsetCurve(basis=_mirrored(curve.basis, axis),
+                           distance=-curve.distance, layer=curve.layer)
     cp = curve.control_points.copy()
-    cp[:, 1] = -cp[:, 1]
+    cp[:, axis] = -cp[:, axis]
     return NurbsCurve(control_points=cp, knots=curve.knots, degree=curve.degree,
                       closed=curve.closed, weights=curve.weights,
                       layer=curve.layer)

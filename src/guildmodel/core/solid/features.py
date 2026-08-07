@@ -43,6 +43,7 @@ from .occ import (
     cut_many,
     extrude,
     fuse_all,
+    nurbs_edge,
     polygon_to_face,
     surface_z_at,
 )
@@ -732,6 +733,68 @@ def lip_body(body: Polygon, depth_mm: float, is_hole=lambda r: False) -> Polygon
     return _P(body.exterior, holes)
 
 
+#: Chord tolerance for sampling an offset aperture back to points, in mm. The
+#: same 0.01 the importers flatten at, so the lip polyline is no coarser than
+#: the contour it came from and every consumer that wants points is unaffected.
+_LIP_CHORD_TOL_MM = 0.01
+
+
+#: How far the exact offset may disagree in area with the Shapely buffer of the
+#: same ring, as a fraction. They describe the same shrink by two routes, so the
+#: agreement is close where the input is finely flattened — 2e-5 on the demo
+#: apertures — and looser on a coarse ring, where the buffer is offsetting
+#: visibly straight chords (1.5e-3 on a 256-segment circle). One percent leaves
+#: room for the coarse case while still being far below any way of getting the
+#: offset genuinely wrong, all of which miss by tens of percent.
+_LIP_AREA_TOL = 0.01
+
+
+def _offset_aperture(curve, reference, depth: float):
+    """`(points, OffsetCurve)` for the aperture shrunk by `depth`, or None.
+
+    The exact parallel curve, sampled — not `lens.buffer(-depth)`, which offsets
+    the *flattened* ring and so approximates an approximation. Both land in the
+    same place; the difference is that this one still knows what it is, so the
+    rim lip stays a curve all the way into the kernel.
+
+    `reference` is that Shapely buffer, and it does two jobs. It **picks the
+    sign**: OCCT offsets along `Z x tangent`, so which sign shrinks depends on
+    how the curve winds, and the demo frame's two lens rings wind opposite ways
+    — assume a sign and one eye grows while the other shrinks. And it **bounds
+    the answer**: `Geom_OffsetCurve` does not trim, so where a contour's
+    curvature radius dips below `depth` it hands back a self-intersecting curve,
+    and an offset larger than the aperture passes clean through the middle and
+    comes back as a smaller ring wound the other way — valid, simple, smaller in
+    area, and completely wrong. Requiring agreement with the buffer catches both
+    without needing to enumerate them.
+
+    Returns None on any of that, and the caller falls back to the buffer.
+    """
+    if curve is None or reference is None or depth <= 0.0:
+        return None
+    from shapely.geometry import Polygon as _P
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    from ..geometry.curves import OffsetCurve
+
+    for signed in (-depth, depth):
+        offset = OffsetCurve(basis=curve, distance=signed,
+                             layer=getattr(curve, "layer", ""))
+        try:
+            adaptor = BRepAdaptor_Curve(nurbs_edge(offset, 0.0))
+            sampler = GCPnts_QuasiUniformDeflection(adaptor, _LIP_CHORD_TOL_MM)
+            pts = [(sampler.Value(i).X(), sampler.Value(i).Y())
+                   for i in range(1, sampler.NbPoints() + 1)]
+            poly = _P(pts)
+        except Exception:                                    # noqa: BLE001
+            continue
+        if len(pts) < 4 or not poly.is_valid or not poly.exterior.is_simple:
+            continue
+        if abs(poly.area - reference.area) <= _LIP_AREA_TOL * reference.area:
+            return pts, offset
+    return None
+
+
 def lip_partition(partition: CastlePartition, depth_mm: float):
     """Re-partition the frame against the *shrunk* apertures.
 
@@ -748,26 +811,42 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
     body exactly, with no buffer artifacts, and it reuses code that is already
     proven: same nine zone names, still `classified`, same ten SCULPT edges.
     """
-    from ..geometry.regions import partition_zones
+    from ..geometry.regions import curves_by_ring, partition_zones
     from shapely.geometry import Polygon as _P
 
     holes = [r for r in partition.body.interiors if partition.is_hole(r)]
-    lenses = [_P(r) for r in partition.body.interiors
-              if not partition.is_hole(r)]
-    if not lenses:
+    lens_rings = [r for r in partition.body.interiors if not partition.is_hole(r)]
+    if not lens_rings:
         return partition
     outline = _P(partition.body.exterior, holes)
 
-    shrunk = []
-    for lens in lenses:
-        s = lens.buffer(-abs(depth_mm))
-        if s.is_empty:
-            shrunk.append(lens)                   # degenerate: leave it alone
+    shrunk, lip_points, lip_curves = [], [], []
+    for ring in lens_rings:
+        lens = _P(ring)
+        buffered = lens.buffer(-abs(depth_mm))
+        buffered = (None if buffered.is_empty else
+                    max(getattr(buffered, "geoms", [buffered]), key=lambda g: g.area))
+        made = _offset_aperture(partition.ring_curve(ring), buffered, abs(depth_mm))
+        if made is not None:
+            pts, offset = made
+            shrunk.append(_P(pts))
+            lip_points.append(pts)
+            lip_curves.append(offset)
             continue
-        shrunk.append(max(getattr(s, "geoms", [s]), key=lambda g: g.area))
+        # No authored curve, or the exact offset disagreed with the buffer:
+        # take the buffer. Empty means the aperture vanished at this depth —
+        # leave it alone rather than punch it out.
+        shrunk.append(lens if buffered is None else buffered)
 
     cuts = [list(e.cut.coords) for e in partition.edges]
-    lip = partition_zones(outline, shrunk, cuts)
+    # The outline exterior and the decorative holes are untouched by the shrink,
+    # so their keys still match and they carry straight through — on the demo
+    # frame that alone is 342 of the body's flattened vertices against the two
+    # apertures' 266. The apertures then come back as offsets, above.
+    source = dict(partition.source_curves)
+    source.update(curves_by_ring(lip_points, lip_curves))
+
+    lip = partition_zones(outline, shrunk, cuts, source_curves=source)
     if not lip.classified or len(lip.zones) != len(partition.zones):
         raise BooleanError("re-partitioning against the rim lip changed the castle")
     return lip

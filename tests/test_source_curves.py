@@ -438,3 +438,139 @@ def test_fuse_all_is_one_pass_and_says_the_same_thing():
     for b in boxes[1:]:
         folded = fuse(folded, b)
     assert mesh_volume(fuse_all(boxes)) == pytest.approx(mesh_volume(folded), abs=1e-6)
+
+
+# ------------------------------------------------------- the rim lip (groove on)
+
+def test_the_offset_curve_is_exactly_parallel_to_its_basis():
+    """`OffsetCurve` says "that curve, d away" and means it. Sampled all round,
+    every point is exactly `d` from the basis — which no offset of a *flattened*
+    ring can claim, and no B-spline fit of the offset can either (the exact
+    offset of a B-spline is not a B-spline)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from guildmodel.core.geometry.curves import OffsetCurve, circle_curve
+    from guildmodel.core.solid.occ import nurbs_edge
+
+    basis = circle_curve((2.0, -1.0), 12.0)
+    offset = OffsetCurve(basis=basis, distance=-0.75)
+    base_geom = BRep_Tool.Curve_s(nurbs_edge(basis, 0.0), 0.0, 1.0)
+
+    sampler = GCPnts_QuasiUniformDeflection(
+        BRepAdaptor_Curve(nurbs_edge(offset, 0.0)), 0.001)
+    worst = 0.0
+    for i in range(1, sampler.NbPoints() + 1):
+        d = GeomAPI_ProjectPointOnCurve(sampler.Value(i), base_geom).LowerDistance()
+        worst = max(worst, abs(d - 0.75))
+    assert worst < 1e-9, f"{worst} mm from parallel"
+
+
+def test_the_rim_lip_keeps_every_ring_curved(partition_with_curves):
+    """With the groove on, the terraces are built against the *shrunk* apertures.
+    Re-partitioning used to drop every curve on the floor, so a grooved build was
+    polygonal however carefully the frame was drawn — the single biggest hole
+    left after the intakes were wired.
+    """
+    from guildmodel.core.geometry.curves import NurbsCurve, OffsetCurve
+    from guildmodel.core.solid.features import lip_partition
+
+    lip = lip_partition(partition_with_curves, 0.6)
+    assert isinstance(lip.ring_curve(lip.body.exterior), NurbsCurve)   # untouched
+    apertures = [lip.ring_curve(r) for r in lip.body.interiors]
+    assert apertures and all(isinstance(c, OffsetCurve) for c in apertures)
+
+
+def test_the_lip_zones_are_as_curved_as_the_ungrooved_ones(partition_with_curves):
+    """The measure that matters: what fraction of the zone boundaries the solid
+    is actually built from can be rebuilt as arcs. Grooved must match ungrooved
+    — 94% on the demo frame — or the groove is still costing curvature."""
+    from guildmodel.core.solid.features import lip_partition
+    from guildmodel.core.solid.occ import SourceCurves
+
+    def curved_fraction(part):
+        src = SourceCurves(part)
+        pts = [p for z in part.zones for p in list(z.polygon.exterior.coords)[:-1]]
+        return sum(src.classify(x, y)[0] is not None for x, y in pts) / len(pts)
+
+    plain = curved_fraction(partition_with_curves)
+    lip = curved_fraction(lip_partition(partition_with_curves, 0.6))
+    assert plain > 0.9
+    assert lip >= plain - 0.01, f"grooved {lip:.2f} against ungrooved {plain:.2f}"
+
+
+def test_the_offset_direction_is_measured_not_assumed(partition_with_curves):
+    """OCCT offsets along `Z x tangent`, so which sign shrinks depends on how the
+    curve winds — and the demo frame's two lens rings wind opposite ways. Assume
+    a sign and one eye grows while the other shrinks."""
+    from guildmodel.core.solid.features import lip_partition
+    from shapely.geometry import Polygon
+
+    before = sorted(Polygon(r).area for r in partition_with_curves.body.interiors)
+    after = sorted(Polygon(r).area
+                   for r in lip_partition(partition_with_curves, 0.6).body.interiors)
+    assert len(before) == len(after) == 2
+    for a, b in zip(before, after):
+        assert b < a, "every aperture must shrink"
+
+
+def test_the_exact_offset_is_only_taken_when_it_agrees_with_the_buffer():
+    """The guard, and why it is comparative rather than local.
+
+    `Geom_OffsetCurve` does not trim. Offset a 5 mm aperture inward by 9 mm and
+    it sails through the centre and returns a 4 mm ring wound the other way —
+    valid, simple, closed, *smaller* than the original. Every cheap local test
+    passes it. Only "does this agree with the shrink Shapely computed?" does not.
+    """
+    from guildmodel.core.solid.features import _offset_aperture
+    from guildmodel.core.geometry.curves import circle_curve
+    from shapely.geometry import Point
+
+    circle = circle_curve((0.0, 0.0), 5.0)
+    lens = Point(0.0, 0.0).buffer(5.0, quad_segs=64)
+
+    from shapely.geometry import Polygon
+    from guildmodel.core.solid.features import _LIP_AREA_TOL
+
+    pts, offset = _offset_aperture(circle, lens.buffer(-1.0), 1.0)
+    assert Polygon(pts).area == pytest.approx(lens.buffer(-1.0).area,
+                                              rel=_LIP_AREA_TOL)
+    assert abs(offset.distance) == pytest.approx(1.0)
+
+    # the through-the-middle ring, offered against the shrink it should match
+    assert _offset_aperture(circle, lens.buffer(-4.5), 9.0) is None
+    assert _offset_aperture(circle, None, 1.0) is None        # buffer came back empty
+    assert _offset_aperture(None, lens.buffer(-1.0), 1.0) is None   # no authored curve
+
+
+def test_a_vanishing_aperture_is_left_alone(partition_with_curves):
+    """A groove deeper than the aperture must not punch the lens out. Shapely's
+    buffer empties, the exact offset is refused with it, and the lip keeps the
+    rings it had — no zone changes, so `lip_partition` does not raise."""
+    from shapely.geometry import Polygon
+    from guildmodel.core.solid.features import lip_partition
+
+    before = sorted(Polygon(r).area for r in partition_with_curves.body.interiors)
+    lip = lip_partition(partition_with_curves, 40.0)
+    after = sorted(Polygon(r).area for r in lip.body.interiors)
+    assert after == pytest.approx(before, rel=1e-9)
+
+
+def test_the_grooved_curved_castle_is_still_watertight(partition_with_curves, imported):
+    """The whole chain, with the feature that used to switch the curves off."""
+    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import build_castle_solid, clear_base_cache
+    from guildmodel.core.solid.occ import is_valid
+    from guildmodel.core.solid.tessellate import tessellate
+
+    points, _ = imported
+    hinges = [points_to_polygon(c) for c in points["HINGE"]]
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+
+    clear_base_cache()
+    solid = build_castle_solid(partition_with_curves, castle, hinges)
+    assert is_valid(solid)
+    assert tessellate(solid).to_trimesh().is_watertight

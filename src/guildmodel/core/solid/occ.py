@@ -36,7 +36,7 @@ from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.GeomAbs import GeomAbs_Shape
-from OCP.Geom import Geom_BSplineCurve
+from OCP.Geom import Geom_BSplineCurve, Geom_OffsetCurve
 from OCP.GeomConvert import GeomConvert
 from OCP.GeomAPI import (GeomAPI_Interpolate, GeomAPI_PointsToBSpline,
                          GeomAPI_ProjectPointOnCurve)
@@ -47,7 +47,9 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_ShapeEnum
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 from OCP.TopTools import TopTools_ListOfShape
-from OCP.gp import gp_Pnt, gp_Vec
+from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
+
+from ..geometry.curves import OffsetCurve
 
 __all__ = [
     "CORNER_DEG",
@@ -412,7 +414,19 @@ def nurbs_edge(curve, z: float = 0.0):
     not periodic — measured, and OCCT rejects them outright as periodic
     ("# Poles and degree mismatch"). So `Periodic=False` here is not a
     simplification; it is what the data is.
+
+    An `OffsetCurve` is built as a real `Geom_OffsetCurve` over its basis rather
+    than fitted, so the rim lip is exact too — see that class for why it cannot
+    be written as poles and knots.
     """
+    if isinstance(curve, OffsetCurve):
+        basis = BRep_Tool.Curve_s(nurbs_edge(curve.basis, z), 0.0, 1.0)
+        try:
+            geom = Geom_OffsetCurve(basis, float(curve.distance), gp_Dir(0.0, 0.0, 1.0))
+        except Exception as exc:                       # OCCT raises its own types
+            raise BooleanError(f"offset curve construction failed: {exc}") from exc
+        return BRepBuilderAPI_MakeEdge(geom).Edge()
+
     vals, mults = curve.knots_and_multiplicities()
 
     poles = TColgp_Array1OfPnt(1, len(curve.control_points))
@@ -655,6 +669,13 @@ def _arc_edge(geom, v0, v1, ua: float, ub: float):
     range, which is fine — ring direction is settled once, on the finished wire,
     by `polygon_to_face`.
     """
+    if not isinstance(geom, Geom_BSplineCurve):
+        # An offset curve (the rim lip) has no pole set to split. Trimming the
+        # whole curve is still correct — it is only the economy that is lost —
+        # and it must not raise, because the caller reads any exception as
+        # "this arc failed" and drops back to the polyline.
+        return BRepBuilderAPI_MakeEdge(geom, v0, v1, float(ua), float(ub)).Edge()
+
     lo, hi = (ua, ub) if ua <= ub else (ub, ua)
     # `GeomConvert.SplitBSplineCurve_s`, not `Segment` on a downcast copy:
     # `Geom_Geometry.Copy()` hands back the base type and this OCP build exposes

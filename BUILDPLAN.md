@@ -4618,19 +4618,80 @@ re-cutting the very rings whose curve identity the watertight fix depends on.
 Demo frame, all features on: **26.7 s → 22.1 s cold, 16.7 s warm.** Bare castle
 6.1 s polygonal / 13.9 s curved, 6,772 edges against 9,942.
 
+### The rim lip is a curve too *(2026-08-07)*
+
+With the groove on, `castle_base` builds the terraces against `lip_partition` —
+the frame re-partitioned around apertures shrunk by the groove depth — and that
+threw every curve away. A grooved build was polygonal however carefully the
+frame was drawn, which is the case that matters most: the groove is on in the
+ALL-FEATURES row, so the whole finished frame was falling back.
+
+Two halves. The **outline and the decorative holes are untouched** by the
+shrink, so their keys still match and they only ever needed passing through;
+that alone is 342 of the demo body's flattened vertices against the apertures'
+266, and it took the grooved build from 0% to 53% of zone vertices back on
+authored curves. The **apertures are genuinely new geometry**, and for those
+`geometry.curves.OffsetCurve` says *"the lens curve, 0.6 mm in"* — exact,
+because the kernel has a matching `Geom_OffsetCurve`. Writing the offset down as
+poles and knots is not an option: the exact offset of a B-spline is not a
+B-spline, so that route means fitting, and fitting is the thing this whole
+strand exists to avoid. Grooved is now **94% curved, the same as ungrooved.**
+
+Two traps, both recorded in `_offset_aperture`:
+
+* **The sign has to be measured.** OCCT offsets along `Z x tangent`, so which
+  sign shrinks depends on the winding — and the demo frame's two lens rings wind
+  opposite ways. Assume a sign and one eye grows while the other shrinks.
+* **`Geom_OffsetCurve` does not trim.** Offset a 5 mm aperture inward by 9 mm
+  and it sails through the centre and returns a 4 mm ring wound the other way:
+  valid, simple, closed, smaller in area. Every cheap local check passes it. The
+  guard is therefore comparative — the exact offset must agree in area with
+  Shapely's buffer of the same ring (1%) — which catches that *and* the
+  self-intersecting case without enumerating either.
+
+### The cutters are the next bottleneck, and always were
+
+Making the groove curved cost the demo's ALL-FEATURES build roughly 1.7x cold
+and 1.3x warm, and profiling says why: **the tooling dwarfs the part.**
+
+| group | cutters | faces | cut time (curved) |
+| --- | --- | --- | --- |
+| eyewire bezel | 2 | 1,440 | 4.9 s |
+| lens groove | 2 | 1,080 | 5.4 s |
+| brow chamfer | 2 | 2,764 | 4.4 s |
+| hinge pockets | 2 | 120 | 0.9 s |
+
+against a base solid of **937 faces**. Every one of those cutters is a
+`ThruSections` loft over 180 discrete stations, so the cut is expensive *and*
+inscribed — `BEZEL_STATIONS = 180` exists precisely to bound the chord error
+that discretisation introduces. This is not a curve problem; the polygonal build
+pays 10.7 s for the same pass.
+
+The curve work makes the fix available: **sweep the profile along the authored
+curve** instead of lofting stations around it. Prototyped on the groove —
+`MakePipeShell` with the lens curve as spine and one V profile — and it gives
+**3 faces instead of 540, with the cut falling from 4.9 s to 0.5 s**, watertight
+and valid. It would also have *no* chord error, retiring the reason
+`BEZEL_STATIONS` is 180.
+
+Not shipped: the prototype's profile placement is not right yet (the cut differs
+by ~105 mm³, and `_inward` is the wrong tool for locating it — it probes the
+body, and the original contour lies *inside* the material once the aperture has
+been shrunk, so both probes land in solid and the vote is meaningless). Two
+further notes for whoever picks it up: `MakePipeShell` **refuses a
+`Geom_OffsetCurve` spine** with `Standard_ConstructionError`, which is why the
+spine must be the original lens curve with the profile placed `depth` inboard;
+and the bezel cannot use a single-profile sweep at all, because it fires an
+anchor ray per station to follow the footing swells.
+
 ### Still open on the curve work
 
-1. **The lens groove drops the curves.** `lip_partition` re-partitions against
-   Shapely-shrunk apertures, so the shrunk rings are genuinely new geometry with
-   no authored curve — correct behaviour, but it means a groove-enabled build is
-   polygonal, and since the groove is on in the ALL-FEATURES row that row is
-   currently identical curved and not. Offsetting the curve itself would fix it,
-   and it is the single highest-value remaining item: it is what stands between
-   the maker and a curved *finished* frame rather than a curved bare castle.
-2. **Cold build is still 13.9 s curved against 6.1 s polygonal.** All of the gap
-   is boolean cost against B-spline extrusions. The clips are the remaining
-   10.7 s → 3 s target; process-level parallelism (shapes serialised through
-   `BRepTools`) is the only untried lever that does not touch geometry.
+1. **Swept cutters** — above. The largest remaining win, and it helps the
+   polygonal path equally.
+2. **Cold build is 13.9 s curved against 6.1 s polygonal** for the bare castle.
+   The gap is boolean cost against B-spline extrusions. Process-level
+   parallelism (shapes serialised through `BRepTools`) is the only untried lever
+   that does not touch geometry — threads do not work, OCP holds the GIL.
 3. **Only splines and circles come across exactly.** Arcs return None because an
    open arc is never a whole ring; if a drawing ever assembles an outline from
    arc segments, that assumption needs revisiting.
