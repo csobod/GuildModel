@@ -70,6 +70,29 @@ DEFAULTS: dict = {
 }
 
 
+# The depth per pass M12.4 shipped as the default. It was never validated on the
+# machine and turned out to be a full-depth bite on a temple blank (M15), so a
+# stored value at or above it is almost certainly the old default carried forward
+# rather than a number the maker chose — a deliberate choice would have been
+# *lower*, since 4.0 was already the ceiling acetate allowed.
+_M124_STEPDOWN_MM = 4.0
+
+
+def _retire_m124_stepdown(cam: dict) -> None:
+    """Drop an M12.4-era `contour_stepdown_mm` so the upgrade actually takes.
+
+    Prefs are restored over the schema defaults on every launch, so lowering the
+    shipped default alone would have changed nothing for anyone who had already
+    run GuildModel: their saved 4.0 would keep cutting temples in one pass. Values
+    the maker really did tune (anything below the old default) are left alone.
+    """
+    try:
+        if float(cam.get("contour_stepdown_mm", 0.0)) >= _M124_STEPDOWN_MM:
+            cam.pop("contour_stepdown_mm", None)      # fall back to the schema default
+    except (TypeError, ValueError):
+        cam.pop("contour_stepdown_mm", None)
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present."""
     try:
@@ -86,6 +109,7 @@ def load() -> dict:
                     merged[key] = {**DEFAULTS[key], **data[key]}
                 else:
                     merged[key] = dict(DEFAULTS[key])
+            _retire_m124_stepdown(merged["cam_params"])
             return merged
     except Exception:
         pass

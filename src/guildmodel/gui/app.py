@@ -502,8 +502,12 @@ class GCodeWorker(_ProgressWorker):
             self._generate()
         except _Cancelled:
             self.cancelled.emit()
-        except Exception:
-            self.error.emit(traceback.format_exc())
+        except Exception as exc:
+            # "Every operation is switched off" is the maker's own setting, not a
+            # crash — report the sentence, not a traceback (M16 per-op enable).
+            from guildmodel.core.cam.castle_ops import NoOperationsError
+            self.error.emit(str(exc) if isinstance(exc, NoOperationsError)
+                            else traceback.format_exc())
 
     def _generate_castle(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
         """Five-op posterior program: hinge pockets -> rough -> fine ->
@@ -511,7 +515,7 @@ class GCodeWorker(_ProgressWorker):
         import yaml
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, fixture_clearance_violations, generate_castle_program,
-            op_summaries, write_castle_program,
+            op_summaries, require_ops, write_castle_program,
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.post.grbl import GRBLPost
@@ -541,10 +545,10 @@ class GCodeWorker(_ProgressWorker):
             progress=self._progress,
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
-        ops = generate_castle_program(
+        ops = require_ops(generate_castle_program(
             relief, castle, self.hinge_polys, tool, params=cam,
             progress=self._progress, tools_cfg=tools_cfg,
-        )
+        ), "The frame front")
         for op in ops:
             zmin, zmax = op.z_range()
             tag = f" · {op.tool_name}" if (cam.is_multi_tool() and op.tool_name) else ""
@@ -649,6 +653,7 @@ class GCodeWorker(_ProgressWorker):
             ops, post, arc_tol_mm=clamp.arc_tol_mm,
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            contour_lead_in=cam.contour_lead_in,
             tool_settings=tool_settings,
             tool_change_mode=machine.tool_change_mode,
         )
@@ -738,12 +743,15 @@ class GCodeWorker(_ProgressWorker):
         import yaml
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, build_tool_settings, count_tool_changes,
-            fixture_clearance_violations, op_summaries, resolve_tool, write_castle_program,
+            fixture_clearance_violations, op_summaries, require_ops, resolve_tool,
+            write_castle_program,
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.cam.temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
         from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import lint_program, load_machine_profile
+        from guildmodel.core.post.machine import (
+            clamp_cam_to_machine, lint_program, load_machine_profile,
+        )
         from guildmodel.core.project.schema import TempleParams
 
         p = self.params
@@ -757,12 +765,23 @@ class GCodeWorker(_ProgressWorker):
             f"engrave {temple.engrave_tool} → profile {temple.profile_tool}"
         )
 
+        # The temple posts through the SAME machine/material clamp as the frame and
+        # the bed. It was the last single-component path that did not: its ops were
+        # generated from an unclamped stepdown, and its post was handed
+        # cam.arc_tolerance_mm rather than the clamped tolerance, so a controller
+        # declared to have no reliable G2/G3 still got arcs (the other half of
+        # INCIDENT-2026-07-29).
+        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
+        for w in clamp.warnings:
+            self.progress.emit(f"[gcode] machine: {w}")
+
         from guildmodel.core.relief.flat import place_temple_on_blank
         outline, hinge_polys, engraving = place_temple_on_blank(
             self.outline, self.hinge_polys, self.engraving, temple.blank_length_mm,
             stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
-        ops = generate_temple_program(outline, engraving, temple, tools_cfg, cam,
-                                      hinge_polys=hinge_polys)
+        ops = require_ops(
+            generate_temple_program(outline, engraving, temple, tools_cfg, cam,
+                                    hinge_polys=hinge_polys), "This temple")
         for op in ops:
             zmin, zmax = op.z_range()
             self.progress.emit(
@@ -810,9 +829,10 @@ class GCodeWorker(_ProgressWorker):
         )
         self._progress("Writing temple program", 0.9)
         write_castle_program(
-            ops, post, side="Temple", arc_tol_mm=cam.arc_tolerance_mm,
+            ops, post, side="Temple", arc_tol_mm=clamp.arc_tol_mm,
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            contour_lead_in=cam.contour_lead_in,
             tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
             contour_op_names=TEMPLE_CONTOUR_OPS)
         text = post.to_string()
@@ -888,11 +908,14 @@ class GCodeWorker(_ProgressWorker):
         )
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, build_tool_settings, count_tool_changes,
-            fixture_clearance_violations, op_summaries, resolve_tool, write_castle_program,
+            fixture_clearance_violations, op_summaries, require_ops, resolve_tool,
+            write_castle_program,
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import lint_program, load_machine_profile
+        from guildmodel.core.post.machine import (
+            clamp_cam_to_machine, lint_program, load_machine_profile,
+        )
         from guildmodel.core.project.schema import BaseCurveBlockParams
 
         cam = self.cam_params or CastleCamParams()
@@ -904,7 +927,19 @@ class GCodeWorker(_ProgressWorker):
             f"material {block.material} · drill {block.drill_tool}"
         )
 
-        ops = generate_block_program(self.block_lens, block, tools_cfg, cam)
+        # Clamp BEFORE generating the ops. This path used to compute a clamped
+        # stepdown and hand it only to write_castle_program, which sets the lead-in
+        # ramp depth — the contour passes themselves were already cut from the
+        # unclamped value, so the clamp was cosmetic. The block's material (acetal,
+        # max_doc 2.0) is usually stricter than the frame's, which is exactly when
+        # that mattered.
+        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
+        for w in clamp.warnings:
+            self.progress.emit(f"[gcode] machine: {w}")
+
+        ops = require_ops(
+            generate_block_program(self.block_lens, block, tools_cfg, cam),
+            "This base-curve block")
         for op in ops:
             zmin, zmax = op.z_range()
             self.progress.emit(
@@ -923,10 +958,6 @@ class GCodeWorker(_ProgressWorker):
             f"[gcode] {', '.join(f'T{s.number} {n}' for n, s in tool_settings.items())} "
             f"· {n_changes} tool change(s) ({machine.tool_change_mode.upper()})"
         )
-
-        # contour stepdown clamped to the acetal / machine depth-of-cut
-        stepdown = min(cam.contour_stepdown_mm, machine.max_doc_mm,
-                       mat.get("max_doc_mm", cam.contour_stepdown_mm))
 
         bstock = block.stock()
         work_offset = cam.program_zero.work_offset(bstock)
@@ -955,8 +986,10 @@ class GCodeWorker(_ProgressWorker):
         )
         self._progress("Writing block program", 0.9)
         write_castle_program(
-            ops, post, side="Base-Curve Block", arc_tol_mm=cam.arc_tolerance_mm,
-            contour_stepdown_mm=stepdown, contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            ops, post, side="Base-Curve Block", arc_tol_mm=clamp.arc_tol_mm,
+            contour_stepdown_mm=cam.contour_stepdown_mm,
+            contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            contour_lead_in=cam.contour_lead_in,
             tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
             contour_op_names=BLOCK_CONTOUR_OPS, drill_op_names=BLOCK_DRILL_OPS,
             peck_depth_mm=block.peck_depth_mm)
@@ -1113,6 +1146,7 @@ class GCodeWorker(_ProgressWorker):
             bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
             contour_stepdown_mm=cam.contour_stepdown_mm,
             contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+            contour_lead_in=cam.contour_lead_in,
             tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
             contour_op_names=bed.contour_op_names, drill_op_names=bed.drill_op_names,
             peck_depth_mm=block.peck_depth_mm)
@@ -1339,6 +1373,7 @@ class SimWorker(_ProgressWorker):
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
                 tool_settings=tool_settings)
 
             self.progress.emit("[sim] Sweeping tool along the toolpaths…")
@@ -1467,6 +1502,16 @@ class FlatSimWorker(_ProgressWorker):
             mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
             mat_key = self.material_name.split()[0].lower()
             mat = mats_cfg.get(mat_key, mats_cfg["acetate"])
+            # Simulate the program the tab actually posts — same clamp, so the pass
+            # structure the maker watches is the pass structure they cut.
+            try:
+                from guildmodel.core.post.machine import (
+                    clamp_cam_to_machine, load_machine_profile,
+                )
+                cam, _clamp = clamp_cam_to_machine(
+                    cam, load_machine_profile(cam.machine_name, config_dir), mat)
+            except Exception:
+                pass                     # unknown machine: simulate unclamped, as before
 
             self.progress.emit(f"[sim] Building the {self.mode} relief at {self.resolution} mm…")
             if self.mode == "temple":
@@ -1510,6 +1555,7 @@ class FlatSimWorker(_ProgressWorker):
                 ops, post, arc_tol_mm=cam.arc_tolerance_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
                 tool_settings=tool_settings, contour_op_names=contour_names,
                 drill_op_names=drill_names, peck_depth_mm=peck)
 
@@ -1693,6 +1739,18 @@ class BedSimWorker(_ProgressWorker):
             config_dir = Path(__file__).parent.parent / "config"
             tools_cfg = _tools_cfg()
             mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
+            # Same clamp the bed program posts under (NestWorker / Generate Worktable),
+            # so the bed sim shows the passes the bed will actually cut.
+            try:
+                from guildmodel.core.post.machine import (
+                    clamp_cam_to_machine, load_machine_profile,
+                )
+                _key = (self.material_name.split() or ["acetate"])[0].lower()
+                cam, _clamp = clamp_cam_to_machine(
+                    cam, load_machine_profile(cam.machine_name, config_dir),
+                    mats_cfg.get(_key, mats_cfg["acetate"]))
+            except Exception:
+                pass                     # unknown machine: simulate unclamped, as before
             place = {pl.label: pl for pl in self.placements}
             specs = [s for s in self.specs if s["label"] in place]
             comps: list = []
@@ -4025,6 +4083,7 @@ class MainWindow(QMainWindow):
                 bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
                 tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
                 contour_op_names=bed.contour_op_names, drill_op_names=bed.drill_op_names)
             text = post.to_string()
@@ -4111,7 +4170,8 @@ class MainWindow(QMainWindow):
         self._sim_worker = BedSimWorker(
             self._nest_specs, self._nest.placements,
             (self._worktable.work_area_width_mm, self._worktable.work_area_height_mm),
-            cam_params=self.params.cam_params(), material_name=self.params.material_name())
+            cam_params=self.params.effective_cam_params(),
+            material_name=self.params.effective_material_name())
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
         self._sim_thread.started.connect(self._sim_worker.run)
@@ -4962,6 +5022,8 @@ class MainWindow(QMainWindow):
                 kwargs[field] = param
             if ws.program_zero is not None:
                 kwargs["program_zero"] = ws.program_zero       # per-component datum (M11)
+            if ws.cam_overrides is not None:
+                kwargs["cam_overrides"] = ws.cam_overrides     # per-component CAM (M16)
             comps.append(Component(**kwargs))
         if comps:
             proj.components = comps
@@ -5470,6 +5532,7 @@ class MainWindow(QMainWindow):
         elif ws.kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
             ws.block_params = self.params.block_params()
         ws.program_zero = self.params._program_zero()    # per-component G54 datum (M11)
+        ws.cam_overrides = self.params.cam_overrides()   # per-component CAM (M16)
 
     def _load_active_geometry(self, ws: ComponentWorkspace) -> None:
         """Point the active ``self._*`` working set at ``ws``."""
@@ -5536,6 +5599,7 @@ class MainWindow(QMainWindow):
                 self.params.set_block_params(ws.block_params)
             if ws.program_zero is not None:          # restore this part's G54 datum (M11)
                 self.params._set_program_zero(ws.program_zero)
+            self.params.set_cam_overrides(ws.cam_overrides)   # this part's CAM (M16)
         finally:
             self.params.blockSignals(False)
         self.view3d.set_stage_enabled(ws.castle_ready)
@@ -5756,6 +5820,7 @@ class MainWindow(QMainWindow):
                 continue
             ws.enabled = comp.enabled
             ws.program_zero = comp.program_zero          # restore per-component datum (M11)
+            ws.cam_overrides = comp.cam_overrides        # restore per-component CAM (M16)
             field = component_param_field(ws.kind)
             setattr(ws, ws_attr[field], getattr(comp, field))
         if 0 <= self._active_ws < len(self._workspaces):
@@ -6404,7 +6469,9 @@ class MainWindow(QMainWindow):
         self.append_log(f"[sim] Simulating the machined result ({mode or 'frame'})…")
 
         res = self._prefs["preview_resolution_mm"]
-        cam, mat = self.params.cam_params(), self.params.material_name()
+        # The sim must simulate the program the tab posts, overrides and all (M16).
+        cam = self.params.effective_cam_params()
+        mat = self.params.effective_material_name()
         if mode == "temple":
             self._sim_worker = FlatSimWorker(
                 "temple", outline=self._outline_poly, temple=self.params.temple_params(),
@@ -6499,7 +6566,7 @@ class MainWindow(QMainWindow):
             params=params,
             partition=self._partition,
             hinge_polys=self._hinge_polys,
-            cam_params=self.params.cam_params(),
+            cam_params=self.params.effective_cam_params(),   # per-component CAM (M16)
             engraving=self._engraving_curves,
             temple=self.params.temple_params(),
             is_temple=self._is_temple,
@@ -6536,7 +6603,7 @@ class MainWindow(QMainWindow):
 
         worker = GCodeWorker(
             outline=self._outline_poly, castle=self.params.castle_params(),
-            params=self._collect_gcode_params(), cam_params=self.params.cam_params())
+            params=self._collect_gcode_params(), cam_params=self.params.effective_cam_params())
         worker.block_lens = self._lens_od
         worker.block = self.params.block_params()
         worker.is_block = True
@@ -6576,7 +6643,7 @@ class MainWindow(QMainWindow):
         worker = GCodeWorker(
             outline=self._outline_poly, castle=self.params.castle_params(),
             params=self._collect_gcode_params(), partition=self._partition,
-            hinge_polys=self._hinge_polys, cam_params=self.params.cam_params())
+            hinge_polys=self._hinge_polys, cam_params=self.params.effective_cam_params())
         worker.block_lens = self._lens_od
         worker.block = self.params.block_params()
         worker.is_worktable = True
@@ -6602,7 +6669,7 @@ class MainWindow(QMainWindow):
         p = self.params
         return {
             "profile_tool_name": p.tool_profile.currentText(),
-            "material_name":     p.material.currentText(),
+            "material_name":     p.effective_material_name(),   # per-component (M16)
             "stock_thickness":   p.blank_thickness.value(),
             "stepdown_profile":  p.stepdown_profile.value(),
             "tab_count":         p.tab_count.value(),

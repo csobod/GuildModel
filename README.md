@@ -11,11 +11,43 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.1.0.** GuildModel builds the posterior castle relief and the
+**v1.4.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
+
+> **New in v1.4.0 — the frame has a front (first V2 instalment).** The model now
+> carries an **anterior surface** as well as the posterior castle, and a new
+> **Edge Features** list on the Model tab cuts partial-span chamfers and fillets
+> into either face — the anterior brow chamfer over each eyewire, stopping short
+> of the bridge, that thick modern frames want. A run's span is chosen by castle
+> zone, tapers to nothing at each end, can vary in width along its length, and
+> mirrors to the other side as one feature. The eyewire bezel can now be cut into
+> the front face instead of, or as well as, the back. **This is modelling and 3D
+> preview only** — machining the front needs the flip setup, which is the next
+> milestone. Posterior programs are unchanged.
+
+> **New in v1.3.0 — toolpath control.** The Cut tab now decides how the part is
+> held (onion skin or hold-down tabs), which operations run at all (uncheck one to
+> cut a job in stages), and what any single component overrides from the project's
+> CAM settings — most usefully its material, so acetal forming blocks stop
+> inheriting the acetate frame's depth per pass. The Machine tab adds climb /
+> conventional milling and a ramp-or-plunge lead-in. Defaults are unchanged, so an
+> existing project posts exactly as it did in v1.2.0. **Hold-down tabs are new and
+> have not been cut on real stock** — air-cut the first one.
+
+> **Upgrading from v1.1.0 — this changes how deep your programs cut.** Depth per
+> pass was set on a frame-only panel that was hidden whenever a temple or
+> base-curve block was the active component, and the shipped default asked for a
+> 4 mm bite: a stock 4 mm temple blank came out as **one full-depth pass**, with no
+> control to change it. Depth per pass now lives on the **Cut** tab for every
+> component kind, with a read-out of the resulting pass count, and the shipped
+> acetate default drops from 4.0 mm to 1.5 mm. Blind pockets and deep engraving
+> step down too, and temple/base-curve programs finally honour the machine's and
+> material's depth-of-cut ceiling. **Re-post any program you still have**, and
+> treat the new pass structure as you would any new program — air-cut, then a test
+> piece.
 
 > **Upgrading from v1.0.0:** worktable programs built their relief on the
 > 3D-preview grid rather than the cutting grid, which put a lot of unnecessary Z

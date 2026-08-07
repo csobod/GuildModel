@@ -162,12 +162,24 @@ def test_fine_relief_never_gouges(program):
 
 
 def test_contour_ops_passes_and_skin(program, demo_inputs):
+    from guildmodel.core.cam.castle_ops import CastleCamParams, contour_passes
+
     ops, _, _ = program
     _, castle, _ = demo_inputs
+    # Derived from the shipped depth per pass rather than hardcoded: M12.4 pinned
+    # this at 4 mm DOC, which M15 lowered after the field found it cutting a temple
+    # blank in a single full-depth pass.
+    expected = sorted(contour_passes(castle.stock.total_pad_height_mm,
+                                     castle.onion_skin_mm,
+                                     CastleCamParams().contour_stepdown_mm))
     for name in ("Eyewires", "Perimeter"):
         zs = sorted({round(p[2], 3) for path in ops[name].paths for p in path})
-        assert zs == [0.4, 2.0, 6.0]                 # M12.4: 4 mm DOC -> 3 passes (was 2.5/4)
+        assert zs == [round(z, 3) for z in expected]
         assert min(zs) == castle.onion_skin_mm      # the skin, never zero
+        # no pass bites deeper than the requested stepdown
+        tops = [castle.stock.total_pad_height_mm] + zs[:0:-1]
+        assert max(a - b for a, b in zip(tops, zs[::-1])) <= \
+            CastleCamParams().contour_stepdown_mm + 1e-9
 
 
 def test_contour_allowance_offsets(program, demo_inputs):
@@ -266,11 +278,18 @@ def test_against_reference_nc(program):
     eye_section = ref.split("(Eyewires)")[1].split("(Perimeter)")[0]
     ref_passes = _held_cut_zs(eye_section)
     assert ref_passes == [0.4, 2.5, 5.0, 7.5]               # the proven Fusion stack (2.5 mm)
-    # M12.4 intentionally cuts deeper (4 mm DOC): same onion-skin floor and same depth
-    # reached, but fewer, deeper passes than the reference.
+    # We reach the same onion-skin floor by the same total depth; how finely that
+    # depth is divided is the shipped depth-per-pass setting, which has moved (M12.4
+    # deepened it to 4 mm, M15 pulled it back below the Fusion reference). Assert the
+    # invariants — same floor, same depth reached, no pass deeper than requested —
+    # rather than a pass count that is a tuning decision.
+    from guildmodel.core.cam.castle_ops import CastleCamParams
     ours = sorted({round(p[2], 3) for path in ops["Eyewires"].paths for p in path})
-    assert ours == [0.4, 2.0, 6.0]
-    assert ours[0] == ref_passes[0] == 0.4 and len(ours) < len(ref_passes)
+    assert ours[0] == ref_passes[0] == 0.4
+    assert ours[-1] <= ref_passes[-1] + CastleCamParams().contour_stepdown_mm
+    tops = [max(ref_passes[-1], ours[-1])] + ours[:0:-1]
+    assert max(a - b for a, b in zip(tops, ours[::-1])) <= \
+        CastleCamParams().contour_stepdown_mm + 1e-9
 
     # rough floor: reference min Z 6.2 == ours (lowest terrace + 2)
     rough_section = ref.split("(Rough Scallop)")[1].split("(Fine Scallop)")[0]

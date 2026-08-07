@@ -69,7 +69,13 @@ def test_eyewires_ring_major(program):
     # not alternating at every depth (which would be 5 switches for 6 passes)
     switches = sum(1 for a, b in zip(sides, sides[1:]) if a != b)
     assert switches == 1, f"expected ring-major (1 switch), got {sides}"
-    assert len(ops["Eyewires"].paths) == 6     # 2 lenses x 3 depth passes (M12.4 4 mm DOC)
+    # 2 lenses x the depth stack. Derived, not hardcoded: the stack follows the
+    # shipped depth per pass, which M15 lowered from M12.4's unvalidated 4.0 mm.
+    from guildmodel.core.cam.castle_ops import CastleCamParams, contour_passes
+    _, castle = program
+    n_depth = len(contour_passes(castle.stock.total_pad_height_mm, castle.onion_skin_mm,
+                                 CastleCamParams().contour_stepdown_mm))
+    assert len(ops["Eyewires"].paths) == 2 * n_depth
 
 
 def _is_ccw(p):

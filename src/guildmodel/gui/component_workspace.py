@@ -41,6 +41,9 @@ class ComponentWorkspace:
     temple_params: object = None
     block_params: object = None
     program_zero: object = None     # per-component G54 datum (M11); None = panel default
+    # Per-component departures from the project-global cam_params (M16) — a
+    # ComponentCamOverrides, most usefully a different material. None = inherit.
+    cam_overrides: object = None
 
     # derived geometry (filled by derive_workspace)
     outline_poly: object = None      # profile WITH decorative holes as interior rings

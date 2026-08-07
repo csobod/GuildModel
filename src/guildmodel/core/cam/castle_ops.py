@@ -34,11 +34,14 @@ from shapely.geometry import Polygon
 # relief.castle.ProgressFn. Default None — core never imports the GUI.
 ProgressFn = Callable[[str, float], None]
 
-from ..project.schema import CastleCamParams, CastleParams, StockDefinition
+from ..project.schema import (
+    CastleCamParams, CastleParams, HoldingParams, StockDefinition,
+)
 from ..relief.castle import CastleRelief, stock_top_heightfield
 from ..relief.heightfield import Heightfield
 from .dropcutter import cutter_location_surface
 from .pocketing import _inward_offsets, _SCALE
+from .tabs import insert_tabs
 
 Point3 = tuple[float, float, float]
 
@@ -176,6 +179,27 @@ def work_holding_keepouts(
 
 # ------------------------------------------------------------------ op 1: hinge pockets
 
+def pocket_levels(start_z: float, floor_z: float, stepdown_mm: float) -> list[float]:
+    """Axial levels a pocket is cleared at, from just under `start_z` to the floor.
+
+    The same shape as `contour_passes` but for a blind floor: the last level is
+    always exactly `floor_z`, so the pocket finishes at size no matter how the
+    stepdown divides. A non-positive stepdown collapses to a single floor level
+    (the guard `contour_passes` and `peck_drill` take — a hand-edited project must
+    not hang the worker)."""
+    if stepdown_mm <= 1e-9:
+        return [floor_z]
+    zs: list[float] = []
+    z = start_z
+    while True:
+        z -= stepdown_mm
+        if z <= floor_z + 1e-9:
+            break
+        zs.append(round(z, 6))
+    zs.append(floor_z)
+    return zs
+
+
 def hinge_pocket_op(
     hinge_polys: list[Polygon],
     floor_z: float,
@@ -183,18 +207,23 @@ def hinge_pocket_op(
     tool_radius_mm: float,
     params: CastleCamParams,
 ) -> CamOp:
-    """Pocket each hinge outline to floor_z with a ramped lap entry.
+    """Pocket each hinge outline to floor_z in ramped levels.
 
-    The outermost tool ring is lapped repeatedly, descending ramp_step_mm per
-    lap from start_z (just above local stock) to the floor — no straight
-    plunge into material. The full inward cascade then clears the floor.
+    Each level is entered by lapping the outermost tool ring, descending
+    ramp_step_mm per lap — no straight plunge into material — and is then cleared
+    by the full inward cascade at that level. Levels are `pocket_stepdown_mm`
+    apart: a pocket deeper than one stepdown used to ramp its outer ring down and
+    then take the ENTIRE remaining depth in one full-depth cascade, which buries
+    the cutter on anything but a shallow recess. A pocket no deeper than one
+    stepdown is a single level and posts exactly the historical path.
     """
     op = CamOp("Hinge Pockets")
     # A non-positive ramp step never descends (max(floor_z, z - 0) == z) — guard it
     # so a hand-edited project can't hang the worker (matching peck_drill): +inf ramps
-    # straight to the floor in one lap. The inward cascade's stepover is guarded in
-    # _inward_offsets.
+    # straight to the level in one lap. The inward cascade's stepover is guarded in
+    # _inward_offsets, the level spacing in pocket_levels.
     ramp_step = params.ramp_step_mm if params.ramp_step_mm > 1e-9 else float("inf")
+    levels = pocket_levels(start_z, floor_z, params.pocket_stepdown_mm)
     for poly in hinge_polys:
         rings = _poly_rings(poly, tool_radius_mm, params.pocket_stepover_mm)
         if not rings:
@@ -202,23 +231,28 @@ def hinge_pocket_op(
         outer = rings[0]
         path: list[Point3] = []
 
-        # ramp laps on the outer ring
         ring_xy = [(p[0] / _SCALE, p[1] / _SCALE) for p in outer]
         ring_xy.append(ring_xy[0])
         n = len(ring_xy)
         z = start_z
         path.append((*ring_xy[0], z))
-        while z > floor_z + 1e-9:
-            z_next = max(floor_z, z - ramp_step)
-            for i in range(1, n):
-                t = i / (n - 1)
-                path.append((*ring_xy[i], z + (z_next - z) * t))
-            z = z_next
-
-        # floor laps: outer ring once more flat, then the inward cascade
-        path += [(*p, floor_z) for p in ring_xy]
-        for ring in rings[1:]:
-            path += _ring_to_points(ring, floor_z)
+        for k, level in enumerate(levels):
+            # ramp laps on the outer ring down to this level
+            while z > level + 1e-9:
+                z_next = max(level, z - ramp_step)
+                for i in range(1, n):
+                    t = i / (n - 1)
+                    path.append((*ring_xy[i], z + (z_next - z) * t))
+                z = z_next
+            # level laps: outer ring once more flat, then the inward cascade
+            path += [(*p, level) for p in ring_xy]
+            for ring in rings[1:]:
+                path += _ring_to_points(ring, level)
+            if k + 1 < len(levels):
+                # The cascade ends on the innermost ring; come back out to the
+                # outer ring's start to ramp the next level. Everything inside the
+                # outer ring is already cleared AT this level, so the move is air.
+                path.append((*ring_xy[0], level))
         op.paths.append(_rdp(path, params.simplify_tol_mm))
     return op
 
@@ -515,6 +549,26 @@ def relief_ops(
 
 # ------------------------------------------------------------------ ops 4+5: contours
 
+class NoOperationsError(ValueError):
+    """Every operation in a program was switched off (M16 per-op enable).
+
+    Its own type so the GUI can report the maker's own choice as a plain sentence
+    instead of the IndexError traceback the posting paths used to raise on
+    ``ops[0]``.
+    """
+
+
+def require_ops(ops: list[CamOp], what: str = "This component") -> list[CamOp]:
+    """Return `ops`, or raise `NoOperationsError` when there is nothing to cut."""
+    if not ops:
+        raise NoOperationsError(
+            f"{what} has no operations to cut — every operation is switched off "
+            f"in the Cut tab, or the geometry produced no toolpaths. Re-enable at "
+            f"least one operation and generate again."
+        )
+    return ops
+
+
 def contour_passes(top_z: float, skin_z: float, stepdown_mm: float) -> list[float]:
     """Depth passes from the stock's top level down to the onion skin."""
     # A non-positive stepdown never advances the loop below — guard the primitive
@@ -543,9 +597,24 @@ def contour_op(
     top_z: float,
     skin_z: float,
     params: CastleCamParams,
+    holding: "HoldingParams | None" = None,
 ) -> CamOp:
+    """Depth-stacked offset contour passes.
+
+    `holding` (M16) applies only where the caller passes it — the op that RELEASES
+    the part. With ``strategy="tabs"`` the stack runs to the anterior face (z = 0)
+    instead of stopping at `skin_z`, and the last pass rises over the uncut
+    bridges. Left None (or on ``skin``), the historical onion-skin stack is emitted
+    unchanged. Inside contours deliberately never get tabs — see `HoldingParams`.
+    """
     op = CamOp(name)
     offset = tool_radius_mm + allowance_mm
+    # Climb (default): an inside contour runs CCW and an outside contour CW, so the
+    # chip thins to zero against a uniform down-cut wall (M12.5). Conventional
+    # reverses both — the choice on a machine whose backlash makes climb pull the
+    # cutter in (M16). The buffered exterior's winding isn't guaranteed either way,
+    # so the direction is forced here rather than assumed.
+    want_ccw = (side == "inside") if params.cut_direction == "climb" else (side == "outside")
     rings: list[list[tuple[float, float]]] = []
     for poly in polys:
         buffered = poly.buffer(offset if side == "outside" else -offset, join_style="round")
@@ -554,23 +623,56 @@ def contour_op(
             if g.is_empty:
                 continue
             coords = list(g.exterior.coords)
-            # Climb milling (CW spindle): an inside contour (lens hole) runs CCW, an
-            # outside contour (perimeter) runs CW — a uniform down-cut wall (M12.5). The
-            # buffered exterior's winding isn't guaranteed, so force it here.
-            if _ring_is_ccw(coords) != (side == "inside"):
+            if _ring_is_ccw(coords) != want_ccw:
                 coords = coords[::-1]
             rings.append(coords)
 
+    tabs = holding is not None and holding.tabs_on()
+    # Tabs hold the part instead of the skin, so the stack must reach the anterior
+    # face. Never below it: the fixture's blank zone and hold-down screws are there.
+    floor_z = 0.0 if tabs else skin_z
     # Ring-major ordering: finish one ring through its full depth stack before
     # moving to the next (Fusion's order). Depth-major (the old order)
     # alternated lenses at each level, adding a long OD<->OS traverse per pass
     # — the back-and-forth that dramatically inflates eyewire cut time.
-    passes = contour_passes(top_z, skin_z, params.contour_stepdown_mm)
+    passes = contour_passes(top_z, floor_z, params.contour_stepdown_mm)
+    tab_h = tab_height_for(passes, top_z, holding.tab_height_mm) if tabs else 0.0
     for ring in rings:
-        for z in passes:
-            pts = [(x, y, z) for x, y in ring]
+        for i, z in enumerate(passes):
+            if tabs and i == len(passes) - 1:
+                # Only the last pass carries the bridges; the passes above it are at
+                # depth the tab tops don't reach, so tabbing them would cut air.
+                pts = insert_tabs([(x, y) for x, y, *_ in ring], holding.tab_count,
+                                  holding.tab_width_mm, tab_h, z)
+            else:
+                pts = [(x, y, z) for x, y in ring]
             op.paths.append(_rdp(pts, params.simplify_tol_mm))
     return op
+
+
+def tab_height_for(passes: list[float], top_z: float, requested_mm: float) -> float:
+    """The tab height that can physically exist, given the depth stack.
+
+    A tab is what the LAST pass leaves behind, so it can be no taller than that
+    pass is deep: the pass above already removed everything higher, and asking for
+    a 2 mm tab under a 1.5 mm final pass yields a 1.5 mm one whatever the G-code
+    says. Clamping here keeps the toolpath honest; `tab_height_warning` gives the
+    caller the sentence to show the maker so the silent difference is visible.
+    """
+    if not passes:
+        return requested_mm
+    prev = passes[-2] if len(passes) >= 2 else top_z
+    return max(0.0, min(requested_mm, prev - passes[-1]))
+
+
+def tab_height_warning(passes: list[float], top_z: float, requested_mm: float) -> str | None:
+    """A one-line warning when the depth stack cannot deliver the tab asked for."""
+    actual = tab_height_for(passes, top_z, requested_mm)
+    if actual >= requested_mm - 1e-9:
+        return None
+    return (f"tab height {requested_mm:.2f} mm exceeds the final pass depth — tabs "
+            f"will be {actual:.2f} mm tall; lower the depth per pass to get the "
+            f"full height")
 
 
 # ------------------------------------------------------------------ fixture safety
@@ -1073,16 +1175,19 @@ def generate_castle_program(
         if op4b.paths:
             ops.append(op4b)
 
-    # 5 — perimeter
+    # 5 — perimeter. The op that releases the frame, so it is the one that carries
+    # the hold-down strategy (M16): onion skin by default, tabs when the maker has
+    # chosen them. The inside contours above keep the skin either way.
     _p("Perimeter", 5)
     perimeter_tool = _tool_for("Perimeter")
     op5 = contour_op(
         "Perimeter", [Polygon(body.exterior)], "outside",
         perimeter_tool["radius_mm"], allowance, top_z, skin, params,
+        holding=castle.holding,
     )
     op5.tool = perimeter_tool
     ops.append(op5)
-    return ops
+    return params.enabled_ops(ops)
 
 
 # Strategy descriptions for the in-app setup sheet, keyed by op name.
@@ -1215,6 +1320,7 @@ def write_castle_program(
     contour_op_names: set | None = None,
     drill_op_names: set | None = None,
     peck_depth_mm: float = 1.5,
+    contour_lead_in: str = _DEFAULT_CAM.contour_lead_in,
 ) -> None:
     """Emit the ops into a single GRBL program (the castle's five ops, or any
     op list — e.g. a temple's engrave + profile, BUILDPLAN M6.3).
@@ -1266,7 +1372,12 @@ def write_castle_program(
                 post.peck_drill(x, y, z_top, z_bottom, peck_depth_mm)
             post.safe_retract()
             continue
-        ramp = contour_stepdown_mm if op.name in contour_ops else 0.0
+        # ramp_height 0 makes the post plunge-and-lap instead of taking the
+        # partial-lap ramped lead-in — which is exactly `contour_lead_in="plunge"`.
+        # A zero ramp ANGLE would not do this: the post reads that as "ramp the
+        # whole lap" (see `_emit_ramped_loop`), which is the opposite request.
+        ramp = (contour_stepdown_mm
+                if op.name in contour_ops and contour_lead_in != "plunge" else 0.0)
         for path in op.paths:
             post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp,
                                ramp_angle_deg=contour_ramp_angle_deg)

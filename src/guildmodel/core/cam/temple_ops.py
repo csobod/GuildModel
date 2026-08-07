@@ -23,10 +23,10 @@ from __future__ import annotations
 
 from shapely.geometry import Polygon
 
-from ..project.schema import CastleCamParams, TempleParams
+from ..project.schema import CastleCamParams, HoldingParams, TempleParams
 from .castle_ops import (
     CamOp, _rdp, contour_op, hinge_pocket_op, order_paths_for_travel,
-    resolve_tool)
+    pocket_levels, resolve_tool)
 
 Point3 = tuple[float, float, float]
 
@@ -41,11 +41,24 @@ def engrave_op(
     depth_z: float,
     tool: dict,
     simplify_tol_mm: float = 0.01,
+    top_z: float | None = None,
+    stepdown_mm: float = 0.0,
 ) -> CamOp:
-    """Trace each ENGRAVING polyline at constant ``z = depth_z`` — a shallow
-    groove on the temple's top face. Open polylines (text strokes) are fine: the
-    post plunges to depth at the start of each and feeds along it."""
+    """Trace each ENGRAVING polyline down to ``z = depth_z`` — a groove on the
+    temple's top face. Open polylines (text strokes) are fine: the post plunges to
+    depth at the start of each and feeds along it.
+
+    With `top_z` (the blank's top face) and a positive `stepdown_mm`, a groove
+    deeper than one stepdown is traced once per depth level instead of plunging
+    straight to full depth — the engraving tool is the most slender in the program
+    and is the one that snaps. Levels are stroke-major: each stroke is finished
+    through its depth stack before the next, matching the ring-major order the
+    through-cuts use, so a deep engraving costs no extra travel."""
     op = CamOp("Engraving", tool=tool)
+    if top_z is None or stepdown_mm <= 1e-9 or top_z - depth_z <= stepdown_mm + 1e-9:
+        zs = [float(depth_z)]
+    else:
+        zs = pocket_levels(float(top_z), float(depth_z), float(stepdown_mm))
     for curve in engraving_curves:
         pts: list[Point3] = [(float(x), float(y), float(depth_z)) for x, y in curve]
         if len(pts) >= 2:
@@ -56,6 +69,11 @@ def engrave_op(
     # permutation: every stroke's geometry and direction are unchanged (the
     # M12.1 guarantee).
     op.paths = order_paths_for_travel(op.paths)
+    # Expand each stroke into its depth stack only AFTER ordering, so the travel
+    # order is still computed over strokes rather than over level copies that all
+    # share one footprint (nearest-neighbour on duplicates is meaningless).
+    if len(zs) > 1:
+        op.paths = [[(x, y, z) for x, y, _ in path] for path in op.paths for z in zs]
     return op
 
 
@@ -87,11 +105,14 @@ def temple_profile_op(
     top_z: float,
     skin_z: float,
     params: CastleCamParams,
+    holding: "HoldingParams | None" = None,
 ) -> CamOp:
-    """The OUTLINE through-cut (outside contour, onion skin) for the temple."""
+    """The OUTLINE through-cut for the temple — the op that releases the part, so
+    it carries the hold-down strategy (onion skin by default, tabs on request)."""
     op = contour_op(
         "Temple Profile", [outline], "outside",
         profile_tool["radius_mm"], allowance_mm, top_z, skin_z, params,
+        holding=holding,
     )
     op.tool = profile_tool
     return op
@@ -202,7 +223,8 @@ def generate_temple_program(
             ops.append(hinge_op)
     if engraving_curves:
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
-                              params.simplify_tol_mm))
+                              params.simplify_tol_mm, top_z=top_z,
+                              stepdown_mm=temple.engrave_stepdown_mm))
     # Decorative OUTLINE openings (normalize.assemble_outline) are inside
     # through-cuts, taken before the profile releases the part. Same tool as the
     # profile unless pinned, so they add no tool change.
@@ -220,7 +242,7 @@ def generate_temple_program(
 
     profile = temple_profile_op(
         outline, profile_tool, temple.hand_finishing_allowance_mm,
-        top_z, skin_z, params)
+        top_z, skin_z, params, holding=temple.holding)
     if temple.snap_to_blank_end:
         # The butt end sits flush on the blank's short edge with the metal core
         # running to it — never drag the profile across it (core-safe profile).
@@ -228,4 +250,4 @@ def generate_temple_program(
             profile, temple.blank_length_mm, temple.stock_side)
     if profile.paths:
         ops.append(profile)
-    return ops
+    return params.enabled_ops(ops)

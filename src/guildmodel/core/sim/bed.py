@@ -123,6 +123,7 @@ def simulate_component(
         ops, post, arc_tol_mm=cam.arc_tolerance_mm,
         contour_stepdown_mm=cam.contour_stepdown_mm,
         contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+        contour_lead_in=cam.contour_lead_in,
         tool_settings=tool_settings, contour_op_names=contour_names,
         drill_op_names=drill_names, peck_depth_mm=peck)
 

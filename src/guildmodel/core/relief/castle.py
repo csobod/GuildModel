@@ -86,6 +86,27 @@ class CastleRelief:
     groove: "object | None" = None
     groove_lens_polys: list[Polygon] = dc_field(default_factory=list)
     mask_body_override: "Polygon | None" = None
+    # The ANTERIOR (front) surface, sharing `field`'s grid (M17). Height above the
+    # blank's anterior datum, so 0 = untouched front face and a positive value is
+    # material taken off the front. Body thickness at any cell is
+    # `field.z - anterior`. None = nothing cuts the front, which is every project
+    # before M17 and the fast path the mesher and CAM still take.
+    #
+    # Machining this needs the flip setup (M9/V2). It is modelled and previewed
+    # now so the shape can be designed and checked before the fixture work lands.
+    anterior: "np.ndarray | None" = None
+
+    @property
+    def anterior_z(self) -> np.ndarray:
+        """The anterior surface, or a flat zero field when nothing cuts the front."""
+        if self.anterior is None:
+            return np.zeros_like(self.field.z)
+        return self.anterior
+
+    def thickness(self) -> np.ndarray:
+        """Remaining material at each cell — what a two-sided design must keep
+        positive everywhere inside the body."""
+        return self.field.z - self.anterior_z
 
     @property
     def mask_body(self) -> Polygon:
@@ -367,6 +388,32 @@ def build_castle_relief(
     feature_band, feature_slope = apply_posterior_features(
         z, partition, castle, inside, ox, oy, resolution, progress=progress)
 
+    # ---- Edge features + the anterior face (M17). The anterior surface only
+    # exists when something actually cuts the front; otherwise `anterior` stays
+    # None and every downstream reader takes the historical flat-z=0 path.
+    anterior = None
+    if castle.cuts_anterior() or any(
+            f.face == "posterior" for f in castle.resolved_edge_features()):
+        from .edges import apply_edge_features, carve_anterior_bezel
+        anterior = np.zeros_like(z)
+        pre_anterior = anterior.copy()
+        # `feature_band` / `feature_max_slope_deg` are POSTERIOR CAM inputs — they
+        # add fine-relief rings to the back of the frame — so anterior carving
+        # deliberately contributes nothing to them. Machining the front is the
+        # flip setup's job (M9/V2), and it will want its own band.
+        if castle.eyewire_bezel.cuts_anterior():
+            _report(progress, "Anterior eyewire chamfer", 0.883)
+            carve_anterior_bezel(z, anterior, pre_anterior, partition,
+                                 castle.eyewire_bezel, inside, ox, oy, resolution)
+        eb, es = apply_edge_features(z, anterior, partition, castle, inside,
+                                     ox, oy, resolution, progress=progress)
+        if eb is not None:
+            feature_band = eb if feature_band is None else (feature_band | eb)
+        feature_slope = max(feature_slope, es)
+        anterior[~inside] = 0.0
+        if not anterior.any():
+            anterior = None            # posterior-only edge features changed nothing here
+
     surface = z.copy()                # posterior surface BEFORE the pockets (relief
                                       # passes sail over them; the Hinge Pockets op cuts)
 
@@ -391,6 +438,7 @@ def build_castle_relief(
         groove=groove if groove_on else None,
         groove_lens_polys=groove_lens_polys,
         mask_body_override=body if groove_on else None,
+        anterior=anterior,
     )
 
 
@@ -599,7 +647,12 @@ def build_castle_mesh(
     relief: CastleRelief, conform: bool = True,
     progress: Optional[ProgressFn] = None,
 ) -> "trimesh.Trimesh":  # noqa: F821
-    """Watertight solid: castle top, flat anterior at z=0, stitched rim.
+    """Watertight solid: castle top, anterior face, stitched rim.
+
+    The anterior is flat at z = 0 unless the relief carries an anterior surface
+    (M17 edge features / anterior eyewire chamfer), in which case the bottom
+    vertices ride it. `_conform_rim` only moves vertices in XY, so a non-flat
+    anterior needs no special handling there.
 
     Works on the masked grid, so the rim follows every boundary ring —
     outline and lens holes alike (closes the spike's open-mesh issue).
@@ -627,9 +680,13 @@ def build_castle_mesh(
     res = relief.field.resolution
     x = relief.field.origin[0] + cc * res
     y = relief.field.origin[1] + rr * res
+    # The anterior face is flat at z = 0 unless something cuts it (M17), in which
+    # case the bottom vertices ride the anterior surface — so an anterior chamfer
+    # shows in the 3D model and the exported STL, not just in the numbers.
+    anterior = relief.anterior_z if hasattr(relief, "anterior_z") else np.zeros_like(z)
     verts = np.vstack([
-        np.column_stack([x, y, z[rr, cc]]),       # top
-        np.column_stack([x, y, np.zeros(n)]),     # anterior (z = 0)
+        np.column_stack([x, y, z[rr, cc]]),           # posterior (castle) surface
+        np.column_stack([x, y, anterior[rr, cc]]),    # anterior surface
     ])
 
     r0, c0 = np.mgrid[0:rows - 1, 0:cols - 1]

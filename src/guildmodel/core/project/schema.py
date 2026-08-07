@@ -148,14 +148,115 @@ class PadSplayParams(BaseModel):
 
 
 class EyewireBezelParams(BaseModel):
-    """Constant-width chamfer band around each lens opening's posterior rim —
-    the "bezeled eyewire" (M13.2). Depth below the local surface at the rim is
+    """Constant-width chamfer band around each lens opening's rim — the "bezeled
+    eyewire" (M13.2). Depth below the local surface at the rim is
     width_mm * tan(angle_deg); the anterior clamp floors the cut.
+
+    `face` (M17) picks which side of the frame the band is cut into. The
+    posterior band is the historical one and stays the default; `anterior` moves
+    it to the front face and `both` cuts a matching band on each side — the
+    "instead of or in addition to" the maker asked for. An anterior band is
+    modelled and previewed now; machining it needs the flip setup (M9/V2).
     """
     enabled: bool = False
     width_mm: float = 2.5
     angle_deg: float = 30.0
     anterior_clamp_mm: float = 1.5
+    face: Literal["posterior", "anterior", "both"] = "posterior"
+    # Anterior band geometry, used when `face` is anterior/both. Separate from the
+    # posterior numbers because the two sides are different jobs: the posterior
+    # bezel seats the lens, the anterior one is cosmetic and usually shallower.
+    anterior_width_mm: float = 1.5
+    anterior_angle_deg: float = 45.0
+    # The anterior cut may never leave the frame thinner than this at any point.
+    min_thickness_mm: float = 1.0
+
+    def cuts_posterior(self) -> bool:
+        return self.enabled and self.face in ("posterior", "both")
+
+    def cuts_anterior(self) -> bool:
+        return self.enabled and self.face in ("anterior", "both")
+
+
+class EdgeFeature(BaseModel):
+    """One chamfer or fillet run along part of an edge (BUILDPLAN M17).
+
+    The feature the thick modern frames need: a chamfer on the **anterior brow**,
+    over each eyewire, *not* carried across the bridge. That shape is impossible
+    to describe with the M13 bezel, which is a constant band all the way round a
+    ring — hence a feature with a span, a profile, and a taper.
+
+    **The span is named by zones, not by numbers along the ring.** `zones` lists
+    the castle zones the run covers (empty = the whole ring); the run is the part
+    of the ring those zones own. That survives re-importing a tweaked drawing —
+    an arc-length fraction would silently point somewhere else — it reads as the
+    maker already thinks ("over the brow, not the bridge"), and it mirrors by
+    swapping `_od` for `_os`. `trim_start_mm` / `trim_end_mm` then nudge each end
+    along the ring for the last few millimetres of control, and `blend_mm` tapers
+    the cut to nothing at each end so it feathers out instead of stopping dead.
+
+    `width_end_mm` makes the run **variable**: the chamfer widens or narrows
+    along its length. Left None it is constant at `width_mm`.
+    """
+    id: str = ""
+    label: str = ""
+    enabled: bool = True
+
+    # Which face and which edge ring.
+    face: Literal["anterior", "posterior"] = "anterior"
+    edge: Literal["outline", "lens_od", "lens_os"] = "outline"
+
+    # The span, in castle-zone vocabulary. Empty `zones` = the whole ring.
+    zones: list[str] = Field(default_factory=list)
+    trim_start_mm: float = 0.0     # + pulls the start in, - pushes it out
+    trim_end_mm: float = 0.0
+    blend_mm: float = Field(4.0, ge=0)   # taper to nothing over this run-in
+
+    # Profile.
+    profile: Literal["chamfer", "fillet"] = "chamfer"
+    width_mm: float = Field(2.0, gt=0)          # chamfer's radial run at the start
+    width_end_mm: float | None = Field(None, gt=0)   # None = constant width
+    angle_deg: float = Field(45.0, gt=0, lt=90)
+    radius_mm: float = Field(2.0, gt=0)         # fillet radius
+    depth_limit_mm: float | None = Field(None, gt=0)  # cap the axial cut
+
+    # Never leave the frame thinner than this where the feature cuts.
+    min_thickness_mm: float = Field(1.0, ge=0)
+
+    # Emit the x-mirrored twin automatically (OD ↔ OS). The brow chamfer is
+    # always a pair, and keeping it one feature means one edit, not two.
+    mirror: bool = True
+
+    def width_at(self, t: float) -> float:
+        """Chamfer width at normalised station `t` (0 at the run's start)."""
+        if self.width_end_mm is None:
+            return self.width_mm
+        return self.width_mm + (self.width_end_mm - self.width_mm) * min(max(t, 0.0), 1.0)
+
+    def max_width_mm(self) -> float:
+        """The widest the feature ever reaches — the search radius the carver needs."""
+        if self.profile == "fillet":
+            return self.radius_mm
+        return max(self.width_mm, self.width_end_mm or self.width_mm)
+
+    def mirrored(self) -> "EdgeFeature":
+        """The x-mirrored twin: OD zones become OS (and vice versa), and a lens
+        edge swaps sides. A centre zone (`bridge`) is its own mirror, so a run
+        that legitimately spans the centre mirrors onto itself."""
+        def swap(name: str) -> str:
+            if name.endswith("_od"):
+                return name[:-3] + "_os"
+            if name.endswith("_os"):
+                return name[:-3] + "_od"
+            return name
+        edge = {"lens_od": "lens_os", "lens_os": "lens_od"}.get(self.edge, self.edge)
+        return self.model_copy(update={
+            "id": f"{self.id}_mirror" if self.id else "",
+            "label": f"{self.label} (mirrored)" if self.label else "",
+            "zones": [swap(z) for z in self.zones],
+            "edge": edge,
+            "mirror": False,          # the twin never mirrors again
+        })
 
 
 class BridgeReliefParams(BaseModel):
@@ -174,6 +275,39 @@ class BridgeReliefParams(BaseModel):
     anterior_clamp_mm: float = 1.5
 
 
+class HoldingParams(BaseModel):
+    """How a released part is held in the blank until the cut finishes (M16).
+
+    Two strategies, and they are **alternatives, not additions** — the reason the
+    tab machinery in `cam/tabs.py` sat unused since it was written:
+
+    * ``skin`` (default, the historical behaviour) — the through-cut stops
+      ``onion_skin_mm`` above the anterior face and the part is snapped/sanded off
+      that wafer by hand. Nothing to program around; the whole part edge is cut at
+      full depth.
+    * ``tabs`` — the through-cut goes to the anterior face (z = 0, never below: the
+      Guild fixture's hold-down screws and blank zone live under the stock) and the
+      **last depth pass** rises over `tab_count` uncut bridges. The part is free
+      except at the tabs, which are cut off and filed. Choose this when the onion
+      skin is fighting you — a thin or brittle blank that cracks when the wafer is
+      broken, or a part small enough that the skin distorts it.
+
+    Tabs apply only to the op that **releases the part** (the outside profile).
+    Inside through-cuts — eyewires, decorative holes — always keep the onion skin:
+    their waste slug is dropping into the fixture either way, and a tabbed slug is
+    a loose piece for the cutter to catch rather than a part worth saving.
+    """
+    strategy: Literal["skin", "tabs"] = "skin"
+    tab_count: int = Field(4, ge=0, le=16)
+    tab_width_mm: float = Field(3.0, gt=0)
+    # Uncut bridge height, measured up from the anterior face. Must stay under the
+    # blank thickness or the "tab" is the whole part.
+    tab_height_mm: float = Field(1.0, gt=0)
+
+    def tabs_on(self) -> bool:
+        return self.strategy == "tabs" and self.tab_count > 0
+
+
 class CastleParams(BaseModel):
     """The parametric castle (BUILDPLAN §2): towers, walls, footing, stock.
 
@@ -188,14 +322,37 @@ class CastleParams(BaseModel):
     footing: FootingSchedule = Field(default_factory=FootingSchedule)
     hinge_pocket_depth_mm: float = 1.0       # below the endpiece zone height
     stock: StockDefinition = Field(default_factory=StockDefinition)
-    onion_skin_mm: float = 0.4               # axial stock left under through-cuts (no tabs)
+    onion_skin_mm: float = 0.4               # axial stock left under through-cuts (skin holding)
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
+    holding: HoldingParams = Field(default_factory=HoldingParams)   # skin | tabs (M16)
     # Posterior finishing features (M13, all default-off — the M2/M3/M4 gates
     # machine the bare castle; each is a min-carve into the footed surface).
     pad_splay: PadSplayParams = Field(default_factory=PadSplayParams)
     eyewire_bezel: EyewireBezelParams = Field(default_factory=EyewireBezelParams)
     bridge_relief: BridgeReliefParams = Field(default_factory=BridgeReliefParams)
     lens_groove: LensGrooveParams = Field(default_factory=lambda: LensGrooveParams())
+    # Partial-span chamfers / fillets on either face (M17). Empty = none, so every
+    # existing project models exactly as before.
+    edge_features: list[EdgeFeature] = Field(default_factory=list)
+
+    def resolved_edge_features(self) -> list[EdgeFeature]:
+        """Every enabled edge feature, each followed by its mirrored twin where
+        `mirror` is set — the list the carver actually walks."""
+        out: list[EdgeFeature] = []
+        for f in self.edge_features:
+            if not f.enabled:
+                continue
+            out.append(f)
+            if f.mirror:
+                out.append(f.mirrored())
+        return out
+
+    def cuts_anterior(self) -> bool:
+        """True when anything in this castle removes material from the front face
+        — the flag the relief build uses to decide whether an anterior surface is
+        needed at all (M17). False keeps the historical single-surface fast path."""
+        return (self.eyewire_bezel.cuts_anterior()
+                or any(f.face == "anterior" for f in self.resolved_edge_features()))
 
 
 # Canonical posterior op names, in machining order. These are the keys for the
@@ -282,6 +439,14 @@ class CastleCamParams(BaseModel):
     # bulk tool does relief / eyewires / perimeter.
     op_tools: dict[str, str] = Field(default_factory=dict)
 
+    # Per-operation enable/skip (M16): op name -> False to leave it out of the
+    # program. Absent = enabled, so an empty dict is the historical "cut everything"
+    # and old projects load unchanged. The everyday use is cutting a job in stages —
+    # pocket and engrave today, release the part after the inserts go in — or
+    # re-posting one operation after a tool change without re-cutting the rest.
+    # Disabling the releasing profile deliberately leaves the part in the blank.
+    op_enabled: dict[str, bool] = Field(default_factory=dict)
+
     # Program zero / G54 work datum (BUILDPLAN M6.2). Default = stock-box
     # center/center, bottom (anterior) face — i.e. the blank center, which is the
     # design-frame origin (a zero offset); pick a corner + top face to touch off
@@ -307,6 +472,14 @@ class CastleCamParams(BaseModel):
     def is_multi_tool(self) -> bool:
         return len(self.tools_in_use()) > 1
 
+    def is_op_enabled(self, op_name: str) -> bool:
+        """Whether `op_name` should be emitted (M16). Unknown/absent = enabled."""
+        return bool(self.op_enabled.get(op_name, True))
+
+    def enabled_ops(self, ops: list) -> list:
+        """`ops` minus the operations the maker has switched off."""
+        return [op for op in ops if self.is_op_enabled(op.name)]
+
     # strategy / geometry. The step / stepover fields drive `while`-loops that only
     # advance by their value, so 0 or negative would spin forever — reject them at
     # load with a clear error (the generators also floor them defensively). `gt=0`
@@ -314,13 +487,35 @@ class CastleCamParams(BaseModel):
     pocket_stepover_mm: float = Field(1.2, gt=0)
     relief_stepover_mm: float = Field(0.9, gt=0)   # matches Fusion Scallop coverage
     rough_axial_stock_mm: float = 2.0
-    # Requested through-cut depth per pass (M12.4): clamped down per material+machine by
-    # `max_doc` (acetate 4.0, acetal 2.0, brittle horn 0.8), so this is "cut as deep as
-    # the material allows" by default — fewer perimeter/eyewire passes — and the user can
-    # still set it shallower. Was 2.5 (a blanket cap that left acetate at 4 passes).
-    contour_stepdown_mm: float = Field(4.0, gt=0)
+    # Requested through-cut depth per pass, clamped down per material+machine by
+    # `max_doc`. M12.4 set this to 4.0 ("cut as deep as the material allows") on the
+    # strength of an unvalidated acetate DOC ceiling; the field verdict is that a
+    # full-depth pass is far too much bite. 1.5 is the conservative baseline — a 4 mm
+    # temple blank cuts in three passes rather than one — and the maker raises it per
+    # job from the Cut tab, which now shows the resulting pass count.
+    contour_stepdown_mm: float = Field(1.5, gt=0)
+    # Axial depth per pocket level (hinge recesses). The outer ring ramps in at
+    # `ramp_step_mm` per lap; the floor cascade that follows used to clear the whole
+    # remaining depth in ONE full-depth pass, so a deep pocket buried the cutter. Now
+    # the pocket is cut in levels this deep, each with its own cascade.
+    pocket_stepdown_mm: float = Field(1.0, gt=0)
     ramp_step_mm: float = Field(0.6, gt=0)  # pocket ramp descent per lap
     contour_ramp_angle_deg: float = 8.0    # through-cut lead-in ramp (partial lap)
+    # How a through-cut pass enters the material (M16). `ramp` is the historical
+    # partial-lap ramped lead-in — no slot-plunge, at the cost of the lead-in
+    # distance every pass. `plunge` drops straight to depth at the pass start and
+    # cuts one clean lap: shorter and perfectly serviceable for a small tool in
+    # acetate, and the only option that makes sense with a slow plunge rate and a
+    # centre-cutting endmill. NOTE this is not a duplicate of a zero ramp angle —
+    # `_emit_ramped_loop` treats a non-positive angle as "ramp the WHOLE lap", so
+    # before this field there was no way to ask for a straight entry at all.
+    contour_lead_in: Literal["ramp", "plunge"] = "ramp"
+    # Milling direction for the through-cut contours (M16). `climb` (default, the
+    # M12.5 behaviour) runs the cutter so the chip thins to zero — the cleaner wall
+    # on acetate, and what the Fusion reference program does. `conventional`
+    # reverses every ring: the choice for a machine with backlash it cannot take
+    # out, where climb milling pulls the cutter into the work.
+    cut_direction: Literal["climb", "conventional"] = "climb"
     skim_epsilon_mm: float = 0.05          # "nothing to cut" threshold for roughing
     # Contour-relief linking (M11): bridge a contour ring's masked gaps up to this
     # width by riding the cutter over the thin cap instead of retract+plunging across
@@ -375,6 +570,11 @@ class TempleParams(BaseModel):
     blank_thickness_mm: float = 4.0
     hinge_pocket_depth_mm: float = 1.0     # HINGE pocket floor below the top face
     engrave_depth_mm: float = 0.3          # groove depth below the top face
+    # Axial depth per engraving pass. A groove deeper than this is cut in several
+    # passes instead of one plunge to full depth — a 1.5 mm channel with a slender
+    # V-bit or 1 mm endmill snaps the tool otherwise. The 0.3 mm default groove is
+    # one pass either way, so shallow engraving is unchanged.
+    engrave_stepdown_mm: float = Field(0.5, gt=0)
     engrave_tool: str = "engrave_vbit"     # small tool for the ENGRAVING passes
     hinge_tool: str = "flat_2mm"           # endmill that clears the HINGE pockets
     # M11 #7: engrave a single fixed-depth line down each stroke's CENTRE (medial
@@ -384,6 +584,7 @@ class TempleParams(BaseModel):
     profile_tool: str = "flat_3175"        # outline through-cut tool
     onion_skin_mm: float = 0.4             # axial stock left under the profile
     hand_finishing_allowance_mm: float = 0.1
+    holding: HoldingParams = Field(default_factory=HoldingParams)   # skin | tabs (M16)
     fixture_zone: str = "temple_right"     # fixture blank zone (clearance check)
 
     # Snap the temple to one end of the blank so the injected metal core (a wire
@@ -439,6 +640,7 @@ class BaseCurveBlockParams(BaseModel):
     profile_tool: str = "flat_3175"
     onion_skin_mm: float = 0.4
     hand_finishing_allowance_mm: float = 0.1
+    holding: HoldingParams = Field(default_factory=HoldingParams)   # skin | tabs (M16)
 
     # mounting holes
     hole_count: int = 3
@@ -934,6 +1136,42 @@ class Worktable(BaseModel):
         )
 
 
+class ComponentCamOverrides(BaseModel):
+    """Per-component departures from the project-global `CastleCamParams` (M16).
+
+    `cam_params` is one model for the whole project — sensible while every part is
+    the same acetate on the same machine, and wrong the moment a project mixes
+    stock. The standard job already does: the frame front and both temples are
+    acetate, the base-curve forming blocks are **acetal**, whose depth-of-cut
+    ceiling is half acetate's. Before this, only the block's *feeds* re-read its own
+    material; its depth per pass came from whatever the frame was set to.
+
+    Every field is optional and ``None`` means "inherit". `material` is the
+    important one — it re-clamps the depth per pass through that material's own
+    `max_doc_mm` at post time — and the rest are escape hatches for a part that
+    needs a lighter cut than its material's defaults imply (a fragile small piece,
+    a worn tool kept in service for one component).
+    """
+    material: str | None = None
+    contour_stepdown_mm: float | None = Field(None, gt=0)
+    pocket_stepdown_mm: float | None = Field(None, gt=0)
+    feed_rate_mmpm: float | None = Field(None, gt=0)
+    spindle_rpm: int | None = Field(None, gt=0)
+    cut_direction: Literal["climb", "conventional"] | None = None
+
+    def is_empty(self) -> bool:
+        """True when nothing is overridden — the component inherits everything."""
+        return not self.model_dump(exclude_none=True)
+
+    def apply(self, cam: "CastleCamParams") -> "CastleCamParams":
+        """`cam` with this component's overrides layered on (material excluded —
+        that one selects the preset the caller clamps against, it is not a CAM
+        field). Returns `cam` unchanged when nothing is set."""
+        update = self.model_dump(exclude_none=True)
+        update.pop("material", None)
+        return cam.model_copy(update=update) if update else cam
+
+
 class Component(BaseModel):
     """One role-typed part of a project (BUILDPLAN M7.1).
 
@@ -956,6 +1194,9 @@ class Component(BaseModel):
     # Per-component G54 work zero (M11): each part keeps its own datum so separately
     # exported NC files (front, each temple) don't all share one zero.
     program_zero: ProgramZero = Field(default_factory=ProgramZero)
+    # Per-component departures from the project-global cam_params (M16) — most
+    # usefully the material, since a base-curve block is acetal among acetate parts.
+    cam_overrides: ComponentCamOverrides = Field(default_factory=ComponentCamOverrides)
 
     forming: FormingMetadata = Field(default_factory=FormingMetadata)
 

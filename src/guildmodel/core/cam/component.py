@@ -20,9 +20,43 @@ from shapely.geometry import Polygon
 from ..project.schema import (
     CastleCamParams,
     Component,
+    ComponentCamOverrides,
     ComponentKind,
     StockDefinition,
 )
+
+
+def resolve_component_cam(
+    cam: CastleCamParams,
+    component: Component | None = None,
+    *,
+    machine=None,
+    mats_cfg: dict | None = None,
+    material_name: str = "acetate",
+):
+    """The project CAM params as they apply to ONE component (BUILDPLAN M16).
+
+    Layers the component's `cam_overrides` on top of the project-global params and
+    then re-clamps through **that component's** material, so a base-curve block in
+    acetal is not cut at the acetate frame's depth per pass. Returns
+    ``(cam, clamp, material_dict, material_name)``; `clamp` is None when no machine
+    profile is supplied (callers that only need the geometry).
+
+    This is the single seam a posting path should use — the M15 round proved that
+    "each path resolves its own CAM params by hand" is how a part ends up posting
+    legally on its own tab and illegally somewhere else.
+    """
+    ov = (component.cam_overrides if component is not None
+          else ComponentCamOverrides())
+    cam = ov.apply(cam)
+    name = ov.material or material_name
+    mats = mats_cfg or {}
+    mat = mats.get((name.split() or ["acetate"])[0].lower()) or mats.get("acetate") or {}
+    clamp = None
+    if machine is not None:
+        from ..post.machine import clamp_cam_to_machine
+        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
+    return cam, clamp, mat, name
 from .block_ops import BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program
 from .castle_ops import CamOp, generate_castle_program
 from .temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
@@ -78,8 +112,13 @@ def build_component_ops(
     per-op / per-feature tools from it). `tool` is the global/default tool dict —
     required only for the frame-front castle program. A missing kind-required
     geometry input raises ValueError.
+
+    The component's own `cam_overrides` are layered on here (M16), so every caller
+    of this seam — per-component Generate, the worktable bed program, the bed sim —
+    picks them up without each re-deriving them.
     """
     kind = component.kind
+    cam_params = component.cam_overrides.apply(cam_params or CastleCamParams())
 
     if kind == ComponentKind.FRAME_FRONT:
         if geometry.relief is None:

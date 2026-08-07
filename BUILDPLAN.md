@@ -22,6 +22,19 @@ real stock — and nothing else.
 
 ## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap (2026-06-18 reorientation replan): **M7 reorientation** — one `.gdraw` → a multi-component project (frame front + both temples + a per-lens base-curve template), per-component 3D workspace tabs, an interactive worktable from a tagged bed DXF, role-matched auto-nesting, and combined-or-per-component G-code (`v0.7.1`–`v0.7.6`) — then hardware round-trip M8 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M9, rename-decision + packaging/v1.0.0 M10. **M7.1 project model ✅ DONE (`v0.7.1`) + M7.2 `.gdraw` intake ✅ DONE (`v0.7.2`, 233 tests — reader + File ▸ Open Model + the component notebook: a tab per component, tab-switch rebinds the active component) + M7.3 per-component notebook ✅ DONE (`v0.7.3`, 234 tests — component tabs + kind-aware editable param dock (Temple/Base Curve tabs) + per-component param persistence) + M7.4 interactive worktable ✅ DONE (`v0.7.4`, 247 tests — `Worktable`/`WorktableZone`/`BedRole` model in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine coords; `from_fixture_dict`/`to_fixture_dict` load the Guild `guild_cnc.yaml` as the default bed and bridge back onto the M6.5 layout machinery unchanged); `core/cam/worktable.py` reads a bed DXF → `polygonize`d regions, `default_worktable`, `.bed` YAML I/O; GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords `BedCanvas` — import a bed DXF / load the Guild bed, click a region, tag its role (frame-front / temple R-L / base-curve R-L / keep-out); persisted in the `.gcam`) + M7.5 per-component 3D models ✅ DONE (`v0.7.5`, 258 tests — `core/relief/flat.py` reuses the castle mesher for flat parts: temple = outline extruded 4 mm + HINGE blind pockets + ENGRAVING grooves, snapped hinge-end to the blank + a visual injected-core bar; base-curve block = the lens shape cut from a 70×70×4.7625 acetal blank, 3 M4 through-holes (2026-06-19: CAM simplified to Drill Holes + Block Profile=lens-shape cut, forming scribe + box cut dropped); GUI `FlatMeshWorker` + Build-3D enabled per kind); next: M7.6 role-matched auto-nesting onto the tagged bed (+ polygon keep-outs, bed render/nudge), then M7.7 combined/per-component G-code**)*
 
+> **2026-08-06 — FEATURE CRISPNESS: root cause found, architecture decision
+> open.** The cutting features read as blended and pitted rather than as a Fusion
+> boolean. **Cause: the raster relief has no representation of an *edge*, so every
+> fix attempted so far has been a smoothing filter applied to a sampling
+> artifact.** Measured on the demo frame: adjacent rim vertices on a curve that
+> should be smooth differ by 0.11 mm on average, 0.48 mm worst case, at preview
+> resolution (`scripts/probe_rim_error.py`). Direction: a real B-Rep kernel
+> (OpenCASCADE), **after V2** — full diagnosis, kernel survey, costs, staged plan
+> and kill criteria in **`BREP-REWRITE-REPORT.md`**; milestone entry in the
+> **"Feature crispness"** section near the end of this file. Four contained fixes
+> worth making first are proposed there as **M18**, two of which are bugs shipping
+> today. *Nothing here displaces V2 — the flip fixture is a hardware gate.*
+
 > **2026-07-29 — `v1.1.0`, 586 tests: WHOLE-BED WORKFLOW HARDWARE-PROVEN + the
 > safety fix that got it there.** A complete nested worktable — frame front, both
 > temples, both base-curve forming blocks — has been **cut on real stock in one
@@ -3206,6 +3219,374 @@ forcing XWayland.
 **Fix:** no code change — this is an environment/library gap (PyVista/VTK vs.
 native Wayland), not a GuildModel bug. Documented in the README; any
 `.desktop` launcher should set `Exec=env QT_QPA_PLATFORM=xcb …/guildmodel`.
+
+## M15 — Depth-per-pass control on every component (v1.2.0) · *the maker decides how deep it bites* — 2026-08-06
+
+> **Field report:** a temple's G-code tried to take the whole blank in one pass,
+> and there was no control anywhere in the UI to change it. Diagnosing that turned
+> up three independent causes plus a cluster of neighbouring places where the same
+> decision was being made *for* the maker rather than *by* them. V1 scope: nail the
+> single-sided feature set down before M9/V2 two-sided.
+
+**Root cause (three things, all required to produce the symptom):**
+
+1. **The default was one pass.** M12.4 raised `contour_stepdown_mm` to 4.0 —
+   "cut as deep as the material allows" — on the strength of an acetate
+   `max_doc_mm` of 4.0 that its own comment flagged as needing validation. A
+   default 4 mm temple blank less a 0.4 mm onion skin is 3.6 mm of cut:
+   `contour_passes(4.0, 0.4, 4.0) == [0.4]`. Exactly one full-depth pass.
+2. **The control was hidden.** `contour_stepdown` lived in the frame-only "Cut
+   Strategy" group, which `set_component_kind` hides for temple and base-curve
+   components. The value still reached the generator — the maker simply could not
+   see or change it while a temple was active. Same for the ramp angle and the arc
+   tolerance, which also apply to every kind.
+3. **The clamp seam was still incomplete.** INCIDENT-2026-07-29 routed the
+   *worktable* paths through `clamp_cam_to_machine`; `_generate_temple` and
+   `_generate_block` were never done. Neither the machine's nor the material's
+   depth-of-cut ceiling applied to a temple, and the post was handed
+   `cam.arc_tolerance_mm` instead of `clamp.arc_tol_mm`, so a controller declared
+   to have no reliable G2/G3 still received arcs. `_generate_block` *looked*
+   clamped — it computed a clamped `stepdown` local, but handed it only to
+   `write_castle_program` (which sets the lead-in ramp depth) while the contour
+   passes had already been generated from the unclamped value.
+
+**Landed:**
+
+1. **Depth per pass is now a universal, everyday control.** New "Depth per pass"
+   group on the **Cut** tab (`_build_depth_group`) — through-cut and pocket —
+   visible for every component kind, with a live read-out of what the active
+   component's blank works out to: *"Temple profile: 3 passes through 3.60 mm
+   (deepest 1.50 mm)"*, amber with *"the whole depth in one bite"* when it
+   collapses to a single pass. The old strategy group keeps only the frame's
+   relief knobs and is renamed **Relief Strategy**; ramp angle + arc tolerance move
+   to a universal **Through-cut lead-in & output** group on Machine.
+2. **Shipped defaults lowered** (user decision, this round): acetate
+   `max_doc_mm` 4.0 → **2.0**, acetate `contour_stepdown_mm` 4.0 → **1.5**,
+   `CastleCamParams.contour_stepdown_mm` 4.0 → **1.5**. A stock temple is now
+   three passes, a stock frame perimeter more. Raiseable per job as always — but a
+   fresh project no longer ships a full-depth cut.
+3. **Clamp seam completed.** `_generate_temple`, `_generate_block`,
+   `FlatSimWorker` and `BedSimWorker` all run `clamp_cam_to_machine` **before**
+   generating ops, and both posts now use `clamp.arc_tol_mm`. The sim and the
+   program a tab posts are once again the same program.
+4. **Blind pockets are cut in levels.** `hinge_pocket_op` ramped its outer ring
+   down and then cleared the floor in ONE cascade at full depth, however deep the
+   pocket. New `pocket_levels()` + `pocket_stepdown_mm` (default 1.0) cut the
+   pocket level by level, each with its own ramped entry and cascade. A recess no
+   deeper than one stepdown posts the historical single-level path unchanged.
+5. **Engraving steps down.** `TempleParams.engrave_stepdown_mm` (default 0.5):
+   a groove deeper than one stepdown is traced once per level instead of plunging
+   a slender V-bit straight to depth. Levels expand *after* travel ordering, so the
+   nearest-neighbour permutation is still computed over strokes, not over level
+   copies sharing one footprint. The 0.3 mm default groove is one pass either way.
+6. **The upgrade actually takes (`prefs._retire_m124_stepdown`).** Caught during
+   verification: prefs are restored over the schema defaults on every launch, so
+   lowering the shipped default alone changed nothing for anyone who had already
+   run GuildModel — this machine's `~/.guildmodel/prefs.json` still pinned
+   `contour_stepdown_mm: 4.0`, and a temple still came out as one pass. A stored
+   value **at or above** the old 4.0 default is retired on load (a deliberate
+   choice would have been *lower*, since 4.0 was already the ceiling acetate
+   allowed); anything below it is the maker's own tuning and is left alone.
+   Project files are deliberately *not* rewritten — an old `.gmodel` keeps its
+   saved request and the read-out warns about it.
+7. **The read-out reports the clamped depth, not the request.** The post applies
+   the material/machine ceiling, so a read-out echoing the request would mis-state
+   an over-set project by a whole pass. It shows what will be cut and says
+   *"capped at the 2.00 mm material/machine limit"* when the two differ.
+8. **`cam_params()` no longer loses fields (silent data loss).** It rebuilt
+   `CastleCamParams` from scratch, so every field with no widget —
+   `pocket_stepover_mm`, `ramp_step_mm`, `relief_link_gap_mm`, `relief_min_run_mm`,
+   `simplify_tol_mm`, `skim_epsilon_mm`, `link_retracts`, `link_clearance_mm`, the
+   screw-keepout pair — reverted to its schema default. `_build_project_schema`
+   saves that snapshot back into the project, so **opening a `.gmodel` with any of
+   those tuned and pressing Save discarded the tuning.** Now `set_cam_params`
+   retains the loaded model as `_cam_base` and `cam_params()` returns
+   `base.model_copy(update=…)` over only the fields the panel owns.
+
+**Deliberately NOT landed (reported, not built):**
+
+- **Hold-down tabs on temple / base-curve profiles.** `cam/tabs.py` exists but is
+  wired only to the legacy no-SCULPT `profile_cut`. Tabs are an *alternative* to
+  the onion skin, not an addition — with a skin the final pass is above the bottom
+  face, where a tab means nothing. Wiring them needs a hold-strategy choice
+  (skin | tabs) from the maker, which is its own milestone, not a checkbox.
+- **Per-op enable / skip.** `cam_params.op_tools` assigns a tool per op but there
+  is no way to say "don't cut the perimeter this time". Needs an op matrix in the
+  UI + an op-set on the schema.
+- **Per-component CAM overrides.** `cam_params` is project-global (only
+  `program_zero` went per-component, in M11). Defensible — depth per pass is a
+  material/tool property, not a part property — but a project mixing acetate
+  temples with an acetal block has one stepdown for both, and only the block path
+  re-reads its own material.
+- **Climb/conventional and lead-in/out style.** Climb is hardcoded in
+  `contour_op` (M12.5); there is no conventional option and no lead-in arc/line
+  choice.
+
+Suite 586 → **606** (+20 in `tests/test_depth_control_m15.py`). Three pre-existing
+tests hardcoded M12.4's 4 mm pass stack (`test_cam_quality::test_eyewires_ring_major`,
+`test_castle_m3::test_contour_ops_passes_and_skin` and `::test_against_reference_nc`);
+each now derives its expectation from the shipped stepdown, or asserts the invariant
+that matters (same onion-skin floor, same depth reached, no pass deeper than
+requested) instead of a pass count that is a tuning decision.
+
+**Cut-time impact — the trade the lowered default buys.** With the shipped
+settings the frame perimeter/eyewire stack goes from 3 passes to **7** through
+9.6 mm, and a temple profile from 1 to **3**. That is the intended cost of not
+taking a full-depth bite; a maker who has proven a deeper cut on their machine
+raises the number on the Cut tab and sees the pass count update live.
+
+Held uncommitted for review — **the changed defaults alter every existing
+project's pass structure**, so verify on a sacrificial cut before production.
+
+## M16 — Toolpath control (v1.3.0) · *the four decisions the program used to make for you* — 2026-08-06
+
+> The M15 audit listed four control gaps it deliberately did not close. This
+> milestone closes them, and in wiring the first one up found two live defects in
+> `cam/tabs.py` that had been latent since the module was written — it had only
+> ever been driven by the legacy no-SCULPT profile fallback, never by a real
+> buffered contour. Still V1 single-sided; M9/V2 two-sided remains out of scope.
+
+1. **Hold-down strategy — onion skin | tabs** (`HoldingParams` on `CastleParams`
+   / `TempleParams` / `BaseCurveBlockParams`). They are **alternatives, not
+   additions**, which is why the tab machinery sat unused: with a skin the final
+   pass is above the bottom face, where a tab means nothing. On `tabs` the stack
+   runs to the anterior face (z = 0, *never* below — the fixture's blank zone and
+   hold-down screws are under the stock) and the last pass rises over `tab_count`
+   bridges. Only the op that **releases the part** takes tabs; inside through-cuts
+   (eyewires, decorative holes) keep the skin, because their waste slug is dropping
+   into the fixture either way and a tabbed slug is a loose piece for the cutter to
+   catch.
+   * **Tab height is clamped to the final pass depth** (`tab_height_for`), because
+     the pass above has already removed everything higher — a 3 mm tab under a
+     1.5 mm final pass is a 1.5 mm tab whatever the G-code says.
+     `tab_height_warning` gives the panel the sentence to show instead of letting
+     the difference be silent.
+2. **Cut direction — climb | conventional** (`CastleCamParams.cut_direction`).
+   Climb was hardcoded in `contour_op` since M12.5. Conventional reverses every
+   ring, inside and outside together so the two stay opposite: the choice on a
+   machine with backlash it cannot take out, where climb pulls the cutter in.
+3. **Lead-in — ramp | plunge** (`CastleCamParams.contour_lead_in`). Not a
+   duplicate of the ramp angle: `_emit_ramped_loop` reads a non-positive angle as
+   *"ramp the whole lap"* — the opposite request — so a straight entry was
+   previously unreachable at any setting. The panel greys the angle out on plunge.
+   * **Tangential arc lead-in deliberately not built.** On a through-cut's first
+     depth pass an arc entry lands in solid material, so it would have to be a
+     ramped arc — i.e. the ramp, with extra geometry. And with an onion skin plus
+     a hand-finishing allowance the wall is hand-finished anyway, so the witness
+     mark an arc lead-in exists to avoid is sanded off. Wrong feature for this part.
+4. **Per-operation enable / skip** (`CastleCamParams.op_enabled`, absent = enabled
+   so old projects load unchanged). Cut a job in stages — pocket and engrave now,
+   release the part after the inserts go in — or re-post one operation after a tool
+   change. The panel's list is kind-aware and warns when a *releasing* op is off
+   ("the part stays attached to the blank"). Switching everything off used to
+   surface as an `IndexError` on `ops[0]`; `require_ops` / `NoOperationsError` now
+   report the maker's own setting as a plain sentence.
+5. **Per-component CAM overrides** (`ComponentCamOverrides` on `Component`,
+   carried on `ComponentWorkspace`, round-tripped through the `.gmodel`). The
+   audit's case: the standard job is an acetate frame and temples plus **acetal**
+   base-curve blocks, and acetal's depth-of-cut ceiling is half acetate's — but
+   `cam_params` was project-global, so only the block's *feeds* re-read its own
+   material while its depth per pass came from the frame. `resolve_component_cam`
+   is the single seam that layers a component's overrides and re-clamps through
+   *its* material; `ParamsPanel.effective_cam_params()` / `effective_material_name()`
+   feed every single-component posting and sim path.
+
+**Two live defects found in `cam/tabs.py` while wiring strategy 1** — both
+invisible until tabs met a buffered contour, whose rings mix 140 mm straight runs
+with 0.2 mm corner steps:
+
+* **Two tabs on one segment merged into one raised run.** The drop back to cutting
+  depth between them was only emitted at the *segment's* end, so on a temple
+  profile four 3 mm tabs became two ~80 mm uncut stretches — most of the edge
+  never cut through.
+* **A tab boundary landing exactly on a vertex was dropped, and stalled the
+  cursor**, silently deleting every remaining tab (the `dist < ev` lower bound
+  could never become true again once `dist` passed it).
+
+`insert_tabs` is rewritten around a distance-indexed Z schedule (`tab_schedule` /
+`_height_at`): every original point is re-emitted at the height the schedule gives
+it and the schedule's breakpoints are interpolated in, so **tab size no longer
+depends on the caller's point spacing**. Ramps have an explicit length from
+`TAB_RAMP_ANGLE_DEG` rather than "whatever the gap to the next path point happens
+to be", and half-width plus ramp are capped against the tab spacing so tabs cannot
+overlap into one continuous rim however extreme the settings.
+
+Suite 606 → **640** (+34 in `tests/test_toolpath_control_m16.py`, including a
+regression test for each `insert_tabs` defect and a spacing-independence test).
+Held uncommitted for review. **Tabs have not been cut on real stock** — the
+strategy is off by default, and its first real cut deserves the usual air-cut and
+test piece.
+
+## M17 — Two-sided modelling foundations (v1.4.0) · *the frame has a front* — 2026-08-06
+
+> First instalment of V2. The driving shape: **a chamfer on the anterior brow,
+> over each eyewire, on each side, not connecting across the bridge** — a common
+> feature of thick modern frames, and one the M13 eyewire bezel cannot express
+> because it is a constant band all the way round a ring.
+>
+> **Scope decision (user, this round): modelling and preview, not machining.**
+> Cutting the front needs the flip setup, which stays M9/V2 — an unproven flip
+> datum cuts the part in the wrong place, and it deserves its own milestone. The
+> posterior program is byte-for-byte unchanged, pinned by a test.
+
+**1. The frame front now exists in the model.** Until now the anterior face was
+flat z = 0 *by definition*: one heightfield, and "the model" meant the posterior.
+`CastleRelief.anterior` is a second surface on the same grid — height above the
+anterior datum, so 0 is untouched and positive is material taken off the front —
+with `thickness() = field.z - anterior`. It is `None` unless something actually
+cuts the front (`CastleParams.cuts_anterior()`), so every pre-M17 project keeps
+the single-surface fast path and reads bit-identically.
+
+**2. `EdgeFeature`: partial-span chamfers and fillets on either face.**
+* **The span is named by castle zone, not by a number along the ring.** `zones`
+  lists the zones the run covers (empty = the whole ring). That survives a
+  re-imported drawing where an arc-length fraction would silently point somewhere
+  else, reads the way the maker thinks ("over the brow, not the bridge"), and
+  **mirrors by swapping `_od` for `_os`** — so one feature with `mirror` on is the
+  pair, not two objects to keep in sync. `trim_start_mm` / `trim_end_mm` then nudge
+  each end for the last few millimetres of control.
+* **`blend_mm` tapers the cut to nothing** at each end, so a run feathers out
+  instead of stopping at full depth against uncut material. The taper is capped at
+  half the run, or a blend longer than the span would ramp past the middle and cut
+  *deeper* than asked.
+* **`width_end_mm` makes it variable** — the chamfer widens or narrows along its
+  length. None = constant.
+* **Both profiles are exact.** `chamfer_drop` is the M13 ramp with a per-sample
+  width; `fillet_drop` is a true round-over whose arc is tangent to the face at
+  `d = radius` (no crease where it ends) and has dropped the full radius at the
+  edge.
+* Posterior features are min-carves into the castle surface; anterior features are
+  the mirror image, max-carves raising the front face into the part. `min_thickness_mm`
+  is enforced against *the other* surface both ways, so a part cannot be carved
+  into nothing from two sides at once.
+
+**3. The eyewire bezel gained a face.** `EyewireBezelParams.face` is
+`posterior` (default, unchanged) / `anterior` / `both` — the "instead of or in
+addition to" that was asked for — with its own anterior width and angle, since the
+posterior band seats the lens and the anterior one is cosmetic. It is built as a
+whole-ring `EdgeFeature` rather than a second copy of the chamfer maths.
+
+**4. The 3D model shows it.** `build_castle_mesh`'s bottom vertices ride the
+anterior surface instead of sitting on z = 0, so an anterior chamfer appears in
+the preview and the exported STL. `_conform_rim` only moves vertices in XY, so a
+non-flat anterior needed nothing there; the solid stays watertight.
+
+**5. UI.** An **Edge Features** list on the Model tab (add / duplicate / remove,
+with a zone-multiselect span picker that only ever offers the *loaded drawing's*
+zones — a stale name from another frame would match nothing and the run would
+silently vanish), plus the bezel's face selector, which greys out whichever side's
+numbers are not being cut.
+
+**Two bugs the new tests caught, both pre-existing in shape:**
+
+* **An anterior-only bezel still carved the posterior.** `apply_posterior_features`
+  gated on `bezel.enabled`, which was the whole story before a face existed; it now
+  gates on `cuts_posterior()`.
+* **Anterior carving inflated the posterior program.** `feature_band` /
+  `feature_max_slope_deg` feed the posterior CAM's feature-finish rings, and the
+  edge carver was contributing anterior cells to them — a chamfer on the *front*
+  added 74 extra fine-relief passes to the *back* (Fine Relief 24 → 98 paths).
+  Only posterior features feed that band now; the anterior band belongs to the flip
+  setup.
+
+Suite 640 → **675** (+35 in `tests/test_edge_features_m17.py`), including a test
+that the posted posterior program is unchanged by an anterior feature.
+
+**Pre-existing finding, NOT from this round — `build_castle_mesh` is not
+watertight at fine resolutions.** Noticed while exporting a two-sided STL. On the
+demo frame the solid is watertight at 0.4 mm and **open at 0.25 mm**, and it is
+open with a plain `CastleParams()` too — no edge features, no anterior surface —
+so M17 neither causes nor worsens it. It matters because the export resolution
+pref defaults to **0.15 mm**, finer than either figure, so exported STLs are
+likely open today. Untouched here to keep this milestone to its scope; worth its
+own look, starting with the rim stitch's assumption that every boundary edge is
+used by exactly one face.
+
+**Still to come for V2:** the flip fixture and second work datum, anterior op
+generation and posting, a two-setup program, and re-registration checks. The
+anterior surface and its feature band are the inputs those will read.
+
+---
+
+## Feature crispness — root cause found, architecture decision open *(2026-08-06)*
+
+**Field report:** the cutting features (pad splay, eyewire bezel, brow chamfer)
+do not read as crisp. There is blending, and a pitted quality along the edges
+where the cut begins and ends. The wanted result is a Fusion boolean cut —
+exact at every edge.
+
+**Root cause: the relief has no representation of an *edge*.** The model is a
+raster heightfield, and every feature is a `min`/`max` painted into it. A cell
+either got carved or it didn't; where the cut begins is wherever the sampling
+flipped, not a curve the model knows about. **Every fix attempted so far has
+therefore been a smoothing filter applied to a sampling artifact** — which is
+why each one made the features softer rather than sharper. `crest_blend_mm`
+defaults to a mandatory 2 mm round-over on the pad splay crest for exactly this
+reason (`relief/features.py:145–147`), and the filter stack in
+`_splay_crest_tables` is an inventory of the same, all traced to the 2026-07-02
+"jagged points where the cut terminates" finding.
+
+**Measured, on the Demo Project frame through the shipping code path** — walking
+the conformed rim vertices around a lens aperture in arc-length order:
+
+```
+res = 0.30 mm   522 rim vertices   |dz| mean 0.109 mm   max 0.476 mm
+res = 0.15 mm  1042 rim vertices   |dz| mean 0.055 mm   max 0.240 mm
+```
+
+Adjacent vertices on a curve that should be smooth, differing by 0.11 mm on
+average. Reproduce with `DISPLAY= .venv/bin/python scripts/probe_rim_error.py`.
+
+**The specific defect behind the pitting:** `_conform_rim`
+(`relief/castle.py:632–634`) projects each silhouette vertex onto the true ring
+**in XY only**, keeping the Z carved at the cell centre — which sits a random
+0–0.3 mm inside the ring, where a rim-anchored chamfer has not reached full
+depth. Correct when the rim was a flat terrace; wrong the moment a chamfer was
+anchored to it. Three further causes (unconformed interior feature edges, the
+compensating blur, and the viewer's 40° `feature_angle` smoothing 30° chamfers)
+are set out in the report below.
+
+### 📄 `BREP-REWRITE-REPORT.md` — full analysis and proposal
+
+**Read that report before doing any work in this area.** It carries the complete
+diagnosis, a survey of B-Rep kernels with a recommendation (OpenCASCADE via
+`cadquery-ocp`), an honest cost accounting (~200 MB installer, LGPL obligations,
+OCC performance and fillet-robustness risk), the module-by-module target
+architecture, the hard problems, a staged migration with kill criteria, and a
+"resuming cold" section with entry points.
+
+**Direction (user, 2026-08-06):** attracted to the real B-Rep kernel despite the
+cost, on future-proofing grounds — **after the V2 release**. Not scheduled. The
+decisive arguments are not crispness but the three things a heightfield cannot
+deliver at any price: watertight solids, STEP export, and undercuts.
+
+**This must not displace V2.** The flip fixture and second work datum are
+hardware gates; an unproven flip datum cuts the part in the wrong place, a
+slightly soft chamfer does not. The M17 scope decision stands.
+
+### M18 (proposed, pre-V2) — the four fixes worth making regardless
+
+None of these is wasted by a later rewrite, and two are bugs shipping today.
+
+1. **Fix the rim-Z defect.** When `_conform_rim` snaps a vertex, re-evaluate the
+   feature's analytic height at the snapped XY instead of keeping the raster Z.
+   Contained, and it removes the moiré from every aperture rim.
+2. **Fix the watertightness bug** (the pre-existing M17 finding above). Exported
+   STLs are likely open at the default 0.15 mm export resolution *right now* —
+   this should not wait on an architecture decision.
+3. **Viewer shading.** `viewer_3d.py:498` uses `feature_angle=40.0`, which
+   smooths across the 30° chamfers of both the pad splay and the eyewire bezel,
+   and splits the 45° brow chamfer inconsistently. Tag feature triangles and
+   split explicitly, or drop the angle to ~15°.
+4. **Default `crest_blend_mm` to 0** and expose it honestly as an *optional*
+   round-over rather than a mandatory one the renderer needs. Accept that the
+   crest looks jagged until the rewrite — better to see the real problem than a
+   blurred one.
+
+**Not in scope for M18:** the machined part. A ball or toroid rolling over a
+convex crest rounds it by the tool radius regardless of model quality. Physical
+crispness needs a curve-driven finishing pass along an exact feature edge curve,
+which is impossible until such a curve exists — report §6, Stage 4.
 
 # Reference
 

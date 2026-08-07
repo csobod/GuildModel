@@ -403,7 +403,9 @@ def apply_posterior_features(
     splay = castle.pad_splay
     bezel = castle.eyewire_bezel
     groove = castle.bridge_relief
-    if not (splay.enabled or bezel.enabled or groove.enabled):
+    # `cuts_posterior()` rather than `enabled` (M17): the bezel can now be aimed
+    # at the front face, and an anterior-only bezel must leave the back alone.
+    if not (splay.enabled or bezel.cuts_posterior() or groove.enabled):
         return None, 0.0
 
     z_pre = z.copy()
@@ -418,7 +420,7 @@ def apply_posterior_features(
                    splay.angle_end_deg) if splay.toric
                   else (splay.angle_center_deg,))
         max_slope = max(max_slope, *angles)
-    if bezel.enabled:
+    if bezel.cuts_posterior():
         if progress is not None:
             progress("Eyewire bezel", 0.87)
         band |= _carve_eyewire_bezel(z, z_pre, partition.body, inside,

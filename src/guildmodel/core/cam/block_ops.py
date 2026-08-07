@@ -51,11 +51,13 @@ def drill_holes_op(
 def block_profile_op(
     lens_shape: Polygon, profile_tool: dict, allowance_mm: float,
     top_z: float, skin_z: float, params: CastleCamParams,
+    holding=None,
 ) -> CamOp:
-    """The lens-shape through-cut (outside contour, onion skin) — frees the block
-    last, exactly the way a frame outline is cut."""
+    """The lens-shape through-cut — frees the block last, exactly the way a frame
+    outline is cut, and carries the hold-down strategy for the same reason."""
     op = contour_op("Block Profile", [lens_shape], "outside",
-                    profile_tool["radius_mm"], allowance_mm, top_z, skin_z, params)
+                    profile_tool["radius_mm"], allowance_mm, top_z, skin_z, params,
+                    holding=holding)
     op.tool = profile_tool
     return op
 
@@ -87,6 +89,7 @@ def generate_block_program(
     ops: list[CamOp] = [
         drill_holes_op(block.hole_centers(), top_z, z_bottom, drill_tool),
         block_profile_op(centered_lens, profile_tool,
-                         block.hand_finishing_allowance_mm, top_z, skin_z, params),
+                         block.hand_finishing_allowance_mm, top_z, skin_z, params,
+                         holding=block.holding),
     ]
-    return ops
+    return params.enabled_ops(ops)

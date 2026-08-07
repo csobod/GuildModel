@@ -47,9 +47,10 @@ from guildmodel.gui import material_store
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BridgeReliefParams, CastleCamParams, CastleParams,
-    ComponentKind, DEFAULT_OP_TOOLS, EyewireBezelParams, FootingFillet,
-    FootingSchedule, LensGrooveParams, PadSplayParams, POSTERIOR_OPS,
-    ProgramZero, StockDefinition, TempleParams, ZoneThicknesses,
+    ComponentCamOverrides, ComponentKind, DEFAULT_OP_TOOLS, EdgeFeature,
+    EyewireBezelParams, FootingFillet, FootingSchedule, HoldingParams, LensGrooveParams,
+    PadSplayParams, POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams,
+    ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -168,9 +169,15 @@ class ParamsPanel(QTabWidget):
         Info / Cut / Machine are universal; Model + Stock are frame-only, Temple
         and Base Curve their own. Inside the universal tabs the frame-lens-only
         content also hides for a temple / base-curve component: the ISO-8624 boxing
-        and lens layers on Info, and the per-op tools / cut strategy / profile
-        fallback on Machine (those describe the frame's posterior toolpaths)."""
+        and lens layers on Info, and the per-op tools / relief strategy / profile
+        fallback on Machine (those describe the frame's posterior toolpaths).
+
+        Depth per pass (Cut) and the through-cut lead-in (Machine) are deliberately
+        NOT in that hidden set: they drive every kind's through-cuts. Hiding them
+        with the frame's relief strategy is what left a temple with no way to say how
+        deep each pass should bite."""
         kind = ComponentKind(kind)
+        self._component_kind = kind
         is_frame = kind == ComponentKind.FRAME_FRONT
         is_temple = kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
         is_block = kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT)
@@ -186,6 +193,8 @@ class ParamsPanel(QTabWidget):
                 cb.setVisible(is_frame)
         for grp in (self._op_tools_group, self._strategy_group, self._fallback_group):
             grp.setVisible(is_frame)
+        self._update_passes_readout()        # the read-out is per-kind
+        self._refresh_operations_hint()      # so is the operation list (M16)
         if not self.isTabVisible(self.currentIndex()):
             self.setCurrentIndex(self._tab_info)
 
@@ -299,7 +308,285 @@ class ParamsPanel(QTabWidget):
         self._build_style_preset_group(lay)
         self._build_castle_group(lay)
         self._build_posterior_finishing_group(lay)
+        self._build_edge_features_group(lay)      # partial-span chamfers/fillets (M17)
         self._build_zones_group(lay)
+
+    # ------------------------------------------------- edge features (M17)
+
+    def _build_edge_features_group(self, lay: QVBoxLayout) -> None:
+        """Partial-span chamfers and fillets on either face (BUILDPLAN M17).
+
+        A list plus one editor, rather than a fixed set of named features, because
+        this is the open-ended one: a frame may want an anterior brow chamfer, a
+        posterior fillet along the lower rim, and a taper at one endpiece, all at
+        once. The span is chosen by castle zone (see `EdgeFeature`), so the list
+        reads in the maker's own vocabulary and mirrors by name.
+        """
+        grp = QGroupBox("Edge Features  (chamfers & fillets)")
+        v = QVBoxLayout(grp)
+
+        hint = QLabel(
+            "Chamfer or round part of an edge — e.g. the anterior brow over each "
+            "eyewire, stopping short of the bridge. Mirrored features cut both sides.")
+        hint.setWordWrap(True)
+        hint.setObjectName("hintLabel")
+        v.addWidget(hint)
+
+        self.edge_list = QListWidget()
+        self.edge_list.setFixedHeight(96)
+        self.edge_list.currentRowChanged.connect(self._on_edge_selected)
+        v.addWidget(self.edge_list)
+
+        row = QHBoxLayout()
+        for text, slot in (("+ Add", self._on_edge_add),
+                           ("Duplicate", self._on_edge_duplicate),
+                           ("Remove", self._on_edge_remove)):
+            btn = QPushButton(text)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        v.addLayout(row)
+
+        self._edge_editor = QWidget()
+        form = QFormLayout(self._edge_editor)
+        form.setContentsMargins(8, 4, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        d = EdgeFeature()
+
+        self.ef_enabled = QCheckBox("Enabled")
+        self.ef_enabled.setChecked(True)
+        form.addRow("", self.ef_enabled)
+        self.ef_label = QLineEdit()
+        self.ef_label.setPlaceholderText("Anterior brow chamfer")
+        form.addRow("Name:", self.ef_label)
+
+        self.ef_face = QComboBox()
+        self.ef_face.addItems(["Anterior (front)", "Posterior (back)"])
+        self.ef_face.setToolTip(
+            "Anterior features are modelled and shown in 3D now; machining them "
+            "needs the flip setup.")
+        form.addRow("Face:", self.ef_face)
+
+        self.ef_edge = QComboBox()
+        self.ef_edge.addItems(["Outline", "Lens OD", "Lens OS"])
+        form.addRow("Edge:", self.ef_edge)
+
+        self.ef_zones = QListWidget()
+        self.ef_zones.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.ef_zones.setFixedHeight(92)
+        self.ef_zones.setToolTip(
+            "Which castle zones the run covers. Select none for the whole edge.\n"
+            "Leaving 'bridge' out is what keeps a brow chamfer from crossing the nose.")
+        form.addRow("Spans zones:", self.ef_zones)
+
+        self.ef_profile = QComboBox()
+        self.ef_profile.addItems(["Chamfer", "Fillet (round-over)"])
+        form.addRow("Profile:", self.ef_profile)
+
+        self.ef_width = _spinbox(d.width_mm, 0.1, 12.0, step=0.1, decimals=2)
+        self.ef_width.setToolTip("How far in from the edge the chamfer runs.")
+        form.addRow("Width:", self.ef_width)
+        self.ef_width_end = _spinbox(0.0, 0.0, 12.0, step=0.1, decimals=2)
+        self.ef_width_end.setSpecialValueText("(constant)")
+        self.ef_width_end.setToolTip(
+            "Width at the far end of the run — set it to taper the chamfer along "
+            "its length. '(constant)' keeps the width above all the way.")
+        form.addRow("Width at end:", self.ef_width_end)
+        self.ef_angle = _spinbox(d.angle_deg, 5.0, 85.0, step=1.0, decimals=1, suffix="°")
+        form.addRow("Angle:", self.ef_angle)
+        self.ef_radius = _spinbox(d.radius_mm, 0.1, 12.0, step=0.1, decimals=2)
+        form.addRow("Fillet radius:", self.ef_radius)
+
+        self.ef_trim_start = _spinbox(0.0, -50.0, 50.0, step=0.5, decimals=1)
+        self.ef_trim_start.setToolTip("Pull the start of the run in (+) or out (−) along the edge.")
+        form.addRow("Trim start:", self.ef_trim_start)
+        self.ef_trim_end = _spinbox(0.0, -50.0, 50.0, step=0.5, decimals=1)
+        form.addRow("Trim end:", self.ef_trim_end)
+        self.ef_blend = _spinbox(d.blend_mm, 0.0, 30.0, step=0.5, decimals=1)
+        self.ef_blend.setToolTip(
+            "Taper the cut to nothing over this distance at each end, so it "
+            "feathers out instead of stopping at full depth.")
+        form.addRow("Blend:", self.ef_blend)
+        self.ef_min_thickness = _spinbox(d.min_thickness_mm, 0.0, 8.0, step=0.1, decimals=2)
+        self.ef_min_thickness.setToolTip(
+            "The frame is never cut thinner than this where the feature runs.")
+        form.addRow("Min thickness:", self.ef_min_thickness)
+
+        self.ef_mirror = QCheckBox("Mirror to the other side")
+        self.ef_mirror.setChecked(True)
+        self.ef_mirror.setToolTip(
+            "Cut the matching feature on the opposite side (OD ↔ OS zone names).")
+        form.addRow("", self.ef_mirror)
+        v.addWidget(self._edge_editor)
+
+        self._edge_features: list[EdgeFeature] = []
+        self._edge_loading = False
+        for w in (self.ef_width, self.ef_width_end, self.ef_angle, self.ef_radius,
+                  self.ef_trim_start, self.ef_trim_end, self.ef_blend,
+                  self.ef_min_thickness):
+            w.valueChanged.connect(self._on_edge_edited)
+        for cb in (self.ef_face, self.ef_edge, self.ef_profile):
+            cb.currentIndexChanged.connect(self._on_edge_edited)
+        for chk in (self.ef_enabled, self.ef_mirror):
+            chk.toggled.connect(self._on_edge_edited)
+        self.ef_label.textEdited.connect(self._on_edge_edited)
+        self.ef_zones.itemSelectionChanged.connect(self._on_edge_edited)
+        self._refresh_edge_list()
+        lay.addWidget(grp)
+
+    _EF_FACES = ("anterior", "posterior")
+    _EF_EDGES = ("outline", "lens_od", "lens_os")
+    _EF_PROFILES = ("chamfer", "fillet")
+
+    def _refresh_edge_zone_choices(self) -> None:
+        """Offer the zones the LOADED drawing actually has — a stale name from a
+        different frame would silently match nothing and the run would vanish."""
+        chosen = {i.data(Qt.ItemDataRole.UserRole) for i in self.ef_zones.selectedItems()}
+        self.ef_zones.blockSignals(True)
+        self.ef_zones.clear()
+        names = ([z.name for z in self._partition.zones]
+                 if getattr(self, "_partition", None) is not None else [])
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.ef_zones.addItem(item)
+            item.setSelected(name in chosen)
+        self.ef_zones.blockSignals(False)
+
+    def _edge_summary(self, f: EdgeFeature) -> str:
+        where = "front" if f.face == "anterior" else "back"
+        what = (f"fillet R{f.radius_mm:g}" if f.profile == "fillet"
+                else f"chamfer {f.width_mm:g}mm@{f.angle_deg:g}°")
+        span = ", ".join(f.zones) if f.zones else "whole edge"
+        name = f.label or f"{f.edge} {what}"
+        flag = "" if f.enabled else "  (off)"
+        return f"{name} — {where} · {span}{'  ⇔' if f.mirror else ''}{flag}"
+
+    def _refresh_edge_list(self) -> None:
+        row = self.edge_list.currentRow()
+        self.edge_list.blockSignals(True)
+        self.edge_list.clear()
+        for f in self._edge_features:
+            self.edge_list.addItem(self._edge_summary(f))
+        self.edge_list.blockSignals(False)
+        if self._edge_features:
+            self.edge_list.setCurrentRow(min(max(row, 0), len(self._edge_features) - 1))
+        self._edge_editor.setEnabled(bool(self._edge_features))
+
+    def _on_edge_selected(self, row: int) -> None:
+        if not (0 <= row < len(self._edge_features)):
+            return
+        f = self._edge_features[row]
+        self._edge_loading = True
+        self._refresh_edge_zone_choices()
+        self.ef_enabled.setChecked(f.enabled)
+        self.ef_label.setText(f.label)
+        self.ef_face.setCurrentIndex(self._EF_FACES.index(f.face))
+        self.ef_edge.setCurrentIndex(self._EF_EDGES.index(f.edge))
+        self.ef_profile.setCurrentIndex(self._EF_PROFILES.index(f.profile))
+        for i in range(self.ef_zones.count()):
+            item = self.ef_zones.item(i)
+            item.setSelected(item.data(Qt.ItemDataRole.UserRole) in f.zones)
+        self.ef_width.setValue(f.width_mm)
+        self.ef_width_end.setValue(f.width_end_mm or 0.0)
+        self.ef_angle.setValue(f.angle_deg)
+        self.ef_radius.setValue(f.radius_mm)
+        self.ef_trim_start.setValue(f.trim_start_mm)
+        self.ef_trim_end.setValue(f.trim_end_mm)
+        self.ef_blend.setValue(f.blend_mm)
+        self.ef_min_thickness.setValue(f.min_thickness_mm)
+        self.ef_mirror.setChecked(f.mirror)
+        self._edge_loading = False
+        self._update_edge_editor_enabled()
+
+    def _update_edge_editor_enabled(self) -> None:
+        """Only the profile's own numbers stay live — a fillet has no angle."""
+        fillet = self.ef_profile.currentIndex() == 1
+        for w in (self.ef_width, self.ef_width_end, self.ef_angle):
+            w.setEnabled(not fillet)
+        self.ef_radius.setEnabled(fillet)
+
+    def _on_edge_edited(self, *_a) -> None:
+        if self._edge_loading:
+            return
+        row = self.edge_list.currentRow()
+        if not (0 <= row < len(self._edge_features)):
+            return
+        end = self.ef_width_end.value()
+        self._edge_features[row] = self._edge_features[row].model_copy(update=dict(
+            enabled=self.ef_enabled.isChecked(),
+            label=self.ef_label.text(),
+            face=self._EF_FACES[self.ef_face.currentIndex()],
+            edge=self._EF_EDGES[self.ef_edge.currentIndex()],
+            profile=self._EF_PROFILES[self.ef_profile.currentIndex()],
+            zones=[i.data(Qt.ItemDataRole.UserRole) for i in self.ef_zones.selectedItems()],
+            width_mm=self.ef_width.value(),
+            width_end_mm=end if end > 0 else None,
+            angle_deg=self.ef_angle.value(),
+            radius_mm=self.ef_radius.value(),
+            trim_start_mm=self.ef_trim_start.value(),
+            trim_end_mm=self.ef_trim_end.value(),
+            blend_mm=self.ef_blend.value(),
+            min_thickness_mm=self.ef_min_thickness.value(),
+            mirror=self.ef_mirror.isChecked(),
+        ))
+        self._update_edge_editor_enabled()
+        self._refresh_edge_list()
+        self.castle_changed.emit()
+
+    def _unique_edge_id(self, base: str = "edge") -> str:
+        taken = {f.id for f in self._edge_features}
+        n = 1
+        while f"{base}_{n}" in taken:
+            n += 1
+        return f"{base}_{n}"
+
+    def _on_edge_add(self) -> None:
+        """A new feature starts as the brow chamfer — the case this exists for —
+        pre-aimed at whichever superior-eyewire zone the drawing has."""
+        zones = [z.name for z in getattr(self, "_partition", None).zones] \
+            if getattr(self, "_partition", None) is not None else []
+        brow = [z for z in zones if z.startswith("eyewire_superior")][:1]
+        self._edge_features.append(EdgeFeature(
+            id=self._unique_edge_id(), label="Brow chamfer",
+            face="anterior", edge="outline", zones=brow,
+            profile="chamfer", width_mm=2.0, angle_deg=45.0, blend_mm=6.0,
+            mirror=True,
+        ))
+        self._refresh_edge_list()
+        self.edge_list.setCurrentRow(len(self._edge_features) - 1)
+        self.castle_changed.emit()
+
+    def _on_edge_duplicate(self) -> None:
+        row = self.edge_list.currentRow()
+        if not (0 <= row < len(self._edge_features)):
+            return
+        src = self._edge_features[row]
+        self._edge_features.insert(row + 1, src.model_copy(update={
+            "id": self._unique_edge_id(),
+            "label": f"{src.label} copy" if src.label else "",
+        }))
+        self._refresh_edge_list()
+        self.edge_list.setCurrentRow(row + 1)
+        self.castle_changed.emit()
+
+    def _on_edge_remove(self) -> None:
+        row = self.edge_list.currentRow()
+        if not (0 <= row < len(self._edge_features)):
+            return
+        self._edge_features.pop(row)
+        self._refresh_edge_list()
+        if self._edge_features:
+            self._on_edge_selected(self.edge_list.currentRow())
+        self.castle_changed.emit()
+
+    def edge_features(self) -> list[EdgeFeature]:
+        return [f.model_copy() for f in self._edge_features]
+
+    def set_edge_features(self, features: list[EdgeFeature]) -> None:
+        self._edge_features = [f.model_copy() for f in (features or [])]
+        self._refresh_edge_list()
+        if self._edge_features:
+            self._on_edge_selected(self.edge_list.currentRow())
 
     # ---------------------------------------------- frame-style presets (M7.16)
 
@@ -558,14 +845,30 @@ class ParamsPanel(QTabWidget):
         self.bezel_clamp = _spinbox(b.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
         self.bezel_clamp.setToolTip(
             "Cut floor above the anterior face — the rim never gets thinner than this.")
+        # Which face the band is cut into (M17). The posterior band seats the lens;
+        # the anterior one is cosmetic, so it carries its own width and angle.
+        self.bezel_face = QComboBox()
+        self.bezel_face.addItems(["Posterior", "Anterior", "Both faces"])
+        self.bezel_face.setToolTip(
+            "Which side of the frame the bezel is cut into.\nAn anterior band is "
+            "modelled and shown in 3D now; machining it needs the flip setup.")
+        self.bezel_ant_width = _spinbox(b.anterior_width_mm, 0.2, 8.0, step=0.1, decimals=1)
+        self.bezel_ant_angle = _spinbox(b.anterior_angle_deg, 5.0, 80.0, step=1.0,
+                                        decimals=1, suffix="°")
+        bezel.addRow("Cut into:", self.bezel_face)
         bezel.addRow("Band width:", self.bezel_width)
         bezel.addRow("Bezel angle:", self.bezel_angle)
         bezel.addRow("Min edge thickness:", self.bezel_clamp)
+        bezel.addRow("Anterior width:", self.bezel_ant_width)
+        bezel.addRow("Anterior angle:", self.bezel_ant_angle)
         glay.addLayout(bezel)
 
         self.bezel_enable.toggled.connect(self._on_bezel_toggled)
         self.bezel_enable.toggled.connect(self.castle_changed)
-        for sb in (self.bezel_width, self.bezel_angle, self.bezel_clamp):
+        self.bezel_face.currentIndexChanged.connect(self._on_bezel_toggled)
+        self.bezel_face.currentIndexChanged.connect(self.castle_changed)
+        for sb in (self.bezel_width, self.bezel_angle, self.bezel_clamp,
+                   self.bezel_ant_width, self.bezel_ant_angle):
             sb.valueChanged.connect(self.castle_changed)
         self._on_bezel_toggled(b.enabled)
 
@@ -683,10 +986,17 @@ class ParamsPanel(QTabWidget):
         for sb in self._bridge_relief_spinboxes():
             sb.setEnabled(on)
 
-    def _on_bezel_toggled(self, on: bool) -> None:
-        """Grey out the bezel controls when the bezel is off."""
+    def _on_bezel_toggled(self, *_a) -> None:
+        """Grey out the bezel controls when it is off, and each face's own numbers
+        when that face is not being cut — so the enabled fields are exactly the
+        ones that reach the model."""
+        on = self.bezel_enable.isChecked()
+        face = self.bezel_face.currentIndex()          # 0 post · 1 ant · 2 both
+        self.bezel_face.setEnabled(on)
         for sb in (self.bezel_width, self.bezel_angle, self.bezel_clamp):
-            sb.setEnabled(on)
+            sb.setEnabled(on and face in (0, 2))
+        for sb in (self.bezel_ant_width, self.bezel_ant_angle):
+            sb.setEnabled(on and face in (1, 2))
 
     def _splay_spinboxes(self) -> list[QDoubleSpinBox]:
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
@@ -830,6 +1140,13 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_depth = _spinbox(d.engrave_depth_mm, 0.0, 3.0, step=0.05, decimals=2)
         self.temple_engrave_depth.setToolTip("Groove depth below the top face.")
         form.addRow("Engrave depth:", self.temple_engrave_depth)
+        self.temple_engrave_stepdown = _spinbox(
+            d.engrave_stepdown_mm, 0.05, 3.0, step=0.05, decimals=2)
+        self.temple_engrave_stepdown.setToolTip(
+            "Depth per engraving pass. A groove deeper than this is cut in several "
+            "passes\ninstead of one plunge to full depth — engraving bits are the "
+            "most slender in the program.")
+        form.addRow("Engrave depth/pass:", self.temple_engrave_stepdown)
         self.temple_engrave_tool = QComboBox()
         self.temple_engrave_tool.addItems(_tool_names())
         self.temple_engrave_tool.setCurrentText(d.engrave_tool)
@@ -858,6 +1175,7 @@ class ParamsPanel(QTabWidget):
 
         for w in (self.temple_blank_length, self.temple_blank_width,
                   self.temple_blank_thickness, self.temple_engrave_depth,
+                  self.temple_engrave_stepdown,
                   self.temple_onion, self.temple_allowance):
             w.valueChanged.connect(self.cam_changed)
         self.temple_engrave_tool.currentIndexChanged.connect(self.cam_changed)
@@ -989,6 +1307,13 @@ class ParamsPanel(QTabWidget):
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
         self._partition = partition
+        # The edge-feature span picker lists this drawing's zones (M17), so it has
+        # to be rebuilt whenever the drawing changes.
+        if hasattr(self, "ef_zones"):
+            self._refresh_edge_zone_choices()
+            row = self.edge_list.currentRow()
+            if 0 <= row < len(self._edge_features):
+                self._on_edge_selected(row)
         if partition is None:
             self.zones_status.setText(
                 "No SCULPT zones — draw 5 section cuts per side in GuildDraw."
@@ -1043,18 +1368,24 @@ class ParamsPanel(QTabWidget):
         so the maker's routine choices aren't buried under machine setup (UX pass)."""
         self._build_material_group(lay)      # material (leads) + allowances
         self._build_feeds_group(lay)         # feeds & speeds, from the material
+        self._build_depth_group(lay)         # depth per pass + the pass read-out
+        self._build_holding_group(lay)       # onion skin | hold-down tabs (M16)
+        self._build_operations_group(lay)    # per-op enable/skip (M16)
+        self._build_overrides_group(lay)     # per-component CAM overrides (M16)
         self._build_chip_group(lay)          # chip-load / surface-speed read-out
 
     # ------------------------------------------------------------ Machine tab
 
     def _build_machine_tab(self, lay: QVBoxLayout) -> None:
         """Machine setup + the frame's toolpath detail (set once / expert). Machine
-        target and Program Zero are universal; the per-op tools, cut strategy and
-        profile fallback are frame-posterior-only and hide for temple/base-curve."""
+        target, Program Zero and the through-cut lead-in are universal; the per-op
+        tools, relief strategy and profile fallback are frame-posterior-only and hide
+        for temple/base-curve."""
         self._build_machine_tool_group(lay)  # controller + default tool
         self._build_program_zero_group(lay)  # G54 work datum
+        self._build_leadin_group(lay)        # ramp angle + arc output (universal)
         self._build_op_tools_group(lay)      # per-op tools (frame-only)
-        self._build_strategy_group(lay)      # cut strategy (frame-only)
+        self._build_strategy_group(lay)      # relief strategy (frame-only)
         self._build_fallback_group(lay)      # profile fallback (frame-only)
 
     def _update_chip_readout(self) -> None:
@@ -1307,12 +1638,359 @@ class ParamsPanel(QTabWidget):
         cf.addRow(self._chip_status_lbl)
         lay.addWidget(cg)
 
-    def _build_strategy_group(self, lay: QVBoxLayout) -> None:
-        """Frame-posterior toolpath strategy (relief + through-cut passes). Frame-only —
-        temple / base-curve components carry their own tools + allowances, so this is
-        hidden for them (set_component_kind)."""
+    def _build_depth_group(self, lay: QVBoxLayout) -> None:
+        """How deep each pass bites — the everyday depth choice, on the Cut tab.
+
+        **Universal.** These drive the through-cut and pocket passes of every
+        component kind, not just the frame. They used to live in the frame-only Cut
+        Strategy group, which `set_component_kind` hid for temples and base-curve
+        blocks — so a temple was cut at whatever depth the frame's strategy happened
+        to hold, with no way to see or change it. A 4 mm temple blank at the old
+        4.0 mm default was one full-depth pass.
+        """
         d = CastleCamParams()
-        grp = QGroupBox("Cut Strategy  (time / finish)")
+        grp = QGroupBox("Depth per pass")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.contour_stepdown = _spinbox(d.contour_stepdown_mm, 0.1, 6.0, step=0.1)
+        self.contour_stepdown.setToolTip(
+            "Axial depth per through-cut pass — how much the cutter takes each time "
+            "round the outline.\nCapped at post time by the material's and the "
+            "machine's maximum depth of cut.")
+        form.addRow("Through-cut:", self.contour_stepdown)
+
+        self.pocket_stepdown = _spinbox(d.pocket_stepdown_mm, 0.1, 6.0, step=0.1)
+        self.pocket_stepdown.setToolTip(
+            "Axial depth per pocket level (hinge recesses). The pocket is cleared "
+            "level by level\ninstead of ramping in and taking the whole remaining "
+            "depth in one cascade.")
+        form.addRow("Pocket:", self.pocket_stepdown)
+
+        # The read-out is the point of this group: the pass count is what the maker
+        # is actually deciding, and a silent "1 pass" is the failure we are fixing.
+        self._passes_lbl = QLabel("—")
+        self._passes_lbl.setWordWrap(True)
+        self._passes_lbl.setObjectName("mutedSmallLabel")
+        form.addRow("", self._passes_lbl)
+
+        for w in (self.contour_stepdown, self.pocket_stepdown):
+            w.valueChanged.connect(self.cam_changed)
+        self.cam_changed.connect(self._update_passes_readout)
+        lay.addWidget(grp)
+
+    def _update_passes_readout(self) -> None:
+        """Show the pass count the active component's blank works out to, so a
+        full-depth single pass is visible before Generate rather than after."""
+        if not hasattr(self, "_passes_lbl"):
+            return
+        from guildmodel.core.cam.castle_ops import contour_passes, tab_height_warning
+        top_z, skin_z, what = self._active_blank_depth()
+        if top_z is None:
+            self._passes_lbl.setText("")
+            return
+        # Tabs cut to the bottom face instead of stopping at the skin, so the stack
+        # is deeper — report what the chosen strategy actually cuts (M16).
+        if self.hold_strategy.currentIndex() == 1:
+            skin_z = 0.0
+        # Report the depth that will actually be CUT, not the one requested: the
+        # post clamps to the material's and the machine's depth-of-cut ceiling, and
+        # a read-out that ignored that would mis-state an over-set project by a
+        # whole pass. `capped` marks the difference so the number is explainable.
+        step = float(self.contour_stepdown.value())
+        ceiling = self._doc_ceiling_mm()
+        capped = ceiling is not None and step > ceiling + 1e-9
+        if capped:
+            step = ceiling
+        n = len(contour_passes(top_z, skin_z, step))
+        deepest = max(top_z - skin_z if n == 1 else step, 0.0)
+        text = (f"{what}: {n} pass{'' if n == 1 else 'es'} "
+                f"through {top_z - skin_z:.2f} mm (deepest {deepest:.2f} mm)")
+        if capped:
+            text += f" — capped at the {ceiling:.2f} mm material/machine limit"
+        if n == 1:
+            text += " — the whole depth in one bite."
+            self._passes_lbl.setStyleSheet("color: #c08a00; font-size: 11px;")
+        else:
+            self._passes_lbl.setStyleSheet("font-size: 11px;")
+        self._passes_lbl.setText(text)
+
+        # A tab can be no taller than the final pass is deep — the pass above has
+        # already removed everything higher. Say so rather than silently shortening.
+        if hasattr(self, "_tab_hint"):
+            if self.hold_strategy.currentIndex() != 1:
+                self._tab_hint.setText("")
+            else:
+                warn = tab_height_warning(contour_passes(top_z, skin_z, step), top_z,
+                                          float(self.hold_tab_height.value()))
+                self._tab_hint.setText(f"⚠ {warn}" if warn else "")
+                self._tab_hint.setStyleSheet(
+                    "color: #c08a00; font-size: 11px;" if warn else "font-size: 11px;")
+
+    def _doc_ceiling_mm(self):
+        """The lower of the active material's and machine's max depth of cut, or
+        None when neither can be resolved (the read-out then shows the request)."""
+        caps = []
+        try:
+            from guildmodel.gui import material_store
+            doc = material_store.material(self.material.currentText()).get("max_doc_mm")
+            if doc:
+                caps.append(float(doc))
+        except Exception:
+            pass
+        try:
+            from guildmodel.core.post.machine import load_machine_profile
+            idx = self.machine.currentIndex()
+            if 0 <= idx < len(self._machine_names):
+                caps.append(float(load_machine_profile(
+                    self._machine_names[idx], _CONFIG_DIR).max_doc_mm))
+        except Exception:
+            pass
+        return min(caps) if caps else None
+
+    def _active_blank_depth(self):
+        """``(top_z, skin_z, label)`` for the through-cut of the active component
+        kind, or ``(None, None, "")`` when the kind has no simple blank."""
+        kind = getattr(self, "_component_kind", None)
+        if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
+            return (self.temple_blank_thickness.value(), self.temple_onion.value(),
+                    "Temple profile")
+        if kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
+            return (self.block_blank_thickness.value(), self.block_onion.value(),
+                    "Block profile")
+        if kind == ComponentKind.FRAME_FRONT:
+            # The perimeter's depth passes start at the stock's HIGHEST level, so the
+            # pad block counts when it is on (castle_ops: top_z = total_pad_height_mm).
+            top = self.blank_thickness.value()
+            if self.use_pad_block.isChecked():
+                top += self.pad_thickness.value()
+            return (top, self.onion_skin.value(), "Frame perimeter")
+        return (None, None, "")
+
+    def _build_holding_group(self, lay: QVBoxLayout) -> None:
+        """How the part is held until the cut finishes — onion skin or tabs (M16).
+
+        **Universal**, and stored on the active component's own params (each of
+        `CastleParams` / `TempleParams` / `BaseCurveBlockParams` carries a
+        `HoldingParams`), because it is a property of the part and its blank, not
+        of the machine. One set of widgets serves whichever component is active —
+        the per-kind `*_params()` snapshot reads them, `set_*_params` restores them.
+        """
+        d = HoldingParams()
+        grp = QGroupBox("Holding  (how the part stays put)")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.hold_strategy = QComboBox()
+        self.hold_strategy.addItems(["Onion skin", "Hold-down tabs"])
+        self.hold_strategy.setToolTip(
+            "Onion skin: stop the through-cut above the bottom face and break the "
+            "wafer by hand.\nHold-down tabs: cut through to the bottom face, leaving "
+            "a few uncut bridges to cut off.\nThese are alternatives — a tabbed cut "
+            "has no skin, and a skinned cut needs no tabs.")
+        form.addRow("Strategy:", self.hold_strategy)
+
+        self.hold_tab_count = QSpinBox()
+        self.hold_tab_count.setRange(0, 16)
+        self.hold_tab_count.setValue(d.tab_count)
+        self.hold_tab_count.setSuffix("  tabs")
+        form.addRow("Tab count:", self.hold_tab_count)
+        self.hold_tab_width = _spinbox(d.tab_width_mm, 0.5, 12.0, step=0.5, decimals=2)
+        form.addRow("Tab width:", self.hold_tab_width)
+        self.hold_tab_height = _spinbox(d.tab_height_mm, 0.2, 6.0, step=0.1, decimals=2)
+        self.hold_tab_height.setToolTip(
+            "Height of each uncut bridge, from the bottom face up.\nCannot exceed "
+            "the depth of the final pass — everything above it is already cut away.")
+        form.addRow("Tab height:", self.hold_tab_height)
+
+        self._tab_hint = QLabel("")
+        self._tab_hint.setWordWrap(True)
+        self._tab_hint.setObjectName("mutedSmallLabel")
+        form.addRow("", self._tab_hint)
+
+        self._tab_rows = (self.hold_tab_count, self.hold_tab_width, self.hold_tab_height)
+        self.hold_strategy.currentIndexChanged.connect(self._on_hold_strategy_changed)
+        for w in self._tab_rows:
+            w.valueChanged.connect(self.cam_changed)
+        self._on_hold_strategy_changed()
+        lay.addWidget(grp)
+
+    def _on_hold_strategy_changed(self, *_a) -> None:
+        """Grey the tab fields out on the skin strategy — they cut nothing there."""
+        tabs = self.hold_strategy.currentIndex() == 1
+        for w in getattr(self, "_tab_rows", ()):
+            w.setEnabled(tabs)
+        self.cam_changed.emit()
+
+    def holding_params(self) -> HoldingParams:
+        return HoldingParams(
+            strategy="tabs" if self.hold_strategy.currentIndex() == 1 else "skin",
+            tab_count=self.hold_tab_count.value(),
+            tab_width_mm=self.hold_tab_width.value(),
+            tab_height_mm=self.hold_tab_height.value(),
+        )
+
+    def set_holding_params(self, h: HoldingParams) -> None:
+        self.hold_strategy.blockSignals(True)
+        self.hold_strategy.setCurrentIndex(1 if h.strategy == "tabs" else 0)
+        self.hold_strategy.blockSignals(False)
+        for w, v in ((self.hold_tab_count, h.tab_count), (self.hold_tab_width, h.tab_width_mm),
+                     (self.hold_tab_height, h.tab_height_mm)):
+            w.blockSignals(True); w.setValue(v); w.blockSignals(False)
+        for w in self._tab_rows:
+            w.setEnabled(h.strategy == "tabs")
+
+    # The operations each component kind can emit, in machining order. Superset:
+    # an op whose geometry is absent (no HINGE layer, no decorative holes) simply
+    # never appears in the program, and its checkbox is harmless.
+    _KIND_OPS: dict = {
+        "frame_front": ("Hinge Pockets", "Rough Relief", "Fine Relief",
+                        "Eyewires", "Holes", "Lens Groove", "Perimeter"),
+        "temple": ("Hinge Pockets", "Engraving", "Holes", "Temple Profile"),
+        "block": ("Drill Holes", "Block Profile"),
+    }
+    # Ops that release the part from the blank — switching one off is a deliberate
+    # "leave it in the stock", worth saying out loud rather than discovering later.
+    _RELEASING_OPS = {"Perimeter", "Temple Profile", "Block Profile"}
+
+    def _build_operations_group(self, lay: QVBoxLayout) -> None:
+        """Per-operation enable/skip (M16) — **universal**, kind-aware.
+
+        The program was all-or-nothing: `op_tools` chose a tool per operation but
+        nothing could leave one out. Cutting a job in stages (pocket and engrave
+        now, release the part after the inserts go in) or re-running a single
+        operation after a tool change both needed this.
+        """
+        grp = QGroupBox("Operations  (uncheck to skip)")
+        self._operations_group = grp
+        v = QVBoxLayout(grp)
+        self.op_checks: dict[str, QCheckBox] = {}
+        for name in dict.fromkeys(
+                n for names in self._KIND_OPS.values() for n in names):
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            cb.toggled.connect(self._on_op_toggled)
+            v.addWidget(cb)
+            self.op_checks[name] = cb
+        self._ops_hint = QLabel("")
+        self._ops_hint.setWordWrap(True)
+        self._ops_hint.setObjectName("mutedSmallLabel")
+        v.addWidget(self._ops_hint)
+        lay.addWidget(grp)
+
+    def _on_op_toggled(self, *_a) -> None:
+        self._refresh_operations_hint()
+        self.cam_changed.emit()
+
+    def _visible_op_names(self) -> tuple:
+        kind = getattr(self, "_component_kind", None)
+        if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
+            return self._KIND_OPS["temple"]
+        if kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
+            return self._KIND_OPS["block"]
+        return self._KIND_OPS["frame_front"]
+
+    def _refresh_operations_hint(self) -> None:
+        """Show only this kind's operations, and warn when the part is left in the
+        blank or nothing is cut at all."""
+        if not hasattr(self, "_ops_hint"):
+            return
+        shown = self._visible_op_names()
+        for name, cb in self.op_checks.items():
+            cb.setVisible(name in shown)
+        off = [n for n in shown if not self.op_checks[n].isChecked()]
+        held = [n for n in off if n in self._RELEASING_OPS]
+        if len(off) == len(shown):
+            self._ops_hint.setText("Nothing is enabled — the program would be empty.")
+            self._ops_hint.setStyleSheet("color: #b34; font-size: 11px;")
+        elif held:
+            self._ops_hint.setText(
+                f"{held[0]} is off — the part stays attached to the blank.")
+            self._ops_hint.setStyleSheet("color: #c08a00; font-size: 11px;")
+        elif off:
+            self._ops_hint.setText(f"Skipping: {', '.join(off)}.")
+            self._ops_hint.setStyleSheet("font-size: 11px;")
+        else:
+            self._ops_hint.setText("")
+
+    def _build_overrides_group(self, lay: QVBoxLayout) -> None:
+        """Per-component departures from the project-global CAM params (M16).
+
+        The everyday case this exists for: the base-curve forming blocks are
+        **acetal** while the frame and temples are acetate, and acetal's
+        depth-of-cut ceiling is half. Before this the block inherited the frame's
+        depth per pass and only its feeds re-read its own material.
+        """
+        grp = QGroupBox("This component only  (overrides)")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.ov_material = QComboBox()
+        self.ov_material.addItem("(project material)")
+        self.ov_material.addItems(self._material_names())
+        self.ov_material.setToolTip(
+            "Cut this component from a different material than the rest of the "
+            "project.\nIts depth per pass is re-clamped through that material's own "
+            "maximum depth of cut.")
+        form.addRow("Material:", self.ov_material)
+
+        # 0 = inherit, matching the feed/spindle override convention already on the
+        # Cut tab — one idiom for "leave it alone" across the whole panel.
+        self.ov_stepdown = _spinbox(0.0, 0.0, 6.0, step=0.1)
+        self.ov_stepdown.setSpecialValueText("(project)")
+        form.addRow("Depth per pass:", self.ov_stepdown)
+        self.ov_feed = _spinbox(0.0, 0.0, 5000.0, step=50.0, decimals=0, suffix=" mm/min")
+        self.ov_feed.setSpecialValueText("(project)")
+        form.addRow("Feed:", self.ov_feed)
+        self.ov_spindle = QSpinBox()
+        self.ov_spindle.setRange(0, 60000)
+        self.ov_spindle.setSingleStep(500)
+        self.ov_spindle.setSuffix(" RPM")
+        self.ov_spindle.setSpecialValueText("(project)")
+        form.addRow("Spindle:", self.ov_spindle)
+
+        self.ov_material.currentIndexChanged.connect(self.cam_changed)
+        for w in (self.ov_stepdown, self.ov_feed, self.ov_spindle):
+            w.valueChanged.connect(self.cam_changed)
+        lay.addWidget(grp)
+
+    def _material_names(self) -> list:
+        try:
+            from guildmodel.gui import material_store
+            return list(material_store.names())
+        except Exception:
+            return ["acetate", "acetal", "horn"]
+
+    def cam_overrides(self) -> ComponentCamOverrides:
+        """The active component's overrides (0 / "(project material)" = inherit)."""
+        def _opt(v):
+            return v or None
+        return ComponentCamOverrides(
+            material=(self.ov_material.currentText()
+                      if self.ov_material.currentIndex() > 0 else None),
+            contour_stepdown_mm=_opt(self.ov_stepdown.value()),
+            feed_rate_mmpm=_opt(self.ov_feed.value()),
+            spindle_rpm=_opt(int(self.ov_spindle.value())),
+        )
+
+    def set_cam_overrides(self, ov: ComponentCamOverrides | None) -> None:
+        ov = ov or ComponentCamOverrides()
+        self.ov_material.blockSignals(True)
+        idx = self.ov_material.findText(ov.material) if ov.material else 0
+        self.ov_material.setCurrentIndex(idx if idx >= 0 else 0)
+        self.ov_material.blockSignals(False)
+        for w, v in ((self.ov_stepdown, ov.contour_stepdown_mm or 0.0),
+                     (self.ov_feed, ov.feed_rate_mmpm or 0.0),
+                     (self.ov_spindle, ov.spindle_rpm or 0)):
+            w.blockSignals(True); w.setValue(v); w.blockSignals(False)
+
+    def _build_strategy_group(self, lay: QVBoxLayout) -> None:
+        """Frame-posterior *relief* strategy — the surfacing passes that only a
+        castle has. Frame-only (set_component_kind). The depth-per-pass and lead-in
+        controls that apply to every kind live in `_build_depth_group` (Cut tab) and
+        `_build_leadin_group` below."""
+        d = CastleCamParams()
+        grp = QGroupBox("Relief Strategy  (time / finish)")
         self._strategy_group = grp
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -1322,19 +2000,46 @@ class ParamsPanel(QTabWidget):
             "Spacing between relief passes (lower = finer surface, longer cut).")
         form.addRow("Relief stepover:", self.relief_stepover)
 
-        self.contour_stepdown = _spinbox(d.contour_stepdown_mm, 0.5, 6.0, step=0.1)
-        self.contour_stepdown.setToolTip(
-            "Axial depth per through-cut pass (capped by material / machine).")
-        form.addRow("Contour stepdown:", self.contour_stepdown)
-
         self.rough_axial_stock = _spinbox(d.rough_axial_stock_mm, 0.0, 5.0, step=0.1)
         self.rough_axial_stock.setToolTip("Axial stock the rough pass leaves for the fine pass.")
         form.addRow("Rough axial stock:", self.rough_axial_stock)
 
+        for w in (self.relief_stepover, self.rough_axial_stock):
+            w.valueChanged.connect(self.cam_changed)
+        lay.addWidget(grp)
+
+    def _build_leadin_group(self, lay: QVBoxLayout) -> None:
+        """Through-cut lead-in + arc output. **Universal**: both already applied to
+        every component kind at post time — they were simply invisible on a temple
+        or base-curve block, so those parts inherited whatever the frame was set to."""
+        d = CastleCamParams()
+        grp = QGroupBox("Through-cut lead-in & output")
+        form = QFormLayout(grp)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.cut_direction = QComboBox()
+        self.cut_direction.addItems(["Climb", "Conventional"])
+        self.cut_direction.setToolTip(
+            "Climb (default): the chip thins to zero — the cleaner wall on acetate, "
+            "and what the\nreference program cuts. Conventional reverses every "
+            "contour: the choice on a machine\nwith backlash it cannot take out, "
+            "where climb milling pulls the cutter into the work.")
+        form.addRow("Cut direction:", self.cut_direction)
+
+        self.contour_lead_in = QComboBox()
+        self.contour_lead_in.addItems(["Ramp", "Plunge"])
+        self.contour_lead_in.setToolTip(
+            "How each through-cut pass enters the material.\nRamp: descend over a "
+            "short lead-in along the contour — no slot-plunge.\nPlunge: drop "
+            "straight to depth and cut one clean lap — shorter, and fine for a "
+            "small tool in acetate.")
+        form.addRow("Lead-in:", self.contour_lead_in)
+
         self.contour_ramp_angle = _spinbox(
             d.contour_ramp_angle_deg, 0.0, 90.0, step=1.0, decimals=1, suffix="°")
         self.contour_ramp_angle.setToolTip(
-            "Lead-in ramp angle for through-cuts (steeper = shorter lead-in, faster).")
+            "Lead-in ramp angle for through-cuts (steeper = shorter lead-in, faster).\n"
+            "0 ramps the whole lap — to skip the ramp entirely, set Lead-in to Plunge.")
         form.addRow("Contour ramp angle:", self.contour_ramp_angle)
 
         self.arc_tolerance = _spinbox(
@@ -1343,10 +2048,16 @@ class ParamsPanel(QTabWidget):
             "Arc-fit tolerance for G2/G3 output (0 = linearized G1).")
         form.addRow("Arc tolerance:", self.arc_tolerance)
 
-        for w in (self.relief_stepover, self.contour_stepdown, self.rough_axial_stock,
-                  self.contour_ramp_angle, self.arc_tolerance):
+        self.contour_lead_in.currentIndexChanged.connect(self._on_lead_in_changed)
+        self.cut_direction.currentIndexChanged.connect(self.cam_changed)
+        for w in (self.contour_ramp_angle, self.arc_tolerance):
             w.valueChanged.connect(self.cam_changed)
         lay.addWidget(grp)
+
+    def _on_lead_in_changed(self, *_a) -> None:
+        """The ramp angle means nothing on a plunge entry — grey it out."""
+        self.contour_ramp_angle.setEnabled(self.contour_lead_in.currentIndex() == 0)
+        self.cam_changed.emit()
 
     def _build_fallback_group(self, lay: QVBoxLayout) -> None:
         """Legacy profile cut for frame DXFs without SCULPT zones. Frame-only."""
@@ -1419,6 +2130,7 @@ class ParamsPanel(QTabWidget):
             ),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
+            holding=self.holding_params(),
             pad_splay=PadSplayParams(
                 enabled=self.splay_enable.isChecked(),
                 run_mm=self.splay_run.value(),
@@ -1437,7 +2149,11 @@ class ParamsPanel(QTabWidget):
                 width_mm=self.bezel_width.value(),
                 angle_deg=self.bezel_angle.value(),
                 anterior_clamp_mm=self.bezel_clamp.value(),
+                face=("posterior", "anterior", "both")[self.bezel_face.currentIndex()],
+                anterior_width_mm=self.bezel_ant_width.value(),
+                anterior_angle_deg=self.bezel_ant_angle.value(),
             ),
+            edge_features=self.edge_features(),
             bridge_relief=BridgeReliefParams(
                 enabled=self.bridge_relief_enable.isChecked(),
                 width_mm=self.bridge_relief_width.value(),
@@ -1489,6 +2205,8 @@ class ParamsPanel(QTabWidget):
             (self.bezel_width, c.eyewire_bezel.width_mm),
             (self.bezel_angle, c.eyewire_bezel.angle_deg),
             (self.bezel_clamp, c.eyewire_bezel.anterior_clamp_mm),
+            (self.bezel_ant_width, c.eyewire_bezel.anterior_width_mm),
+            (self.bezel_ant_angle, c.eyewire_bezel.anterior_angle_deg),
             (self.bridge_relief_width, c.bridge_relief.width_mm),
             (self.bridge_relief_depth, c.bridge_relief.depth_mm),
             (self.bridge_relief_taper, c.bridge_relief.taper_angle_deg),
@@ -1522,11 +2240,29 @@ class ParamsPanel(QTabWidget):
         self._on_groove_toggled(c.lens_groove.enabled)
         self._refresh_zone_list()      # show the restored per-zone overrides
         self._update_groove_angle()
+        self.bezel_face.blockSignals(True)
+        self.bezel_face.setCurrentIndex(
+            ("posterior", "anterior", "both").index(c.eyewire_bezel.face))
+        self.bezel_face.blockSignals(False)
+        self._on_bezel_toggled()
+        self.set_edge_features(c.edge_features)          # M17 chamfers / fillets
+        self.set_holding_params(c.holding)
+        self._update_passes_readout()  # the restored stock drives the pass count
         self.castle_changed.emit()
         self.stock_changed.emit()
 
     def cam_params(self) -> CastleCamParams:
-        """Snapshot the CAM tab into the persisted CastleCamParams schema."""
+        """Snapshot the CAM tab into the persisted CastleCamParams schema.
+
+        Updates the params last loaded via `set_cam_params` rather than building a
+        fresh model. `CastleCamParams` carries a dozen fields with no widget —
+        `pocket_stepover_mm`, `ramp_step_mm`, `relief_link_gap_mm`, the link-retract
+        and screw-keepout settings — and constructing a new model reset every one of
+        them to the schema default. Since `_build_project_schema` saves this snapshot
+        back into the project, opening a `.gmodel` with any of those tuned and
+        pressing Save silently discarded the tuning. Anything the panel does not own,
+        the panel does not touch.
+        """
         idx = self.machine.currentIndex()
         machine_name = self._machine_names[idx] if 0 <= idx < len(self._machine_names) else "guild_cnc"
 
@@ -1539,25 +2275,34 @@ class ParamsPanel(QTabWidget):
             if txt and txt != _SAME_AS_GLOBAL:
                 op_tools[op] = txt
 
-        return CastleCamParams(
+        base = getattr(self, "_cam_base", None) or CastleCamParams()
+        return base.model_copy(update=dict(
             tool_name=self.cam_tool.currentText(),
             machine_name=machine_name,
             op_tools=op_tools,
             program_zero=self._program_zero(),
             relief_stepover_mm=self.relief_stepover.value(),
             contour_stepdown_mm=self.contour_stepdown.value(),
+            pocket_stepdown_mm=self.pocket_stepdown.value(),
             rough_axial_stock_mm=self.rough_axial_stock.value(),
             contour_ramp_angle_deg=self.contour_ramp_angle.value(),
+            contour_lead_in="plunge" if self.contour_lead_in.currentIndex() else "ramp",
+            cut_direction="conventional" if self.cut_direction.currentIndex() else "climb",
+            op_enabled={n: False for n, cb in self.op_checks.items()
+                        if not cb.isChecked()},
             arc_tolerance_mm=self.arc_tolerance.value(),
             feed_rate_mmpm=_opt(self.feed_override.value()),
             plunge_rate_mmpm=_opt(self.plunge_override.value()),
             spindle_rpm=int(self.spindle_override.value()) or None,
             safe_z_clearance_mm=self.safe_z_clearance.value(),
             hold_down_height_mm=self.hold_down_height.value(),
-        )
+        ))
 
     def set_cam_params(self, cp: CastleCamParams) -> None:
         """Restore the CAM tab from a persisted CastleCamParams (prefs/project)."""
+        # Keep the whole model as the base `cam_params` updates, so the fields with
+        # no widget survive the round-trip instead of reverting to schema defaults.
+        self._cam_base = cp
         if cp.tool_name:
             self.cam_tool.setCurrentText(cp.tool_name)
         for op, cb in getattr(self, "op_tool_combos", {}).items():
@@ -1570,8 +2315,21 @@ class ParamsPanel(QTabWidget):
         self._set_program_zero(cp.program_zero)
         self.relief_stepover.setValue(cp.relief_stepover_mm)
         self.contour_stepdown.setValue(cp.contour_stepdown_mm)
+        self.pocket_stepdown.setValue(cp.pocket_stepdown_mm)
         self.rough_axial_stock.setValue(cp.rough_axial_stock_mm)
         self.contour_ramp_angle.setValue(cp.contour_ramp_angle_deg)
+        self.contour_lead_in.blockSignals(True)
+        self.contour_lead_in.setCurrentIndex(1 if cp.contour_lead_in == "plunge" else 0)
+        self.contour_lead_in.blockSignals(False)
+        self.contour_ramp_angle.setEnabled(cp.contour_lead_in != "plunge")
+        self.cut_direction.blockSignals(True)
+        self.cut_direction.setCurrentIndex(1 if cp.cut_direction == "conventional" else 0)
+        self.cut_direction.blockSignals(False)
+        for name, cb in self.op_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(cp.is_op_enabled(name))
+            cb.blockSignals(False)
+        self._refresh_operations_hint()
         self.arc_tolerance.setValue(cp.arc_tolerance_mm)
         self.feed_override.setValue(cp.feed_rate_mmpm or 0.0)
         self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)
@@ -1586,6 +2344,7 @@ class ParamsPanel(QTabWidget):
             blank_width_mm=self.temple_blank_width.value(),
             blank_thickness_mm=self.temple_blank_thickness.value(),
             engrave_depth_mm=self.temple_engrave_depth.value(),
+            engrave_stepdown_mm=self.temple_engrave_stepdown.value(),
             engrave_tool=self.temple_engrave_tool.currentText(),
             engrave_centerline=self.temple_engrave_centerline.isChecked(),
             hinge_tool=self.temple_hinge_tool.currentText(),
@@ -1594,6 +2353,7 @@ class ParamsPanel(QTabWidget):
             stock_side=self.temple_stock_side.currentText(),
             onion_skin_mm=self.temple_onion.value(),
             hand_finishing_allowance_mm=self.temple_allowance.value(),
+            holding=self.holding_params(),
             fixture_zone=self._temple_fixture_zone,
         )
 
@@ -1605,10 +2365,13 @@ class ParamsPanel(QTabWidget):
             (self.temple_blank_width, t.blank_width_mm),
             (self.temple_blank_thickness, t.blank_thickness_mm),
             (self.temple_engrave_depth, t.engrave_depth_mm),
+            (self.temple_engrave_stepdown, t.engrave_stepdown_mm),
             (self.temple_onion, t.onion_skin_mm),
             (self.temple_allowance, t.hand_finishing_allowance_mm),
         ):
             sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
+        self.set_holding_params(t.holding)
+        self._update_passes_readout()        # the temple blank drives the pass count
         for cb, val in ((self.temple_engrave_tool, t.engrave_tool),
                         (self.temple_hinge_tool, t.hinge_tool),
                         (self.temple_profile_tool, t.profile_tool),
@@ -1633,6 +2396,7 @@ class ParamsPanel(QTabWidget):
             profile_tool=self.block_profile_tool.currentText(),
             onion_skin_mm=self.block_onion.value(),
             hand_finishing_allowance_mm=self.block_allowance.value(),
+            holding=self.holding_params(),
             hole_count=self.block_hole_count.value(),
             hole_spacing_mm=self.block_hole_spacing.value(),
             hole_diameter_mm=self.block_hole_diameter.value(),
@@ -1662,6 +2426,8 @@ class ParamsPanel(QTabWidget):
         self.block_hole_count.blockSignals(True)
         self.block_hole_count.setValue(b.hole_count)
         self.block_hole_count.blockSignals(False)
+        self.set_holding_params(b.holding)
+        self._update_passes_readout()        # the block blank drives the pass count
         for cb, val in ((self.block_profile_tool, b.profile_tool),
                         (self.block_hole_arrangement, b.hole_arrangement),
                         (self.block_drill_tool, b.drill_tool)):
@@ -1671,7 +2437,23 @@ class ParamsPanel(QTabWidget):
     # ------------------------------------------------------------------ material
 
     def material_name(self) -> str:
+        """The project's selected material (the Cut tab's combo)."""
         return self.material.currentText()
+
+    def effective_cam_params(self) -> CastleCamParams:
+        """`cam_params()` with the ACTIVE component's overrides applied (M16).
+
+        Every single-component posting path should call this rather than
+        `cam_params()`, so a base-curve block in acetal is not cut at the acetate
+        frame's depth per pass. The material itself is not a CAM field — it selects
+        the preset the post clamps against; see `effective_material_name`.
+        """
+        return self.cam_overrides().apply(self.cam_params())
+
+    def effective_material_name(self) -> str:
+        """The material this component is actually cut from — its own override if
+        it has one, else the project's."""
+        return self.cam_overrides().material or self.material_name()
 
     def set_material(self, name: str) -> None:
         """Select a material without repopulating the feeds (used on restore,
