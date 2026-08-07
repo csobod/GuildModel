@@ -5,12 +5,18 @@ blob) imports as a multi-component project. These tests cover the curve flattene
 + the scene→posterior (x,y)→(-x,-y) transform, the per-workspace read, the
 multi-component assembly (frame front + both temples + a base-curve template per
 lens), the base-curve right/left split, the forming carry, and the security guard.
+
+The last section covers the *exact* curves (2026-08-07). A ``.gdraw`` stores its
+splines as cubic Bezier nodes; those are now carried through as B-splines instead
+of being flattened away, so the primary intake reaches the B-Rep kernel as the
+curve GuildDraw drew rather than as a polygon approximating it.
 """
 import json
 import math
 import zipfile
 from xml.etree import ElementTree as ET
 
+import numpy as np
 import pytest
 
 from guildmodel.core.project.schema import ComponentKind
@@ -19,6 +25,7 @@ from guildmodel.core.io_import.gdraw import (
     TABS,
     build_project_from_gdraw,
     read_gdraw,
+    read_workspace_curves,
     read_workspace_geometry,
 )
 
@@ -222,3 +229,138 @@ def test_temple_geometry_has_outline_and_engraving(tmp_path):
     tr = next(c for c in gp.components if c.component.kind == ComponentKind.TEMPLE_RIGHT)
     assert len(tr.layers["OUTLINE"]) == 1
     assert len(tr.layers["ENGRAVING"]) == 1
+
+
+# ------------------------------------------------------------------ exact curves
+
+def _spline(layer, nodes, closed=False):
+    """A GuildDraw spline curve: `nodes` is [(x, y, cp_in|None, cp_out|None), ...]."""
+    return {"kind": "spline", "layer": layer, "closed": closed,
+            "nodes": [_node(x, y, cp_in, cp_out) for x, y, cp_in, cp_out in nodes]}
+
+
+def _curved_ring(layer):
+    """A closed four-node spline — a rounded square, genuinely not a polygon."""
+    return _spline(layer, [
+        (-20.0, -20.0, (-30.0, -10.0), (-10.0, -30.0)),
+        (20.0, -20.0, (10.0, -30.0), (30.0, -10.0)),
+        (20.0, 20.0, (30.0, 10.0), (10.0, 30.0)),
+        (-20.0, 20.0, (-10.0, 30.0), (-30.0, 10.0)),
+    ], closed=True)
+
+
+def test_a_gdraw_spline_keeps_its_exact_definition():
+    """The point of the whole exercise: a `.gdraw` spline reaches the kernel as a
+    curve, not as the polyline it happens to flatten to."""
+    pts, curves = read_workspace_curves({"curves": [_curved_ring("OUTLINE")]})
+    curve = curves["OUTLINE"][0]
+    assert curve is not None
+    assert curve.degree == 3 and curve.closed and curve.is_consistent()
+    # four Bezier segments -> 3*4 + 1 poles, and far fewer than the flattening.
+    assert len(curve.control_points) == 13
+    assert len(pts["OUTLINE"][0]) > 40
+
+
+def test_the_exact_curve_and_the_polyline_describe_the_same_boundary():
+    """Not a fit. Every flattened point must lie *on* the rebuilt curve — if the
+    two ever drift apart, `_ring_key` lookups start silently missing."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from OCP.gp import gp_Pnt
+    from guildmodel.core.solid.occ import nurbs_edge
+
+    pts, curves = read_workspace_curves({"curves": [_curved_ring("OUTLINE")]})
+    geom = BRep_Tool.Curve_s(nurbs_edge(curves["OUTLINE"][0], 0.0), 0.0, 1.0)
+    worst = max(GeomAPI_ProjectPointOnCurve(gp_Pnt(x, y, 0.0), geom).LowerDistance()
+                for x, y in pts["OUTLINE"][0])
+    assert worst < 1e-9, f"{worst} mm — a transcription must be exact"
+
+
+def test_the_posterior_flip_moves_the_curve_too():
+    """Scene -> posterior is (x, y) -> (-x, -y). Miss the curve and the two
+    representations describe different frames (BUILDPLAN M1.2)."""
+    state = {"curves": [_curved_ring("OUTLINE")]}
+    _, raw = read_workspace_curves(state, posterior=False)
+    _, flipped = read_workspace_curves(state, posterior=True)
+    a = raw["OUTLINE"][0].control_points
+    b = flipped["OUTLINE"][0].control_points
+    assert np.allclose(b, -a)
+
+
+def test_a_gdraw_circle_is_exact_not_sampled():
+    """A circle is a rational quadratic; no polyline reproduces one."""
+    import math
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from OCP.gp import gp_Pnt
+    from guildmodel.core.solid.occ import nurbs_edge
+
+    state = {"curves": [{"kind": "circle", "layer": "LENS",
+                         "nodes": [_node(5, 0)], "radius": 10.0}]}
+    _, curves = read_workspace_curves(state, posterior=False)
+    curve = curves["LENS"][0]
+    assert curve is not None and curve.rational and curve.degree == 2
+
+    geom = BRep_Tool.Curve_s(nurbs_edge(curve, 0.0), 0.0, 1.0)
+    worst = 0.0
+    for i in range(360):
+        a = 2.0 * math.pi * i / 360.0
+        p = gp_Pnt(5.0 + 10.0 * math.cos(a), 10.0 * math.sin(a), 0.0)
+        worst = max(worst, GeomAPI_ProjectPointOnCurve(p, geom).LowerDistance())
+    assert worst < 1e-9
+
+
+def test_circle_flattening_is_sagitta_based():
+    """`tol` is how far a chord may sag, not a divisor of the circumference.
+
+    The original read `circumference / tol`, which is dimensionally wrong and
+    turned a 20 mm hole into ~12,600 points — every one of which then went
+    through Shapely and the mesher.
+    """
+    state = {"curves": [{"kind": "circle", "layer": "LENS",
+                         "nodes": [_node(0, 0)], "radius": 20.0}]}
+    ring = read_workspace_geometry(state)["LENS"][0]
+    assert 50 < len(ring) < 200
+    # and it really is within tolerance of the circle
+    worst = max(abs(math.hypot(x, y) - 20.0) for x, y in ring)
+    assert worst < 0.01
+
+
+def test_lines_and_arcs_report_no_curve():
+    """A polyline already *is* its points, and an open arc is never a ring, so
+    neither needs an exact form — and claiming one would be noise."""
+    state = {"curves": [
+        _line("SCULPT", [(0, 0), (10, 10)]),
+        {"kind": "arc", "layer": "OUTLINE", "nodes": [_node(0, 0)],
+         "radius": 5.0, "start_angle": 0.0, "end_angle": 90.0},
+    ]}
+    _, curves = read_workspace_curves(state)
+    assert curves["SCULPT"] == [None]
+    assert curves["OUTLINE"] == [None]
+
+
+def test_points_and_curves_stay_index_aligned(tmp_path):
+    """The contract every consumer relies on, across a whole file."""
+    path = tmp_path / "model.gdraw"
+    states = _full_states()
+    states["front"]["curves"].append(_curved_ring("OUTLINE"))
+    _make_gdraw(path, states)
+    doc = read_gdraw(path)
+    for ws in doc.workspaces.values():
+        for layer, pts in ws.layers.items():
+            assert len(pts) == len(ws.curves[layer]), f"{ws.name}/{layer}"
+
+
+def test_components_carry_their_curves(tmp_path):
+    """Including a base-curve template, which gets exactly its own lens."""
+    path = tmp_path / "model.gdraw"
+    states = _full_states()
+    states["front"]["curves"].append(_curved_ring("LENS"))
+    _make_gdraw(path, states)
+    gp = build_project_from_gdraw(path)
+    for gc in gp.components:
+        for layer, pts in gc.layers.items():
+            assert len(pts) == len(gc.curves.get(layer, [])), gc.component.kind
+    front = next(c for c in gp.components
+                 if c.component.kind == ComponentKind.FRAME_FRONT)
+    assert sum(c is not None for c in front.curves["LENS"]) == 1

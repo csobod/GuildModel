@@ -11,6 +11,13 @@ axis, and per-layer visibility (see GuildDraw ``framedraft/export/svg.py`` +
 lists** that :func:`io_import.dxf.import_dxf` yields, so a ``.gdraw`` and a
 per-workspace DXF import identically (the §3 contract holds across both paths).
 
+**Splines are also kept as splines**, as of 2026-08-07. Flattening still happens
+and still drives everything that wants points, but each curve's exact definition
+is preserved alongside it (:func:`read_workspace_curves`), so the B-Rep path can
+build the curve GuildDraw drew rather than a polygon approximating it. A
+``.gdraw`` spline is stored as cubic Bezier nodes rather than as poles and knots;
+``geometry.curves.cubic_bezier_chain`` re-spells one as the other exactly.
+
 Coordinate frame: GuildDraw scene units are mm in screen space (Y down). A DXF
 export negates Y (DXF Y-up) and GuildModel flips X for the posterior, so the **net
 scene → posterior transform is (x, y) → (-x, -y)** — applied here once, exactly as
@@ -32,6 +39,13 @@ from xml.etree import ElementTree as ET
 
 from shapely.geometry import Polygon
 
+from guildmodel.core.geometry.curves import (
+    NurbsCurve,
+    circle_curve,
+    cubic_bezier_chain,
+    mirror_x,
+    mirror_y,
+)
 from guildmodel.core.layers import ALL_LAYERS
 from guildmodel.core.project.schema import (
     Component,
@@ -122,7 +136,12 @@ def _flatten_circle(curve: dict, tol: float) -> list[Point]:
     if not nodes or not r:
         return []
     cx, cy = _node_xy(nodes[0])
-    n = max(16, int(2.0 * math.pi * r / max(tol, 1e-6)))
+    # Sagitta, not arc length: `tol` is how far the chord may sag from the arc,
+    # the same test `_flatten_arc` (and the DXF importer) applies. Dividing
+    # circumference by it instead — as this did until 2026-08-07 — is
+    # dimensionally wrong and turned a 20 mm hole into ~12,000 points.
+    half = math.acos(max(-1.0, 1.0 - tol / r))
+    n = max(16, math.ceil(math.pi / max(half, 1e-9)))
     return [(cx + r * math.cos(2.0 * math.pi * i / n),
              cy + r * math.sin(2.0 * math.pi * i / n)) for i in range(n)]
 
@@ -154,6 +173,60 @@ def _flatten_curve(curve: dict, tol: float) -> list[Point]:
     return _flatten_line(curve)
 
 
+# ------------------------------------------------------------------ exact curves
+
+def _bezier_segments(curve: dict) -> list[tuple[Point, Point, Point, Point]]:
+    """The curve's cubic Bezier segments, the same ones `_flatten_spline` walks.
+
+    Kept deliberately parallel to `_flatten_spline` — same node pairing, same
+    closed-curve wrap, same missing-handle rule (a node with no ``cp_out`` puts
+    its control point on the node itself, making that side of the segment
+    straight). If the two ever disagree, the exact curve and the polyline stop
+    describing the same boundary and `_ring_key` lookups start missing.
+    """
+    nodes = curve.get("nodes", [])
+    if len(nodes) < 2:
+        return []
+    pairs = list(zip(nodes, nodes[1:]))
+    if curve.get("closed") and len(nodes) > 2:
+        pairs.append((nodes[-1], nodes[0]))
+    segments = []
+    for a, b in pairs:
+        p0, p3 = _node_xy(a), _node_xy(b)
+        c_out, c_in = a.get("cp_out"), b.get("cp_in")
+        p1 = (float(c_out["x"]), float(c_out["y"])) if c_out else p0
+        p2 = (float(c_in["x"]), float(c_in["y"])) if c_in else p3
+        segments.append((p0, p1, p2, p3))
+    return segments
+
+
+def _source_curve(curve: dict, layer: str) -> NurbsCurve | None:
+    """The curve's exact definition, or None where there isn't a useful one.
+
+    Never raises. A curve we cannot express is a reason to fall back to the
+    flattened points — which are produced regardless — not to fail the import.
+
+    Lines and arcs return None on purpose. A line already *is* its polyline, so
+    there is nothing to recover; an open arc is never a closed ring, and only
+    whole rings are looked up (`regions.curves_by_ring`).
+    """
+    kind = curve.get("kind", "line")
+    try:
+        if kind == "spline":
+            return cubic_bezier_chain(_bezier_segments(curve),
+                                      closed=bool(curve.get("closed")),
+                                      layer=layer)
+        if kind == "circle":
+            nodes = curve.get("nodes", [])
+            if not nodes:
+                return None
+            return circle_curve(_node_xy(nodes[0]),
+                                float(curve.get("radius") or 0.0), layer=layer)
+    except Exception:
+        return None
+    return None
+
+
 # ------------------------------------------------------------------ workspace read
 
 @dataclass
@@ -168,6 +241,9 @@ class GdrawWorkspace:
     applying the same scene→posterior flip the layer curves already got."""
     name: str
     layers: dict[str, list[list[Point]]]
+    #: Index-aligned with ``layers``: the exact curve each point list was
+    #: flattened from, or None. See :func:`read_workspace_curves`.
+    curves: dict[str, list] = field(default_factory=dict)
     apical_radius_mm: float = 0.0
     bridge_angle_deg: float = 0.0
     mirror_enabled: bool = True
@@ -186,15 +262,20 @@ class GdrawDocument:
     active_tab: str = "front"
 
 
-def read_workspace_geometry(
+def read_workspace_curves(
     state: dict, chord_tol: float = CHORD_TOL_MM, posterior: bool = True,
-) -> dict[str, list[list[Point]]]:
-    """Flatten a workspace's ``state["curves"]`` to layer-keyed point lists.
+) -> tuple[dict[str, list[list[Point]]], dict[str, list[NurbsCurve | None]]]:
+    """``(points, curves)`` — the flattened geometry, and what it came from.
 
-    Mirrors :func:`io_import.dxf.import_dxf`: only recognised layers are kept, and
-    ``posterior=True`` applies the single (x, y) → (-x, -y) flip.
+    The pair is **index-aligned** per layer, exactly as
+    :func:`io_import.dxf.import_curves` returns it: ``curves[layer][i]`` is the
+    exact curve behind ``points[layer][i]``, or None where the source was a
+    polyline (or something we chose not to express). The two intakes hand the
+    rest of the program the same shape, so nothing downstream has to know which
+    file it was opened from.
     """
     result: dict[str, list[list[Point]]] = {k: [] for k in ALL_LAYERS}
+    curves: dict[str, list[NurbsCurve | None]] = {k: [] for k in ALL_LAYERS}
     for curve in state.get("curves", []):
         layer = curve.get("layer")
         if layer not in ALL_LAYERS:
@@ -202,10 +283,30 @@ def read_workspace_geometry(
         pts = _flatten_curve(curve, chord_tol)
         if len(pts) < 2:
             continue
+        exact = _source_curve(curve, layer)
         if posterior:
+            # The single flip point for this intake — and it has to move BOTH
+            # representations or they describe different frames.
             pts = [(-x, -y) for x, y in pts]
+            if exact is not None:
+                exact = mirror_y(mirror_x(exact))
         result[layer].append(pts)
-    return result
+        curves[layer].append(exact)
+    return result, curves
+
+
+def read_workspace_geometry(
+    state: dict, chord_tol: float = CHORD_TOL_MM, posterior: bool = True,
+) -> dict[str, list[list[Point]]]:
+    """Flatten a workspace's ``state["curves"]`` to layer-keyed point lists.
+
+    Mirrors :func:`io_import.dxf.import_dxf`: only recognised layers are kept, and
+    ``posterior=True`` applies the single (x, y) → (-x, -y) flip.
+
+    Points only. Callers that can use the exact source curves — the B-Rep path —
+    want :func:`read_workspace_curves`.
+    """
+    return read_workspace_curves(state, chord_tol, posterior)[0]
 
 
 def _check_svg_bytes(data: bytes) -> None:
@@ -243,9 +344,11 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
     mir = state.get("mirror", {}) or {}
     texts = [dict(t) for t in (state.get("texts") or [])
              if isinstance(t, dict) and t.get("layer") in ALL_LAYERS]
+    layers, curves = read_workspace_curves(state, chord_tol, posterior)
     return GdrawWorkspace(
         name=name,
-        layers=read_workspace_geometry(state, chord_tol, posterior),
+        layers=layers,
+        curves=curves,
         apical_radius_mm=float(frm.get("apical_radius_mm", 0.0) or 0.0),
         bridge_angle_deg=float(frm.get("bridge_angle_deg", 0.0) or 0.0),
         mirror_enabled=bool(mir.get("enabled", True)),
@@ -256,7 +359,8 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
 
 
 def _empty_workspace(name: str) -> GdrawWorkspace:
-    return GdrawWorkspace(name=name, layers={k: [] for k in ALL_LAYERS})
+    return GdrawWorkspace(name=name, layers={k: [] for k in ALL_LAYERS},
+                          curves={k: [] for k in ALL_LAYERS})
 
 
 def read_gdraw(path, chord_tol: float = CHORD_TOL_MM,
@@ -317,6 +421,8 @@ class GdrawComponent:
     component: Component
     layers: dict[str, list[list[Point]]]
     texts: list[dict] = field(default_factory=list)
+    #: Index-aligned with ``layers`` (see :class:`GdrawWorkspace.curves`).
+    curves: dict[str, list] = field(default_factory=dict)
 
 
 @dataclass
@@ -363,7 +469,8 @@ def build_project_from_gdraw(path) -> GdrawProject:
         ComponentKind.FRAME_FRONT, forming=_forming_of(front),
         source_file=str(path), source_workspace="front")
     project.add_component(ff)
-    comps.append(GdrawComponent(ff, front.layers, texts=list(front.texts)))
+    comps.append(GdrawComponent(ff, front.layers, texts=list(front.texts),
+                                curves=front.curves))
 
     # temples (disabled when the workspace is empty / has no outline)
     for tab, kind in _TAB_KIND.items():
@@ -373,10 +480,12 @@ def build_project_from_gdraw(path) -> GdrawProject:
             kind, enabled=has_outline, forming=_forming_of(ws),
             source_file=str(path), source_workspace=tab)
         project.add_component(comp)
-        comps.append(GdrawComponent(comp, ws.layers, texts=list(ws.texts)))
+        comps.append(GdrawComponent(comp, ws.layers, texts=list(ws.texts),
+                                    curves=ws.curves))
 
     # base-curve templates, one per front LENS (OD/+x → right, OS/-x → left)
-    for lens_pts in front.layers.get("LENS", []):
+    lens_curves = front.curves.get("LENS", [])
+    for i, lens_pts in enumerate(front.layers.get("LENS", [])):
         kind = (ComponentKind.BASE_CURVE_RIGHT if _lens_centroid_x(lens_pts) >= 0
                 else ComponentKind.BASE_CURVE_LEFT)
         comp = Component.for_kind(
@@ -385,6 +494,8 @@ def build_project_from_gdraw(path) -> GdrawProject:
         project.add_component(comp)
         empty = {k: [] for k in ALL_LAYERS}
         empty["LENS"] = [lens_pts]
-        comps.append(GdrawComponent(comp, empty))
+        one_curve = {k: [] for k in ALL_LAYERS}
+        one_curve["LENS"] = [lens_curves[i] if i < len(lens_curves) else None]
+        comps.append(GdrawComponent(comp, empty, curves=one_curve))
 
     return GdrawProject(project=project, components=comps, active_tab=doc.active_tab)

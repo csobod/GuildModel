@@ -24,6 +24,13 @@ class ComponentWorkspace:
     kind: ComponentKind
     label: str
     layers: dict
+    # The exact curves the drawing was authored with, index-aligned with
+    # `layers` — `{layer: [NurbsCurve | None, ...]}` from `import_curves` /
+    # `read_workspace_curves`. Optional: empty means every consumer falls back
+    # to the flattened points, which is how this worked before 2026-08-07.
+    # `derive_workspace` turns them into the partition's `source_curves`, which
+    # is what lets the B-Rep castle be built from curves instead of polygons.
+    curves: dict = field(default_factory=dict)
     enabled: bool = True
     source_workspace: str = ""
     forming: object = None
@@ -91,9 +98,14 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     A frame front has an OUTLINE + two LENS curves (+ SCULPT for the castle); a
     temple has an OUTLINE and no lenses; a base-curve template carries its single
     LENS (placed in ``lens_od`` so the block generator can build from it).
+
+    When ``ws.curves`` carries the drawing's exact curves they are folded into the
+    partition as ``source_curves``, and the B-Rep castle builds from them. Without
+    them everything here behaves exactly as it did.
     """
     from guildmodel.core.geometry.boxing import measure_from_polygon
-    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.geometry.curves import mirror_x as mirror_curve_x
+    from guildmodel.core.geometry.regions import curves_by_ring, partition_zones
     from guildmodel.core.io_import.normalize import assemble_outline, points_to_polygon
 
     layers = ws.layers
@@ -110,6 +122,13 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
         if _outline and not any(p.is_valid and p.area > 1.0 for p in _lenses):
             layers = ws.layers = {lyr: [[(-x, y) for x, y in c] for c in curves]
                                   for lyr, curves in layers.items()}
+            # The exact curves have to make the same trip, or they and the
+            # points describe different parts (BUILDPLAN M1.2's single-flip rule
+            # applies to both representations).
+            ws.curves = {
+                lyr: [mirror_curve_x(c) if c is not None else None for c in cs]
+                for lyr, cs in (ws.curves or {}).items()
+            }
         ws.layers_oriented = True
 
     ws.engraving_curves = list(layers.get("ENGRAVING", []))
@@ -139,7 +158,16 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
 
     sculpt = layers.get("SCULPT", [])
     if ws.outline_poly is not None and len(valid_lens) >= 2 and sculpt:
-        ws.partition = partition_zones(ws.outline_poly, valid_lens[:2], sculpt)
+        # Only OUTLINE and LENS: those are the rings that bound the body, and a
+        # ring is the only thing `source_curves` is ever looked up by. SCULPT
+        # cuts are open polylines (straight in every drawing so far) and HINGE
+        # pockets are cut, not bounded.
+        source: dict = {}
+        for layer in ("OUTLINE", "LENS"):
+            source.update(curves_by_ring(layers.get(layer, []),
+                                         (ws.curves or {}).get(layer, [])))
+        ws.partition = partition_zones(ws.outline_poly, valid_lens[:2], sculpt,
+                                       source_curves=source)
         ws.castle_ready = bool(ws.partition.classified)
 
     if boxing is not None:
@@ -165,6 +193,7 @@ def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
         c = gc.component
         ws = ComponentWorkspace(
             kind=c.kind, label=component_label(c.kind), layers=gc.layers,
+            curves=gc.curves,
             enabled=c.enabled, source_workspace=c.source_workspace, forming=c.forming,
             texts=list(gc.texts),
             castle_params=c.castle, temple_params=c.temple,

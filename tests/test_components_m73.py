@@ -206,3 +206,99 @@ def test_kind_aware_param_dock_and_persistence(tmp_path, monkeypatch):
     win._activate_workspace(3)
     assert p.isTabVisible(p._tab_block)
     assert not p.isTabVisible(p._tab_temple)
+
+
+# ------------------------------------------------------------------ exact curves
+
+def _spline_ring(layer, cx, cy, rx, ry):
+    """A closed four-node spline ellipse-ish ring — genuinely not a polygon."""
+    k = 0.5523                       # circle-ish Bezier handle length
+    nodes = []
+    for (nx, ny), (ix, iy), (ox, oy) in (
+        ((cx + rx, cy), (cx + rx, cy - k * ry), (cx + rx, cy + k * ry)),
+        ((cx, cy + ry), (cx + k * rx, cy + ry), (cx - k * rx, cy + ry)),
+        ((cx - rx, cy), (cx - rx, cy + k * ry), (cx - rx, cy - k * ry)),
+        ((cx, cy - ry), (cx - k * rx, cy - ry), (cx + k * rx, cy - ry)),
+    ):
+        nodes.append({"x": nx, "y": ny,
+                      "cp_in": {"x": ix, "y": iy}, "cp_out": {"x": ox, "y": oy}})
+    return {"kind": "spline", "layer": layer, "closed": True, "nodes": nodes}
+
+
+def _curved_front_state():
+    return {"forming": {"apical_radius_mm": 88.0, "bridge_angle_deg": 5.0},
+            "mirror": {"x": 0.0, "enabled": True},
+            "curves": [
+                _spline_ring("OUTLINE", 0, 0, 60, 20),
+                _spline_ring("LENS", 30, 0, 14, 12),
+                _spline_ring("LENS", -30, 0, 14, 12),
+                _line("SCULPT", [(0, -25), (0, 25)]),
+                _line("SCULPT", [(45, -25), (45, 25)]),
+            ]}
+
+
+def test_a_drawings_curves_reach_the_partition(tmp_path):
+    """The whole point of the wiring: open a `.gdraw` and the frame front's
+    partition knows the curves it was drawn with.
+
+    Before this, `partition_zones` took `source_curves` and the only caller
+    passing it was a benchmark script — so nothing a maker could actually open
+    ever built from a curve.
+    """
+    path = tmp_path / "curved.gdraw"
+    states = {"front": _curved_front_state(), "temple_r": {"curves": []},
+              "temple_l": {"curves": []}, "hinge": {"curves": []}}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"active_tab": "front"}))
+        for tab, st in states.items():
+            zf.writestr(f"{tab}.svg", _svg_bytes(st))
+
+    front = build_workspaces_from_gdraw(path)[0][0]
+    assert front.partition is not None
+    # the body exterior and both apertures each resolve to their authored curve
+    assert front.partition.ring_curve(front.partition.body.exterior) is not None
+    assert all(front.partition.ring_curve(r) is not None
+               for r in front.partition.body.interiors)
+    assert len(front.partition.curve_list()) == 3
+
+
+def test_a_polyline_drawing_still_supplies_no_curves(tmp_path):
+    """Opt-in by data: a drawing made of polylines yields an empty curve map and
+    the historical polygonal build, unchanged."""
+    path = _make_gdraw(tmp_path / "flat.gdraw")
+    front = build_workspaces_from_gdraw(path)[0][0]
+    assert front.partition is not None
+    assert front.partition.source_curves == {}
+
+
+def test_the_temple_reorientation_flips_the_curves_too():
+    """`derive_workspace` reflects a temple across the Y axis; leave the curves
+    behind and the two representations describe different parts."""
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+
+    curve = cubic_bezier_chain([((0.0, 0.0), (5.0, 4.0), (15.0, 4.0), (20.0, 0.0))])
+    before = curve.control_points.copy()
+    ws = ComponentWorkspace(
+        kind=ComponentKind.TEMPLE_RIGHT, label="Temple Right",
+        layers={"OUTLINE": [[(-70, -6), (70, -6), (70, 6), (-70, 6)]]},
+        curves={"OUTLINE": [curve]})
+    derive_workspace(ws)
+    assert ws.is_temple
+    flipped = ws.curves["OUTLINE"][0].control_points
+    assert flipped[:, 0].tolist() == (-before[:, 0]).tolist()
+    assert flipped[:, 1].tolist() == before[:, 1].tolist()
+
+
+def test_re_deriving_does_not_flip_a_temple_twice():
+    """`layers_oriented` guards the points; it has to guard the curves with them."""
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+
+    curve = cubic_bezier_chain([((0.0, 0.0), (5.0, 4.0), (15.0, 4.0), (20.0, 0.0))])
+    ws = ComponentWorkspace(
+        kind=ComponentKind.TEMPLE_RIGHT, label="Temple Right",
+        layers={"OUTLINE": [[(-70, -6), (70, -6), (70, 6), (-70, 6)]]},
+        curves={"OUTLINE": [curve]})
+    derive_workspace(ws)
+    once = ws.curves["OUTLINE"][0].control_points.copy()
+    derive_workspace(ws)
+    assert ws.curves["OUTLINE"][0].control_points.tolist() == once.tolist()

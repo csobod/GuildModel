@@ -118,7 +118,8 @@ class ToolSep(QWidget):
 class ImportWorker(QObject):
     """Runs DXF import + boxing measurement off the GUI thread."""
 
-    finished = Signal(dict, object, dict, list)  # layers, boxing|None, raw_summary, unrecognised
+    # layers, boxing|None, raw_summary, unrecognised, curves
+    finished = Signal(dict, object, dict, list, dict)
     error = Signal(str)
 
     def __init__(self, path: Path) -> None:
@@ -129,7 +130,7 @@ class ImportWorker(QObject):
         try:
             import ezdxf as _ezdxf
             from collections import Counter as _Counter
-            from guildmodel.core.io_import.dxf import import_dxf
+            from guildmodel.core.io_import.dxf import import_curves
             from guildmodel.core.io_import.normalize import points_to_polygon
             from guildmodel.core.geometry.boxing import measure_from_polygon
 
@@ -146,7 +147,9 @@ class ImportWorker(QObject):
                 if lyr.upper() not in SUPPORTED_LAYERS
             ]
 
-            layers = import_dxf(self.path)
+            # `import_curves`, not `import_dxf`: same points, plus the exact
+            # SPLINE definitions behind them for the B-Rep path.
+            layers, curves = import_curves(self.path)
 
             boxing = None
             lens_curves = layers.get("LENS", [])
@@ -156,7 +159,7 @@ class ImportWorker(QObject):
                 if len(valid) >= 2:
                     boxing = measure_from_polygon(valid[0], valid[1])
 
-            self.finished.emit(layers, boxing, raw_summary, unrecognised)
+            self.finished.emit(layers, boxing, raw_summary, unrecognised, curves)
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -5769,6 +5772,11 @@ class MainWindow(QMainWindow):
             # glyphs land on the part and read correctly on the interior face.
             polys = [[(-x, y) for x, y in poly] for poly in polys]
             ws.layers["ENGRAVING"] = list(ws.layers.get("ENGRAVING", [])) + polys
+            # Outlined glyphs have no authored curve behind them; pad so
+            # `ws.curves` stays index-aligned with `ws.layers` as documented.
+            if ws.curves:
+                ws.curves["ENGRAVING"] = (list(ws.curves.get("ENGRAVING", []))
+                                          + [None] * len(polys))
             ws.engraving_curves = list(ws.layers["ENGRAVING"])
             self.append_log(
                 f"[engraving] {ws.label}: outlined {len(polys)} glyph contour(s) "
@@ -5831,7 +5839,8 @@ class MainWindow(QMainWindow):
         self._import_thread.start()
 
     def _on_import_finished(
-        self, layers: dict, boxing, raw_summary: dict, unrecognised: list
+        self, layers: dict, boxing, raw_summary: dict, unrecognised: list,
+        curves: dict | None = None,
     ) -> None:
         from guildmodel.core.project.schema import ComponentKind, component_label
 
@@ -5855,7 +5864,8 @@ class MainWindow(QMainWindow):
         # A plain DXF is a one-component project: a frame front, or a temple when
         # it is an outline with no lenses (M6.3). The derived geometry + actions
         # are applied by _activate_workspace below (M7.3).
-        ws = ComponentWorkspace(kind=ComponentKind.FRAME_FRONT, label="", layers=layers)
+        ws = ComponentWorkspace(kind=ComponentKind.FRAME_FRONT, label="", layers=layers,
+                                curves=curves or {})
         derive_workspace(ws, boxing=boxing)
         if ws.is_temple:
             ws.kind = ComponentKind.TEMPLE_RIGHT

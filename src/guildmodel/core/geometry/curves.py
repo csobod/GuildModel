@@ -21,6 +21,11 @@ knots, multiplicities, degree, periodic flag, optional rational weights — so
 handing that straight to the kernel is exact by construction. No fit, no
 tolerance, no error term.
 
+The same holds for the `.gdraw` path, which is the *primary* intake and had the
+same hole. GuildDraw stores a spline there as cubic Bezier nodes rather than as
+poles and knots, but a chain of cubic Beziers is a cubic B-spline — see
+`cubic_bezier_chain`, which re-spells one as the other with no tolerance either.
+
 **Kernel-neutral on purpose.** `core/io_import` must not import OCP: the
 importer runs on every startup and OCP is ~70 MB of shared libraries. This
 module is plain data. `core/solid/occ.py` is the only place that turns it into a
@@ -28,11 +33,12 @@ module is plain data. `core/solid/occ.py` is the only place that turns it into a
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["NurbsCurve", "mirror_x"]
+__all__ = ["NurbsCurve", "circle_curve", "cubic_bezier_chain", "mirror_x", "mirror_y"]
 
 
 @dataclass(frozen=True)
@@ -109,3 +115,109 @@ def mirror_x(curve: NurbsCurve) -> NurbsCurve:
     return NurbsCurve(control_points=cp, knots=curve.knots, degree=curve.degree,
                       closed=curve.closed, weights=curve.weights,
                       layer=curve.layer)
+
+
+def mirror_y(curve: NurbsCurve) -> NurbsCurve:
+    """The curve with y negated.
+
+    The `.gdraw` reader's scene → posterior transform is (x, y) → (-x, -y) —
+    GuildDraw scene space is Y-down — so that path needs both mirrors where the
+    DXF path (already Y-up) needs only :func:`mirror_x`.
+    """
+    cp = curve.control_points.copy()
+    cp[:, 1] = -cp[:, 1]
+    return NurbsCurve(control_points=cp, knots=curve.knots, degree=curve.degree,
+                      closed=curve.closed, weights=curve.weights,
+                      layer=curve.layer)
+
+
+#: Below this, a Bézier segment's four control points are one point and the
+#: segment contributes no geometry. A picometre: far under any real drawing
+#: coordinate, so this only ever catches true duplicates.
+_DEGENERATE_MM = 1e-9
+
+
+def cubic_bezier_chain(segments, closed: bool = False,
+                       layer: str = "") -> NurbsCurve | None:
+    """One cubic B-spline through a chain of cubic Bézier segments.
+
+    **Not an approximation.** A chain of cubic Béziers *is* a cubic B-spline —
+    the same curve written a different way. Interleave the segments' control
+    points and give each interior joint a knot of multiplicity 3, and the basis
+    functions reproduce each segment's Bernstein polynomials exactly. So this
+    conversion has no tolerance and no error term, the same way
+    :func:`io_import.dxf._spline_curve` has none.
+
+    That is what makes it worth doing. GuildDraw's ``.gdraw`` — the primary
+    intake — stores its splines as Bézier nodes, and the reader flattened them
+    to polylines exactly as the DXF importer used to, so a ``.gdraw`` reached the
+    B-Rep kernel as a polygon no matter how smoothly it was drawn.
+
+    ``segments`` is a sequence of ``(p0, p1, p2, p3)`` xy tuples, consecutive
+    segments sharing an endpoint. For ``closed=True`` the caller supplies the
+    wrap-around segment, so the last pole coincides with the first; the curve is
+    *clamped*, not periodic, which is what `occ.nurbs_edge` builds and what
+    closed DXF splines are too.
+
+    Returns None when nothing survives — the caller then falls back to the
+    flattened polyline, which is always produced anyway.
+    """
+    segs = [s for s in segments if len(s) == 4 and _extent(s) > _DEGENERATE_MM]
+    if not segs:
+        return None
+
+    poles: list[tuple[float, float]] = [tuple(segs[0][0])]
+    for _p0, p1, p2, p3 in segs:
+        poles.extend((tuple(p1), tuple(p2), tuple(p3)))
+
+    # Clamped cubic: multiplicity 4 at both ends, 3 at every interior joint.
+    # len(knots) == 3m + 5 == len(poles) + degree + 1, so `is_consistent` holds.
+    m = len(segs)
+    knots = [0.0] * 4
+    for j in range(1, m):
+        knots.extend([float(j)] * 3)
+    knots.extend([float(m)] * 4)
+
+    return NurbsCurve(control_points=poles, knots=knots, degree=3,
+                      closed=closed, layer=layer)
+
+
+def _extent(segment) -> float:
+    """The largest gap between any two of a Bézier segment's control points."""
+    return max(math.dist(a, b) for a in segment for b in segment)
+
+
+#: A quarter circle as a rational quadratic needs its corner pole weighted by
+#: cos(45°); the nine-pole form below is the textbook exact circle.
+_W = math.sqrt(2.0) / 2.0
+
+
+def circle_curve(center: tuple[float, float], radius: float,
+                 layer: str = "") -> NurbsCurve | None:
+    """A full circle as an exact rational quadratic B-spline (nine poles).
+
+    Exact, not sampled: the rational form reproduces a circle to machine
+    precision, which a polyline cannot do at any vertex count. It also spares
+    the pipeline a genuinely bad approximation — the ``.gdraw`` circle flattener
+    divides *circumference* by the chord tolerance, so a 20 mm hole arrives as
+    roughly twelve thousand points.
+
+    Wound counter-clockwise from angle 0. Returns None for a non-positive
+    radius.
+    """
+    if radius <= 0.0:
+        return None
+    cx, cy = float(center[0]), float(center[1])
+    r = float(radius)
+    #  (1,0) (1,1) (0,1) (-1,1) (-1,0) (-1,-1) (0,-1) (1,-1) (1,0)
+    unit = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0),
+            (-1, -1), (0, -1), (1, -1), (1, 0)]
+    poles = [(cx + r * ux, cy + r * uy) for ux, uy in unit]
+    return NurbsCurve(
+        control_points=poles,
+        knots=[0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0],
+        degree=2,
+        closed=True,
+        weights=[1.0, _W, 1.0, _W, 1.0, _W, 1.0, _W, 1.0],
+        layer=layer,
+    )
