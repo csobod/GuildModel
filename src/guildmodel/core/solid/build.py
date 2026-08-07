@@ -42,6 +42,7 @@ from .occ import (
     fuse_all,
     is_valid,
     polygon_to_face,
+    SourceCurves,
     volume,
     spline_wire,
 )
@@ -89,15 +90,48 @@ def zone_heights(partition: CastlePartition, castle: CastleParams,
 
 # ------------------------------------------------------------------ terraces
 
+#: Build zone boundaries from the drawing's authored curves instead of from the
+#: flattened polygon. **Off, and the reason is watertightness, not correctness.**
+#:
+#: The geometry works. Zone boundaries are arcs of the outline and lens curves
+#: joined by the straight SCULPT cuts that severed them; ~94% of every zone's
+#: vertices lie on an authored curve, and rebuilding them as trimmed arcs gives
+#: nine valid faces whose areas match the polygons to +0.059 mm2 in total. The
+#: whole castle then builds valid, with 9,942 -> 8,237 edges and 4,971 -> 3,952
+#: display edges, at a mesh volume of 7825.69 mm3 against the polygon build's
+#: 7825.25 — a +0.44 mm3 surplus, which is exactly the chord deficit the true
+#: curve is supposed to recover.
+#:
+#: What stops it is the tessellation: **the curved solid meshes non-watertight**,
+#: and at 23,774 triangles against 6,472. The M2 STL gate and the CAM both
+#: require watertight, so this cannot be the default until `tessellate` produces
+#: a closed mesh across mixed spline/planar faces. Build time also goes 7.8 s ->
+#: 18.8 s, dominated by per-vertex curve classification and by booleans on
+#: spline faces.
+#:
+#: Turning this on is one flag; fixing the mesh is the actual next task.
+CURVED_TERRACES = False
+
+
 def build_terraces(partition: CastlePartition,
-                   heights: dict[str, float]) -> TopoDS_Shape:
-    """Every zone extruded to its height and fused — the stepped castle."""
+                   heights: dict[str, float],
+                   curved: bool | None = None) -> TopoDS_Shape:
+    """Every zone extruded to its height and fused — the stepped castle.
+
+    With `curved` (default `CURVED_TERRACES`), zone boundaries are rebuilt from
+    the drawing's authored curves. `SourceCurves` is built once here and reused
+    across all nine zones — the per-vertex classification is the real cost, and
+    building the OCCT handles nine times over would be waste.
+    """
+    use_curves = CURVED_TERRACES if curved is None else curved
+    source = SourceCurves(partition) if use_curves else None
     solids = []
     for zone in partition.zones:
         poly = zone.polygon
         if poly.is_empty or poly.area <= 0:
             continue
-        solids.append(extrude(polygon_to_face(poly, 0.0), heights[zone.name]))
+        solids.append(extrude(polygon_to_face(poly, 0.0, curves=source),
+                              heights[zone.name]))
     if not solids:
         raise BooleanError("partition has no zones with area")
     return fuse_all(solids)

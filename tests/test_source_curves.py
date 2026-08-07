@@ -196,3 +196,60 @@ def test_no_curves_available_changes_nothing(partition_with_curves):
     assert bare.source_curves == {}
     assert bare.ring_curve(bare.body.exterior) is None
     assert polygon_to_face(bare.body, 0.0, curves=bare) is not None
+
+
+# ------------------------------------------- zone boundaries as trimmed arcs
+
+def test_zone_faces_can_be_rebuilt_from_authored_curves(partition_with_curves):
+    """A zone boundary is arcs of the outline and lens curves joined by the
+    straight SCULPT cuts that severed them — so a whole-ring lookup finds
+    nothing and `curved_ring_wire` has to reconstruct it run by run.
+
+    All nine zones must come out valid, with areas matching the polygons: using
+    the true curve may move a zone by the chord deficit, never by more.
+    """
+    from guildmodel.core.solid.occ import (SourceCurves, area, is_valid,
+                                           polygon_to_face)
+
+    part = partition_with_curves
+    source = SourceCurves(part)
+    assert source, "the demo frame has authored curves to match against"
+
+    total_poly = total_curved = 0.0
+    for zone in part.zones:
+        plain = polygon_to_face(zone.polygon, 0.0)
+        curved = polygon_to_face(zone.polygon, 0.0, curves=source)
+        assert is_valid(curved), f"{zone.name} built an invalid face"
+        a_plain, a_curved = area(plain), area(curved)
+        assert a_curved == pytest.approx(a_plain, abs=1.0), zone.name
+        total_poly += a_plain
+        total_curved += a_curved
+
+    assert total_poly == pytest.approx(part.body.area, abs=0.01)
+    assert total_curved == pytest.approx(total_poly, abs=0.5)
+
+
+def test_curved_terraces_are_off_and_why(partition_with_curves):
+    """The curved castle is geometrically right and meshes non-watertight.
+
+    Guarding the flag rather than the geometry: the M2 STL gate and the CAM both
+    require a closed mesh, so `CURVED_TERRACES` stays off until `tessellate`
+    produces one across mixed spline/planar faces. If this test starts failing
+    because someone fixed the mesher, that is the moment to flip it.
+    """
+    from guildmodel.core.solid.build import CURVED_TERRACES, build_terraces
+    from guildmodel.core.solid.occ import explore
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid import zone_heights
+    from OCP.TopAbs import TopAbs_EDGE
+
+    assert CURVED_TERRACES is False
+
+    part = partition_with_curves
+    heights = zone_heights(part, CastleParams())
+    plain = build_terraces(part, heights, curved=False)
+    curved = build_terraces(part, heights, curved=True)
+
+    n_plain = sum(1 for _ in explore(plain, TopAbs_EDGE))
+    n_curved = sum(1 for _ in explore(curved, TopAbs_EDGE))
+    assert n_curved < n_plain, "arcs must collapse edges, not add them"

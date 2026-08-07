@@ -171,6 +171,20 @@ class CastlePartition:
         point = Polygon(ring).representative_point()
         return any(h.contains(point) for h in self.holes)
 
+    def curve_list(self) -> list:
+        """Every distinct authored curve, for callers matching *partial* rings.
+
+        `ring_curve` answers "is this whole ring one authored curve?", which is
+        true for the body exterior and the apertures. A zone boundary is not —
+        it is arcs of those curves joined by straight SCULPT cuts — so rebuilding
+        one needs the candidates to test each vertex against.
+        """
+        out: list = []
+        for curve in self.source_curves.values():
+            if not any(curve is seen for seen in out):
+                out.append(curve)
+        return out
+
     def zone(self, name: str) -> Zone:
         for z in self.zones:
             if z.name == name:

@@ -22,12 +22,14 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
+from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakePolygon,
+    BRepBuilderAPI_MakeVertex,
     BRepBuilderAPI_MakeWire,
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
@@ -35,11 +37,12 @@ from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.GeomAbs import GeomAbs_Shape
 from OCP.Geom import Geom_BSplineCurve
-from OCP.GeomAPI import GeomAPI_Interpolate, GeomAPI_PointsToBSpline
+from OCP.GeomAPI import (GeomAPI_Interpolate, GeomAPI_PointsToBSpline,
+                         GeomAPI_ProjectPointOnCurve)
 from OCP.GProp import GProp_GProps
 from OCP.TColgp import TColgp_Array1OfPnt, TColgp_HArray1OfPnt
 from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
-from OCP.TopAbs import TopAbs_ShapeEnum
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_ShapeEnum
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Shape
 from OCP.TopTools import TopTools_ListOfShape
@@ -51,7 +54,9 @@ __all__ = [
     "BooleanError",
     "area",
     "common",
+    "SourceCurves",
     "curve_ring_wire",
+    "curved_ring_wire",
     "cut",
     "cut_many",
     "edge_points",
@@ -60,6 +65,7 @@ __all__ = [
     "fuse",
     "fuse_all",
     "is_valid",
+    "mesh_volume",
     "nurbs_edge",
     "polygon_ring_wire",
     "polygon_to_face",
@@ -138,25 +144,63 @@ def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
     return out
 
 
-#: Relative precision for mass properties. The default (no `Eps`) integrates on
-#: a fixed grid, which is exact enough for planar polygonal faces and **wrong**
-#: for spline-bounded ones: the demo body face measured 1546.690 mm2 by default
-#: against 1483.750 mm2 adaptively — a 4% error, in the direction that looks
-#: like the curve added material. It did not; the curve adds 0.649 mm2 over the
-#: polygon inscribed in it, which is exactly the chord deficit and exactly what
-#: the adaptive figure shows. Every area or volume taken on geometry that may
-#: carry a real curve has to ask for the adaptive integration.
+#: Relative precision for **surface** mass properties. On a planar face bounded
+#: by splines the default (no `Eps`) integrates on a fixed grid and gets it
+#: wrong by 4%: the demo body face reads 1546.690 mm2 by default against
+#: 1483.750 adaptively, in the direction that looks like the curve added
+#: material. It did not — the true outline adds 0.649 mm2 over the polygon
+#: inscribed in it (exactly the chord deficit) and the true apertures take 0.889
+#: back, which is what the adaptive figure shows and the theory predicts.
 GPROP_EPS = 1e-6
 
 
 def volume(shape: TopoDS_Shape) -> float:
+    """Enclosed volume — **trustworthy only while every face is planar.**
+
+    No `Eps`, and that is deliberate. Passing one is the obvious move after the
+    surface-area finding above and it is wrong here: on a solid carrying spline
+    faces `VolumeProperties_s` disagrees with itself at every setting. Two
+    *disjoint* zone prisms from the demo frame, whose fused volume must be
+    exactly their sum:
+
+        setting        od          os          fused       sum
+        default      985.435   1011.400     2006.927    1996.835
+        Eps 1e-6     919.773   1038.664     1550.374    1958.437
+        Eps 1e-9    1045.464   1051.349     2413.023    2096.813
+        mesh         994.498   1013.568     2008.066    2008.066
+
+    Only the tessellation is self-consistent, and it is exact — the fused mesh
+    equals the sum of the parts to the last digit, watertight. An `Eps` of 1e-6
+    was briefly shipped here and made the answer *worse*; it survives above for
+    `area`, where it was verified against theory on a planar face.
+
+    So: this stays on the default, which is exact for the polygonal solids the
+    whole test suite and `bench_solid.py` are pinned to, and callers measuring
+    anything that may carry a real curve use `mesh_volume`. The empty-but-valid
+    guards in `build_castle_solid` only ask whether this is greater than zero,
+    which no setting gets wrong.
+    """
     props = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, props, GPROP_EPS)
+    BRepGProp.VolumeProperties_s(shape, props)
     return props.Mass()
 
 
+def mesh_volume(shape: TopoDS_Shape, deflection: float = 0.005) -> float:
+    """Volume via tessellation — the referee when a shape carries curves.
+
+    Slower than `volume` and the only measurement that stays consistent once
+    spline faces are involved. See `volume` for the numbers that establish that.
+    """
+    from .tessellate import tessellate
+    return float(tessellate(shape, deflection=deflection).to_trimesh().volume)
+
+
 def area(shape: TopoDS_Shape) -> float:
-    """Surface area, adaptively integrated — see `GPROP_EPS`."""
+    """Surface area, adaptively integrated — see `GPROP_EPS`.
+
+    Verified on a planar spline-bounded face, where adaptive integration agrees
+    with theory to 0.001 mm2. Unlike `volume`, the `Eps` earns its place here.
+    """
     props = GProp_GProps()
     BRepGProp.SurfaceProperties_s(shape, props, GPROP_EPS)
     return props.Mass()
@@ -203,6 +247,21 @@ CORNER_DEG = 25.0
 #: outline: 4.7 um worst case, 1.4 um rms — 30x tighter than the 0.15 mm raster
 #: this replaces, and invisible against any acetate machining tolerance.
 FIT_TOL_MM = 0.005
+
+
+def _wire_signed_area(wire) -> float:
+    """Sign of a wire's enclosed area, from a coarse sample of its edges.
+
+    A wire built from trimmed arcs has no coordinate list to shoelace, and its
+    direction still has to match the ring it replaces or the face comes out
+    invalid. Five points per edge is far more than the sign needs.
+    """
+    pts = []
+    for edge in explore(wire, TopAbs_EDGE):
+        sampled = edge_points(edge, 5)
+        if sampled:
+            pts.extend((p.X(), p.Y()) for p in sampled)
+    return _signed_area(pts) if len(pts) >= 3 else 0.0
 
 
 def _signed_area(points) -> float:
@@ -450,6 +509,216 @@ def ring_wire(coords, z: float = 0.0, spline: bool = False, curve=None):
         return polygon_ring_wire(coords, z)
 
 
+#: A trimmed arc is trusted only if it stays this close to the ring polyline it
+#: was derived from, in mm. A correct arc rides within the chord sagitta (<= the
+#: importer's 0.01 mm flattening tolerance); a wrong-branch arc — the trim
+#: sweeping the long way round a closed curve — misses by millimetres. There is
+#: no middle ground, so the threshold is not delicate.
+ARC_VERIFY_TOL_MM = 0.05
+
+#: Fewest ring vertices a run must have before it is worth trying as an arc.
+#: Two vertices are a chord and carry no curvature information.
+MIN_ARC_VERTS = 3
+
+
+class SourceCurves:
+    """The authored curves behind a partition, ready to rebuild wires from.
+
+    Holds the OCCT handles so they are built once for a whole terrace pass
+    rather than once per zone, and answers the two different questions the two
+    kinds of ring ask:
+
+    * **Whole ring** — the body exterior, the lens apertures. One authored
+      curve, one exact edge. `ring()`.
+    * **Partial ring** — a zone boundary, which is arcs of those curves joined
+      by the straight SCULPT cuts that made it. Needs each vertex tested
+      against every candidate. `classify()`.
+    """
+
+    def __init__(self, partition):
+        self._partition = partition
+        self._curves = list(partition.curve_list()) if partition is not None else []
+        self._geoms = []
+        for curve in self._curves:
+            try:
+                edge = TopoDS.Edge_s(nurbs_edge(curve, 0.0))
+                adaptor = BRepAdaptor_Curve(edge)
+                self._geoms.append((BRep_Tool.Curve_s(edge, 0.0, 1.0),
+                                    adaptor.FirstParameter(),
+                                    adaptor.LastParameter()))
+            except Exception:                                # noqa: BLE001
+                self._geoms.append(None)
+
+    def __bool__(self) -> bool:
+        return any(g is not None for g in self._geoms)
+
+    def ring(self, ring):
+        return self._partition.ring_curve(ring) if self._partition else None
+
+    def geom(self, index):
+        return self._geoms[index]
+
+    def classify(self, x: float, y: float, tol: float = 1e-3):
+        """`(curve_index, parameter)` for the curve this point lies on, else
+        `(None, None)`. The point must be *on* the curve, not merely near it."""
+        point = gp_Pnt(float(x), float(y), 0.0)
+        best = (None, None, tol)
+        for i, entry in enumerate(self._geoms):
+            if entry is None:
+                continue
+            proj = GeomAPI_ProjectPointOnCurve(point, entry[0])
+            if proj.NbPoints() and proj.LowerDistance() < best[2]:
+                best = (i, proj.LowerDistanceParameter(), proj.LowerDistance())
+        return best[0], best[1]
+
+
+def _arc_spans(tagged, source: "SourceCurves"):
+    """Maximal runs of ring vertices lying on one authored curve, split where
+    the run crosses that curve's start/end and verified against the ring."""
+    from shapely.geometry import LineString, Point
+
+    n = len(tagged)
+    runs, i = [], 0
+    while i < n:
+        ci = tagged[i][2]
+        if ci is None:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and tagged[j + 1][2] == ci:
+            j += 1
+        runs.append((i, j, ci))
+        i = j + 1
+
+    spans = []
+    for (a, b, ci) in runs:
+        _, u0, u1 = source.geom(ci)
+        period = u1 - u0
+        us = [tagged[k][3] for k in range(a, b + 1)]
+        # A run passing the curve's start/end point shows up as a parameter
+        # jump. Trimming straight across it sweeps the complement arc — the
+        # whole rest of the outline — which is how this first presented:
+        # negative areas, and one zone seven times too large.
+        start = 0
+        for k in range(1, len(us)):
+            if abs(us[k] - us[k - 1]) > period / 2:
+                if k - start >= MIN_ARC_VERTS:
+                    spans.append((a + start, a + k - 1, ci, us[start], us[k - 1]))
+                start = k
+        if len(us) - start >= MIN_ARC_VERTS:
+            spans.append((a + start, a + len(us) - 1, ci, us[start], us[-1]))
+
+    verified = []
+    for (ia, ib, ci, ua, ub) in sorted(spans):
+        geom = source.geom(ci)[0]
+        polyline = LineString([(tagged[k % n][0], tagged[k % n][1])
+                               for k in range(ia, ib + 1)])
+        ok = True
+        for t in (0.15, 0.35, 0.5, 0.65, 0.85):
+            q = geom.Value(float(ua) + (float(ub) - float(ua)) * t)
+            if Point(q.X(), q.Y()).distance(polyline) > ARC_VERIFY_TOL_MM:
+                ok = False
+                break
+        if ok:
+            verified.append((ia, ib, ci, ua, ub))
+    return verified
+
+
+def curved_ring_wire(coords, z: float, source: "SourceCurves"):
+    """A wire that uses the authored curves wherever the ring follows them.
+
+    This is what makes the *model* curved rather than just its outer silhouette.
+    `build_terraces` extrudes **zone** polygons, and a zone boundary is arcs of
+    the outline and lens rings joined by the straight SCULPT cuts that severed
+    them — so a whole-ring lookup finds nothing and the polygon survives. On the
+    demo frame ~94% of every zone's vertices lie on an authored curve, in two to
+    five clean runs, and rebuilding those as trimmed arcs takes the nine zones
+    from 649 ring vertices to 170 edges with every area inside 0.5 mm2.
+
+    Raises `BooleanError` if no arc survives verification, so the caller can
+    fall back to the plain polygon rather than pay for this twice.
+
+    **Vertices are shared explicitly.** Arc endpoints are exact points on the
+    curve; straight endpoints are flattened ring vertices; the two differ by up
+    to the flattening tolerance. Left to match them by proximity,
+    `BRepBuilderAPI_MakeWire` stitched the gap where it could and produced a
+    disordered wire where it could not — while still reporting `IsDone()`.
+    Building each `TopoDS_Vertex` once and handing it to both neighbours took
+    this from five of nine zones to seven.
+    """
+    pts = list(coords)
+    if len(pts) > 1 and tuple(pts[0][:2]) == tuple(pts[-1][:2]):
+        pts = pts[:-1]
+    if len(pts) < 3:
+        raise BooleanError(f"ring has only {len(pts)} distinct points")
+
+    tagged = [(float(x), float(y)) + source.classify(x, y) for x, y in
+              ((p[0], p[1]) for p in pts)]
+    n = len(tagged)
+    spans = _arc_spans(tagged, source)
+    if not spans:
+        raise BooleanError("no verified arc on this ring")
+
+    def ring_pnt(k):
+        return gp_Pnt(tagged[k % n][0], tagged[k % n][1], float(z))
+
+    # Describe the ring as an ordered segment list, then realise it.
+    segs, cursor = [], 0
+    for (ia, ib, ci, ua, ub) in spans:
+        if ia < cursor:
+            continue                       # overlaps a span already taken
+        for k in range(cursor, ia):
+            segs.append(("line", k, 0, 0))
+        segs.append(("arc", ci, ua, ub, ia, ib))
+        cursor = ib
+    for k in range(cursor, n):
+        segs.append(("line", k, 0, 0))
+
+    starts = [source.geom(s[1])[0].Value(float(s[2])) if s[0] == "arc"
+              else ring_pnt(s[1]) for s in segs]
+    verts = [BRepBuilderAPI_MakeVertex(p).Vertex() for p in starts]
+
+    edges = []
+    for idx, seg in enumerate(segs):
+        v0, v1 = verts[idx], verts[(idx + 1) % len(segs)]
+        if seg[0] == "arc":
+            _, ci, ua, ub, ia, ib = seg
+            try:
+                edges.append(BRepBuilderAPI_MakeEdge(
+                    source.geom(ci)[0], v0, v1, float(ua), float(ub)).Edge())
+                continue
+            except Exception:                                # noqa: BLE001
+                pass
+            # A rejected arc falls back to the vertices it was derived from —
+            # NOT to one chord across the whole span. Cutting that corner left
+            # two zones wrong by +180 and +225 mm2, which is how we learned
+            # those failures were never about the curves at all.
+            prev = v0
+            for k in range(ia + 1, ib):
+                nxt = BRepBuilderAPI_MakeVertex(ring_pnt(k)).Vertex()
+                try:
+                    edges.append(BRepBuilderAPI_MakeEdge(prev, nxt).Edge())
+                    prev = nxt
+                except Exception:                            # noqa: BLE001
+                    continue
+            try:
+                edges.append(BRepBuilderAPI_MakeEdge(prev, v1).Edge())
+            except Exception:                                # noqa: BLE001
+                pass
+            continue
+        try:
+            edges.append(BRepBuilderAPI_MakeEdge(v0, v1).Edge())
+        except Exception:                                    # noqa: BLE001
+            pass                            # coincident junction: no edge needed
+
+    mw = BRepBuilderAPI_MakeWire()
+    for edge in edges:
+        mw.Add(edge)
+    if not mw.IsDone():
+        raise BooleanError("curved ring wire did not close")
+    return mw.Wire()
+
+
 def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False,
                     curves=None):
     """Planar face at height `z`, holes included.
@@ -469,9 +738,32 @@ def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False,
     """
     poly = orient(poly, 1.0)
 
+    # Accept a bare CastlePartition as well as a prepared SourceCurves. Callers
+    # building many faces (build_terraces) should pass the latter so the OCCT
+    # handles are made once; a one-off caller should not have to know that.
+    source = curves
+    if source is not None and not hasattr(source, "ring"):
+        source = SourceCurves(source)
+
     def wire_for(ring):
-        curve = curves.ring_curve(ring) if curves is not None else None
-        return ring_wire(ring.coords, z, spline, curve=curve)
+        if source is None:
+            return ring_wire(ring.coords, z, spline)
+        # Fast path: the whole ring is one authored curve (the body exterior,
+        # the apertures) — one exact edge, no per-vertex work.
+        curve = source.ring(ring)
+        if curve is not None:
+            return ring_wire(ring.coords, z, spline, curve=curve)
+        # Otherwise the ring may still *follow* authored curves in runs, which
+        # is what every zone boundary does.
+        if source:
+            try:
+                wire = curved_ring_wire(ring.coords, z, source)
+                if _signed_area(ring.coords) * _wire_signed_area(wire) < 0:
+                    wire.Reverse()
+                return wire
+            except BooleanError:
+                pass
+        return ring_wire(ring.coords, z, spline)
 
     mf = BRepBuilderAPI_MakeFace(wire_for(poly.exterior))
     for interior in poly.interiors:

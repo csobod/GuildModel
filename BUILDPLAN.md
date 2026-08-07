@@ -4463,8 +4463,59 @@ by the guard — `arcs=0`, pure polyline — `eyewire_superior_od` and
 `eyewire_inferior_os` are *still* wrong (+180 and +225 mm²). The cause is in the
 spike's fallback: a rejected span emits **one straight chord across the whole
 span** instead of re-emitting the original vertices, cutting the corner off.
-Fix that first; it likely takes the count straight to 9/9, and it means the
-trimming logic itself is in better shape than the score suggests.
+
+### Step 2 resolved — 9/9, and blocked on the mesher instead
+
+The fallback was the whole remaining problem, exactly as predicted: re-emitting
+the span's vertices took it straight to **9/9 valid, areas matching the polygons
+to +0.059 mm² in total**. Replacing the midpoint check with one that samples the
+arc against the span's own polyline (`ARC_VERIFY_TOL_MM`) then restored arcs to
+the two zones the crude guard had been rejecting.
+
+`occ.SourceCurves` + `occ.curved_ring_wire` are production code and
+`build_terraces` can use them. The whole castle builds **valid** from authored
+curves:
+
+| | polygons | authored curves |
+| --- | --- | --- |
+| edges | 9,942 | **8,237** |
+| display edges | 4,971 | **3,952** |
+| mesh volume | 7825.25 mm³ | **7825.69 mm³** (+0.44 — the chord deficit, recovered) |
+| `BRepCheck_Analyzer` | valid | valid |
+| triangles | 6,472 | 23,774 |
+| **watertight** | **yes** | **NO** |
+| build | 7.8 s | 18.8 s |
+
+**`CURVED_TERRACES` is therefore `False`.** The geometry is right — that +0.44 mm³
+is precisely what recovering the true curve should add — but the tessellation is
+not closed, and the M2 STL gate and the CAM both require watertight. Flipping
+the flag is one line; **fixing `tessellate` to produce a closed mesh across
+mixed spline/planar faces is the actual next task.** Build time (2.4×) is a
+secondary concern and is dominated by per-vertex curve classification.
+
+### `volume()` cannot be trusted once a face is a spline — and an Eps makes it worse
+
+Recorded because it cost real time and because the natural fix is the wrong one.
+Two **disjoint** zone prisms, whose fused volume must be exactly their sum:
+
+| setting | od | os | fused | sum |
+| --- | --- | --- | --- | --- |
+| default | 985.435 | 1011.400 | 2006.927 | 1996.835 |
+| `Eps` 1e-6 | 919.773 | 1038.664 | **1550.374** | 1958.437 |
+| `Eps` 1e-9 | 1045.464 | 1051.349 | 2413.023 | 2096.813 |
+| **mesh** | **994.498** | **1013.568** | **2008.066** | **2008.066** |
+
+Only the tessellation is self-consistent. This session briefly shipped
+`Eps=1e-6` on `occ.volume` — correct for the planar spline-bounded *face* where
+it was verified against theory, and **wrong for solids**, where it turned a 0.5%
+error into a 23% one. Reverted; `occ.mesh_volume` added as the referee, and the
+reasoning is in the docstring so the next person does not re-derive it. The
+`area()` adaptive integration stands, on the face evidence.
+
+Chasing that number is also what exposed the false alarm behind it: the 716 mm³
+the terrace fuse appeared to "lose" was never lost. Disjoint solids cannot
+overlap, so a fuse that reports less than the sum is a measurement bug, not a
+geometry bug — worth remembering as a cheap sanity check on this kernel.
 
 # Reference
 
