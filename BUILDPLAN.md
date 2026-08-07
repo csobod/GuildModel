@@ -3653,12 +3653,129 @@ Stage 2 lands.
 not an edge fillet. `_footing_z` survives the rewrite as the *primary* section
 generator rather than as a fallback — so Stage 3 deletes less than planned.
 
-**Next — Stage 2** (report §6): build the castle and all features as a solid,
-tessellate for preview and STL, derive the heightfield by ray-casting and feed
-the existing CAM unchanged, keep the raster path behind a preference for A/B
-gating. Before it starts, the unproven Stage 1 items in report §9.5 need
-closing — PyInstaller packaging first, and that needs a Linux CI workflow, which
-does not exist yet.
+## Stage 2 — the solid becomes the master model · *in progress, 2026-08-06*
+
+> **Sequencing decision (user, 2026-08-06): go straight to Stage 2; Windows and
+> macOS packaging waits.** GuildModel is GPL-3 and Linux-first — priority goes to
+> the platforms that agree with the project's philosophy and to the maker's own
+> workflow, on the reasoning that an open codebase lets the community adapt the
+> rest. The risk accepted, explicitly: OCP has not been proven inside a frozen
+> bundle, and that can only be tested on CI runners. If it turns out not to
+> freeze, the fallback is unchanged (Manifold, report §3.1) but Stage 2 would
+> have been spent first. **The licence obligation was not deferred** — OCCT's
+> LGPL relinking terms and source offer went into `NOTICE` with the dependency,
+> because retrofitting that after distribution is the part that cannot be undone.
+
+**The architecture (report §4.2), restated:** the B-Rep becomes the master
+representation and **the heightfield becomes a derived one, for CAM only**. The
+drop-cutter is hardware-proven and carries the `INCIDENT-2026-07-29` fix in
+`CUT_RES_MM`; nobody touches it. It keeps consuming a `Heightfield` with exactly
+today's semantics, produced by ray-casting the solid.
+
+**1. `core/solid/` — the new module.** Castle from `CastlePartition` unchanged:
+zone polygons extruded to their heights and fused; footings and features as
+boolean sweeps. Proven in Stage 1 at 0.81 s for the terraces and 0.12 s for all
+ten footings.
+
+**2. Footings are swept cross-sections, not fillets** — Stage 1's correction.
+`_footing_z` is promoted to the primary section generator: the existing analytic
+profile, swept along the SCULPT cut line. It is *not* deleted by Stage 3.
+
+**3. The features as sweeps** (report §4.3, with §9's corrections): eyewire bezel
+and lens groove swept along the aperture ring; pad splay along the crest curve;
+brow chamfer along the trimmed span with a tapering profile — **floored at
+0.02 mm, never zero**, or `MakePipeShell.MakeSolid()` fails; hinge pockets
+extruded and subtracted.
+
+**4. The CAM adapter.** Solid → Z-map at `CUT_RES_MM` by vertical ray casting.
+One new function, and the only thing the CAM ever sees. `dropcutter`,
+`castle_ops`, `component`, `sim/bed`, the worktable and the whole posting chain
+stay untouched.
+
+**5. The raster path stays alive behind a preference**, for A/B comparison and
+for the gating strategy in report §3.5 — the new path is checked against the old
+by sampling, excluding a narrow band around each feature boundary, and that band
+is asserted separately to have got *sharper*.
+
+### Stage 2 display modes — Fusion-parity viewing *(user requirement, 2026-08-06)*
+
+**Why this belongs to Stage 2 and could never have been done before it.** All of
+these are drawings *of the edges*, and the raster model has none. The Stage 1
+solid of the demo frame carries **3,850 real edges** — the outline, each lens
+ring, each terrace step, each feature boundary. The heightfield mesh at export
+resolution carries **263,800 triangles and therefore ~396,000 triangle borders**,
+not one of which is an edge of the frame. Wireframe on that is a wall of noise.
+The display modes and the crisp chamfer are the same fix.
+
+Four modes, in the Fusion vocabulary makers already have:
+
+| Mode | Surfaces | Edges |
+| --- | --- | --- |
+| **Wireframe** | none | all, including occluded |
+| **Shaded with Hidden Edges** | translucent | all, occluded ones distinguished |
+| **Shaded with Visible Edges** | opaque | visible only |
+| **Shaded / Render** | opaque, best quality | none |
+
+**The enabler:** the tessellator must emit the topological edge polylines
+alongside the triangles — after `BRepMesh_IncrementalMesh`, each `TopoDS_Edge`
+carries its own polygon, so the exact edge set comes out at tessellation
+fidelity. The viewer draws the triangles as the surface and the edge polylines as
+a separate line set. Hidden-edge handling falls out of depth testing rather than
+needing a heuristic: visible-only = lines depth-tested against the surface;
+hidden-shown = the same lines drawn again with depth testing off.
+
+**This also retires M18 #3.** `viewer_3d.py`'s `feature_angle=40.0` guess exists
+only because the mesh has no crease information. With real edges there is nothing
+to guess — the tessellator says where the creases are.
+
+**Exit criteria for Stage 2:** the posted G-code for the demo frame is equivalent
+to today's within the agreed tolerance; the preview is visibly crisp; all four
+display modes work on the demo frame; `BRepCheck_Analyzer` passes before export.
+
+**Deferred out of Stage 2, tracked:** PyInstaller packaging on Windows/macOS
+(report §9.5), determinism across OCC versions (§5.4), the `flat.py` duck-type
+(§5.3), preview interactivity and incremental rebuild (§5.5). The last one may
+force itself into scope — Stage 1 measured a single chamfer boolean at 10.75 s.
+
+### Stage 2 progress *(2026-08-06)*
+
+**Landed:** `core/solid/` — `occ.py` (the Shapely↔OCCT bridge), `build.py`
+(terraces + swept footings), `tessellate.py` (triangles + topological edges).
+`tests/test_solid_stage2.py`, 9 cases. The demo castle builds valid in ~9 s and
+tessellates in 0.21 s to **4,548 triangles, watertight, genus 2** — against
+**263,800** for the 0.15 mm raster mesh of the same frame.
+
+**Two defects found and fixed while building it**, both worth remembering
+because of *how* they presented:
+
+* **`polygon_to_face` reversed the hole wires.** Holes must wind opposite the
+  outer wire and be added as-is. Reversing on top of that makes a face OCCT
+  reports invalid *while still returning a shape with a plausible bounding box*,
+  so it surfaced not as an error but as a boolean that quietly produced nothing:
+  the footing fill intersected the body prism to exactly 0 mm³ and the blend was
+  carve-only. Now normalised with `orient(poly, 1.0)` so it does not depend on
+  Shapely's incoming winding, and pinned by two tests.
+* **The footing fill was silently absent** because of the above — volume sat at
+  the carve-only 7774 mm³. Now 7991 mm³, and a test pins that fills contribute.
+
+**KNOWN LIMITATION — the edges are polygonal, not curves.** `ring_wire` builds
+each contour from the Shapely coordinate list, so the demo outline's 342
+vertices become 342 straight `TopoDS_Edge`s (lens rings 137 and 129). The solid
+therefore carries ~3,850 edges that are *real boundaries but one-segment lines*,
+not one spline per feature. Consequences, in increasing order of importance:
+
+1. Wireframe display still works and is still vastly better than 396,000
+   triangle borders — the lines drawn are genuinely the part's boundary.
+2. The silhouette is a chord approximation, so a very close zoom will show it.
+3. **It matters most for Stage 4.** Curve-driven CAM wants an exact curve to
+   drive the tool along; 342 line segments is a polyline, which is closer to
+   today's situation than to the goal.
+
+The fix is to fit B-spline wires instead of polygons (`GeomAPI_PointsToBSpline`,
+already used for sweep spines, where Stage 1 found the spline is the *easier*
+input). **It needs measuring before adopting** — changing every face boundary
+from lines to splines is exactly the kind of change that alters boolean
+robustness — so it is a spike, not a patch. Do it before Stage 4 depends on it.
 
 # Reference
 

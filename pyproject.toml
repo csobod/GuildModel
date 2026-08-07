@@ -23,6 +23,11 @@ dependencies = [
     "rtree>=1.2",       # trimesh's bounds-tree backend (the STL-gate test needs it)
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    # B-Rep solid kernel (OCCT 7.9). Pinned exactly, not floated: the rebuilt
+    # geometry must be reproducible across versions or a saved project previews
+    # differently after a dependency bump (BREP-REWRITE-REPORT.md §5.4).
+    # LGPL-2.1 + OCCT Exception — see NOTICE for the relinking obligation.
+    "cadquery-ocp==7.9.3.1.1",
 ]
 
 [project.optional-dependencies]

@@ -16,7 +16,33 @@ Pydantic         Data validation        MIT
 PyYAML           YAML parsing           MIT
 pytest           Testing framework      MIT
 PyInstaller      Application bundler    GPL-2.0+ with bootloader exception
+cadquery-ocp     OCCT Python bindings   Apache-2.0 (binding layer)
+Open CASCADE     B-Rep solid kernel     LGPL-2.1-only + OCCT Exception 1.0
 
 All dependencies are GPL-compatible. PySide6/Qt is used under LGPL v3,
 which permits linking from GPL software without requiring Qt to be covered
 by the GPL.
+
+Open CASCADE Technology (OCCT)
+------------------------------
+
+GuildModel's solid-modelling kernel is Open CASCADE Technology, used through
+the `cadquery-ocp` bindings. OCCT is licensed under LGPL-2.1-only with the
+Open CASCADE Exception 1.0; the binding layer is Apache-2.0. LGPL-2.1 section 3
+permits relicensing under a later GPL, so LGPL-2.1 + GPL-3.0-or-later is a
+standard combination and GuildModel links it directly.
+
+Two obligations follow, and they bind any redistributed build:
+
+1. OCCT must remain a REPLACEABLE SHARED LIBRARY. Frozen bundles must ship it
+   as separate .so / .dll / .dylib files (PyInstaller's default behaviour),
+   never statically linked or otherwise fused into the executable, so that a
+   recipient can substitute their own build of the kernel.
+
+2. The LGPL-2.1 licence text and the Open CASCADE Exception must ship with the
+   binary, together with a written offer of the corresponding source. OCCT
+   sources are available from https://dev.opencascade.org/ and the exact
+   version in use is pinned in pyproject.toml.
+
+  Open CASCADE Exception 1.0:  https://spdx.org/licenses/OCCT-exception-1.0.html
+  OCCT source:                 https://github.com/Open-Cascade-SAS/OCCT
