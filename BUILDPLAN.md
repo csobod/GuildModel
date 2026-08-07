@@ -4651,8 +4651,23 @@ Two traps, both recorded in `_offset_aperture`:
 
 ### The cutters are the next bottleneck, and always were
 
-Making the groove curved cost the demo's ALL-FEATURES build roughly 1.7x cold
-and 1.3x warm, and profiling says why: **the tooling dwarfs the part.**
+Demo frame, `scripts/bench_solid.py`, back to back on the same machine:
+
+| build | polygonal | curved |
+| --- | --- | --- |
+| bare castle + hinge pockets | 8.3 s cold / 0.8 s warm | 20.5 s / 0.7 s |
+| + lens groove | 11.8 s / 3.4 s | 27.0 s / 5.7 s |
+| + eyewire bezel | 13.3 s / 5.3 s | 25.3 s / 6.6 s |
+| **ALL FEATURES ON** | **32.4 s / 24.8 s** | **52.1 s / 30.6 s** |
+
+**This is not shippable as the default** — 52 s to open a frame and 31 s per
+slider drag is worse than the 20 s target by a wide margin, and worse than the
+polygonal build that preceded it. It sits on `stage2-curves-and-perf` pending
+the cutter work below, which is the thing that fixes it. Note the warm column:
+curved costs only 23% more there, because `castle_base` is cached and what
+remains is almost entirely the feature booleans.
+
+Profiling says where it goes: **the tooling dwarfs the part.**
 
 | group | cutters | faces | cut time (curved) |
 | --- | --- | --- | --- |
