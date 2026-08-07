@@ -152,6 +152,63 @@ def test_tessellation_carries_real_edges(demo_tess):
     assert np.all(pts >= lo - 1e-6) and np.all(pts <= hi + 1e-6)
 
 
+# --------------------------------------------------------- spline ring wires
+
+def test_spline_ring_wire_tracks_the_source_contour(demo_partition):
+    """The fitted wire is geometrically excellent — this is not why it is off
+    by default.
+
+    Split at genuine corners (the demo outline has four, at the hinge ends), the
+    fit stays within a few microns of the source polyline, and the straight runs
+    come back exact. What rules it out for now is the *face* built on it, not
+    the wire; see `occ.ring_wire`'s docstring for the measurements.
+    """
+    from shapely.geometry import LineString, Point
+
+    from guildmodel.core.solid.occ import (
+        CORNER_DEG, _corner_mask, _ring_points, _runs_between_corners,
+        spline_ring_wire)
+    from guildmodel.core.solid.tessellate import edge_polylines
+
+    ring = demo_partition.body.exterior
+    src = _ring_points(ring.coords)
+    runs, closed = _runs_between_corners(src, _corner_mask(src, CORNER_DEG))
+    assert not closed and len(runs) == 4, "demo outline should split into 4 runs"
+
+    wire = spline_ring_wire(ring.coords, 0.0)
+    polys = edge_polylines(wire, deflection=0.002, angle=0.05)
+    assert len(polys) == len(runs)
+
+    for seg, poly in zip(runs, polys):
+        line = LineString(poly[:, :2])
+        worst = max(line.distance(Point(*q)) for q in seg)
+        assert worst < 0.02, f"spline strayed {worst * 1000:.1f} um from source"
+
+
+def test_spline_faces_are_not_the_default(demo_partition):
+    """Regression guard on the decision, not on the geometry.
+
+    A planar face on spline boundaries tessellates to *zero* triangles at the
+    natural fit tolerance while still reporting valid, which is what collapsed
+    the full build to an empty solid. If a future OCCT makes this work, this
+    test failing is the signal to revisit — not a reason to flip the default
+    without re-running the tolerance sweep.
+    """
+    import numpy as np
+
+    from guildmodel.core.solid.occ import polygon_to_face
+    from guildmodel.core.solid.tessellate import tessellate
+
+    body = demo_partition.body
+    poly_face = polygon_to_face(body, 0.0)           # default: polygonal
+    tess = tessellate(poly_face, deflection=0.005, angle=0.05, with_edges=False)
+    v, f = tess.vertices, tess.faces
+    assert len(f) > 0, "the default face must tessellate"
+    area = 0.5 * np.abs(np.cross(v[f[:, 1]] - v[f[:, 0]],
+                                 v[f[:, 2]] - v[f[:, 0]])).sum()
+    assert area == pytest.approx(body.area, rel=1e-6)
+
+
 def test_edge_polylines_are_deduplicated(demo_solid):
     """Every edge is shared by two faces; the explorer must not emit it twice."""
     from guildmodel.core.solid.tessellate import edge_polylines

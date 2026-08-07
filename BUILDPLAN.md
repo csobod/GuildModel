@@ -3771,11 +3771,60 @@ not one spline per feature. Consequences, in increasing order of importance:
    drive the tool along; 342 line segments is a polyline, which is closer to
    today's situation than to the goal.
 
-The fix is to fit B-spline wires instead of polygons (`GeomAPI_PointsToBSpline`,
-already used for sweep spines, where Stage 1 found the spline is the *easier*
-input). **It needs measuring before adopting** — changing every face boundary
-from lines to splines is exactly the kind of change that alters boolean
-robustness — so it is a spike, not a patch. Do it before Stage 4 depends on it.
+The obvious fix is to fit B-spline wires instead of polygons. **It was spiked
+and it does not work — do not retry it as written.**
+
+### Spline ring wires — spiked, rejected for now *(2026-08-06)*
+
+`scripts/spike_spline_wires.py`. Splitting each ring at genuine corners (turn
+> 25 deg) and fitting the smooth runs works beautifully **as geometry**:
+
+* the demo outline is **4 corners → 4 smooth runs**; lens rings have none, so
+  each is one closed periodic curve
+* deviation from the source polyline: **5.2 um worst, 1.7 um mean**, and the
+  straight hinge-end runs come back exact
+* edges collapse **3,850 → 244**; display edges **3,549 → 122**
+
+**And then the faces built on those wires misbehave, at every tolerance:**
+
+| fit tol | face tris | prism tris | watertight | GProp volume err |
+| --- | --- | --- | --- | --- |
+| 5e-3 mm | **0** | 119,229 | no | −105.06 mm³ |
+| 1e-3 mm | 991 | 23,184 | yes | −55.59 |
+| 1e-4 mm | 1,077 | 103,028 | yes | −79.03 |
+| 1e-5 mm | 1,453 | 126,430 | yes | +22.35 |
+
+The polygonal prism does the same shape in **1,360 triangles with an exact
+volume**. There is no convergence to chase: the error changes sign between
+tolerances. At the natural 5 um fit the planar face tessellates to *zero*
+triangles, which is what collapsed the full build to an empty solid.
+
+Note the failure signature — it is becoming this kernel's house style, and it is
+the single most useful thing to carry forward: **`BRepCheck_Analyzer.IsValid()`
+returned true throughout**, and the same face reported three different areas
+depending on whether you asked `SurfaceProperties`, extruded and took the
+volume, or meshed it. Validity is necessary, not sufficient. Cross-check area or
+volume by a second route whenever a construction changes.
+
+Tried and did not help: `MakeFace(wire)`, `MakeFace(wire, OnlyPlane)`,
+`MakeFace(gp_Pln, wire)`, `ShapeFix_Face`, `ShapeFix_Shape`, and building the
+boundary as 2D curves on the plane (`Geom2dAPI_PointsToBSpline` /
+`Geom2dAPI_Interpolate` + `BRepLib.BuildCurves3d`), which is the principled
+route and still tessellated to zero.
+
+**The better plan, and it removes the risk entirely: do not put splines in the
+faces.** Nothing actually requires the *modelling* boundary to be a spline. What
+needs curves is (a) Stage 4's curve-driven CAM pass and (b) wireframe display —
+both of which consume edges at **extraction** time. So build the solid
+polygonally, where the booleans are robust and exact, and fit a spline to each
+chain of smooth consecutive edges when handing a curve to the CAM or the viewer.
+The kernel never sees a spline face, the fit quality above is already proven
+adequate, and the two concerns decouple. Do this in Stage 4 for CAM, and
+optionally in the tessellator for display.
+
+The spline machinery stays in `occ.py` behind `spline=False` so the experiment
+is re-runnable when OCCT moves; `test_solid_stage2.py` pins both the wire's
+fit quality and the decision.
 
 # Reference
 
