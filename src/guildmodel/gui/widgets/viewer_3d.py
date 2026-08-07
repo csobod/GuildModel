@@ -25,6 +25,7 @@ from typing import Optional
 import numpy as np
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QPushButton,
     QButtonGroup, QLabel, QCheckBox, QSizePolicy, QSlider,
 )
@@ -89,6 +90,24 @@ class Viewer3D(QWidget):
     playback_step_changed = Signal(int, str)   # op index, op label (sim scrubber, M7.12)
     collision_paused = Signal(int)              # frame where play paused on a hold-down (M7.12.3)
 
+    #: Display modes, in Fusion's vocabulary (BUILDPLAN Stage 2).
+    #:
+    #: All but the last are drawings *of the edges*, which is why they could not
+    #: exist before the solid did: a heightfield mesh has 263,800 triangles and
+    #: ~396,000 triangle borders, none of which is an edge of the frame. The
+    #: solid carries the outline, each lens ring, each terrace step and each
+    #: feature boundary as real topological curves.
+    #:
+    #: Hidden-edge handling falls out of depth testing rather than a heuristic:
+    #: an opaque surface occludes the lines behind it, a translucent one does
+    #: not, and wireframe draws no surface at all.
+    _DISPLAY_MODES = [
+        ("Shaded",                   "shaded"),
+        ("Shaded with visible edges", "shaded_visible"),
+        ("Shaded with hidden edges",  "shaded_hidden"),
+        ("Wireframe",                 "wireframe"),
+    ]
+
     # the teaching stepper (model mode): (label, stage value, icon, tooltip)
     _STAGE_BUTTONS = [
         ("Towers",   "towers",  "stage-towers",  "Towers only"),
@@ -104,6 +123,10 @@ class Viewer3D(QWidget):
         self._palette = theme.palette(False)
         self._dark = False
         self._mode = "model"
+        # Set before the toolbar is built: `_build_model_section` seeds the
+        # display-mode combo from it.
+        self._display_mode = "shaded_visible"      # see _DISPLAY_MODES
+        self._model_edges = None
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -219,6 +242,24 @@ class Viewer3D(QWidget):
         self._apply_stage_icons()
         lay.addSpacing(8)
         lay.addWidget(self._section_btn)
+
+        # Display mode (Stage 2). Only meaningful once the model carries real
+        # edges; with a raster mesh the edge set is empty and the edge-drawing
+        # modes fall back to plain shading rather than drawing 396,000 triangle
+        # borders, which is noise rather than a wireframe.
+        lay.addSpacing(8)
+        self._display_combo = QComboBox()
+        self._display_combo.setFixedHeight(22)
+        self._display_combo.setToolTip(
+            "Display mode — how the model is drawn.\n"
+            "Edge modes need a solid model; a raster mesh has no edges to draw.")
+        for label, value in self._DISPLAY_MODES:
+            self._display_combo.addItem(label, value)
+        self._display_combo.setCurrentIndex(
+            [v for _, v in self._DISPLAY_MODES].index(self._display_mode))
+        self._display_combo.currentIndexChanged.connect(self._on_display_mode)
+        self._display_combo.setEnabled(False)
+        lay.addWidget(self._display_combo)
 
         lay.addStretch()
         self._mesh_label = QLabel("No mesh"); self._mesh_label.setObjectName("hintLabel")
@@ -481,9 +522,17 @@ class Viewer3D(QWidget):
         if btn is not None:
             btn.setChecked(True)
 
-    def show_mesh(self, mesh, stock=None, core_guide=None, program_zero=None) -> None:
+    def show_mesh(self, mesh, stock=None, core_guide=None, program_zero=None,
+                  edges=None) -> None:
         """Cache a trimesh.Trimesh as the model scene and draw it if model mode is
-        current. `stock`/`core_guide`/`program_zero` match the old Preview3D API."""
+        current. `stock`/`core_guide`/`program_zero` match the old Preview3D API.
+
+        `edges`: the model's **real** topological edges, as a list of (k, 3)
+        polylines from `core.solid.tessellate`. Present only on the solid path.
+        Without them the edge display modes have nothing honest to draw — a
+        raster mesh's triangle borders are not edges of the frame — so they are
+        disabled rather than shown drawing noise.
+        """
         if not self._ensure_plotter():
             return
         import pyvista as pv
@@ -497,11 +546,22 @@ class Viewer3D(QWidget):
         # split sharp creases so smooth shading keeps the footing blends soft
         pv_mesh = pv_mesh.compute_normals(split_vertices=True, feature_angle=40.0)
 
+        self._model_edges = self._edges_polydata(edges)
+        has_edges = self._model_edges is not None
+        self._display_combo.setEnabled(has_edges)
+        if not has_edges and self._display_mode != "shaded":
+            self._display_mode = "shaded"
+            self._display_combo.blockSignals(True)
+            self._display_combo.setCurrentIndex(0)
+            self._display_combo.blockSignals(False)
+
         self._model_pv = pv_mesh
         self._model_stock = stock
         self._model_core_guide = core_guide
         self._model_zero = tuple(program_zero) if program_zero is not None else None
         self._model_label_text = f"{len(verts):,} verts · {len(faces):,} tris"
+        if edges:
+            self._model_label_text += f" · {len(edges):,} edges"
         keep = self._keep_camera((float(verts[:, 0].min()), float(verts[:, 0].max()),
                                   float(verts[:, 1].min()), float(verts[:, 1].max()))
                                  if len(verts) else None)
@@ -509,6 +569,47 @@ class Viewer3D(QWidget):
             self._render_model(reset_camera=not keep)
         else:
             self._mesh_label.setText(self._model_label_text)
+
+    @staticmethod
+    def _edges_polydata(edges):
+        """A VTK line set from `core.solid.tessellate`'s edge polylines.
+
+        One polyline per topological edge, kept whole rather than exploded into
+        segments so VTK draws each edge as a single continuous line.
+        """
+        if not edges:
+            return None
+        import pyvista as pv
+
+        pts, cells, offset = [], [], 0
+        for poly in edges:
+            n = len(poly)
+            if n < 2:
+                continue
+            pts.append(np.asarray(poly, dtype=np.float32))
+            cells.append(np.concatenate(([n], np.arange(offset, offset + n))))
+            offset += n
+        if not pts:
+            return None
+        return pv.PolyData(np.vstack(pts),
+                           lines=np.concatenate(cells).astype(np.int32))
+
+    def _on_display_mode(self, index: int) -> None:
+        value = self._display_combo.itemData(index)
+        if value == self._display_mode:
+            return
+        self._display_mode = value
+        if self._mode == "model":
+            self._render_model(reset_camera=False)
+
+    def display_mode(self) -> str:
+        return self._display_mode
+
+    def set_display_mode(self, value: str) -> None:
+        values = [v for _, v in self._DISPLAY_MODES]
+        if value not in values:
+            return
+        self._display_combo.setCurrentIndex(values.index(value))
 
     def _render_model(self, reset_camera: bool) -> None:
         # A bare mode switch must not eagerly create a GL context — only re-draw an
@@ -527,10 +628,17 @@ class Viewer3D(QWidget):
             return
 
         lit = not self._flat_shaded()
+        mode = self._display_mode if self._model_edges is not None else "shaded"
+        lit = lit and mode != "wireframe"
         mesh_kwargs = dict(
             color=self._palette.mesh_surface, smooth_shading=True,
             show_edges=False, lighting=lit, specular=0.3 if lit else 0.0,
             specular_power=20)
+        if mode == "shaded_hidden":
+            # Translucent, so the lines behind the surface come through: this is
+            # the "visible and invisible edges" reading. Depth testing does the
+            # occlusion work either way — nothing here classifies edges.
+            mesh_kwargs["opacity"] = 0.35
         sectioned = False
         if self._section_on:
             # a draggable clip plane carves the model live so the maker can inspect the
@@ -542,8 +650,13 @@ class Viewer3D(QWidget):
                 sectioned = True
             except Exception:
                 sectioned = False
-        if not sectioned:
+        if not sectioned and mode != "wireframe":
             self._plotter.add_mesh(self._model_pv, **mesh_kwargs)
+        if mode != "shaded" and self._model_edges is not None:
+            self._plotter.add_mesh(
+                self._model_edges, color=self._palette.mesh_edge,
+                line_width=1.6, lighting=False, render_lines_as_tubes=False,
+                pickable=False)
         self._apply_scene_lights()
 
         stock = self._model_stock

@@ -49,6 +49,12 @@ DEFAULTS: dict = {
     "prompt_set_default_bed": True,
     # Recently opened files (most recent first)
     "recent_files":          [],
+    # Build the 3D model with the B-Rep solid kernel instead of the raster
+    # heightfield (BUILDPLAN Stage 2). The solid carries real topological edges,
+    # which is what the viewer's edge display modes draw; the raster path has
+    # none. Off by default while Stage 2 is in progress — report §3.5 keeps both
+    # paths alive so they can be compared.
+    "use_solid_model":       False,
     # 3D preview / STL export grid resolution (mm)
     "preview_resolution_mm": 0.3,
     "export_resolution_mm":  0.15,

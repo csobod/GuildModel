@@ -350,6 +350,7 @@ class CanvasPalette:
     zone_outline: str       # zone-inspector hover outline
     zone_fill_rgba: tuple[int, int, int, int]   # zone hover fill
     mesh_surface: str       # 3D part surface
+    mesh_edge: str          # 3D topological edges (Stage 2 display modes)
     ready_off: str          # readiness dot — nothing loaded
     ready_red: str          # readiness dot — DXF only
     ready_yellow: str       # readiness dot — model built
@@ -368,6 +369,7 @@ LIGHT = CanvasPalette(
     zone_outline="#e07800",
     zone_fill_rgba=(255, 150, 30, 70),
     mesh_surface="#d4a84b",
+    mesh_edge="#2b2b2b",
     ready_off="#c2b89e",
     ready_red="#c0392b",
     ready_yellow="#d4a017",
@@ -385,6 +387,7 @@ DARK = CanvasPalette(
     zone_outline="#e8924a",
     zone_fill_rgba=(255, 160, 60, 60),
     mesh_surface="#d4a84b",
+    mesh_edge="#1a1a1a",
     ready_off="#5a5446",
     ready_red="#d05a4a",
     ready_yellow="#d4a840",

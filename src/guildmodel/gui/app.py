@@ -191,12 +191,12 @@ class MeshWorker(_ProgressWorker):
     """Builds the castle relief mesh off the GUI thread (matched SCULPT
     zone layouts only — the spike's distance-based fallback is retired)."""
 
-    finished = Signal(object, str)   # trimesh.Trimesh, stage
+    finished = Signal(object, str, object)   # trimesh.Trimesh, stage, edges|None
     error = Signal(str)
 
     def __init__(
         self, partition, castle, hinge_polys=(), stage: str = "pockets",
-        resolution: float = 0.3,
+        resolution: float = 0.3, solid: bool = False,
     ) -> None:
         super().__init__()
         self.partition = partition
@@ -204,9 +204,18 @@ class MeshWorker(_ProgressWorker):
         self.hinge_polys = list(hinge_polys)
         self.stage_name = stage
         self.resolution = resolution
+        self.solid = solid
 
     def run(self) -> None:
         try:
+            if self.solid and self.stage_name == "pockets":
+                # The solid path only models the FULL posterior. The teaching
+                # stepper's partial stages stay on the raster builder — they are
+                # a pedagogical decomposition of the raster construction, not
+                # states the solid passes through.
+                mesh, edges = self._build_solid()
+                self.finished.emit(mesh, self.stage_name, edges)
+                return
             from guildmodel.core.relief.castle import (
                 build_castle_mesh, build_castle_stage,
             )
@@ -216,11 +225,23 @@ class MeshWorker(_ProgressWorker):
                 progress=self._progress,
             )
             mesh = build_castle_mesh(relief, progress=self._progress)
-            self.finished.emit(mesh, self.stage_name)
+            self.finished.emit(mesh, self.stage_name, None)
         except _Cancelled:
             self.cancelled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
+
+    def _build_solid(self):
+        """The B-Rep path: a solid, tessellated with its real edges."""
+        from guildmodel.core.solid import build_castle_solid
+        from guildmodel.core.solid.tessellate import tessellate
+
+        solid = build_castle_solid(
+            self.partition, self.castle, self.hinge_polys,
+            progress=self._progress)
+        self._progress("Tessellating", 0.95)
+        tess = tessellate(solid)
+        return tess.to_trimesh(), tess.edges
 
 
 # Preview grid step for an engraved temple. The engraving v-groove is ~0.5 mm wide, so
@@ -1929,6 +1950,20 @@ class PrefsDialog(QDialog):
         )
         prev_form.addRow("Preview resolution:", self._preview_res)
         prev_form.addRow("Export resolution:", self._export_res)
+
+        # BUILDPLAN Stage 2. The solid is the master representation; the raster
+        # stays available so the two can be compared (report §3.5).
+        self._solid_model = QCheckBox("Build the model as a B-Rep solid")
+        self._solid_model.setChecked(bool(prefs.get("use_solid_model", False)))
+        self._solid_model.setToolTip(
+            "Model with the OpenCASCADE solid kernel instead of the raster\n"
+            "heightfield. Cuts get exact edges, the solid is watertight by\n"
+            "construction, and the viewer's wireframe / hidden-edge display\n"
+            "modes become available — they draw the part's real edges, which a\n"
+            "heightfield mesh does not have.\n\n"
+            "Slower to rebuild, and the resolution settings above no longer\n"
+            "apply to the preview: a solid has no grid.")
+        prev_form.addRow("", self._solid_model)
         gen_lay.addWidget(prev_box)
 
         # Paths
@@ -2853,6 +2888,7 @@ class PrefsDialog(QDialog):
         out = {
             "dark_mode": self._dark_check.isChecked(),
             "show_log_on_start": self._log_check.isChecked(),
+            "use_solid_model": self._solid_model.isChecked(),
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
             "last_output_dir": self._out_dir.text(),
@@ -3023,6 +3059,9 @@ class MainWindow(QMainWindow):
         # (cache invalidated whenever a castle parameter changes)
         self._stage = "pockets"
         self._stage_cache: dict[str, object] = {}
+        # Real topological edges per stage, from the solid path (Stage 2).
+        # None on the raster path — a heightfield mesh has no edges to draw.
+        self._edge_cache: dict[str, object] = {}
 
         # The active view (0 = 2D, 1 = 3D, 2 = Sim) — the single axis the toolbar
         # toggles drive, persisted across tab switches so the chosen view follows you
@@ -5222,6 +5261,7 @@ class MainWindow(QMainWindow):
         if p["preview_resolution_mm"] != old_preview_res:
             # Cached stage meshes were built at the old resolution.
             self._stage_cache.clear()
+            self._edge_cache.clear()
             if self.stack.currentIndex() == 1 and self._castle_ready():
                 self._rebuild_timer.start()
 
@@ -5468,12 +5508,14 @@ class MainWindow(QMainWindow):
             self.view3d.clear()
             return
         zero, _ = self._active_program_zero_3d()
+        edges = self._edge_cache.get(self._active_mesh_key())
         if self._active_is_flat():
             self.view3d.show_mesh(mesh, stock=self._flat_stock(),
-                                  core_guide=self._active_core_guide, program_zero=zero)
+                                  core_guide=self._active_core_guide,
+                                  program_zero=zero, edges=edges)
         else:
             self.view3d.show_mesh(mesh, stock=self.params.castle_params().stock,
-                                  program_zero=zero)
+                                  program_zero=zero, edges=edges)
 
     # -------------------------------------------------------- component notebook
 
@@ -6094,6 +6136,7 @@ class MainWindow(QMainWindow):
         # Parameters changed: every cached stage is stale, and so is any stored
         # program (the relief it rode just changed) — drop green back to yellow.
         self._stage_cache.clear()
+        self._edge_cache.clear()
         self._invalidate_program()
         if self.stack.currentIndex() == 1 and self._castle_ready():
             self._rebuild_timer.start()
@@ -6102,7 +6145,7 @@ class MainWindow(QMainWindow):
         self._stage = stage
         cached = self._stage_cache.get(stage)
         if cached is not None:
-            self._show_stage_mesh(cached)
+            self._show_stage_mesh(cached, self._edge_cache.get(stage))
         elif self._castle_ready():
             self._start_mesh_build(show_progress=False)
 
@@ -6112,7 +6155,7 @@ class MainWindow(QMainWindow):
         # Re-draw the stock ghost around the currently shown stage, if any.
         cached = self._stage_cache.get(self._stage)
         if cached is not None and self.stack.currentIndex() == 1:
-            self._show_stage_mesh(cached)
+            self._show_stage_mesh(cached, self._edge_cache.get(self._stage))
 
     def _on_cam_changed(self) -> None:
         """Persist the CAM tab (material / machine / tool / strategy / feeds).
@@ -6269,6 +6312,7 @@ class MainWindow(QMainWindow):
             self._partition, self.params.castle_params(),
             hinge_polys=self._hinge_polys, stage=self._stage,
             resolution=self._prefs["preview_resolution_mm"],
+            solid=bool(self._prefs.get("use_solid_model", False)),
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -6340,22 +6384,26 @@ class MainWindow(QMainWindow):
         self._mesh_built = True
         self._refresh_readiness()
 
-    def _show_stage_mesh(self, mesh) -> None:
+    def _show_stage_mesh(self, mesh, edges=None) -> None:
         zero, _ = self._active_program_zero_3d()
         self.view3d.show_mesh(mesh, stock=self.params.castle_params().stock,
-                              program_zero=zero)
+                              program_zero=zero, edges=edges)
         n_v = len(mesh.vertices)
         n_t = len(mesh.faces)
-        self.status_lbl.setText(f"3D model ready — {n_v:,} verts · {n_t:,} tris")
+        extra = f" · {len(edges):,} edges" if edges else ""
+        self.status_lbl.setText(
+            f"3D model ready — {n_v:,} verts · {n_t:,} tris{extra}")
 
-    def _on_mesh_finished(self, mesh, stage: str) -> None:
+    def _on_mesh_finished(self, mesh, stage: str, edges=None) -> None:
         self._close_progress()
         self._stage_cache[stage] = mesh
+        self._edge_cache[stage] = edges
         if stage == self._stage:
-            self._show_stage_mesh(mesh)
+            self._show_stage_mesh(mesh, edges)
         self.append_log(
             f"[3D] Done ({stage}) — {len(mesh.vertices):,} verts, "
             f"{len(mesh.faces):,} tris"
+            + (f", {len(edges):,} edges" if edges else "")
         )
         self._act_build.setEnabled(True)
         self._mesh_built = True
