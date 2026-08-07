@@ -738,6 +738,26 @@ def build_castle_mesh(
     mesh = trimesh.Trimesh(
         vertices=verts, faces=np.vstack([top, bottom, rim]), process=True
     )
+    # The face set above is closed as authored. What opens it is the weld:
+    # `_snap_to_rings` is not injective, so two adjacent boundary vertices can
+    # project onto the *same* point of the outline / lens / pocket curve, and
+    # process=True then merges them. That collapses the rim quad between them
+    # into zero-area slivers, which merge_vertices keeps rather than drops — and
+    # a degenerate face's edges read as unpaired, so the solid reports open.
+    # The geometry is right; only the slivers are wrong. Measured on the demo
+    # frame, this is the whole of the M17 watertightness finding: 4 open edges
+    # at 0.25 mm and 3 at 0.20 mm, none at 0.40 / 0.30 / 0.15 mm — non-monotonic
+    # in resolution because it depends on where the projection happens to
+    # collide, not on how fine the grid is.
+    #
+    # The test is topological, not geometric: drop faces that lost a distinct
+    # corner to the weld. trimesh's own `nondegenerate_faces` is area-based and
+    # at the default height also strips legitimately thin grid triangles, which
+    # tears far more than it repairs.
+    f = mesh.faces
+    keep = ((f[:, 0] != f[:, 1]) & (f[:, 1] != f[:, 2]) & (f[:, 2] != f[:, 0]))
+    if not keep.all():
+        mesh.update_faces(keep)
     if mesh.volume < 0:
         mesh.invert()
     _report(progress, "Mesh ready", 1.0)

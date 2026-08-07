@@ -22,6 +22,39 @@ real stock — and nothing else.
 
 ## Status snapshot *(2026-06-16, **M6 COMPLETE — M6.5 worktable-nesting tagged `v0.6.5`** — File ▸ Generate Worktable Program cuts the frame front + its base-curve block in ONE program, auto-packed onto the fixture zones and scheduled to minimise tool changes across the bed (demo 2-part bed = 1 change). M6 "Expanded CAM operations" all done: ✅ M6.1 multi-tool → ✅ M6.2 stock-box zero → ✅ M6.3 temples+engraving → ✅ M6.4 base-curve blocks → ✅ M6.5 worktable nesting. Suite 197 green. Roadmap (2026-06-18 reorientation replan): **M7 reorientation** — one `.gdraw` → a multi-component project (frame front + both temples + a per-lens base-curve template), per-component 3D workspace tabs, an interactive worktable from a tagged bed DXF, role-matched auto-nesting, and combined-or-per-component G-code (`v0.7.1`–`v0.7.6`) — then hardware round-trip M8 (the only gate that cuts acetate — also graduates GuildDraw to v1.0.0), two-sided M9, rename-decision + packaging/v1.0.0 M10. **M7.1 project model ✅ DONE (`v0.7.1`) + M7.2 `.gdraw` intake ✅ DONE (`v0.7.2`, 233 tests — reader + File ▸ Open Model + the component notebook: a tab per component, tab-switch rebinds the active component) + M7.3 per-component notebook ✅ DONE (`v0.7.3`, 234 tests — component tabs + kind-aware editable param dock (Temple/Base Curve tabs) + per-component param persistence) + M7.4 interactive worktable ✅ DONE (`v0.7.4`, 247 tests — `Worktable`/`WorktableZone`/`BedRole` model in `project/schema.py` (role-tagged zone polygons + keep-out polygons in machine coords; `from_fixture_dict`/`to_fixture_dict` load the Guild `guild_cnc.yaml` as the default bed and bridge back onto the M6.5 layout machinery unchanged); `core/cam/worktable.py` reads a bed DXF → `polygonize`d regions, `default_worktable`, `.bed` YAML I/O; GUI: a trailing **Worktable** tab (peer of the components) with a machine-coords `BedCanvas` — import a bed DXF / load the Guild bed, click a region, tag its role (frame-front / temple R-L / base-curve R-L / keep-out); persisted in the `.gcam`) + M7.5 per-component 3D models ✅ DONE (`v0.7.5`, 258 tests — `core/relief/flat.py` reuses the castle mesher for flat parts: temple = outline extruded 4 mm + HINGE blind pockets + ENGRAVING grooves, snapped hinge-end to the blank + a visual injected-core bar; base-curve block = the lens shape cut from a 70×70×4.7625 acetal blank, 3 M4 through-holes (2026-06-19: CAM simplified to Drill Holes + Block Profile=lens-shape cut, forming scribe + box cut dropped); GUI `FlatMeshWorker` + Build-3D enabled per kind); next: M7.6 role-matched auto-nesting onto the tagged bed (+ polygon keep-outs, bed render/nudge), then M7.7 combined/per-component G-code**)*
 
+> **2026-08-06 — STAGE 1 KERNEL SPIKE RUN AND PASSED; STL WATERTIGHTNESS FIXED.**
+> The B-Rep go/no-go has been taken against the Demo Project frame on
+> `cadquery-ocp` 7.9.3.1.1 (OCCT 7.9): **the kill criteria are not met, proceed.**
+> The tapered partial-span chamfer — the risk the report ranked first — builds
+> valid in 0.14 s on a B-spline spine, needing only a 0.02 mm floor on the taper
+> (a section that collapses to a true point fails `MakeSolid()`). **The fillet
+> question came back the other way, and it corrected the plan rather than killing
+> it:** 0 of 16 footing edges accept `BRepFilletAPI_MakeFillet` at the Demo
+> Project's scheduled radii, because those radii (4–48 mm) are an order of
+> magnitude larger than the steps they blend (0.2–5.8 mm) — they were never edge
+> fillets, they are *cross-section* S-blend radii, exactly what `_footing_z`
+> already implements. Sweeping that existing profile along the SCULPT cut line
+> instead: **10/10 sweeps valid, 10/10 booleans valid, 0.12 s.** Report §9 has the
+> numbers and supersedes its own §4.3 and §5.2. Re-derive with
+> `DISPLAY= .venv/bin/python scripts/spike_brep.py`. *Still unproven: PyInstaller
+> packaging (and there is no Linux CI workflow), determinism across OCC versions,
+> the `flat.py` duck-type, preview interactivity.*
+>
+> **M18 #2 landed (the shipping STL bug).** `build_castle_mesh` produced open
+> solids at fine grids. **The M17 attribution to the rim stitch was wrong** — the
+> face set is closed as authored (`process=False` gives 0 open edges at every
+> resolution). `_snap_to_rings` is not injective: two adjacent boundary vertices
+> can project onto the same point of the outline / lens / pocket curve, trimesh's
+> `process=True` welds them, and the collapsed rim quad becomes zero-area slivers
+> that survive the merge — and a degenerate face's edges read as unpaired. The
+> failure was never monotonic in resolution (open at 0.25 and 0.20 mm, closed at
+> 0.40 / 0.30 / 0.15 mm), which is why "finer than either figure, so likely open"
+> did not hold. Fix drops faces that lost a distinct corner to the weld — a
+> topological test, not an area one; trimesh's own `nondegenerate_faces` is
+> area-based and at its default strips legitimate thin grid triangles, tearing far
+> more than it repairs. Watertight and genus-2 across 0.40 → 0.10 mm. Suite 675 →
+> **679**, the four new cases proven to fail without the fix.
+>
 > **2026-08-06 — FEATURE CRISPNESS: root cause found, architecture decision
 > open.** The cutting features read as blended and pitted rather than as a Fusion
 > boolean. **Cause: the raster relief has no representation of an *edge*, so every
@@ -3587,6 +3620,45 @@ None of these is wasted by a later rewrite, and two are bugs shipping today.
 convex crest rounds it by the tool radius regardless of model quality. Physical
 crispness needs a curve-driven finishing pass along an exact feature edge curve,
 which is impossible until such a curve exists — report §6, Stage 4.
+
+### M18 progress *(2026-08-06)*
+
+**#2 watertightness — DONE.** Diagnosis and fix recorded in the status note at
+the top of this file; the short version is that the M17 attribution to the rim
+stitch was wrong, and the real cause is `_snap_to_rings` not being injective plus
+trimesh's vertex weld. `tests/test_castle_m2.py::test_castle_mesh_watertight_at_fine_resolutions`
+pins 0.30 / 0.25 / 0.20 / 0.15 mm and was verified to fail at 0.25 and 0.20
+without the fix. Suite 675 → 679.
+
+**#1 rim-Z, #3 viewer shading, #4 `crest_blend_mm` — deliberately deferred**
+(user decision, this round). With Stage 1 passed and Stage 2 the next milestone,
+#1 and #4 are fixes to code Stage 3 deletes; #3 is superseded by the tessellator
+emitting real crease edges. They stay on the list only if a release ships before
+Stage 2 lands.
+
+## Stage 1 — B-Rep kernel spike (v1.4.0+) · *the go/no-go* — ✅ PASSED 2026-08-06
+
+`scripts/spike_brep.py`, no production code path. Full results in
+**`BREP-REWRITE-REPORT.md` §9**, which supersedes that report's §4.3 and §5.2.
+
+| Question | Result |
+| --- | --- |
+| §5.1 tapered partial-span chamfer (`MakePipeShell`) | **PASS** — valid, 0.14 s, needs a 0.02 mm taper floor; spline spine works, polyline spine does not |
+| §5.2 footing fillets (`BRepFilletAPI_MakeFillet`) | **FAIL 0/16** at scheduled radii — but the operation was mis-specified, not the kernel |
+| §9.3 footing as a swept `_footing_z` cross-section | **PASS 10/10** sweeps and 10/10 booleans, 0.12 s |
+| Castle as extruded + fused terraces | **PASS** — valid solid, 0.81 s, 8004.95 mm³ |
+| Performance | sub-second throughout **except** the chamfer boolean at 10.75 s |
+
+**The one architectural correction:** the footing blend is a swept cross-section,
+not an edge fillet. `_footing_z` survives the rewrite as the *primary* section
+generator rather than as a fallback — so Stage 3 deletes less than planned.
+
+**Next — Stage 2** (report §6): build the castle and all features as a solid,
+tessellate for preview and STL, derive the heightfield by ray-casting and feed
+the existing CAM unchanged, keep the raster path behind a preference for A/B
+gating. Before it starts, the unproven Stage 1 items in report §9.5 need
+closing — PyInstaller packaging first, and that needs a Linux CI workflow, which
+does not exist yet.
 
 # Reference
 

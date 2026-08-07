@@ -185,6 +185,35 @@ def test_castle_mesh_watertight(demo):
     assert mesh.bounds[1][2] == pytest.approx(10.0, abs=0.01)
 
 
+@pytest.mark.parametrize("res", [0.30, 0.25, 0.20, 0.15])
+def test_castle_mesh_watertight_at_fine_resolutions(demo, res):
+    """M18: the exported solid must close at the resolutions that reach an STL.
+
+    The M17 finding was that the mesh opened up at fine grids, and it was
+    attributed to the rim stitch. It was not: the face set is closed as
+    authored. `_snap_to_rings` is not injective, so two adjacent boundary
+    vertices can project onto the same point of the outline / lens / pocket
+    curve; trimesh's `process=True` then welds them and the rim quad between
+    them collapses into zero-area slivers that survive the merge, and a
+    degenerate face's edges read as unpaired.
+
+    0.25 and 0.20 mm are the two grids measured open before the fix (4 and 3
+    open edges); 0.15 mm is the export-resolution default. The failure was never
+    monotonic in resolution — it depends on where the projection happens to
+    collide — so this pins several grids rather than just the finest.
+    """
+    from guildmodel.core.relief.castle import build_castle_mesh, build_castle_relief
+
+    part, castle, hinges = demo
+    relief = build_castle_relief(part, castle, hinges, resolution=res)
+    mesh = build_castle_mesh(relief)
+
+    assert mesh.is_watertight, f"open solid at {res} mm"
+    # Two lens apertures: a closed genus-2 surface, so V - E + F = 2 - 2*2.
+    assert mesh.euler_number == -2
+    assert mesh.volume == pytest.approx(7825.0, abs=5.0)
+
+
 # ------------------------------------------------------------------ M2.5 the gate
 
 def test_demo_relief_matches_fusion_stl(demo_relief, demo):

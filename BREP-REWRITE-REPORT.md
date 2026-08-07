@@ -1,6 +1,9 @@
 # Report: replacing the heightfield with a B-Rep solid kernel
 
-**Status:** proposal, for decision. Not scheduled.
+**Status:** **Stage 1 spike RUN and PASSED — 2026-08-06.** Kill criteria not met;
+the recommendation to proceed stands. See **§9** for the measured results, which
+**correct §4.3 and §5.2**: the footing blend is not an edge fillet and must not
+be built with `BRepFilletAPI_MakeFillet`. Read §9 before acting on §4 or §5.
 **Written:** 2026-08-06, against `v1.4.0` (M17 landed, held for review).
 **Assumed timing:** *after* the V2 release. Nothing here should displace the flip
 fixture, the second work datum, or anterior posting — those are V2's reason to
@@ -407,7 +410,7 @@ impossible today because no such curve exists.
 | Feature | Today | As a solid |
 | --- | --- | --- |
 | Castle terraces | per-zone flat fill | extrude each zone polygon to its height, union |
-| Footing blends | analytic two-arc S-blend on signed distance | `BRepFilletAPI_MakeFillet`, exterior then interior, on the real step edge |
+| Footing blends | analytic two-arc S-blend on signed distance | ~~`BRepFilletAPI_MakeFillet`, exterior then interior, on the real step edge~~ **— WRONG, disproved in §9.2. Sweep the `_footing_z` cross-section along the SCULPT cut line and subtract.** |
 | Eyewire bezel | `min` over a distance band | revolve/sweep a triangular profile along the aperture ring, subtract |
 | Pad splay | crest tables + rounded chamfer drop | sweep a chamfer profile along the crest curve, subtract |
 | Brow chamfer (`EdgeFeature`) | per-sample chamfer drop × taper weight | `BRepOffsetAPI_MakePipeShell` along the trimmed span with a profile law, subtract |
@@ -448,6 +451,11 @@ spine is one of OCC's fussier APIs and can fail to build. *Spike this first* —
 is the single item most likely to force a fallback.
 
 ### 5.2 Fillet robustness on organic splines
+
+> **Superseded by §9.2.** Measured: 0 of 16 footing edges accept a fillet at the
+> scheduled radii, and the reason is not kernel fragility — it is that the
+> footing was never an edge fillet. The section below is kept for the record;
+> the mitigations it proposes are not the ones to reach for.
 
 The classic OCC failure mode, and the second-highest risk. The castle is a
 stepped solid whose step edges are spline SCULPT cuts meeting an organic outline
@@ -618,6 +626,113 @@ as soon as a toolpath loads.
 were taken against `v1.4.0`. Stage 0 changes several of those exact files, so
 after it lands, trust the *names* (`_conform_rim`, `_carve_eyewire_bezel`,
 `crest_blend_mm`) over the line numbers.
+
+---
+
+## 9. Stage 1 spike — results *(run 2026-08-06)*
+
+Run with `DISPLAY= .venv/bin/python scripts/spike_brep.py`, against the Demo
+Project frame through the real partition (`partition_zones` on the vendored
+DXF), on `cadquery-ocp` 7.9.3.1.1 / OCCT 7.9, Python 3.14.6, Linux x86-64.
+Re-run it to re-derive every number below.
+
+**Verdict: the kill criteria in §6 are not met. Proceed to Stage 2.** But two of
+this report's own design decisions were wrong, and one of them is load-bearing.
+
+### 9.1 §5.1 — the tapered partial-span chamfer: PASSES
+
+The item the report called "the single item most likely to force a fallback"
+builds, and it is fast.
+
+```
+extrude + fuse 9 zone terraces          0.81 s   valid  8004.95 mm^3, 653 faces
+sweep chamfer, spline spine, floor 0.02 0.14 s   valid  run 51.23 mm, 25 profiles
+subtract chamfer from castle           10.75 s   valid  removed 90.05 mm^3
+```
+
+Two findings that change how it must be built:
+
+* **The taper cannot go to exactly zero.** `MakePipeShell.MakeSolid()` fails
+  outright when the end profile collapses to a point. Flooring the chamfer width
+  at **0.02 mm** — a fiftieth of the finishing tool's radius, invisible in
+  acetate — builds a valid solid every time. M17's `blend_mm` law is otherwise
+  reproduced exactly.
+* **The spline spine works and the polyline spine does not**, which is the
+  opposite of the intuition the report was written on. Fitting a B-spline through
+  the span stations (`GeomAPI_PointsToBSpline`) succeeds; feeding the raw
+  polyline of ring vertices as the spine fails `MakeSolid()` after 5 s. The
+  organic curve is the *easy* case for `MakePipeShell`; the many-segment polyline
+  with near-tangent corners is the hard one.
+
+### 9.2 §5.2 — the footing fillets: FAIL, because the operation was wrong
+
+At the Demo Project's scheduled radii, **0 of 16 footing step edges accept a
+fillet.** Dropping the radius until it works needs to go absurdly far:
+
+| Radius | Edges filleted | |
+| --- | --- | --- |
+| scheduled (ext 6–32 mm) | **0 / 16** | all "not done" |
+| 1.0 mm | 2 / 16 | |
+| 0.5 mm | 5 / 16 | |
+| 0.25 mm | 13 / 16 | 1/24th of the smallest scheduled radius |
+
+**This is not kernel fragility, and reading it that way would have taken the
+project down the wrong branch.** The scheduled footing radii are
+`endpiece_superior=32/48`, `endpiece_inferior=16/32`, `bridge_superior=24/32`,
+`nosepad_superior=6/4`, `nosepad_inferior=9/10` mm. The steps they blend are
+**0.2 – 5.8 mm**. A 48 mm edge fillet on a 0.7 mm step is not a fillet any kernel
+can build, Fusion included — there is nowhere near 48 mm of adjacent face to land
+it on.
+
+So these were never 3D edge fillets. They are radii of a **cross-section**
+S-blend, which is exactly what `castle.py`'s own header says it implements: *"the
+cross-section profile depends only on the signed distance to the cut line."*
+§4.3's mapping of footing blends onto `BRepFilletAPI_MakeFillet` was a
+mis-reading of the existing code.
+
+### 9.3 The correction — footing as a swept cross-section: PASSES 10/10
+
+Sweeping `_footing_z`'s own profile along each SCULPT cut line and subtracting:
+
+```
+sweep + subtract on every named zone edge   0.12 s
+  swept   10/10 valid
+  booleans 10/10 valid
+  result valid, 7774.37 mm^3
+```
+
+Ten of ten, in an eighth of a second, using the *existing* analytic profile
+function unchanged as the section generator. This is strictly better than the
+fillet route would have been even if it had worked: it reproduces the Demo
+Project's verified `< 0.01 mm rms` blend by construction rather than hoping a
+kernel fillet lands in the same place, and it keeps the Fusion timeline ordering
+(`first="interior"` / `"exterior"`) meaningful.
+
+**Consequence for §5.2's mitigations:** none of them are needed. The
+"keep `_footing_z` as a fallback for edges the kernel gives up on" plan inverts —
+`_footing_z` is the *primary* construction, and no fillet API is involved.
+
+### 9.4 Performance
+
+Better than §3.4 feared, with one exception. Everything is sub-second — terrace
+build 0.81 s, all ten footings 0.12 s, the chamfer sweep 0.14 s — **except the
+boolean subtracting the swept chamfer from the castle, at 10.75 s.** That single
+operation is most of the wall clock. §3.4's warning is real but localised: it is
+booleans against the many-profile swept cutter, not the kernel generally. Worth
+knowing before Stage 2 designs the rebuild cache, because it says the thing to
+cache is boolean results, not sweeps.
+
+### 9.5 What Stage 1 has NOT proven
+
+Being explicit, because §6 lists this and it is not done:
+
+* **PyInstaller packaging on the CI targets.** Not attempted. The OCP collection
+  hooks in `build_common.py` are untouched, and note there is **no Linux CI
+  workflow** — only `macos-build.yml` and `windows-build.yml` — so "all three CI
+  targets" cannot currently be satisfied as written.
+* Determinism across OCC versions (§5.4), the `flat.py` duck-type (§5.3), and
+  preview interactivity (§5.5) are all untested.
+* Nothing here touches the CAM adapter. The solid → Z-map ray-cast is unwritten.
 
 ---
 
