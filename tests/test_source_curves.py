@@ -298,3 +298,143 @@ def test_curves_only_engage_when_the_caller_supplies_them():
                            raw["SCULPT"])
     assert part.source_curves == {}
     assert not SourceCurves(part)
+
+
+# ------------------------------------------------------- Bezier chains (.gdraw)
+
+def test_a_bezier_chain_is_a_b_spline_not_an_approximation_of_one():
+    """`.gdraw` stores Bezier nodes; a chain of cubic Beziers *is* a cubic
+    B-spline. Sampling each segment's Bernstein form and projecting onto the
+    converted curve is the whole claim."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from OCP.gp import gp_Pnt
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+    from guildmodel.core.solid.occ import nurbs_edge
+
+    segments = [
+        ((0.0, 0.0), (5.0, 12.0), (15.0, 12.0), (20.0, 0.0)),
+        ((20.0, 0.0), (25.0, -12.0), (35.0, -12.0), (40.0, 0.0)),
+        ((40.0, 0.0), (45.0, 12.0), (55.0, 8.0), (60.0, 4.0)),
+    ]
+    curve = cubic_bezier_chain(segments)
+    assert curve.degree == 3
+    assert len(curve.control_points) == 3 * len(segments) + 1
+    assert curve.is_consistent()
+
+    geom = BRep_Tool.Curve_s(nurbs_edge(curve, 0.0), 0.0, 1.0)
+    worst = 0.0
+    for p0, p1, p2, p3 in segments:
+        for i in range(51):
+            t = i / 50.0
+            b = ((1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t * t * (1 - t), t ** 3)
+            x = sum(w * p[0] for w, p in zip(b, (p0, p1, p2, p3)))
+            y = sum(w * p[1] for w, p in zip(b, (p0, p1, p2, p3)))
+            worst = max(worst,
+                        GeomAPI_ProjectPointOnCurve(gp_Pnt(x, y, 0.0), geom).LowerDistance())
+    assert worst < 1e-9, f"{worst} mm — the conversion has no tolerance to spend"
+
+
+def test_a_degenerate_bezier_segment_is_dropped_not_built():
+    """Four coincident poles would give the kernel a stationary point for no
+    geometry in return."""
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+
+    p = (3.0, 4.0)
+    assert cubic_bezier_chain([(p, p, p, p)]) is None
+    curve = cubic_bezier_chain([(p, p, p, p),
+                                ((3.0, 4.0), (5.0, 6.0), (7.0, 6.0), (9.0, 4.0))])
+    assert len(curve.control_points) == 4
+
+
+def test_mirroring_a_curve_leaves_its_basis_alone():
+    """Mirroring moves the hull; knots, degree and weights do not move with it."""
+    from guildmodel.core.geometry.curves import circle_curve, mirror_x, mirror_y
+
+    c = circle_curve((4.0, -3.0), 2.0)
+    for flip, axis in ((mirror_x, 0), (mirror_y, 1)):
+        m = flip(c)
+        assert np.allclose(m.knots, c.knots)
+        assert np.allclose(m.weights, c.weights)
+        assert m.degree == c.degree
+        expected = c.control_points.copy()
+        expected[:, axis] = -expected[:, axis]
+        assert np.allclose(m.control_points, expected)
+
+
+# ------------------------------------------------------- kernel-side economies
+
+def test_an_arc_carries_only_its_own_span(imported):
+    """A trimmed edge still references all 64 poles of the outline; a segmented
+    one carries just the arc. Extruding the trimmed form makes every boolean and
+    every meshing pass work on the whole surface — 19.96 s vs 16.67 s on the
+    demo frame's cold build."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeVertex
+    from guildmodel.core.solid.occ import _arc_edge, nurbs_edge
+
+    _, curves = imported
+    full = BRep_Tool.Curve_s(nurbs_edge(curves["OUTLINE"][0], 0.0), 0.0, 1.0)
+    u0, u1 = full.FirstParameter(), full.LastParameter()
+    ua, ub = u0 + 0.20 * (u1 - u0), u0 + 0.45 * (u1 - u0)
+    v0 = BRepBuilderAPI_MakeVertex(full.Value(ua)).Vertex()
+    v1 = BRepBuilderAPI_MakeVertex(full.Value(ub)).Vertex()
+
+    trimmed = BRep_Tool.Curve_s(
+        BRepBuilderAPI_MakeEdge(full, v0, v1, ua, ub).Edge(), 0.0, 1.0)
+    segmented = BRep_Tool.Curve_s(_arc_edge(full, v0, v1, ua, ub), 0.0, 1.0)
+    assert trimmed.NbPoles() == full.NbPoles() == 64
+    assert segmented.NbPoles() < 30
+
+    # ...and it is the same arc: knot insertion is exact.
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+        want = full.Value(ua + (ub - ua) * t)
+        got = segmented.Value(segmented.FirstParameter()
+                              + (segmented.LastParameter() - segmented.FirstParameter()) * t)
+        assert want.Distance(got) < 1e-9
+
+
+def test_a_span_running_against_the_curve_spans_the_same_arc():
+    """A ring winding opposite the curve arrives with `ua > ub`.
+
+    `MakeEdge` matches the parameter pair against the vertex pair positionally,
+    so the descending order has to be passed through: normalise it and the edge
+    is refused, silently, because the caller falls back on any exception. What
+    comes back is a FORWARD edge over the ascending range, which is correct —
+    ring direction is settled on the finished wire by `polygon_to_face`.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+    from guildmodel.core.solid.occ import _arc_edge, nurbs_edge
+
+    curve = cubic_bezier_chain([
+        ((0.0, 0.0), (5.0, 10.0), (15.0, 10.0), (20.0, 0.0)),
+        ((20.0, 0.0), (25.0, -10.0), (35.0, -10.0), (40.0, 0.0)),
+    ])
+    geom = BRep_Tool.Curve_s(nurbs_edge(curve, 0.0), 0.0, 1.0)
+    ua, ub = 1.6, 0.4                                    # descending
+    v0 = BRepBuilderAPI_MakeVertex(geom.Value(ua)).Vertex()
+    v1 = BRepBuilderAPI_MakeVertex(geom.Value(ub)).Vertex()
+    edge = _arc_edge(geom, v0, v1, ua, ub)
+    lo, hi = BRep_Tool.Range_s(edge)
+    assert (lo, hi) == pytest.approx((ub, ua))
+    arc = BRep_Tool.Curve_s(edge, 0.0, 1.0)
+    for t in (0.0, 0.5, 1.0):
+        assert arc.Value(lo + (hi - lo) * t).Distance(geom.Value(ub + (ua - ub) * t)) < 1e-9
+
+
+def test_fuse_all_is_one_pass_and_says_the_same_thing():
+    """A union is associative, so the pairwise fold and the multi-tool pass must
+    agree exactly — the only difference is that the fold re-intersects the
+    growing result on every step (3.2 s vs 0.35 s on the demo footings)."""
+    from guildmodel.core.solid.occ import fuse, fuse_all, mesh_volume
+    from guildmodel.core.solid.occ import extrude, polygon_to_face
+    from shapely.geometry import box
+
+    boxes = [extrude(polygon_to_face(box(i * 8.0, 0.0, i * 8.0 + 10.0, 10.0)), 5.0)
+             for i in range(4)]
+    folded = boxes[0]
+    for b in boxes[1:]:
+        folded = fuse(folded, b)
+    assert mesh_volume(fuse_all(boxes)) == pytest.approx(mesh_volume(folded), abs=1e-6)

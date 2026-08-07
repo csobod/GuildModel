@@ -37,6 +37,7 @@ from OCP.BRepGProp import BRepGProp
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.GeomAbs import GeomAbs_Shape
 from OCP.Geom import Geom_BSplineCurve
+from OCP.GeomConvert import GeomConvert
 from OCP.GeomAPI import (GeomAPI_Interpolate, GeomAPI_PointsToBSpline,
                          GeomAPI_ProjectPointOnCurve)
 from OCP.GProp import GProp_GProps
@@ -624,6 +625,48 @@ def _arc_spans(tagged, source: "SourceCurves"):
     return verified
 
 
+def _arc_edge(geom, v0, v1, ua: float, ub: float):
+    """One edge carrying **only** the arc `[ua, ub]`, not the whole curve.
+
+    `BRepBuilderAPI_MakeEdge(curve, v0, v1, ua, ub)` builds a perfectly correct
+    edge, but it still references the entire curve and is merely *trimmed* in
+    parameter. Extruding a zone boundary made of those gives faces whose surface
+    is a 64-pole extrusion with a small window cut out of it, and the boolean
+    engine and the mesher then both work on the whole surface. Cutting the arc
+    out first leaves a 22-pole curve for a third of the outline. On the demo
+    frame's curved build:
+
+        whole curve, trimmed   terraces 0.95 s   full cold build 19.96 s
+        segmented arc          terraces 0.40 s   full cold build 16.67 s
+
+    Same solid: watertight either way, mesh volumes 8,004.80 vs 8,004.90 mm3.
+
+    It does **not** repair `volume()` — `BRepGProp` still reads ~17 mm3 light on
+    the curved terraces (7,987.6 against a true 8,004.9), so `mesh_volume` is
+    still the one to measure these with.
+
+    Knot insertion is exact, so this is a re-spelling and not an approximation.
+
+    A run winding against the curve arrives with `ua > ub`, and the two
+    parameters must still be handed over **in the run's order**: they are
+    matched against `v0` and `v1` positionally, so passing the ascending pair
+    with descending vertices makes `MakeEdge` refuse the edge outright. OCCT
+    then normalises internally and returns a FORWARD edge over the ascending
+    range, which is fine — ring direction is settled once, on the finished wire,
+    by `polygon_to_face`.
+    """
+    lo, hi = (ua, ub) if ua <= ub else (ub, ua)
+    # `GeomConvert.SplitBSplineCurve_s`, not `Segment` on a downcast copy:
+    # `Geom_Geometry.Copy()` hands back the base type and this OCP build exposes
+    # no `DownCast_s`, so that route raises AttributeError — and the caller falls
+    # back on *any* exception, so it fails silently. It cost an afternoon of
+    # believing a speedup that was really the polyline fallback being fast.
+    seg = GeomConvert.SplitBSplineCurve_s(geom, float(lo), float(hi), 1e-9)
+    first, last = seg.FirstParameter(), seg.LastParameter()
+    pa, pb = (first, last) if ua <= ub else (last, first)
+    return BRepBuilderAPI_MakeEdge(seg, v0, v1, pa, pb).Edge()
+
+
 def curved_ring_wire(coords, z: float, source: "SourceCurves"):
     """A wire that uses the authored curves wherever the ring follows them.
 
@@ -684,8 +727,7 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
         if seg[0] == "arc":
             _, ci, ua, ub, ia, ib = seg
             try:
-                edges.append(BRepBuilderAPI_MakeEdge(
-                    source.geom(ci)[0], v0, v1, float(ua), float(ub)).Edge())
+                edges.append(_arc_edge(source.geom(ci)[0], v0, v1, ua, ub))
                 continue
             except Exception:                                # noqa: BLE001
                 pass
@@ -885,9 +927,30 @@ def common(a: TopoDS_Shape, b: TopoDS_Shape) -> TopoDS_Shape:
 
 
 def fuse_all(shapes: list[TopoDS_Shape]) -> TopoDS_Shape:
+    """Union every shape in ONE boolean pass.
+
+    Same reasoning as `cut_many`, and the same measurement. Folding them
+    pairwise re-does the accumulated result's intersections on every step, so
+    the cost climbs as the union grows. Uniting the demo frame's terrace solid
+    with its ten footing fills:
+
+        pairwise fold      3.2 s polygonal   3.3 s curved
+        one multi-tool     0.35 s            0.54 s
+
+    identical mesh volume in every case.
+
+    Unlike `cut_many` this needs no ordering caveat: a union is commutative and
+    associative, so one pass is always the same answer as any fold.
+    """
     if not shapes:
         raise BooleanError("nothing to fuse")
-    out = shapes[0]
+    if len(shapes) == 1:
+        return shapes[0]
+    op = BRepAlgoAPI_Fuse()
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(shapes[0])
     for s in shapes[1:]:
-        out = fuse(out, s)
-    return out
+        tools.Append(s)
+    op.SetArguments(args)
+    op.SetTools(tools)
+    return _run(op, "fuse_all")

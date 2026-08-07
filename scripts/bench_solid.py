@@ -25,26 +25,23 @@ DEMO = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "demo"
 def demo_inputs(with_curves: bool = True):
     """The demo partition and its hinges.
 
+    Built through `derive_workspace` — the same call the application makes when
+    a drawing is opened — so a number measured here is a number the maker gets.
+
     `with_curves` carries the drawing's authored NURBS through to the partition,
     which is what lets the solid be built from the curves GuildDraw drew rather
     than from the flattened polyline. Off, this reproduces the historical
     polygonal build for comparison.
     """
-    from guildmodel.core.geometry.regions import curves_by_ring, partition_zones
     from guildmodel.core.io_import.dxf import import_curves
-    from guildmodel.core.io_import.normalize import points_to_polygon
+    from guildmodel.core.project.schema import ComponentKind
+    from guildmodel.gui.component_workspace import ComponentWorkspace, derive_workspace
 
-    raw, curves = import_curves(DEMO / "GuildDraw DXF Export.dxf")
-    outline = points_to_polygon(raw["OUTLINE"][0])
-    lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
-
-    source: dict = {}
-    if with_curves:
-        for layer in ("OUTLINE", "LENS"):
-            source.update(curves_by_ring(raw[layer], curves[layer]))
-    return partition_zones(outline, lenses, raw["SCULPT"],
-                           source_curves=source), hinges
+    layers, curves = import_curves(DEMO / "GuildDraw DXF Export.dxf")
+    ws = ComponentWorkspace(kind=ComponentKind.FRAME_FRONT, label="", layers=layers,
+                            curves=curves if with_curves else {})
+    derive_workspace(ws)
+    return ws.partition, ws.hinge_polys
 
 
 def _brow_chamfer():
@@ -121,9 +118,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None,
                     help="substring of a row label; 'all' runs ALL FEATURES ON only")
+    ap.add_argument("--no-curves", action="store_true",
+                    help="build from the flattened polylines (the pre-2026-08-07 path)")
     args = ap.parse_args()
 
-    partition, hinges = demo_inputs()
+    partition, hinges = demo_inputs(with_curves=not args.no_curves)
     rows = variants()
     if args.only:
         needle = "ALL FEATURES" if args.only == "all" else args.only

@@ -35,10 +35,8 @@ from ..relief.castle import _footing_spans, _footing_z
 from .occ import (
     BooleanError,
     common,
-    cut,
     cut_many,
     extrude,
-    fuse,
     fuse_all,
     is_valid,
     polygon_to_face,
@@ -432,10 +430,16 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
 
     # Composite rule, from the raster: fills first, then carves win. Each body
     # is already clipped to the zone it belongs to, so no further clipping here.
+    #
+    # One pass each, not fuse-the-tools-then-apply. The blends are independent
+    # of one another — a union is associative and A - (B u C) == A - B - C — so
+    # unlike the surface features (see `build_castle_solid`) there is no
+    # ordering question here, and the multi-tool form is simply cheaper:
+    # 9.8 s -> 5.9 s on the demo frame, identical volume.
     if fills:
-        solid = fuse(solid, fuse_all(fills))
+        solid = fuse_all([solid, *fills])
     if carves:
-        solid = cut(solid, fuse_all(carves))
+        solid = cut_many(solid, carves)
 
     value = (partition, h, top, solid)
     _BASE_CACHE.append((key, source, value))
