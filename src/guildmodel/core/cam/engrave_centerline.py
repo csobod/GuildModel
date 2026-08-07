@@ -27,7 +27,6 @@ import numpy as np
 from scipy.spatial import Voronoi
 from shapely import contains_xy, prepare
 from shapely.geometry import LineString, MultiLineString, Polygon
-from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, unary_union
 
 Curve = list[tuple[float, float]]
