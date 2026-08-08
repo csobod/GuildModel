@@ -4653,17 +4653,27 @@ Two traps, both recorded in `_offset_aperture`:
 
 Demo frame, `scripts/bench_solid.py`, back to back on the same machine:
 
-| build | polygonal | curved (first) | curved (after the sweep + OBB) |
-| --- | --- | --- | --- |
-| bare castle + hinge pockets | 8.3 s cold / 0.8 s warm | 20.5 s / 0.7 s | 20.7 s / 0.8 s |
-| + lens groove | 11.8 s / 3.4 s | 27.0 s / 5.7 s | **23.2 s / 1.9 s** |
-| + eyewire bezel | 13.3 s / 5.3 s | 25.3 s / 6.6 s | 25.6 s / 6.1 s |
-| **ALL FEATURES ON** | **32.4 s / 24.8 s** | **52.1 s / 30.6 s** | **53.1 s / 31.1 s** |
+Final state of the branch, both columns measured back to back on the same
+machine (`scripts/bench_solid.py [--no-curves]`):
 
-The groove row is the one that moved, and it moved because that cutter could be
-swept. ALL FEATURES did not: `cut_many` applies all eight tools in one pass, so
-simplifying one of them while the bezel (1,440 faces) and brow chamfer (2,764)
-stand is absorbed. **The branch is still not mergeable on these numbers.**
+| build | polygonal | curved |
+| --- | --- | --- |
+| bare castle + hinge pockets | 5.5 s cold / 0.5 s warm | 14.4 s / 0.6 s |
+| + lens groove | 7.6 s / 2.4 s | 15.5 s / **1.4 s** |
+| + eyewire bezel | 8.4 s / 3.4 s | 19.2 s / 5.6 s |
+| **ALL FEATURES ON** | **20.5 s / 15.2 s** | **35.0 s / 21.7 s** |
+
+Curved costs 1.7x cold and 1.4x warm. The groove row is the one place curved is
+now *faster* than polygonal on a warm rebuild (1.4 s against 2.4 s) — a swept
+three-face cutter beats a lofted 540-face one by more than the curved surfaces
+cost. That is what every cutter would look like if they could all be swept, and
+two of the three cannot (see above).
+
+**Still not mergeable on the cold column**, and the ceiling is understood rather
+than mysterious: the feature cut turns a 2,102-face solid and 4,330 faces of
+tooling into a 4,981-face result, because a chamfer is expressed as 277 ruled
+patches. Both routes out of that — sweeping the cutter, chamfering the edge —
+have now been measured and rejected for this geometry.
 
 **This is not shippable as the default** — 52 s to open a frame and 31 s per
 slider drag is worse than the 20 s target by a wide margin, and worse than the
@@ -4736,13 +4746,74 @@ faces of tooling into a **4,981-face** result, and that is the honest ceiling of
 this approach — most of those faces exist only because a chamfer is being
 described as 277 ruled patches rather than as a chamfer.
 
-The way past it is not another sweep. It is `BRepFilletAPI_MakeChamfer` /
-`MakeFillet` — asking the kernel to chamfer *an edge*, which is what Fusion does
-and what would give one exact face per feature instead of hundreds. That is a
-genuine architectural change (it needs the target edge to exist and be
-selectable in the solid, and OCCT's variable-radius support is linear along an
-edge where `taper_weight` is not), and it is the natural next milestone rather
-than a tweak.
+### `BRepFilletAPI_MakeChamfer` does not work on this part *(2026-08-07)*
+
+The obvious way past the cutter ceiling is to stop cutting: ask the kernel to
+chamfer *an edge*, which is what Fusion does and what would give one exact face
+per feature instead of hundreds. It was spiked properly and **it does not work
+here**, which is worth stating with numbers because nothing about the idea looks
+wrong on paper.
+
+The API itself is fine — a `BRepPrimAPI_MakeBox` chamfers, and so does a
+rectangle put through our own `polygon_to_face` + `extrude`. It is the real part
+it refuses. Chamfering each of the 30 top-rim edges, one at a time:
+
+| solid | faces | 2.5 mm | 1.5 mm | 1.0 mm | 0.5 mm |
+| --- | --- | --- | --- | --- | --- |
+| terraces only | 91 | 8/30 | 16/30 | 13/30 | 23/30 |
+| castle base (footings fused in) | 933 | **0/30** | **0/30** | **0/30** | **0/30** |
+
+The whole rim as one contour never builds, at any width, on either. Note the
+terraces row is not even monotonic in width — 2.5 mm succeeds on edges where
+1.0 mm fails — so there is no "keep it small and it works" rule to lean on
+either. Once the footing blends are fused in, nothing on the rim chamfers at
+all: the rim becomes a chain of edges meeting swept blend surfaces at
+non-tangent junctions, which is precisely where OCCT's fillet/chamfer engine is
+known to be weakest.
+
+A maker changing a bezel width from 2.5 mm to 1.0 mm and getting a failed build
+is not a feature. **Rejected**; the boolean cutters stay.
+
+What the spike did produce is the junction-tolerance fix below, which was found
+while hunting for the rim edges to chamfer and is worth more than the chamfer
+would have been.
+
+### The two biggest zones were not curved at all *(2026-08-07)*
+
+The rim turned out to be 213 straight edges and one arc. It should not have
+been, and the reason is a tolerance.
+
+`curved_ring_wire` verifies each arc span and then builds it, falling back to
+one line edge per vertex on any exception. That fallback was firing on
+`eyewire_superior_od` and `eyewire_inferior_os` and **nothing noticed**: the
+vertices still classified at 94%, the spans still verified, the volumes were
+right, the mesh was watertight. Only counting the edges of a zone face showed it
+— 48 edges carrying a single arc, where its neighbours were 8 edges carrying
+two.
+
+A junction vertex sits at a flattened ring point but is handed to `MakeEdge`
+with a parameter *on the curve*, and `MakeEdge` refuses the pair outright when
+they disagree by more than the vertex's own tolerance. A zone ring's vertices
+are not the drawing's — Shapely nodes the boundary against the SCULPT cuts,
+which moves them — and the disagreement measured 0.19 µm and 0.54 µm against a
+default vertex tolerance of 1e-7 mm. `JUNCTION_TOL_MM = 1e-3` states that
+uncertainty instead of pretending it away, and is the same 1 µm
+`SourceCurves.classify` already uses to decide a point is on a curve at all.
+
+| | before | after |
+| --- | --- | --- |
+| `eyewire_superior_od` face | 48 edges, 1 arc | 7 edges, 2 arcs |
+| `eyewire_inferior_os` face | 53 edges, 1 arc | 7 edges, 2 arcs |
+| castle base | 1,063 faces / 6,076 edges | 933 / 5,376 |
+| all features on | 31,188 edges | 23,088 |
+| test suite | 831 s | 525 s |
+
+Watertight, valid, volumes unchanged to 1.5 mm³.
+
+**The lesson to keep**: "the vertices classify" is not "the model is curved".
+`test_every_verified_arc_becomes_an_arc` now asserts the step in between, per
+zone, because every softer measure passed while two ninths of the frame was a
+polygon.
 
 ### Still open on the curve work
 
