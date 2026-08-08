@@ -18,9 +18,16 @@ import sys
 
 
 def main() -> None:
+    # Evidence mode (BUILDPLAN-NEW UI-0): print the display/scale diagnostic
+    # and exit, without VTK or a window. Checked before anything Qt exists.
+    if "--diag-display" in sys.argv:
+        from guildmodel.gui.diag import run_diag
+        sys.exit(run_diag())
+
     # Before QApplication: Qt reads QT_QPA_PLATFORM when the app is constructed,
     # so an XWayland switch is only possible here.
     from guildmodel.gui.hidpi import (apply_ui_scale, force_x11_on_wayland,
+                                      scale_decision, stylesheet_scale,
                                       ui_scale)
     force_x11_on_wayland()
 
@@ -42,9 +49,18 @@ def main() -> None:
     from guildmodel.gui import prefs as prefs_mod
     from guildmodel.gui.style import theme
     saved = prefs_mod.load()
+    # Two factors (gui/hidpi.py): the platform's typography, which only the
+    # stylesheet needs since the font already carries it, and the UI scale,
+    # which both need.
     scale = ui_scale(app.primaryScreen(), saved)
     apply_ui_scale(app, scale)
-    app.setStyleSheet(theme.stylesheet(saved["dark_mode"], scale))
+    app.setStyleSheet(theme.stylesheet(saved["dark_mode"],
+                                       stylesheet_scale(app, saved)))
+    # The one-scaler invariant's receipt (BUILDPLAN-NEW UI-0): the decision and
+    # its reason, stashed for MainWindow's log pane so any wrong-size report is
+    # diagnosable from the log alone (`--diag-display` prints the full table).
+    app.setProperty("guildmodel_scale_decision",
+                    scale_decision(app.primaryScreen(), saved, app))
 
     # Show the loading splash before the slow VTK import + main-window build,
     # so the maker sees the app is starting and doesn't launch a second copy.

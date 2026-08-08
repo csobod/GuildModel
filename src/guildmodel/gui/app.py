@@ -1944,6 +1944,34 @@ class PrefsDialog(QDialog):
         self._dark_check = QCheckBox("Enable dark mode")
         self._dark_check.setChecked(prefs["dark_mode"])
         mode_form.addRow(self._dark_check)
+
+        # UI scale (BUILDPLAN-NEW UI-0). The escape hatch that keeps any future
+        # scaling bug from stranding the maker in an unusable UI: Auto follows
+        # the desktop's own convention (see gui/hidpi._decide), a number pins
+        # it. The sample label previews the chosen size live.
+        self._scale_choices = [
+            ("auto", "Auto (follow the desktop)"),
+            ("1.0", "100%"), ("1.1", "110%"), ("1.25", "125%"),
+            ("1.5", "150%"), ("1.75", "175%"), ("2.0", "200%"),
+        ]
+        self._scale_combo = QComboBox()
+        for _k, label in self._scale_choices:
+            self._scale_combo.addItem(label)
+        cur_scale = str(prefs.get("ui_scale", "auto"))
+        self._scale_combo.setCurrentIndex(next(
+            (i for i, (k, _l) in enumerate(self._scale_choices)
+             if k == cur_scale), 0))
+        self._scale_combo.setToolTip(
+            "Size of the whole interface (fonts and controls).\n"
+            "Auto follows your desktop's scaling setting; pick a number to\n"
+            "override just this app. Takes effect immediately on OK.")
+        self._scale_sample = QLabel("Sample — Aa 12.5 mm")
+        self._scale_sample.setToolTip("Preview of interface text at the chosen scale.")
+        self._scale_base_pt = self.font().pointSizeF() or 10.0
+        self._scale_combo.currentIndexChanged.connect(self._on_scale_preview)
+        self._on_scale_preview(self._scale_combo.currentIndex())
+        mode_form.addRow("UI scale:", self._scale_combo)
+        mode_form.addRow("", self._scale_sample)
         ap_lay.addWidget(mode_box)
 
         # Viewport preset — GuildDraw's canvas themes, shared verbatim so the
@@ -2794,6 +2822,19 @@ class PrefsDialog(QDialog):
                 new_user[name] = {"_deleted": True}
         tool_store.replace_user(new_user)
 
+    def _on_scale_preview(self, index: int) -> None:
+        """Resize the sample label to the chosen scale — live, dialog-local."""
+        from guildmodel.gui import hidpi
+        key = self._scale_choices[index][0]
+        if key == "auto":
+            app = QApplication.instance()
+            scale = hidpi.ui_scale(app.primaryScreen() if app else None, {})
+        else:
+            scale = float(key)
+        font = self._scale_sample.font()
+        font.setPointSizeF(self._scale_base_pt * scale)
+        self._scale_sample.setFont(font)
+
     def _accept(self) -> None:
         self._save_materials()
         self._save_tools()
@@ -2807,8 +2848,10 @@ class PrefsDialog(QDialog):
             self._out_dir.setText(d)
 
     def to_prefs(self) -> dict:
+        scale_key = self._scale_choices[self._scale_combo.currentIndex()][0]
         out = {
             "dark_mode": self._dark_check.isChecked(),
+            "ui_scale": scale_key if scale_key == "auto" else float(scale_key),
             "show_log_on_start": self._log_check.isChecked(),
             "use_solid_model": self._solid_model.isChecked(),
             "preview_resolution_mm": round(self._preview_res.value(), 2),
@@ -2882,6 +2925,9 @@ class MainWindow(QMainWindow):
         self._dxf_loaded = False
         self._mesh_built = False
         self._program_stored = False
+        # The tessellation's verdict on the current model (BUILDPLAN-NEW UI-0).
+        # None = nothing built yet; set by `_set_mesh_verdict` on every build.
+        self._mesh_verdict = None
 
         self._build_ui()
         self._build_toolbar()                     # builds the action registry + toolbar
@@ -3029,6 +3075,12 @@ class MainWindow(QMainWindow):
         self._fbo_probe = _FboProbe(self)
         logging.getLogger().addHandler(self._fbo_probe)
 
+        # The scale decision boot made, into the log pane (BUILDPLAN-NEW UI-0):
+        # any wrong-size report becomes diagnosable from a log paste.
+        _decision = QApplication.instance().property("guildmodel_scale_decision")
+        if _decision:
+            self.append_log(f"[ui] {_decision}")
+
     # ------------------------------------------------------------------ theme
 
     def _apply_dark_mode(self, dark: bool) -> None:
@@ -3036,11 +3088,11 @@ class MainWindow(QMainWindow):
         self._dark_mode = dark
         app = QApplication.instance()
         if app is not None:
-            # Re-derive the UI scale rather than defaulting it: the stylesheet
+            # Re-derive the scale rather than defaulting it: the stylesheet
             # carries the scaled font sizes, so restyling without it would snap
-            # the whole UI back to 96-DPI sizing on a theme toggle.
+            # the whole UI back to the design baseline on a theme toggle.
             app.setStyleSheet(theme.stylesheet(
-                dark, hidpi.ui_scale(app.primaryScreen(), self._prefs)))
+                dark, hidpi.stylesheet_scale(app, self._prefs)))
         self.canvas.set_dark_mode(dark)
         self.view3d.set_dark_mode(dark)
         self.bed_canvas.set_dark_mode(dark)
@@ -3059,9 +3111,16 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- readiness
 
     def _refresh_readiness(self) -> None:
-        """Drive the status-bar dot from the three readiness flags (M5.2)."""
+        """Drive the status-bar dot from the three readiness flags (M5.2).
+
+        A model the tessellation rejects does not count as built, however
+        cheerfully the kernel reported it (BUILDPLAN-NEW UI-0) — the dot is the
+        one thing a maker glances at before cutting metal.
+        """
+        verdict = getattr(self, "_mesh_verdict", None)
+        built = self._mesh_built and (verdict is None or verdict.ok)
         self.readiness.set_state(readiness_dot.state_for(
-            self._dxf_loaded, self._mesh_built, self._program_stored,
+            self._dxf_loaded, built, self._program_stored,
         ))
 
     def _invalidate_program(self) -> None:
@@ -5154,12 +5213,25 @@ class MainWindow(QMainWindow):
             return
         p = dlg.to_prefs()
         old_preview_res = self._prefs["preview_resolution_mm"]
+        scale_changed = p.get("ui_scale") != self._prefs.get("ui_scale")
         appearance_changed = any(
             p.get(k) != self._prefs.get(k)
             for k in ("viewport", "render3d", "toolpath_palette",
                       "layer_colors", "grid"))
         self._prefs.update(p)
         prefs_mod.save(self._prefs)
+
+        # UI scale (BUILDPLAN-NEW UI-0): re-derive and re-apply immediately —
+        # font here, stylesheet via the restyle below. `apply_ui_scale` is
+        # idempotent (absolute, from the platform base), so this is safe to
+        # run any number of times.
+        if scale_changed:
+            app = QApplication.instance()
+            hidpi.apply_ui_scale(
+                app, hidpi.ui_scale(app.primaryScreen(), self._prefs))
+            self.append_log("[ui] " + hidpi.scale_decision(
+                app.primaryScreen(), self._prefs, app))
+            appearance_changed = True     # force the stylesheet re-apply below
 
         # Re-bind shortcuts + rebuild the toolbar from the (possibly edited) prefs (M7.15).
         if "hotkeys" in p:
@@ -6325,7 +6397,10 @@ class MainWindow(QMainWindow):
         self.view3d.show_mesh(mesh, stock=self._flat_stock(),
                               core_guide=core_guide, program_zero=zero)
         n_v, n_t = len(mesh.vertices), len(mesh.faces)
-        self.status_lbl.setText(f"3D model ready — {n_v:,} verts · {n_t:,} tris")
+        self._set_mesh_verdict(mesh)          # same honest gate as the castle path
+        state = ("3D model ready" if self._mesh_verdict.ok
+                 else "⚠ 3D model has problems")
+        self.status_lbl.setText(f"{state} — {n_v:,} verts · {n_t:,} tris")
         self.append_log(f"[3D] Done — {n_v:,} verts, {n_t:,} tris")
         self._act_build.setEnabled(True)
         self._mesh_built = True
@@ -6338,8 +6413,31 @@ class MainWindow(QMainWindow):
         n_v = len(mesh.vertices)
         n_t = len(mesh.faces)
         extra = f" · {len(edges):,} edges" if edges else ""
+        # "Ready" has to mean *verified* (BUILDPLAN-NEW UI-0). The screenshot
+        # that started this work showed a visibly broken model over this exact
+        # label, because the label only ever meant "the builder returned".
+        self._set_mesh_verdict(mesh)
+        state = ("3D model ready" if self._mesh_verdict.ok
+                 else "⚠ 3D model has problems")
         self.status_lbl.setText(
-            f"3D model ready — {n_v:,} verts · {n_t:,} tris{extra}")
+            f"{state} — {n_v:,} verts · {n_t:,} tris{extra}")
+
+    def _set_mesh_verdict(self, mesh) -> None:
+        """Run the tessellation oracle and surface it (status + Inspector).
+
+        The kernel's own `IsValid` is not consulted: it returns True for the
+        empty results, the order-dependent boolean corruption and the leaking
+        shells catalogued in BUILDPLAN-NEW §3.1. The mesh is the only check
+        that has caught any of them.
+        """
+        from guildmodel.core.mesh_check import verify_mesh
+
+        self._mesh_verdict = verify_mesh(mesh)
+        if not self._mesh_verdict.ok:
+            self.append_log("[verify] " + self._mesh_verdict.summary)
+            for problem in self._mesh_verdict.problems[1:]:
+                self.append_log("[verify] " + problem)
+        self._refresh_inspector()
 
     def _on_mesh_finished(self, mesh, stage: str, edges=None) -> None:
         self._close_progress()
@@ -6422,6 +6520,14 @@ class MainWindow(QMainWindow):
                 machine_lint=self._diag_lint,
                 cut_report=self._diag_cut_report,
             )
+            # The model's own verdict leads the list (BUILDPLAN-NEW UI-0): a
+            # broken model makes every downstream check meaningless, so it must
+            # not sit below a tool-reach warning.
+            verdict = getattr(self, "_mesh_verdict", None)
+            if verdict is not None and not verdict.ok:
+                from guildmodel.core.diagnostics import Issue
+                issues = [Issue("error", "Model", p, ("view", "3d"))
+                          for p in verdict.problems] + issues
         self._inspector.set_issues(issues)
         counts = severity_counts(issues)
         n = counts["error"] + counts["warning"]

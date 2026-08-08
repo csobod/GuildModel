@@ -9,6 +9,7 @@ must NOT mark the session dirty. Also covered: the boot module stays light
 """
 import json
 import os
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -336,6 +337,9 @@ class _FakeScreen:
     def __init__(self, physical, logical=96.0, dpr=1.0):
         self._p, self._l, self._d = physical, logical, dpr
 
+    def name(self):
+        return "fake"
+
     def physicalDotsPerInch(self):
         return self._p
 
@@ -346,32 +350,67 @@ class _FakeScreen:
         return self._d
 
 
-def test_ui_scale_measures_the_panel(monkeypatch):
-    """The maker's hand-tuned QT_SCALE_FACTOR=1.47 on a 141.6-DPI panel is
-    exactly what the measurement produces — that is the number to reproduce."""
-    from guildmodel.gui.hidpi import ui_scale
-
+def _no_scale_env(monkeypatch):
     for var in ("QT_SCALE_FACTOR", "QT_FONT_DPI", "QT_SCREEN_SCALE_FACTORS",
                 "QT_ENABLE_HIGHDPI_SCALING"):
         monkeypatch.delenv(var, raising=False)
+
+
+def test_ui_scale_follows_a_managed_desktop(monkeypatch):
+    """A desktop environment's scaling convention is followed, never
+    second-guessed — **including the choice not to scale.**
+
+    The first cut of this policy measured the panel (1.475x on the maker's
+    141.6 DPI screen) and overrode the desktop's deliberate scale-1, making
+    GuildModel the one over-sized window on the desktop (BUILDPLAN-NEW UI-0).
+    Qt 6 already applies whatever the desktop asks for via devicePixelRatio;
+    with a DE present our factor must be exactly 1.0.
+    """
+    from guildmodel.gui.hidpi import scale_decision, ui_scale
+
+    _no_scale_env(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
+    assert ui_scale(_FakeScreen(141.6), {}) == 1.0
+    assert "desktop convention" in scale_decision(_FakeScreen(141.6), {})
+    # dpr > 1 or a non-96 logical DPI mean someone is scaling even with no
+    # XDG_CURRENT_DESKTOP — still managed, still hands-off.
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
+    assert ui_scale(_FakeScreen(192.0, dpr=2.0), {}) == 1.0
+    assert ui_scale(_FakeScreen(141.6, logical=144.0), {}) == 1.0
+
+
+def test_ui_scale_measures_only_an_unmanaged_panel(monkeypatch):
+    """The physical-DPI heuristic survives solely for the bare-WM case where
+    nobody manages the desktop: no DE, dpr 1, logical DPI at Qt's 96 default."""
+    from guildmodel.gui.hidpi import scale_decision, ui_scale
+
+    _no_scale_env(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
     assert ui_scale(_FakeScreen(141.6), {}) == pytest.approx(1.475, abs=0.01)
-    # A ~96 DPI desktop panel is left alone rather than nudged into blur.
+    assert "measured" in scale_decision(_FakeScreen(141.6), {})
+    # A ~96 DPI panel is left alone rather than nudged into blur.
     assert ui_scale(_FakeScreen(96.0), {}) == 1.0
     assert ui_scale(_FakeScreen(102.0), {}) == 1.0        # under the threshold
-    # Where Qt already scaled, that part of the job is done.
-    assert ui_scale(_FakeScreen(192.0, dpr=2.0), {}) == 1.0
+    # Windows/macOS always manage scaling; the heuristic never fires there.
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert ui_scale(_FakeScreen(141.6), {}) == 1.0
 
 
 def test_ui_scale_yields_to_the_maker(monkeypatch):
     """An explicit env var or preference wins — never compound the two."""
-    from guildmodel.gui.hidpi import ui_scale
+    from guildmodel.gui.hidpi import scale_decision, ui_scale
 
-    monkeypatch.delenv("QT_SCALE_FACTOR", raising=False)
-    assert ui_scale(_FakeScreen(141.6), {"ui_scale": 1.0}) == 1.0
+    _no_scale_env(monkeypatch)
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
+    assert ui_scale(_FakeScreen(141.6), {"ui_scale": 1.25}) == 1.25
     assert ui_scale(_FakeScreen(141.6), {"ui_scale": 2.0}) == 2.0
+    assert "pinned" in scale_decision(_FakeScreen(141.6), {"ui_scale": 1.25})
 
     monkeypatch.setenv("QT_SCALE_FACTOR", "1.5")
     assert ui_scale(_FakeScreen(141.6), {}) == 1.0
+    assert "QT_SCALE_FACTOR" in scale_decision(_FakeScreen(141.6), {})
 
 
 def test_stylesheet_scales_its_px_font_sizes():
@@ -387,3 +426,64 @@ def test_stylesheet_scales_its_px_font_sizes():
     # Hairlines stay hairlines — doubling 1px borders just muddies the chrome.
     assert big.count("1px solid") == plain.count("1px solid")
     assert theme.stylesheet(False, 1.0) == plain
+
+
+def test_typography_follows_the_platform_not_the_stylesheet(qapp):
+    """The stylesheet pins 139 `font-size` px values, so before this the app
+    looked identical on every desktop — Segoe UI 9, Cantarell 11 and Noto Sans
+    10 all rendered as the designer's 13 px. `desktop_font_scale` turns those
+    authored sizes into ratios so the platform's typography comes through.
+    """
+    from guildmodel.gui import hidpi
+
+    qapp.setProperty("_guildmodel_base_font_size", None)
+    font = qapp.font()
+    font.setPointSizeF(13.0)                       # 13 pt == 17.33 px at 96 DPI
+    qapp.setFont(font)
+    assert hidpi.desktop_font_scale(qapp) == pytest.approx(
+        (13.0 * 96.0 / 72.0) / hidpi.DESIGN_BASE_PX, abs=1e-6)
+
+
+def test_qts_generic_fallback_is_not_mistaken_for_a_desktop_choice(qapp, monkeypatch):
+    """PySide6 bundles its own Qt and looks for platform themes only inside
+    that bundle, so a system-installed KDEPlasmaPlatformTheme6.so is never
+    seen and every Plasma session gets Qt's generic 'Sans Serif' 9pt. That is
+    'no answer', not a request for 9pt, and substituting the mainstream Linux
+    desktop default is what stops the app rendering a size smaller than every
+    window around it."""
+    from guildmodel.gui import hidpi
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    qapp.setProperty("_guildmodel_base_font_size", None)
+    font = qapp.font()
+    font.setFamily("Sans Serif")
+    font.setPointSizeF(9.0)
+    qapp.setFont(font)
+    assert hidpi._base_font_size(qapp) == pytest.approx(10.0)
+
+    # A real 9pt choice from a named family is honoured, not overridden.
+    qapp.setProperty("_guildmodel_base_font_size", None)
+    font.setFamily("Segoe UI")
+    qapp.setFont(font)
+    assert hidpi._base_font_size(qapp) == pytest.approx(9.0)
+
+
+def test_applying_the_scale_twice_does_not_compound(qapp):
+    """Preferences can re-apply the scale at any time; the platform base is
+    captured once so every call sets an absolute size. The first version
+    multiplied whatever font was current — a silent x-squared bug."""
+    from guildmodel.gui import hidpi
+
+    qapp.setProperty("_guildmodel_base_font_size", None)
+    font = qapp.font()
+    font.setFamily("Inter")
+    font.setPointSizeF(10.0)
+    qapp.setFont(font)
+
+    hidpi.apply_ui_scale(qapp, 1.5)
+    once = qapp.font().pointSizeF()
+    hidpi.apply_ui_scale(qapp, 1.5)
+    assert qapp.font().pointSizeF() == pytest.approx(once)
+    assert once == pytest.approx(15.0)
+    hidpi.apply_ui_scale(qapp, 1.0)               # and it can go back down
+    assert qapp.font().pointSizeF() == pytest.approx(10.0)
