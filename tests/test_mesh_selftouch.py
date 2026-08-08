@@ -31,20 +31,27 @@ aviator read 2 contacts where there are 6, because a face that goes degenerate
 carries its edges out of the count. For a while it also meant the control was
 comparing the B-Rep at float64 against the mesh at float32.
 
-**Where this stands.** Contacts are **zero everywhere** — base and every
-feature, matching the B-Rep on all three drawings. Three things got it there:
+**Where this stands.** Contacts and open edges are **zero everywhere** — base
+and every feature, matching the B-Rep on all three drawings. Four changes, and
+three of them are one rule: *a tool must cross every surface it meets, and no
+vertex of it may lie in a face of its target.*
 
-* `FOOTING_CROSS_MM` — carry each blend half across the zone wall at the seam
-  instead of stopping on it. The base was 157 / 247 / 232.
-* `ZONE_WELD_MM` — grow each zone so neighbours overlap, rather than asking two
-  independently computed copies of a wall to cancel.
-* `kernel.sweep_sections` — build a swept tube as an explicit strip instead of a
-  union of abutting convex hulls. The lens groove was 76 / 94 / 82.
+* `FOOTING_CROSS_MM` — the blend halves ended at `u = 0`, the zone wall at the
+  seam. The base was 157 / 247 / 232 contacts.
+* `features.EDGE_CROSS_MM` — the pad splay's sections start on the ring it
+  sweeps, and that ring *is* the body outline. 105 / 97 / 93 degenerate faces
+  and 34 / 47 / 15 open edges, none of which moved for four hypotheses about the
+  far end of the profile before a staged target named the near end: the same
+  tool cuts a plain box clean and the real outline at 102.
+* `kernel.sweep_sections` — a swept tube built as an explicit strip rather than
+  a union of abutting convex hulls, whose shared sections the union did not
+  reliably cancel. The lens groove was 76 / 94 / 82.
+* `ZONE_WELD_MM` — the odd one out: grow each zone so neighbours overlap, rather
+  than asking two independently computed copies of a wall to cancel.
 
-What remains is **zero-area triangles**, which are a lesser thing — `mesh_check`
-does not report them and slicers generally discard them — but the B-Rep emits
-none, so they are still a gap. `_KNOWN_DEGENERATE` holds them, and the pad splay
-is the open item.
+What remains is a handful of **zero-area triangles** — at most 12, against the
+B-Rep's none. `mesh_check` does not report them and slicers generally discard
+them, so they are a gap rather than a defect. `_KNOWN_DEGENERATE` holds them.
 """
 import zipfile
 from pathlib import Path
@@ -224,28 +231,23 @@ def test_no_blend_sample_lands_on_the_seam():
 
 # ------------------------------------------------------------ what is not, yet
 
-#: Zero-area triangles, and the edges that open when they are dropped, by
-#: fixture and feature. Pinned as an upper bound: these are what is left after
-#: the contacts went, and the B-Rep produces none of them, so this is a ratchet
-#: on a known gap rather than an expectation that it is fine.
+#: Zero-area triangles left per fixture and feature. Pinned as an upper bound:
+#: the B-Rep emits none, so this is a ratchet on a known gap rather than an
+#: expectation that it is fine.
 #:
-#: The splay is the open item. Four things have been tried on it and none
-#: touched the `open` count, which sits at exactly 31 / 43 / 13 no matter what
-#: the profile does at either end — leading the chamfer out past its anchor
-#: (made it worse), two points instead of twelve for a collinear ramp (removed
-#: 1.5 mm3 more material, the subdivision is what stops the cell bulging across
-#: the turn), building it as a strip (no change — both operands are clean on
-#: their own and it is the subtraction that makes the faces), and stopping the
-#: profile short inside the material so the section's end wall crosses
-#: transversally (105 -> 99, open unchanged). That invariance says the cause is
-#: not the profile's shape.
+#: These are what survived three rounds of one rule — a tool must cross every
+#: surface it meets, and no *vertex* of it may lie in a face of its target.
+#: `model.build.FOOTING_CROSS_MM` for the zone wall at a blend seam,
+#: `features.EDGE_CROSS_MM` for the body outline under the pad splay, and
+#: `kernel.sweep_sections` for the sections a hull chain left abutting inside
+#: its own tube. The splay alone went 105 / 97 / 93 to 6 / 4 / 2.
 _KNOWN_DEGENERATE = {
-    "demo_front":    {"eyewire_bezel": (2, 0), "lens_groove": (8, 0),
-                      "pad_splay": (105, 31), "bridge_relief": (0, 0)},
-    "aviator_front": {"eyewire_bezel": (12, 0), "lens_groove": (0, 0),
-                      "pad_splay": (97, 43), "bridge_relief": (0, 0)},
-    "gabriel_front": {"eyewire_bezel": (12, 0), "lens_groove": (8, 0),
-                      "pad_splay": (93, 13), "bridge_relief": (0, 0)},
+    "demo_front":    {"eyewire_bezel": 2, "lens_groove": 8,
+                      "pad_splay": 6, "bridge_relief": 0},
+    "aviator_front": {"eyewire_bezel": 12, "lens_groove": 0,
+                      "pad_splay": 4, "bridge_relief": 0},
+    "gabriel_front": {"eyewire_bezel": 12, "lens_groove": 8,
+                      "pad_splay": 2, "bridge_relief": 0},
 }
 
 
@@ -273,15 +275,20 @@ def test_no_feature_makes_the_surface_touch_itself(fixture, feature, request):
 @pytest.mark.parametrize("fixture",
                          ["demo_front", "aviator_front", "gabriel_front"])
 def test_the_degenerate_faces_do_not_grow(fixture, feature, request):
-    """A ratchet on what is left, not an expectation that it is fine."""
+    """A ratchet on what is left, not an expectation that it is fine.
+
+    Open edges are asserted at **zero** rather than ratcheted. An edge that
+    opens when the degenerate faces are dropped means those faces were holding
+    the surface together, which is a real pinch; the splay had 34 / 47 / 15 of
+    them until `EDGE_CROSS_MM` moved its first sample off the outline.
+    """
     mesh = _model(request.getfixturevalue(fixture), **{feature: True})
     found = self_touching_edges(mesh)
-    zero_budget, open_budget = _KNOWN_DEGENERATE[fixture][feature]
-    assert found["zero_area"] <= zero_budget, (
+    budget = _KNOWN_DEGENERATE[fixture][feature]
+    assert found["zero_area"] <= budget, (
         f"zero-area triangles rose to {found['zero_area']} from a known "
-        f"{zero_budget} — see the module docstring")
-    assert found["open"] <= open_budget, (
-        f"open edges rose to {found['open']} from a known {open_budget}")
+        f"{budget} — see the module docstring")
+    assert found["open"] == 0, found
 
 
 def test_the_sweep_never_falls_back_to_the_hull_chain(demo_front):

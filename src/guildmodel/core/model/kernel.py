@@ -189,6 +189,60 @@ def drop_degenerate(man: Manifold,
     return _check(Manifold.compose(keep), "compose")
 
 
+def _cap_triangles(section: np.ndarray):
+    """Triangles closing one end of an open sweep, or None.
+
+    Indices are into `section`, traversing it in **index order** — which is what
+    the strip's sides do, so the caller only has to reverse one of the two ends.
+
+    **Ear-clipped in the section's own plane, not fanned from a corner.** A fan
+    is only valid for a convex section, and several of these are not: the
+    footing blend's S-curve closed off to `far`, and the round-over edge
+    feature. Fanning those puts triangles outside the polygon — a cap that
+    self-intersects while still being index-manifold, so nothing complains. It
+    has never yet mattered, and that is luck rather than design: the blend
+    bands' caps sit beyond the ends of the SCULPT cut, outside the body, and the
+    zone prism clips them away. The pad splay's caps land on the part.
+
+    **Projected onto the section's own plane, via Newell's normal.** The obvious
+    shortcut — drop the axis the section spans least — is wrong here and was
+    tried: these sections stand in *vertical* planes, so a band running
+    diagonally spans x and y more than z, the shortcut projects it onto XY, and
+    the polygon collapses to a line. That took 11 of the demo frame's 26 sweeps
+    into the `hull_chain` fallback, silently, and only
+    `test_the_sweep_never_falls_back_to_the_hull_chain` said so.
+    """
+    from manifold3d import triangulate
+
+    pts = np.asarray(section, dtype=np.float64)
+    nxt = np.roll(pts, -1, axis=0)
+    normal = np.array([
+        np.sum((pts[:, 1] - nxt[:, 1]) * (pts[:, 2] + nxt[:, 2])),
+        np.sum((pts[:, 2] - nxt[:, 2]) * (pts[:, 0] + nxt[:, 0])),
+        np.sum((pts[:, 0] - nxt[:, 0]) * (pts[:, 1] + nxt[:, 1]))])
+    length = float(np.linalg.norm(normal))
+    if length < 1e-12:                      # no area to cap
+        return None
+    normal /= length
+
+    helper = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(helper, normal))) > 0.9:
+        helper = np.array([1.0, 0.0, 0.0])
+    u_axis = np.cross(helper, normal)
+    u_axis /= np.linalg.norm(u_axis)
+    v_axis = np.cross(normal, u_axis)
+
+    rel = pts - pts[0]
+    flat = np.ascontiguousarray(np.column_stack([rel @ u_axis, rel @ v_axis]))
+    try:
+        tris = np.asarray(triangulate([flat]), dtype=np.int64)
+    except Exception:                                        # noqa: BLE001
+        return None
+    if len(tris) == 0:
+        return None
+    return tris
+
+
 def _strip_mesh(profiles: list[np.ndarray], closed: bool) -> Manifold | None:
     """The tube as an explicit triangle strip, or None if it cannot be built.
 
@@ -237,10 +291,23 @@ def _strip_mesh(profiles: list[np.ndarray], closed: bool) -> Manifold | None:
             tris.append((a + j, a + j2, b + j2))
             tris.append((a + j, b + j2, b + j))
     if not closed:
-        end = (n - 1) * k
-        for j in range(1, k - 1):
-            tris.append((0, j + 1, j))
-            tris.append((end, end + j, end + j + 1))
+        # Wound to match the sides, which follow the section's index order
+        # whatever that order happens to mean geometrically. The side quads
+        # leave the first station's boundary running j -> j+1, so its cap has to
+        # run the other way, and the last station's the same way. Orienting the
+        # caps from geometry instead — outward along the sweep — was tried and
+        # is wrong: it agrees with the sides for one section winding and
+        # contradicts them for the other, and both windings are in use here, so
+        # exactly half the blend bands came back rejected. `_strip_mesh` flips
+        # the finished shell if it turns out inside-out, which is the right
+        # place for that decision because there it can be made once.
+        for start, cap in ((0, _cap_triangles(sections[0])),
+                           ((n - 1) * k, _cap_triangles(sections[-1]))):
+            if cap is None:
+                return None
+            wound = cap[:, ::-1] if start == 0 else cap
+            for t0, t1, t2 in wound:
+                tris.append((start + t0, start + t1, start + t2))
 
     verts = np.vstack(sections)
     faces = np.asarray(tris, dtype=np.uint64)

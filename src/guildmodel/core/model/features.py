@@ -114,6 +114,21 @@ EDGE_SECTIONS_PER_MM = 1.2
 #: The shallowest cut a taper is allowed to reach before it is simply zero.
 MIN_TAPER_DROP_MM = 0.02
 
+#: How far outside the edge the section's first sample is moved, mm.
+#:
+#: `u = 0` is the ring the sweep runs along, and for the pad splay and the edge
+#: features that ring **is the body outline** — so a sample there is a vertex of
+#: the tool lying exactly in a face of its target. Same defect as
+#: `model.build.FOOTING_CROSS_MM`, third instance, and found the same way: cut
+#: the splay out of progressively simpler targets and it is clean against a
+#: plain box, 102 degenerate faces against the real outline, before any terrace
+#: or blend is involved.
+#:
+#: The sample is *moved* rather than added, so the section keeps its point count
+#: and the ramp keeps its slope; `-CUT_MARGIN_MM` already stands well outside
+#: the body, and this only has to clear the wall.
+EDGE_CROSS_MM = 0.05
+
 
 def _edge_profile(width: float, drop: float, radius: float, profile: str,
                   posterior: bool, n: int = 12) -> np.ndarray:
@@ -129,6 +144,7 @@ def _edge_profile(width: float, drop: float, radius: float, profile: str,
     than `sweep_sections`.
     """
     us = np.linspace(0.0, width, n)
+    us[0] = -EDGE_CROSS_MM            # off the wall — see the constant
     if profile == "fillet":
         r = max(radius, 1e-6)
         inner = np.clip(r - us, 0.0, r)

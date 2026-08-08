@@ -688,90 +688,88 @@ corruption.
 
 ## 8. Risks, stated plainly
 
-0. **The mesh surface touched itself and the B-Rep's did not. Contacts are now
-   zero everywhere; degenerate faces remain.** *(Found 2026-08-08 chasing
-   §8.2's edge problem, closed the same day.)*
+0. **The mesh surface touched itself and the B-Rep's did not. Contacts and open
+   edges are now zero everywhere; a handful of degenerate faces remain.**
+   *(Found 2026-08-08 chasing §8.2's edge problem, closed the same day.)*
 
-   Welded by position and with degenerate faces removed, the mesh base carried
-   **157 / 247 / 232** edges with more than two faces on demo / aviator /
-   gabriel, and the lens groove a further **76 / 94 / 82**. The B-Rep carries
-   **0** on every feature and every fixture. An STL has no index table, so this
-   is what a slicer sees. It is the M-N0 condition — the one `mesh_check`
-   describes as "will not export as a valid STL" — and `verify_mesh` cannot
-   currently see it, because Manifold keeps its index-manifold invariant across
-   a self-contact by duplicating the vertex.
+   Welded by position and with degenerate faces removed, the mesh carried
+   **157 / 247 / 232** edges with more than two faces on the base, **76 / 94 /
+   82** on the lens groove, and the pad splay pinched the surface at **34 / 47 /
+   15** more. The B-Rep carries none of it, on any feature or fixture. An STL has
+   no index table, so this is what a slicer sees; it is the M-N0 condition, the
+   one `mesh_check` describes as "will not export as a valid STL". Everything
+   else about the part was right throughout — watertight, one body, volume exact
+   to 0.00000% — which is precisely why it needed looking for.
 
-   Everything else about the part was right throughout: watertight, one body,
-   volume exact to 0.00000%. That combination is precisely why it needed looking
-   for.
+   **One rule accounts for three of the four fixes:** *a tool must cross every
+   surface it meets, and no vertex of it may lie in a face of its target.*
 
-   **Three causes, three fixes, all measured.**
+   * `model.build.FOOTING_CROSS_MM` — each blend half's profile ended at
+     `u = 0`, the vertical wall between two zones. The sample there is *moved*
+     across, not added: leaving one on the wall keeps a vertex in a face, which
+     is the same defect one dimension down and measured 330 zero-area triangles
+     against none.
+   * `features.EDGE_CROSS_MM` — the pad splay sweeps *along the body outline*,
+     so its first sample sat on the outline itself. Four hypotheses about the
+     far end of the profile failed first, and the `open` count did not move for
+     any of them; cutting the same tool from staged targets named it in one run
+     — clean against a plain box, 102 against the real outline, before any
+     terrace or blend was involved.
+   * `kernel.sweep_sections` — `hull_chain` unions one convex cell per station
+     gap, and consecutive cells **abut** on a shared section rather than
+     overlapping; its docstring claimed otherwise and was wrong. Manifold fails
+     to cancel that face about 0.65 times per station on a synthetic sweep with
+     nothing else in the scene, invariant to circle / off-centre circle /
+     ellipse, V / scalene / tapering section, open / closed, and 60 / 120 / 240
+     stations. The strip builds the tube directly — exact, no booleans, and its
+     volume converges to the hull chain's from below, the difference being the
+     bulge the convex cells add.
 
-   * *The blend halves stopped exactly on the seam.* Each half's profile ended
-     at `u = 0`, the vertical wall between two zones — a face of the tool lying
-     inside a face of its target, which is the very thing the unclipped-band
-     construction was adopted to avoid. It also left the band's `u = 0` edge a
-     30-station chord of a seam the prism carries at full resolution, so
-     wherever the chord fell inside the zone the subtraction left a standing
-     hairline fin. `FOOTING_CROSS_MM` carries each half 0.05 mm past the seam,
-     where the zone's own prism clips it away for free.
-   * *Two booleans computed the same wall and did not agree.* Zone polygons tile
-     the body exactly — neighbours share a seam with the same endpoints,
-     collinear, at distance 0.0 — so two plain prisms raise the same wall twice
-     and the union cancels it. That is why `build_terraces` was always clean.
-     But subtracting a blend band re-nodes the wall it crosses and hands it back
-     displaced by up to **7.6e-7 mm**, and an exact kernel is right not to
-     pretend two walls that differ are one. `ZONE_WELD_MM` grows every zone by a
-     micron so neighbours genuinely overlap, and the outline clips the union
-     back.
-   * *The sweep primitive could not produce a clean tube.* `hull_chain` unions
-     one convex cell per station gap, and consecutive cells **abut** on a shared
-     section rather than overlapping — its docstring claimed otherwise and was
-     wrong. Manifold fails to cancel that shared face about 0.65 times per
-     station, on a synthetic sweep with nothing else in the scene, invariant to
-     everything tried: circle, off-centre circle and ellipse; a V, a scalene
-     triangle and a tapering section; open and closed; 60, 120 and 240 stations.
-     `kernel.sweep_sections` builds the tube as an explicit quad strip instead —
-     exact, contact-free at every density, no booleans at all, with `hull_chain`
-     kept as a guarded fallback for the tight-corner fold it was chosen for.
-     `test_the_sweep_never_falls_back_to_the_hull_chain` pins that the fallback
-     is not silently carrying the build.
+   The fourth is `ZONE_WELD_MM`: zone polygons tile the body exactly, so two
+   plain prisms raise the same wall twice and the union cancels it — until a
+   blend band re-nodes that wall and hands it back displaced by up to
+   **7.6e-7 mm**. Growing each zone by a micron gives the boolean real geometry
+   instead of a coincidence to adjudicate, and the outline clips it back.
 
-   None of the three moves the part; parity against the B-Rep is unchanged and
-   the bezel still clears its 5 µm raster gate.
+   None of the four moves the part; parity is unchanged and the bezel still
+   clears its 5 µm raster gate.
 
-   **A fourth thing, found while measuring the third.** `to_trimesh` extracted
-   through `Manifold.to_mesh()`, which is **float32**, while Manifold keeps
-   float64 — and that function is what `verify_mesh`, every volume gate, the
-   anchor rays and STL export all read a model through. At a 50 mm coordinate
-   the float32 spacing is about 4e-6 mm. It distorted the counts in *both*
-   directions: the bezel read 308 / 400 / 428 zero-area triangles where there
-   are 2 / 12 / 12, and the aviator read 2 self-touching edges where there are
-   6, because quantisation both merges distinct vertices *and* turns faces
-   degenerate so that step 2 drops their edges out of the count. It now uses
+   **`to_trimesh` was reading at float32.** `Manifold.to_mesh()` is float32 while
+   Manifold keeps float64, and that function is what `verify_mesh`, every volume
+   gate, the anchor rays and STL export all read a model through. At a 50 mm
+   coordinate the spacing is about 4e-6 mm, and it distorted the counts in
+   *both* directions: the bezel read 308 / 400 / 428 zero-area triangles where
+   there are 2 / 12 / 12, and the aviator read 2 contacts where there are 6,
+   because quantisation both merges distinct vertices and turns faces degenerate
+   so the degenerate-face step carries their edges out of the count. Now
    `to_mesh64`.
 
-   **What is left: zero-area triangles.** Bezel 2 / 12 / 12, groove 8 / 0 / 8,
-   pad splay 93 / 105. A lesser class — `mesh_check` does not report them and
-   slicers generally discard them — but the B-Rep emits none, so it is still a
-   gap. The splay is the open item and four hypotheses are dead: leading the
-   chamfer out past its anchor (worse), two profile points instead of twelve for
-   a collinear ramp (removes 1.5 mm³ more, the subdivision is what stops the
-   cell bulging across the turn), the strip (no change — both operands are clean
-   and it is the subtraction that makes the faces), and stopping the profile
-   short inside the material (105 → 99, open unchanged). The `open` count is
-   invariant at 31 / 43 / 13 across every profile change, which says the cause
-   is not the profile's shape.
+   **What is left: at most 12 zero-area triangles** per fixture — bezel 2 / 12 /
+   12, groove 8 / 0 / 8, splay 6 / 4 / 2. `mesh_check` does not report them and
+   slicers generally discard them, so it is a gap against the B-Rep rather than
+   a defect. `test_mesh_selftouch` asserts zero contacts and zero open edges and
+   ratchets these.
+
+   **The fallback earned its test immediately.** `sweep_sections` keeps
+   `hull_chain` for a path turning tighter than its section is deep, and
+   `test_the_sweep_never_falls_back_to_the_hull_chain` pins that it is not
+   silently carrying the build. Adding ear-clipped caps turned it red at once —
+   11 of 26 sweeps had dropped back — for two bugs that were invisible in the
+   geometry: projecting each section onto "the two axes it spans most" collapses
+   a section standing in a vertical plane (fixed with Newell's normal), and
+   orienting the caps from geometry while the sides follow index order agrees
+   for one section winding and contradicts the other, so exactly half the blend
+   bands were rejected, one per carve/raise pair.
 
    **Measuring this is easy to get wrong in three ways, all of which I did.**
    Skipping the degenerate-face removal inflates the count about threefold (194
-   reported where 157 is honest), because a zero-area triangle contributes its
-   long edge twice. Round-tripping through **binary STL**, which stores float32,
-   quantises distinct vertices into false contacts: that route showed 26 and 16
-   on the *B-Rep*, and I briefly concluded the shipped path was broken. It is
-   not. And the per-feature control was for a while comparing the B-Rep at
-   float64 against the mesh at float32 — the same trap, one level up, after
-   having already written it down once.
+   where 157 is honest), because a zero-area triangle contributes its long edge
+   twice. Round-tripping through **binary STL**, which stores float32, quantises
+   distinct vertices into false contacts — that route showed 26 and 16 on the
+   *B-Rep* and I briefly concluded the shipped path was broken. And the
+   per-feature control was for a while comparing the B-Rep at float64 against
+   the mesh at float32: the same trap, one level up, after having written it
+   down as a lesson.
 
 1. ~~**The footing blends are unproven in the new kernel**~~ — **retired
    2026-08-08 for parity; see risk 0 for what they did break.** They agree to
