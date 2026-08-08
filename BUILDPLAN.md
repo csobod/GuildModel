@@ -4653,12 +4653,17 @@ Two traps, both recorded in `_offset_aperture`:
 
 Demo frame, `scripts/bench_solid.py`, back to back on the same machine:
 
-| build | polygonal | curved |
-| --- | --- | --- |
-| bare castle + hinge pockets | 8.3 s cold / 0.8 s warm | 20.5 s / 0.7 s |
-| + lens groove | 11.8 s / 3.4 s | 27.0 s / 5.7 s |
-| + eyewire bezel | 13.3 s / 5.3 s | 25.3 s / 6.6 s |
-| **ALL FEATURES ON** | **32.4 s / 24.8 s** | **52.1 s / 30.6 s** |
+| build | polygonal | curved (first) | curved (after the sweep + OBB) |
+| --- | --- | --- | --- |
+| bare castle + hinge pockets | 8.3 s cold / 0.8 s warm | 20.5 s / 0.7 s | 20.7 s / 0.8 s |
+| + lens groove | 11.8 s / 3.4 s | 27.0 s / 5.7 s | **23.2 s / 1.9 s** |
+| + eyewire bezel | 13.3 s / 5.3 s | 25.3 s / 6.6 s | 25.6 s / 6.1 s |
+| **ALL FEATURES ON** | **32.4 s / 24.8 s** | **52.1 s / 30.6 s** | **53.1 s / 31.1 s** |
+
+The groove row is the one that moved, and it moved because that cutter could be
+swept. ALL FEATURES did not: `cut_many` applies all eight tools in one pass, so
+simplifying one of them while the bezel (1,440 faces) and brow chamfer (2,764)
+stand is absorbed. **The branch is still not mergeable on these numbers.**
 
 **This is not shippable as the default** — 52 s to open a frame and 31 s per
 slider drag is worse than the 20 s target by a wide margin, and worse than the
