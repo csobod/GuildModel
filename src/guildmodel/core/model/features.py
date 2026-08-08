@@ -20,7 +20,7 @@ import numpy as np
 from manifold3d import Manifold
 from shapely.geometry import LineString, Polygon
 
-from ..geometry.rings import inward_normals, ring_stations
+from ..geometry.rings import carry_anchors, inward_normals, ring_stations
 from ..project.schema import CastleParams
 from .kernel import (ManifoldError, hull_chain, surface_z_at,
                      swept_profile)
@@ -113,31 +113,6 @@ EDGE_SECTIONS_PER_MM = 1.2
 MIN_TAPER_DROP_MM = 0.02
 
 
-def _carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
-    """Fill missed anchor rays from their nearest neighbour along the run.
-
-    A ray that grazes the silhouette misses a triangle mesh where it still
-    registers against a B-Rep surface — measured on the bridge scoop, where the
-    last station sits exactly on the body's top edge. The surface has not
-    vanished there; our probe simply slid off it, so the honest reading is the
-    height of the station next door, not "no material".
-
-    Substituting a constant instead is what made the mesh scoop remove 21% more
-    than the B-Rep one: dropping that station to the anterior clamp took its
-    section from z 5.3 down to 1.48 and cut a gouge nothing asked for.
-
-    `fallback` applies only when *every* station missed, which means the feature
-    is over empty space and should cut nothing.
-    """
-    out = np.asarray(anchors, dtype=float).copy()
-    valid = ~np.isnan(out)
-    if not valid.any():
-        return np.full_like(out, float(fallback))
-    idx = np.arange(len(out))
-    out[~valid] = np.interp(idx[~valid], idx[valid], out[valid])
-    return out
-
-
 def _edge_profile(width: float, drop: float, radius: float, profile: str,
                   posterior: bool, n: int = 12) -> np.ndarray:
     """One edge-feature section as `(u, v)` offsets from the anchor.
@@ -228,7 +203,7 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
 
         anchors = surface_z_at(mesh, pts + into * _RIM_PROBE_MM,
                                face="top" if posterior else "bottom")
-        anchors = _carry_anchors(anchors, far)
+        anchors = carry_anchors(anchors, far)
 
         profiles = [
             _edge_profile(float(w), float(d), float(feature.radius_mm),
@@ -278,7 +253,7 @@ def bezel_cutter(mesh, body: Polygon, ring, bezel, top: float,
     pts, tans = ring_stations(LineString(ring), stations)
     into_wall = inward_normals(body, pts, tans)
 
-    anchors = _carry_anchors(surface_z_at(mesh, pts + into_wall * _RIM_PROBE_MM),
+    anchors = carry_anchors(surface_z_at(mesh, pts + into_wall * _RIM_PROBE_MM),
                              clamp)
 
     drop = width * tan_a
@@ -393,7 +368,7 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
     # No material at a station means nothing to splay. Anchoring at the clamp
     # collapses the section there; 0.0 would have cut the whole thickness away,
     # which is exactly the Gabriel failure.
-    anchors = _carry_anchors(anchors, floor)
+    anchors = carry_anchors(anchors, floor)
     drops = np.clip(drops, MIN_TAPER_DROP_MM,
                     np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
     top = float(np.nanmax(anchors)) + CUT_MARGIN_MM
@@ -439,7 +414,7 @@ def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
 
     anchors = surface_z_at(mesh, np.column_stack([np.zeros_like(ys), ys]))
     floor = float(p.anterior_clamp_mm)
-    anchors = _carry_anchors(anchors, floor)
+    anchors = carry_anchors(anchors, floor)
     ds = np.minimum(ds, np.maximum(anchors - floor, 0.0))
     ds = np.maximum(ds, MIN_TAPER_DROP_MM)
     top = float(anchors.max()) + CUT_MARGIN_MM

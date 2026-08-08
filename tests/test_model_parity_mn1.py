@@ -308,30 +308,16 @@ def test_the_bezel_band_agrees_with_the_brep_kernel(fixture, request):
 
 # ------------------------------------------------------- splay and the scoop
 
-#: The one combination where the kernels legitimately disagree, and why.
-#:
-#: The aviator's bridge keyhole is a decorative OUTLINE hole sitting on the
-#: scoop's centreline, so several anchor rays pass straight through it. OCCT's
-#: `surface_z_at` reports a miss as **0.0**, indistinguishable from "the surface
-#: is at the anterior face", and the scoop then plunges the full thickness
-#: across the opening. That is the identical defect that cut Gabriel's frame in
-#: half through the pad splay (M-N0) — a miss read as solid material at z=0.
-#:
-#: The mesh path carries the neighbouring anchors across the gap instead, so the
-#: scoop follows the surrounding surface over the opening rather than diving to
-#: the floor. That is the behaviour we believe is correct, which is why this is
-#: recorded as a divergence to resolve rather than papered over with a wider
-#: tolerance. See `test_the_scoop_does_not_dive_through_a_decorative_opening`.
-_KNOWN_DIVERGENCE = {("aviator_front", "bridge_relief")}
-
-
 @pytest.mark.parametrize("feature", ["pad_splay", "bridge_relief"])
 @pytest.mark.parametrize("fixture",
                          ["demo_front", "aviator_front", "gabriel_front"])
 def test_surface_features_agree_with_the_brep_kernel(fixture, feature, request):
-    """The two features that read the surface beneath them, one at a time."""
-    if (fixture, feature) in _KNOWN_DIVERGENCE:
-        pytest.skip("known divergence — see _KNOWN_DIVERGENCE")
+    """The two features that read the surface beneath them, one at a time.
+
+    `(aviator_front, bridge_relief)` was skipped here as a known divergence
+    until the B-Rep path stopped reading a missed anchor ray as 0.0. It was the
+    mesh kernel that was right; the gate is now live on all six combinations.
+    """
     from guildmodel.core.model import subtract_all, to_trimesh
     from guildmodel.core.model import build_terraces as mesh_terraces
     from guildmodel.core.model.features import scoop_cutter, splay_cutter
@@ -367,38 +353,62 @@ def test_surface_features_agree_with_the_brep_kernel(fixture, feature, request):
         f"path's {brep_removed:.3f}")
 
 
-def test_the_scoop_does_not_dive_through_a_decorative_opening(aviator_front):
-    """Pins the divergence above, and which side of it we are on.
+@pytest.mark.parametrize("kernel", ["mesh", "brep"])
+@pytest.mark.parametrize("fixture", ["aviator_front", "gabriel_front"])
+def test_the_scoop_does_not_dive_where_its_rays_find_nothing(fixture, kernel,
+                                                             request):
+    """The scoop marches up the centreline, which is where a frame is not solid.
 
-    Anchor rays that cross the aviator's bridge keyhole find nothing. Read as
-    0.0 they mean "the surface is at the anterior face" and the scoop cuts the
-    full thickness; carried from the neighbouring stations they mean "the
-    surface continues", which is what a scoop running over an opening actually
-    does.
+    Both real drawings break the ray, for different reasons: seven of the
+    aviator's thirteen stations sit inside its decorative keyhole, and two of
+    Gabriel's run off the bottom of the bridge into the nose gap. Read as 0.0
+    those misses mean "the surface is at the anterior face" and the section —
+    which closes upward to `top` — takes the full thickness. Carried from the
+    neighbouring stations they mean "the surface continues", which is what a
+    scoop passing over an opening actually does.
 
     Asserted as a *floor on the cutter*, not as a volume, because the volume is
-    the symptom and the cutter reaching z=0 is the defect.
+    the symptom and the cutter reaching z=0 is the defect. The volume gate above
+    ran green on Gabriel throughout: its two missed stations are over air, so
+    diving there removed almost nothing while still being wrong.
+
+    Run against both kernels, since the whole point is that they now answer this
+    the same way.
     """
-    from guildmodel.core.model import build_terraces, to_trimesh
-    from guildmodel.core.model.features import scoop_cutter
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.solid.build import zone_heights
 
-    partition = aviator_front.partition
-    assert any(partition.is_hole(r) for r in partition.body.interiors), (
-        "this fixture is chosen for its decorative opening")
-
+    front = request.getfixturevalue(fixture)
+    partition = front.partition
     castle = CastleParams()
     castle.bridge_relief.enabled = True
     heights = zone_heights(partition, castle, None)
-    bare = build_terraces(partition, heights)
-    cutter = to_trimesh(scoop_cutter(to_trimesh(bare), partition.body,
-                                     castle.bridge_relief))
+
+    if kernel == "mesh":
+        from guildmodel.core.model import build_terraces, to_trimesh
+        from guildmodel.core.model.features import scoop_cutter
+
+        bare = build_terraces(partition, heights)
+        cutter = to_trimesh(scoop_cutter(to_trimesh(bare), partition.body,
+                                         castle.bridge_relief))
+        z_min = float(cutter.bounds[0][2])
+    else:
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+
+        from guildmodel.core.solid.build import build_terraces as occ_terraces
+        from guildmodel.core.solid.features import scoop_cutter as occ_scoop
+
+        bare = occ_terraces(partition, heights, curved=False)
+        box = Bnd_Box()
+        BRepBndLib.Add_s(occ_scoop(bare, partition.body,
+                                   castle.bridge_relief), box)
+        z_min = float(box.CornerMin().Z())
 
     floor = float(castle.bridge_relief.anterior_clamp_mm)
-    assert cutter.bounds[0][2] >= floor - 0.05, (
-        f"the scoop reaches z={cutter.bounds[0][2]:.3f}, below its own "
-        f"anterior clamp of {floor} — it is diving through the opening")
+    assert z_min >= floor - 0.05, (
+        f"the {kernel} scoop reaches z={z_min:.3f}, below its own anterior "
+        f"clamp of {floor} — it is diving where its rays found nothing")
 
 
 @pytest.mark.parametrize("fixture",
@@ -536,24 +546,43 @@ def test_neither_kernel_bezels_a_decorative_opening(aviator_front):
     assert len(mesh) == len(lenses), "the mesh path bezelled a decorative hole"
 
 
-def test_the_mesh_anchor_ray_reports_a_miss_as_nan(demo_front):
-    """Not 0.0. The B-Rep default of 0.0 is indistinguishable from "the surface
-    sits on the anterior face", and that is precisely how the pad splay came to
-    treat Gabriel's empty nose notch as solid material and cut the frame in
-    half. A miss has to be loud."""
+@pytest.mark.parametrize("kernel", ["mesh", "brep"])
+def test_an_anchor_ray_reports_a_miss_as_nan(kernel, demo_front):
+    """Not 0.0, on either kernel.
+
+    0.0 is indistinguishable from "the surface sits on the anterior face", and
+    that is precisely how the pad splay came to treat Gabriel's empty nose notch
+    as solid material and cut the frame in half, and how the bridge scoop came
+    to plunge through the aviator's keyhole. A miss has to be loud.
+
+    The B-Rep path defaulted to 0.0 until the scoop fix; the two kernels now
+    disagree about nothing here, which is why this is one parametrized test
+    rather than a mesh-side rule the other side is free to ignore.
+    """
     import numpy as np
 
-    from guildmodel.core.model import build_castle_model, to_trimesh
-    from guildmodel.core.model.kernel import surface_z_at
     from guildmodel.core.project.schema import CastleParams
 
-    mesh = to_trimesh(build_castle_model(demo_front.partition, CastleParams(),
-                                         demo_front.hinge_polys))
-    far_away = [(10_000.0, 10_000.0)]
-    assert np.isnan(surface_z_at(mesh, far_away)[0])
+    if kernel == "mesh":
+        from guildmodel.core.model import build_castle_model, to_trimesh
+        from guildmodel.core.model.kernel import surface_z_at
+
+        part = to_trimesh(build_castle_model(demo_front.partition,
+                                             CastleParams(),
+                                             demo_front.hinge_polys))
+    else:
+        from guildmodel.core.solid.build import zone_heights
+        from guildmodel.core.solid.build import build_terraces as occ_terraces
+        from guildmodel.core.solid.occ import surface_z_at
+
+        part = occ_terraces(demo_front.partition,
+                            zone_heights(demo_front.partition, CastleParams(),
+                                         None), curved=False)
+
+    assert np.isnan(surface_z_at(part, [(10_000.0, 10_000.0)])[0])
 
     inside = demo_front.partition.body.representative_point()
-    hit = surface_z_at(mesh, [(inside.x, inside.y)])[0]
+    hit = surface_z_at(part, [(inside.x, inside.y)])[0]
     assert not np.isnan(hit) and hit > 0.0
 
 

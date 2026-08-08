@@ -100,9 +100,18 @@ def is_valid(shape: TopoDS_Shape) -> bool:
     return BRepCheck_Analyzer(shape).IsValid()
 
 
-def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = 0.0,
+def surface_z_at(shape: TopoDS_Shape, pts_xy, missing: float = float("nan"),
                  tol: float = 1e-7, face: str = "top") -> np.ndarray:
     """Exact surface height above each (x, y), by vertical ray.
+
+    **`missing` is NaN, and used to be 0.0.** That default cost two defects,
+    because 0.0 is not a sentinel — it is the anterior face. A ray that hit
+    nothing was indistinguishable from one that found the front of the frame, and
+    a feature spanning from the surface up to `top` then removed the whole
+    thickness. It cut Gabriel's frame in half through the pad splay, and it made
+    the bridge scoop plunge through the aviator's decorative keyhole. A caller
+    now has to decide what a miss means; `geometry.rings.carry_anchors` is that
+    decision for every feature that rides the surface.
 
     `face="bottom"` takes the lowest hit instead of the highest — the anterior
     face. In a solid the front of the frame is simply the underside; it needs no

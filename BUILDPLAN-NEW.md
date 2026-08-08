@@ -370,6 +370,36 @@ interpreter. A C++ port of this codebase would reproduce the catalog exactly,
 after a rewrite measured in months. Likewise CadQuery/build123d (same kernel
 underneath) change the ergonomics, not the math.
 
+### 3.5 Defects that were ours, not the kernel's *(added 2026-08-08)*
+
+§3.1 already had to be corrected once for blaming OCCT for a cutter we built
+tangent to a wall. Since the port started, the parity work has surfaced three
+more of ours, and all three have the same shape: **a sentinel value that is also
+a legal measurement.** They are recorded here rather than in the §3.2 catalog
+because that table is the case against the kernel and these are not evidence for
+it. If anything they are evidence for the port itself — every one was found by
+making a second kernel answer the same question.
+
+| # | defect | the sentinel | found by |
+| --- | --- | --- | --- |
+| 1 | Pad splay cut Gabriel's frame **into two halves** — left x[-67.65, -1.38], right x[1.38, 67.65], watertight, `IsValid` true, zero holes | `surface_z_at` returned **0.0** for an anchor ray that missed, which is also "the surface is at the anterior face". The crest stepped out through the nose notch, the ray found nothing, and the chamfer — spanning up to `top` — took the whole thickness | the maker's own drawing, as a third fixture; only the **body count** caught it |
+| 2 | Bridge scoop **plunged through the aviator's decorative keyhole** to z=-0.020, removing 19.471 mm³ against 14.577; and did the same on Gabriel, where the run leaves the bottom of the bridge | the same 0.0 | building the feature on the mesh kernel and comparing. On Gabriel the volume gate stayed green the whole time, because those stations are over air — wrong in the same way, cheap in millimetres |
+| 3 | `offset_aperture` lost its exact curve on every rim lip, silently falling back to the Shapely buffer | a bare `except Exception` around a `NameError` | moving the function; the exception had always been there |
+
+The fix for 1 and 2 is `geometry.rings.carry_anchors`, shared by both kernels: a
+missed ray is NaN, and NaN is filled from the neighbouring station rather than
+from any constant. Substituting a constant is what caused the mesh kernel's own
+version of this bug — anchoring a grazed station at the anterior clamp took it
+from z 5.3 to 1.48 and gouged 21% more than OCCT. **No constant is a height the
+surface ever had.** Both `surface_z_at` implementations now default `missing` to
+NaN so that forgetting is loud.
+
+The methodology lesson is the one §3.1 already names, now with four instances:
+**a gate must be checked against a known-wrong input, not only a known-right
+one.** The groove's backwards V, the bezel's part-volume tolerance, the slab
+test's convex fixture, and Gabriel's diving scoop all passed while measuring
+nothing.
+
 ---
 
 ## 4. What is sound and must survive any redesign
@@ -566,6 +596,16 @@ sweep is new). ~2–3 sessions. **Kill switch**: if footing parity cannot meet
 the existing gates, fall back to hybrid — OCCT builds the (cacheable, rarely
 failing) base, Manifold applies every feature to its tessellation; §3.1 shows
 the features, not the terraces, are where the kernel dies.
+
+*Everything but the footing blends is ported as of 2026-08-08.* Terraces agree
+to 0.0000%, and the six surface-feature gates (splay × scoop over all three
+fixtures) are live with no skips. The port paid for itself before shipping: it
+found three defects in the B-Rep path that the B-Rep path's own tests passed,
+including two that cut through real frames — see §3.5. Both are fixed on **both**
+kernels; the shipped aviator scoop changed by 4.98 mm³, with the maker's
+agreement that the old geometry was wrong. Anything kernel-neutral that both
+paths need now lives in `core/geometry/rings.py` rather than being copied, for
+exactly the reason §3.5 documents: two copies of a rule become two rules.
 
 **M-N2 — into the app behind a flag.** `MultiMeshWorker` gains the Manifold
 path; readiness dot = Manifold `status()` + our own boundary-edge count (the

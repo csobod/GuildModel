@@ -124,6 +124,7 @@ def hinge_pocket_cutters(hinges: Iterable[Polygon], castle: CastleParams,
 # it without importing OCP. Re-exported under the old private names: these are
 # the same functions, and duplicating them is how two kernels start disagreeing.
 from ..geometry.rings import (                                   # noqa: E402
+    carry_anchors as _carry_anchors,
     crest_inside as _crest_inside,
     GROOVE_STATIONS,
     _LIP_AREA_TOL,
@@ -194,7 +195,8 @@ def bezel_cutter(solid: TopoDS_Shape, body: Polygon, ring,
 
     # Anchor on the surface AT THE RIM — sampled just inside it, since a ray
     # exactly on the aperture boundary hits the vertical wall ambiguously.
-    anchors = surface_z_at(solid, pts + inward * _RIM_PROBE_MM)
+    anchors = _carry_anchors(surface_z_at(solid, pts + inward * _RIM_PROBE_MM),
+                             float(p.anterior_clamp_mm))
 
     sections = [
         _bezel_section(p_xy, nn, float(a), width, tan_a,
@@ -492,6 +494,10 @@ def edge_feature_cutters(solid: TopoDS_Shape, partition: CastlePartition,
 
         anchors = surface_z_at(solid, pts + inward * _RIM_PROBE_MM,
                                face="top" if posterior else "bottom")
+        # A span with no material under it should cut nothing, so an all-miss
+        # falls back to the plane `_edge_section` closes against — the section
+        # collapses there instead of spanning the part.
+        anchors = _carry_anchors(anchors, top if posterior else -CUT_MARGIN_MM)
 
         sections = [
             _edge_section(p, nn, float(a), float(wd), float(dr),
@@ -615,6 +621,12 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     # at the local surface height. Each is anchored where its own definition
     # pins it.
     anchors = surface_z_at(solid, pts + inward * np.maximum(c, _RIM_PROBE_MM)[:, None])
+    floor = float(p.anterior_clamp_mm)
+    # A crest ray that finds nothing means no material to splay at that station,
+    # not material sitting at z=0 — see `_carry_anchors`. `_crest_inside` keeps
+    # the crest in the body so this fires rarely, but the two guards answer
+    # different questions and neither implies the other.
+    anchors = _carry_anchors(anchors, floor)
     top = float(anchors.max()) + CUT_MARGIN_MM
 
     # Floor the cut at `anterior_clamp_mm` above the front face, the same way
@@ -629,9 +641,8 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     # in the wrong place, which is why only the body count caught it.
     #
     # The lower bound keeps the loft buildable where the surface is already
-    # thinner than the clamp (an anchor ray that misses reads 0.0), matching
-    # `scoop_cutter`; at 0.02 mm it cannot sever anything.
-    floor = float(p.anterior_clamp_mm)
+    # thinner than the clamp, matching `scoop_cutter`; at 0.02 mm it cannot sever
+    # anything.
     drops = np.clip(drops, MIN_TAPER_DROP_MM,
                     np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
 
@@ -717,6 +728,16 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
 
     anchors = surface_z_at(solid, np.column_stack([np.zeros_like(ys), ys]))
     floor = float(p.anterior_clamp_mm)
+    # The scoop is the feature this matters most to, because its stations march
+    # straight up the centreline and that is exactly where a frame is *not*
+    # solid. Seven of the aviator's thirteen sit inside its decorative keyhole
+    # and two of Gabriel's run off the bottom of the bridge into the nose gap;
+    # only the demo frame reads solid the whole way. Before `_carry_anchors`
+    # those misses came back as 0.0, and since a section closes upward to `top`,
+    # the cutter reached z=-0.020 and took the full thickness across the opening
+    # on both real drawings — 19.471 mm3 removed on the aviator and 17.095 on
+    # Gabriel, against 14.708 on the frame with nothing in the way.
+    anchors = _carry_anchors(anchors, floor)
     ds = np.minimum(ds, np.maximum(anchors - floor, 0.0))
     ds = np.maximum(ds, MIN_TAPER_DROP_MM)
     top = float(anchors.max()) + CUT_MARGIN_MM

@@ -1,9 +1,10 @@
 """Ring geometry shared by both model kernels (BUILDPLAN-NEW M-N1).
 
 These answer *where* things go — stations around an aperture, which way is into
-the material, and what the rim lip is once the groove has shrunk it. None of it
-is about triangles or trimmed surfaces, and both `core/solid` (OpenCASCADE) and
-`core/model` (Manifold) need every one of them.
+the material, what the rim lip is once the groove has shrunk it, and what an
+anchor ray that hit nothing is allowed to mean. None of it is about triangles or
+trimmed surfaces, and both `core/solid` (OpenCASCADE) and `core/model`
+(Manifold) need every one of them.
 
 They lived in `core/solid/features.py` until the mesh kernel needed them, which
 would have meant importing OCP — ~70 MB of shared libraries — to ask a Shapely
@@ -35,8 +36,8 @@ from shapely.prepared import prep
 from .curves import OffsetCurve
 from .regions import CastlePartition
 
-__all__ = ["crest_inside", "inward_normals", "lip_body", "lip_partition",
-           "offset_aperture", "ring_stations"]
+__all__ = ["carry_anchors", "crest_inside", "inward_normals", "lip_body",
+           "lip_partition", "offset_aperture", "ring_stations"]
 
 def ring_stations(ring: LineString, n: int):
     """Points and unit tangents evenly spaced around a closed ring."""
@@ -226,6 +227,14 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
     return lip
 
 
+# ------------------------------------------------------------------ anchor rays
+#
+# Both kernels anchor their surface-riding features by firing a vertical ray at
+# the part as it currently stands. Both therefore have to answer the same
+# question: what does it mean when a ray hits nothing? These two are that
+# answer, and they are here rather than in either kernel because getting
+# different answers is precisely the failure mode the port exists to avoid.
+
 def crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
                   c: np.ndarray, steps: int = 24) -> np.ndarray:
     """Shorten each crest offset until the crest point is inside the material.
@@ -255,4 +264,51 @@ def crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
             if t <= 0.0 or prepared.contains(Point(float(q[0]), float(q[1]))):
                 out[i] = t
                 break
+    return out
+
+
+def carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
+    """Fill missed anchor rays from their neighbours along the run.
+
+    Takes NaN for "this ray hit nothing" — which is why both `surface_z_at`
+    implementations default `missing` to NaN rather than to a height. A miss is
+    a *gap in the reading*, and the one thing it must never be silently mistaken
+    for is a real surface at some particular Z.
+
+    Rays miss for three reasons, and none of them means "cut deeper here":
+
+    - The station is over an opening. Seven of the aviator's thirteen bridge
+      scoop stations sit inside its decorative keyhole.
+    - The run leaves the material altogether. Two of Gabriel's thirteen run off
+      the bottom of the bridge into the nose gap.
+    - The ray grazes the silhouette. A tangent ray still registers against a
+      B-Rep surface but slides off a triangle mesh, which is how the two kernels
+      came to disagree on the scoop in the first place.
+
+    In all three the surface either continues on both sides or is simply absent,
+    so the honest reading is the neighbouring station's height: the feature rides
+    over the gap instead of plunging into it. Where there is no material the
+    cutter then hangs in air and removes nothing, which is correct by default.
+
+    **Substituting a constant is what makes this dangerous, and both kernels have
+    now been bitten by a different constant.** Reading a miss as 0.0 — the
+    anterior face — is what let the pad splay treat Gabriel's empty nose notch as
+    solid and cut the frame into two halves, and what makes the B-Rep scoop
+    plunge the full thickness across the aviator's keyhole. Reading it as the
+    anterior clamp instead took a grazed scoop station from z 5.3 to 1.48 and
+    gouged 21% more than it should. Neither constant is a height the surface ever
+    had; the station next door is.
+
+    `fallback` applies only when *every* station missed, which means the whole
+    feature is over empty space and should cut nothing.
+    """
+    out = np.asarray(anchors, dtype=float).copy()
+    valid = ~np.isnan(out)
+    if not valid.any():
+        return np.full_like(out, float(fallback))
+    idx = np.arange(len(out))
+    # `np.interp` holds the end values flat, so a miss before the first hit or
+    # after the last one takes the nearest real reading rather than extrapolating
+    # a trend off the end of the run.
+    out[~valid] = np.interp(idx[~valid], idx[valid], out[valid])
     return out
