@@ -10,6 +10,113 @@ measured on this machine, this week, on this codebase — the probe scripts are 
 
 ---
 
+## 0. First operation — the interface (UI-0). *Added 2026-08-07, runs before everything below.*
+
+The kernel is not the only thing at a wall. The interface is struggling on the
+maker's own machine — the primary platform this project exists for — and the
+mandate is the same shape as the kernel audit: **an in-depth UI/UX analysis**,
+not another spot fix. Two distinct problems, one operation.
+
+### 0.1 Rendering: the scaling has now been wrong in both directions
+
+History, with numbers, because it shows why the next fix must be systemic:
+
+| era | state | why |
+| --- | --- | --- |
+| before 2026-08-07 | everything ~68% of intended size, splash black | native-Wayland Qt: VTK cannot embed (X11-only renderer), and under XWayland Qt assumed 96 DPI on a 141.6 DPI panel; nobody scaled |
+| after the Stage 2 fix | correct on that day's session: `gui/hidpi.py` forces `xcb`, measures the panel, computes **1.475×**, applies it to the app font and to the stylesheet's 139 `px` sizes; splash rebuilt as a `QWidget` (1096 ms → 83 ms, no black flash) | exactly one party scaled: us |
+| now | fonts and splash **far too big** | to be verified, but there is one prime suspect |
+
+**The prime suspect: two parties scaling at once.** Our factor is derived from
+physical-vs-logical DPI and explicitly divides out `devicePixelRatio` — but
+compositor upscaling of XWayland windows is *invisible* to the client (dpr
+still reads 1.0). KDE Plasma's Wayland session can scale legacy X11 apps
+itself, and that setting (or a Plasma/Qt update flipping its default) stacks
+the compositor's ~1.5× on top of our 1.475× ≈ **2.2×** — "REALLY big," which is
+what the screen shows. The old too-small state was zero scalers; the current
+too-big state is likely two. The bug class is the same one both times:
+**scaling by inference, with no authority on who scales.**
+
+The fix this operation must land is an invariant, not a value: **exactly one
+party applies scale, and the app can prove which one it was.** Concretely:
+
+1. **Evidence first, on this machine.** A `--diag-display` dump (screen
+   name, physical/logical DPI, dpr, platform plugin, the env overrides, the
+   computed scale, compositor legacy-scaling setting where readable) captured
+   under: Plasma Wayland as-is, Plasma with legacy-app-scaling toggled, plain
+   X11 session, and `QT_QPA_PLATFORM=wayland` (headless of 3D, but it answers
+   what Qt *would* do). No code changes until this table exists — the last fix
+   was correct for the session it was measured in, which is precisely the trap.
+2. **Detect, don't assume.** If the compositor is scaling XWayland (detectable:
+   logical DPI ≈ 96 × compositor scale, or xrdb `Xft.dpi` ≠ 96, or the X
+   screen's mm-size versus EDID disagreeing with the pixel size), our factor
+   must collapse to 1.0. The one-scaler invariant enforced in code, with the
+   decision logged at startup — one line in the app log saying *who* is scaling
+   and *why*, so the next report of wrong-size UI is diagnosable from the log
+   alone.
+3. **The escape hatch is already there and must be surfaced.** The `ui_scale`
+   preference (auto / pinned number / 1.0-off) exists in `hidpi.ui_scale()`;
+   Preferences should expose it with a live preview, so no future scaling bug
+   ever strands the maker in an unusable UI.
+4. **The splash follows the same scale source** — it renders through the same
+   `(dpr, scale)` pair, so it is fixed by construction, and verified with the
+   same diagnostic.
+5. **A platform matrix, kept honest by CI where possible**: Plasma/Wayland
+   (the maker's — first-class), GNOME/Wayland, plain X11, Windows, macOS (the
+   packaging targets). For each: scale correctness at compositor 100% / 125% /
+   150%, splash, dark/light toggle re-derivation, and the VTK embed. The
+   Wayland rows cannot run in CI honestly — they get a documented manual
+   checklist instead of a pretense.
+
+### 0.2 UX: is the app telling the user the truth, and is it pleasant to drive?
+
+The screenshot that triggered this work shows the deeper problem: a visibly
+corrupt model — a spike of material off the nosepad — over a status bar reading
+**"3D model ready"** and an Inspector reading **"Nothing flagged."** Every
+automated gate was green while the user could *see* the failure. The kernel
+audit (§3) explains why the checks lied; the UX audit has to fix the parallel
+failure: **the interface reported health it had not verified.**
+
+Scope of the walkthrough, as a user would meet it:
+
+- **Honest status.** The readiness dot and Inspector must reflect the *mesh
+  oracle* (closed + volume sane — the only check that has ever caught real
+  corruption), not the kernel's self-report. "Model ready" should mean
+  *verified*, and a failed verification should name the feature it implicates.
+- **Stale-state signaling.** After a parameter change, is it unmistakable that
+  the preview no longer matches the numbers? (Today: a rebuild button and
+  memory.)
+- **Long-operation UX.** At today's 21–35 s builds: progress that names the
+  stage (exists), cancellation (exists), and no dead UI. This whole category
+  is scheduled to *evaporate* with the 39 ms kernel (§5F) — the audit should
+  therefore fix cheaply now and design for live-drag later, not invest in
+  polishing a waiting room we intend to demolish.
+- **Error surfacing.** Build failures currently land in the log pane with a
+  dialog pointing at it. The walkthrough asks: can a non-developer read any
+  failure the app can produce and know what to *do*?
+- **The panel itself.** The dock's parameter groups have grown feature by
+  feature (the screenshot shows the strain); an editing pass over grouping,
+  labels, units, and defaults against the vocabulary in §2 — with the maker
+  driving, since they are the reference user.
+- **Structural debt with UX consequences.** MainWindow is 4,183 lines / 192
+  methods (2026-08-07 audit); worth splitting only where it blocks the above,
+  not as an end in itself.
+
+### 0.3 Deliverables and exit
+
+A short **UI-0 findings report** appended to this file (the display-diagnosis
+table, the chosen scaling authority, the UX punch list ranked); the one-scaler
+invariant + diagnostic landed; the preference surfaced; the splash verified;
+the top of the UX punch list fixed — at minimum honest status (§0.2 first
+bullet), which also feeds M-N0's mesh-oracle gate directly.
+
+**Exit criteria**: correct rendering on the maker's session at 100/125/150%
+compositor scale with the decision visible in the log; no regression on plain
+X11; the walkthrough performed with findings written down rather than held in
+memory. Then the kernel work (M-N0…) proceeds below.
+
+---
+
 ## 1. The one-paragraph verdict
 
 The project's goals are right and most of the codebase is sound. The failure is
@@ -292,6 +399,9 @@ fix; everything else in this document is bookkeeping around it.
 ## 7. Migration plan
 
 Staged so that at every point the app still works and the old path can referee.
+**UI-0 (§0) runs first** — it is independent of the kernel choice, it unblocks
+the maker's daily use, and its honest-status work is the same mesh-oracle gate
+M-N0 needs.
 
 **M-N0 — stop the bleeding (immediately, on the current branch).**
 The §3.1 history-dependence is a shipping bug today. Mitigation candidates, in
@@ -364,8 +474,10 @@ corruption.
 
 ## 9. The decision being asked for
 
-Approve the direction (§6) and M-N0/M-N1 as the next work. The first visible
-deliverables: the in-session corruption bug mitigated on the current branch,
-the Gabriel drawing as a fixture, and the mesh kernel building the bare castle
-+ groove with the full parity suite green — at which point the 39 ms number
-stops being a spike and starts being the product.
+Approve the direction (§6) with **UI-0 first**, then M-N0/M-N1. The first
+visible deliverables, in order: the interface rendering correctly on the
+maker's own machine with the scaling decision provable from the log; honest
+model status in the UI; the in-session corruption bug mitigated on the current
+branch; the Gabriel drawing as a fixture; and the mesh kernel building the bare
+castle + groove with the full parity suite green — at which point the 39 ms
+number stops being a spike and starts being the product.
