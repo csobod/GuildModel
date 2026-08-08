@@ -37,6 +37,13 @@ what the screen shows. The old too-small state was zero scalers; the current
 too-big state is likely two. The bug class is the same one both times:
 **scaling by inference, with no authority on who scales.**
 
+> **This suspect was wrong** — see §0.4. The compositor was at scale 1
+> throughout; *we* were the only scaler, and the anomaly. The bug class named
+> in the last sentence was right, which is why the fix below still stands: the
+> deliverable was always the invariant, not the value. Left here as written
+> because a plausible, well-argued, incorrect hypothesis is exactly what the
+> "evidence first" rule exists to catch.
+
 The fix this operation must land is an invariant, not a value: **exactly one
 party applies scale, and the app can prove which one it was.** Concretely:
 
@@ -101,6 +108,77 @@ Scope of the walkthrough, as a user would meet it:
 - **Structural debt with UX consequences.** MainWindow is 4,183 lines / 192
   methods (2026-08-07 audit); worth splitting only where it blocks the above,
   not as an end in itself.
+
+### 0.4 UI-0 findings — what the evidence actually said *(2026-08-07)*
+
+Run `guildmodel --diag-display` to reproduce any of this.
+
+**Finding 1 — we were the second scaler, and the desktop was never asked.**
+
+| | value |
+| --- | --- |
+| session | Plasma 6 / Wayland, app forced to XWayland for VTK |
+| primary panel `eDP-1` | 1920x1200, 345x215 mm → **141.6 physical DPI** |
+| Qt logical DPI / dpr | 96.0 / **1.00** |
+| KWin `Xwayland Scale`, `kscreen` output scale | **1**, **1** |
+| our computed scale (old policy) | **1.475** |
+
+The compositor was not double-scaling after all — the maker simply runs that
+panel at scale 1 on purpose, and *we* were the anomaly. Every other window on
+the desktop is at 1.0; ours was 1.475. The prime suspect named in §0.1 was
+wrong, and the measurement is why we know.
+
+The fix is the invariant rather than the number (`hidpi._decide`): the maker's
+pin wins; a **managed desktop is followed exactly, including its choice not to
+scale**; the physical-DPI heuristic fires only where nothing manages the
+desktop (no `XDG_CURRENT_DESKTOP`, dpr 1, logical DPI still at Qt's 96
+default). `scale_decision()` renders the reasoning as one line, emitted to the
+startup log and to the diagnostic — the same code path, so the log cannot drift
+from the behaviour.
+
+**Finding 2 — the original "too small" was not a DPI problem at all.**
+
+`/usr/lib/qt6/plugins/platformthemes/KDEPlasmaPlatformTheme6.so` exists, and the
+app can never load it: **PySide6 bundles its own Qt** and searches only its own
+plugin directory, which ships `libqgtk3` and `libqxdgdesktopportal` and no KDE
+theme. So Qt answers with its generic fallback — `"Sans Serif" 9pt` — under both
+the `xcb` and `wayland` plugins. On top of that the stylesheet pins **139
+`font-size` values in px**, which overrode even that. The app therefore rendered
+at one fixed size on Segoe UI 9, Cantarell 11 and Noto Sans 10 alike; "renders
+well across platforms" was structurally impossible.
+
+`desktop_font_scale()` makes the authored sizes *ratios* against a stated 13 px
+design baseline (`DESIGN_BASE_PX`), so typography tracks the platform with no
+DPI arithmetic anywhere. Qt's generic fallback is treated as "no answer" and
+replaced with the mainstream Linux default (10 pt) rather than mistaken for a
+desktop that wants 9 pt. On this machine: font 9 pt → 10 pt, stylesheet ×1.026.
+
+Also fixed while in there: `apply_ui_scale` multiplied *the current* font, so a
+second caller — which Preferences now is — would have squared the factor. It
+captures the platform base once and always sets an absolute size.
+
+**Finding 3 — "3D model ready" only ever meant "the builder returned".**
+
+Now `core/mesh_check.verify_mesh` asks the tessellation: closed, consistently
+wound, positive volume, one connected body. It drives the status bar
+("⚠ 3D model has problems"), **leads** the Inspector list — a broken model makes
+every downstream check meaningless, so it must not sit under a tool-reach
+warning — and degrades the readiness dot green → red. Verified end to end: a
+leaking mesh flips the dot to red and puts *"The surface has gaps, so this is
+not a closed solid. It will not export as a valid STL"* at the top of the
+Inspector.
+
+It takes triangles, not a kernel handle, so it survives M-N1 unchanged. That is
+deliberate: **the check must not inherit the bias of whatever built the mesh.**
+
+**Escape hatch shipped.** Preferences ▸ Appearance ▸ UI scale (Auto, or
+100–200%) with a live sample and immediate apply.
+
+**Still open from §0.1–0.2** (not blocking, carried forward): the platform
+matrix beyond this machine (GNOME/Wayland, plain X11, Windows, macOS) needs the
+manual checklist actually run; stale-preview signalling; the parameter-dock
+editing pass with the maker driving; and MainWindow's 4,183 lines, to be split
+only where it blocks the above.
 
 ### 0.3 Deliverables and exit
 
