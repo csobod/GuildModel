@@ -1,4 +1,4 @@
-"""Does the surface touch itself? The base no longer does; three features still.
+"""Does the surface touch itself? No longer — anywhere. Degenerate faces remain.
 
 Found while investigating why dihedral edge detection produced lines that were
 not on the part (BUILDPLAN-NEW §8.2). The creases turned out to be zero-area
@@ -22,24 +22,29 @@ Step 2 is not optional. Skipping it reported 194 on the demo base where the
 honest figure was 157, and it was skipping it that made the B-Rep look defective
 too (see `test_the_brep_surface_does_not_touch_itself`).
 
-**Where this stands.** The base — terraces plus all ten footing blends, which
-was 157 / 247 / 232 across the three fixtures — is now zero, and so is the bare
-model with its hinge pockets. Two changes did it, both in `model/build.py` and
-both the same rule: carry a tool *across* every surface it meets
-(`FOOTING_CROSS_MM`, for the zone wall at the seam), and never ask two
-independently computed copies of a face to cancel (`ZONE_WELD_MM`).
+**And measure at full precision.** `to_trimesh` used to extract through
+`Manifold.to_mesh()`, which is float32 while Manifold itself keeps float64. At a
+50 mm coordinate that spacing is about 4e-6 mm, and it distorted these counts in
+*both* directions — the bezel read 308 zero-area triangles where there are 2,
+because quantisation merges vertices and turns faces degenerate, while the
+aviator read 2 contacts where there are 6, because a face that goes degenerate
+carries its edges out of the count. For a while it also meant the control was
+comparing the B-Rep at float64 against the mesh at float32.
 
-What remains is per feature, and is not the same defect:
+**Where this stands.** Contacts are **zero everywhere** — base and every
+feature, matching the B-Rep on all three drawings. Three things got it there:
 
-* **lens groove** — 76 / 94 / 82, and the V arrives with 60 to 72 of them
-  before it has met the part. Root-caused to `kernel.hull_chain`, whose cells
-  abut on a shared section rather than overlapping; see its docstring, and the
-  overlap that was tried and rejected.
-* **pad splay** — no contacts, but open edges once the degenerate faces are
-  dropped, which means those faces are load-bearing and the surface pinches.
-* **eyewire bezel** — 308 / 400 / 428 zero-area triangles and up to 2 contacts.
+* `FOOTING_CROSS_MM` — carry each blend half across the zone wall at the seam
+  instead of stopping on it. The base was 157 / 247 / 232.
+* `ZONE_WELD_MM` — grow each zone so neighbours overlap, rather than asking two
+  independently computed copies of a wall to cancel.
+* `kernel.sweep_sections` — build a swept tube as an explicit strip instead of a
+  union of abutting convex hulls. The lens groove was 76 / 94 / 82.
 
-M-N3 does not flip the default until all of it is zero.
+What remains is **zero-area triangles**, which are a lesser thing — `mesh_check`
+does not report them and slicers generally discard them — but the B-Rep emits
+none, so they are still a gap. `_KNOWN_DEGENERATE` holds them, and the pad splay
+is the open item.
 """
 import zipfile
 from pathlib import Path
@@ -219,39 +224,99 @@ def test_no_blend_sample_lands_on_the_seam():
 
 # ------------------------------------------------------------ what is not, yet
 
-#: Known self-touching edge counts by fixture and feature, as an upper bound so
-#: the defect cannot quietly grow and so that fixing it fails here and has to be
-#: acknowledged rather than slipping by. See the module docstring for what each
-#: one is; none of them is the blend defect the base had.
-_KNOWN_SELF_TOUCH = {
-    "demo_front":    {"eyewire_bezel": 0, "lens_groove": 76},
-    "aviator_front": {"eyewire_bezel": 2, "lens_groove": 94},
-    "gabriel_front": {"eyewire_bezel": 0, "lens_groove": 82},
+#: Zero-area triangles, and the edges that open when they are dropped, by
+#: fixture and feature. Pinned as an upper bound: these are what is left after
+#: the contacts went, and the B-Rep produces none of them, so this is a ratchet
+#: on a known gap rather than an expectation that it is fine.
+#:
+#: The splay is the open item. Four things have been tried on it and none
+#: touched the `open` count, which sits at exactly 31 / 43 / 13 no matter what
+#: the profile does at either end — leading the chamfer out past its anchor
+#: (made it worse), two points instead of twelve for a collinear ramp (removed
+#: 1.5 mm3 more material, the subdivision is what stops the cell bulging across
+#: the turn), building it as a strip (no change — both operands are clean on
+#: their own and it is the subtraction that makes the faces), and stopping the
+#: profile short inside the material so the section's end wall crosses
+#: transversally (105 -> 99, open unchanged). That invariance says the cause is
+#: not the profile's shape.
+_KNOWN_DEGENERATE = {
+    "demo_front":    {"eyewire_bezel": (2, 0), "lens_groove": (8, 0),
+                      "pad_splay": (105, 31), "bridge_relief": (0, 0)},
+    "aviator_front": {"eyewire_bezel": (12, 0), "lens_groove": (0, 0),
+                      "pad_splay": (97, 43), "bridge_relief": (0, 0)},
+    "gabriel_front": {"eyewire_bezel": (12, 0), "lens_groove": (8, 0),
+                      "pad_splay": (93, 13), "bridge_relief": (0, 0)},
 }
 
 
-@pytest.mark.parametrize("feature", ["eyewire_bezel", "lens_groove"])
+@pytest.mark.parametrize("feature", ["eyewire_bezel", "lens_groove",
+                                     "pad_splay", "bridge_relief"])
 @pytest.mark.parametrize("fixture",
                          ["demo_front", "aviator_front", "gabriel_front"])
-def test_the_remaining_features_do_not_get_worse(fixture, feature, request):
-    """A ratchet on known defects, not an expectation that they are fine.
+def test_no_feature_makes_the_surface_touch_itself(fixture, feature, request):
+    """Zero contacts, per feature, matching the B-Rep on all three drawings.
 
-    Under-tightening this would let them spread unnoticed; over-tightening to
-    the exact figure would make every unrelated tessellation change fail here.
-    So: at most what is recorded, and the model must still be the closed,
-    single, correct-volume body it is today.
+    This is the M-N0 condition — what `mesh_check` words as "the model overlaps
+    itself along N edges ... will not export as a valid STL" — and it is the one
+    that has to be zero rather than merely small. The lens groove was 76 / 94 /
+    82 of them until `kernel.sweep_sections` replaced the hull chain.
     """
     mesh = _model(request.getfixturevalue(fixture), **{feature: True})
     found = self_touching_edges(mesh)
-    budget = _KNOWN_SELF_TOUCH[fixture][feature]
-    assert found["touching"] <= budget, (
-        f"self-touching edges rose to {found['touching']} from a known "
-        f"{budget} — see the module docstring")
-
-    # Everything else about the part is still right, which is exactly why this
-    # needed a dedicated measurement to see at all.
+    assert found["touching"] == 0, found
     assert mesh.is_watertight
     assert mesh.body_count == 1
+
+
+@pytest.mark.parametrize("feature", ["eyewire_bezel", "lens_groove",
+                                     "pad_splay", "bridge_relief"])
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_the_degenerate_faces_do_not_grow(fixture, feature, request):
+    """A ratchet on what is left, not an expectation that it is fine."""
+    mesh = _model(request.getfixturevalue(fixture), **{feature: True})
+    found = self_touching_edges(mesh)
+    zero_budget, open_budget = _KNOWN_DEGENERATE[fixture][feature]
+    assert found["zero_area"] <= zero_budget, (
+        f"zero-area triangles rose to {found['zero_area']} from a known "
+        f"{zero_budget} — see the module docstring")
+    assert found["open"] <= open_budget, (
+        f"open edges rose to {found['open']} from a known {open_budget}")
+
+
+def test_the_sweep_never_falls_back_to_the_hull_chain(demo_front):
+    """`sweep_sections` keeps `hull_chain` for paths that turn tighter than the
+    section is deep, where a strip would build the self-intersection faithfully.
+
+    A fallback nobody notices is the failure mode this project keeps being
+    bitten by, so pin that it is not silently carrying the build: on a fully
+    featured frame every sweep must take the strip.
+    """
+    from guildmodel.core.model import kernel
+    from guildmodel.core.model import build_castle_model
+    from guildmodel.core.project.schema import CastleParams
+
+    real, taken = kernel._strip_mesh, {"strip": 0, "fallback": 0}
+
+    def counting(profiles, closed):
+        out = real(profiles, closed)
+        taken["strip" if out is not None else "fallback"] += 1
+        return out
+
+    castle = CastleParams()
+    for name in ("eyewire_bezel", "lens_groove", "pad_splay", "bridge_relief"):
+        getattr(castle, name).enabled = True
+
+    kernel._strip_mesh = counting
+    try:
+        build_castle_model(demo_front.partition, castle, demo_front.hinge_polys)
+    finally:
+        kernel._strip_mesh = real
+
+    assert taken["strip"] > 0, "no sweep ran at all; this test proves nothing"
+    assert taken["fallback"] == 0, (
+        f"{taken['fallback']} of {sum(taken.values())} sweeps fell back to the "
+        "hull chain, which leaves membranes — find out which and why")
 
 
 def test_the_zero_area_faces_are_manifolds_own(demo_front):

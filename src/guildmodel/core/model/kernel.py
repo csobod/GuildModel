@@ -12,20 +12,26 @@ Manifold it is an invariant of the data structure — an operation either return
 a closed manifold or reports an error status. The whole of BUILDPLAN-NEW §3 is
 the cost of the first arrangement.
 
-Two things here were learned the hard way in the spike and must not be
-rediscovered:
+Three things here were learned the hard way and must not be rediscovered:
 
-* **Weld with the merge map, not with positions.** `to_mesh()` hands back
+* **Weld with the merge map, not with positions.** `to_mesh64()` hands back
   MeshGL, which splits vertices along property boundaries — the same point in
   space appears several times by design. Matching them back up by rounding
   coordinates is guesswork that silently opens seams; `merge_from_vert` /
   `merge_to_vert` is the library telling you exactly which duplicates are one
   vertex. `to_trimesh` below does it that way.
-* **Sweep as a chain of per-segment convex hulls.** Every swept feature in this
-  project (groove V, bezel, splay, scoop, footing blends) is a profile carried
-  along a ring. Hulling each consecutive pair of profiles cannot
-  self-intersect however tight the corner, which is precisely where
-  `BRepOffsetAPI_MakePipeShell` produced 401-second invalid shapes.
+* **Extract at float64.** `to_mesh()` is float32; Manifold is not. Everything
+  the app knows about a model comes through `to_trimesh`, and the downcast was
+  quietly rewriting the answers — see there.
+* **Sweep by building the strip, not by unioning hulls.** Every swept feature in
+  this project (groove V, bezel, splay, scoop, footing blends) is a section
+  carried along a ring, and a section of k points over n stations *is* a quad
+  grid. It was originally a chain of per-segment convex hulls, chosen because
+  that cannot self-intersect however tight the corner — which is precisely where
+  `BRepOffsetAPI_MakePipeShell` produced 401-second invalid shapes. But those
+  cells only *abut*, and the union does not reliably cancel the section they
+  share. `hull_chain` is still here as `sweep_sections`'s fallback for the
+  tight-corner case; it is no longer the way to sweep.
 """
 from __future__ import annotations
 
@@ -40,6 +46,7 @@ __all__ = [
     "extrude",
     "hull_chain",
     "intersect_all",
+    "sweep_sections",
     "subtract_all",
     "surface_z_at",
     "swept_profile",
@@ -182,8 +189,112 @@ def drop_degenerate(man: Manifold,
     return _check(Manifold.compose(keep), "compose")
 
 
+def _strip_mesh(profiles: list[np.ndarray], closed: bool) -> Manifold | None:
+    """The tube as an explicit triangle strip, or None if it cannot be built.
+
+    A section of `k` points carried over `n` stations *is* a quad grid: two
+    triangles per (station gap x section edge), plus a fan cap at each end when
+    the path does not close. No booleans, so nothing has to cancel and nothing
+    is left over.
+
+    **The sections must be ordered around the section boundary.** `hull_chain`
+    never needed that — a hull ignores order — but all four callers already do
+    it, and this makes it load-bearing.
+
+    Returns None rather than raising, so `sweep_sections` can fall back, when:
+
+    * the sections are not all the same length, so there are no rails to build;
+    * a rail runs *backwards* against the sweep. That is the fold `hull_chain`
+      was chosen to be immune to: where the path turns tighter than the section
+      is deep, the offset surface passes through itself, and a strip would
+      faithfully build the self-intersection where a union of convex cells
+      quietly does the right thing. The test is that every rail advance has a
+      positive component along the centroid step;
+    * Manifold rejects the result as not an oriented 2-manifold.
+    """
+    from manifold3d import Mesh64
+
+    n = len(profiles)
+    if n < 2:
+        return None
+    sections = [np.asarray(p, dtype=np.float64) for p in profiles]
+    k = len(sections[0])
+    if k < 3 or any(len(s) != k for s in sections):
+        return None
+
+    last = n if closed else n - 1
+    for i in range(last):
+        a, b = sections[i], sections[(i + 1) % n]
+        step = b.mean(axis=0) - a.mean(axis=0)
+        if not np.any(step) or np.any((b - a) @ step <= 0.0):
+            return None
+
+    tris = []
+    for i in range(last):
+        a, b = i * k, ((i + 1) % n) * k
+        for j in range(k):
+            j2 = (j + 1) % k
+            tris.append((a + j, a + j2, b + j2))
+            tris.append((a + j, b + j2, b + j))
+    if not closed:
+        end = (n - 1) * k
+        for j in range(1, k - 1):
+            tris.append((0, j + 1, j))
+            tris.append((end, end + j, end + j + 1))
+
+    verts = np.vstack(sections)
+    faces = np.asarray(tris, dtype=np.uint64)
+    man = Manifold(Mesh64(vert_properties=verts, tri_verts=faces))
+    if getattr(man.status(), "name", str(man.status())) not in ("NoError", "0"):
+        return None
+    if man.volume() < 0.0:                  # section wound the other way
+        man = Manifold(Mesh64(vert_properties=verts,
+                              tri_verts=np.ascontiguousarray(faces[:, ::-1])))
+        if getattr(man.status(), "name",
+                   str(man.status())) not in ("NoError", "0"):
+            return None
+    return man
+
+
+def sweep_sections(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
+    """Sweep an ordered section along a path. The project's sweep primitive.
+
+    Builds the tube directly (`_strip_mesh`) and falls back to `hull_chain` for
+    the cases a strip cannot express.
+
+    **Why not the hull chain, which is what this used to be.** A union of
+    per-segment convex hulls leaves consecutive cells *abutting* on a shared
+    section rather than overlapping, and Manifold fails to cancel that shared
+    face often enough to matter — about 0.65 sections per station, measured on
+    synthetic sweeps with nothing else in the scene, and invariant to everything
+    tried: circle, off-centre circle and ellipse; a V, a scalene triangle and a
+    tapering section; open and closed; 60, 120 and 240 stations. It reached the
+    part as 76 / 94 / 82 self-touching edges on the lens groove.
+
+    Overlapping the cells so they genuinely intersect **was tried and is not the
+    answer**: at 2% of a step it makes slivers, which are worse than the exact
+    coincidence they replace; at 25% it still does not reach zero and the tube
+    has bulged by 0.6%; and applied to `swept_profile` it took the footing base
+    from 0 contacts to 2,500. The rejected constant is in the history if it is
+    ever wanted again.
+
+    The strip is exact instead of approximate, and cheaper — no booleans at all.
+    Against the hull chain on the same sections it is contact-free at every
+    density and its volume converges to the hull's from below, the difference
+    being the bulge the convex cells add: -0.0023% at 60 stations, -0.0003% at
+    120, -0.0000% at 240.
+    """
+    strip = _strip_mesh(profiles, closed)
+    return strip if strip is not None else hull_chain(profiles, closed)
+
+
 def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     """Sweep a profile along a path as the union of per-segment convex hulls.
+
+    **Kept as `sweep_sections`'s fallback, not as the way to sweep.** It is the
+    construction that cannot self-intersect however tight the corner, which is
+    why it is still here; it is also the construction that leaves membranes, so
+    reach for `sweep_sections` unless you specifically need this.
 
     `profiles[i]` is the (k, 3) section at station i. Each consecutive pair is
     hulled into a convex cell and the cells are unioned.
@@ -249,15 +360,17 @@ def swept_profile(points, normals, profile_uv, far: float,
     shape all four of this project's surface features describe: a boundary
     curve, and material to be removed above or below it.
 
-    Works where `hull_chain` cannot, by slicing the section into one convex
-    trapezoid per profile segment and sweeping each slice as its own chain.
-    The slices share faces and their union is the section, exactly.
+    Closing the profile off to `far` makes it an ordinary ordered section —
+    the `m` profile points, then the two corners on the `far` plane — so this
+    goes through `sweep_sections` like everything else.
 
-    That matters for the round-over profile: it is the upper half of a circle,
-    so the region above it is concave and a single hull would span the dent —
-    silently delivering a chamfer where the maker asked for a fillet. Costs
-    `(m - 1)` chains instead of one, which is why `hull_chain` stays the
-    direct route for the sections that are genuinely convex.
+    **The fallback is the slab decomposition below, not `hull_chain`**, and the
+    difference is not cosmetic: these sections are allowed to be concave, and a
+    hull would span the dent *silently*, delivering a chamfer where the maker
+    asked for a fillet. The slabs slice the section into one convex trapezoid
+    per profile segment; they share faces and their union is the section
+    exactly. They also abut along the path, with the membranes that implies,
+    which is why they are the fallback rather than the route.
     """
     profile_uv = [np.asarray(p, dtype=float) for p in profile_uv]
     n = len(points)
@@ -266,6 +379,21 @@ def swept_profile(points, normals, profile_uv, far: float,
     m = len(profile_uv[0])
     if m < 2:
         raise ManifoldError("a profile needs at least two points")
+
+    if all(len(p) == m for p in profile_uv):
+        sections = []
+        for k in range(n):
+            p = np.asarray(points[k], dtype=float)
+            d = np.asarray(normals[k], dtype=float)
+            uv = profile_uv[k]
+            xy = p[None, :] + d[None, :] * uv[:, :1]
+            sections.append(np.vstack([
+                np.column_stack([xy, uv[:, 1]]),
+                [xy[-1, 0], xy[-1, 1], far],
+                [xy[0, 0], xy[0, 1], far]]))
+        strip = _strip_mesh(sections, closed)
+        if strip is not None:
+            return strip
 
     def slab(k: int, i: int) -> np.ndarray:
         """Profile segment i at station k, closed off to `far`."""
@@ -322,12 +450,27 @@ def surface_z_at(mesh, pts_xy, missing: float = float("nan"),
 
 
 def to_trimesh(man: Manifold):
-    """The mesh, welded by Manifold's own merge map.
+    """The mesh, welded by Manifold's own merge map, at full precision.
 
     MeshGL duplicates vertices along property boundaries by design, so the raw
     triangle soup looks open. `merge_from_vert`/`merge_to_vert` is the library
     stating which duplicates are the same point; applying it is the difference
     between a watertight answer and a spurious 33,036 boundary edges.
+
+    **`to_mesh64`, not `to_mesh`.** Manifold keeps float64 internally — it
+    round-trips 50.000000123456789 exactly — but `to_mesh()` hands back
+    **float32**, and this function is the one place the whole app reads a model
+    through: `verify_mesh`, every volume gate, the anchor rays, STL export. At a
+    50 mm coordinate the float32 spacing is about 4e-6 mm, so the downcast was
+    merging distinct vertices and splitting others.
+
+    It was measured before it was believed. Extracting the same builds both ways,
+    the eyewire bezel's zero-area triangle count falls from 308 / 400 / 428 to
+    2 / 4 / 4 — around 99% of them were our own downcast — while the aviator's
+    self-touching edges *rise* from 2 to 6, because quantisation does not only
+    invent contacts: merging turns faces degenerate, and a degenerate face
+    carries its edges out of the count with it. Float32 was hiding as much as it
+    was inventing.
 
     `process=False` on purpose: trimesh's cleanup drops degenerate slivers, and
     dropping a sliver can itself open a closed mesh. The mesh is already welded
@@ -336,8 +479,8 @@ def to_trimesh(man: Manifold):
     """
     import trimesh
 
-    mesh = man.to_mesh()
-    verts = np.asarray(mesh.vert_properties)[:, :3]
+    mesh = man.to_mesh64()
+    verts = np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3]
     faces = np.asarray(mesh.tri_verts, dtype=np.int64)
 
     remap = np.arange(len(verts))

@@ -2,17 +2,19 @@
 
 The mesh-domain counterpart of `core/solid/features.py`. Same features, same
 placement — the *where* comes from `core/geometry/rings.py`, shared by both
-kernels — built as swept hull chains instead of lofted B-Rep sections.
+kernels — built as swept strips instead of lofted B-Rep sections.
 
-**Why every sweep here is a chain of convex hulls.** The B-Rep path builds these
-with `BRepOffsetAPI_ThruSections` and, where it tried them, `MakePipeShell`.
-Both are where the season's worst failures came from: a bezel sweep that
-produced a valid 4-face cutter whose *cut* took 260 s and returned negative
-volume, a spine that took 401 s to fail, and the M-N0 tangency that left a
-non-manifold edge. Hulling each consecutive pair of profiles cannot
-self-intersect however tight the corner, and the union of the cells is a
-manifold by construction. The spike measured the groove this way at 39 ms with
-the undercut present at 40 of 40 stations.
+**Why not the B-Rep's sweeps.** `BRepOffsetAPI_ThruSections` and `MakePipeShell`
+are where the season's worst failures came from: a bezel sweep that produced a
+valid 4-face cutter whose *cut* took 260 s and returned negative volume, a spine
+that took 401 s to fail, and the M-N0 tangency that left a non-manifold edge.
+
+**Why not a chain of convex hulls either, which is what these were.** That
+construction cannot self-intersect however tight the corner, which is why
+`kernel.hull_chain` is still there as a fallback — but its cells abut on a
+shared section instead of overlapping, and the union does not reliably cancel
+it. The lens groove reached the part with 76 self-touching edges from that
+alone. `kernel.sweep_sections` builds the tube directly and is exact.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from shapely.geometry import LineString, Polygon
 
 from ..geometry.rings import carry_anchors, inward_normals, ring_stations
 from ..project.schema import CastleParams
-from .kernel import (ManifoldError, hull_chain, surface_z_at,
+from .kernel import (ManifoldError, surface_z_at, sweep_sections,
                      swept_profile)
 
 __all__ = ["bezel_cutter", "bezel_cutters", "edge_feature_cutters",
@@ -101,7 +103,7 @@ def v_groove_cutter(body: Polygon, ring, groove,
             [mouth[0], mouth[1], apex_z - lead_half_w],
         ])
 
-    return hull_chain([profile(i) for i in range(stations)], closed=True)
+    return sweep_sections([profile(i) for i in range(stations)], closed=True)
 
 
 #: Sections per millimetre along an edge-feature span. Matches the B-Rep path's
@@ -124,7 +126,7 @@ def _edge_profile(width: float, drop: float, radius: float, profile: str,
 
     The chamfer is a straight ramp. The **fillet is concave** — see
     `kernel.swept_profile`, which is why edge features go through that rather
-    than `hull_chain`.
+    than `sweep_sections`.
     """
     us = np.linspace(0.0, width, n)
     if profile == "fillet":
@@ -266,11 +268,13 @@ def bezel_cutter(mesh, body: Polygon, ring, bezel, top: float,
         v1 = max(rim_z - drop + u1 * tan_a, clamp)
         a, b = p + n * u0, p + n * u1
         # Trapezoid in the (inward, Z) plane: the chamfer plane below, `top`
-        # above. Convex, which is what `hull_chain` requires.
+        # above. Convex, which mattered when this was a hull chain; the strip
+        # in `sweep_sections` does not care, but the section is still ordered
+        # around its boundary, which the strip very much does care about.
         return np.array([[a[0], a[1], v0], [b[0], b[1], v1],
                          [b[0], b[1], top], [a[0], a[1], top]])
 
-    return hull_chain([profile(i) for i in range(stations)], closed=True)
+    return sweep_sections([profile(i) for i in range(stations)], closed=True)
 
 
 def bezel_cutters(mesh, partition, castle: CastleParams,
@@ -386,7 +390,9 @@ def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
 
     Base widest and deepest at the top edge of the bridge on the centreline,
     tapering to a tip down the lower bridge. Sections are half-ellipses closed
-    upward, which are convex, so this goes through `hull_chain`.
+    upward. Ordered around the section boundary — left to right along the
+    ellipse, then the two corners at `top` — which is what `sweep_sections`
+    needs to build the strip.
     """
     import math
 
@@ -435,7 +441,7 @@ def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
     # rule rather than as a bug to rediscover.
     profiles.append(section(float(ys[-1]) + CUT_MARGIN_MM, float(rs[-1]),
                             float(ds[-1]), float(anchors[-1])))
-    return hull_chain(profiles, closed=False)
+    return sweep_sections(profiles, closed=False)
 
 
 def surface_feature_cutters(mesh, body: Polygon,
