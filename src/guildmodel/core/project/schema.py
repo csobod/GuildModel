@@ -177,6 +177,41 @@ class EyewireBezelParams(BaseModel):
     def cuts_anterior(self) -> bool:
         return self.enabled and self.face in ("anterior", "both")
 
+    def as_edge_features(self) -> list["EdgeFeature"]:
+        """The anterior band, expressed as whole-ring `EdgeFeature`s.
+
+        The anterior band *is* a chamfer round a whole ring, so describing it as
+        one leaves a single chamfer implementation to trust instead of a copy of
+        the same maths per kernel. It lives on the params rather than in any one
+        kernel because all three paths need the identical list: the raster
+        (`relief.edges.carve_anterior_bezel`), the B-Rep
+        (`solid.features.bezel_cutters`) and the mesh
+        (`model.features.bezel_cutters`). Two of them had their own copy and the
+        third had none, which is how `face="anterior"` came to model on one
+        kernel and silently not on the other.
+
+        Empty `zones` is the whole ring — see `relief.edges.spans_whole_ring`,
+        which the solid kernels need because of it. `blend_mm=0` because the
+        band does not feather out; it closes on itself.
+
+        The posterior band is *not* here. It is a purpose-built loft anchored on
+        the surface it seats the lens against, and it is only cut around lens
+        apertures — a decorative OUTLINE opening seats no lens.
+        """
+        if not self.cuts_anterior() or self.anterior_width_mm <= 0:
+            return []
+        return [
+            EdgeFeature(
+                id=f"anterior-bezel-{edge}", label="Anterior eyewire bezel",
+                face="anterior", edge=edge, profile="chamfer",
+                width_mm=self.anterior_width_mm,
+                angle_deg=self.anterior_angle_deg,
+                min_thickness_mm=self.min_thickness_mm,
+                zones=[], blend_mm=0.0, mirror=False,
+            )
+            for edge in ("lens_od", "lens_os")
+        ]
+
 
 class EdgeFeature(BaseModel):
     """One chamfer or fillet run along part of an edge (BUILDPLAN M17).

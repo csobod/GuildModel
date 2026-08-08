@@ -238,30 +238,13 @@ def bezel_cutter(solid: TopoDS_Shape, body: Polygon, ring,
 
 
 def anterior_bezel_features(bezel: EyewireBezelParams) -> list:
-    """The anterior bezel band, expressed as whole-ring `EdgeFeature`s.
+    """The anterior bezel band as whole-ring `EdgeFeature`s.
 
-    Exactly how the raster spells it (`relief.edges.carve_anterior_bezel`), and
-    for the same reason: the anterior band *is* a chamfer round a whole ring, so
-    describing it as one keeps a single chamfer implementation to trust instead
-    of a second copy of the same maths on the other face.
-
-    Empty `zones` is the whole ring; `blend_mm=0` because the band does not
-    feather out — it closes on itself.
+    Kept as a name because this module's `__all__` exports it; the derivation
+    itself is `EyewireBezelParams.as_edge_features`, on the params, so that all
+    three kernels get the identical list from one place.
     """
-    from ..project.schema import EdgeFeature
-
-    if not bezel.cuts_anterior() or bezel.anterior_width_mm <= 0:
-        return []
-    return [
-        EdgeFeature(
-            id=f"anterior-bezel-{edge}", label="Anterior eyewire bezel",
-            face="anterior", edge=edge, profile="chamfer",
-            width_mm=bezel.anterior_width_mm, angle_deg=bezel.anterior_angle_deg,
-            min_thickness_mm=bezel.min_thickness_mm,
-            zones=[], blend_mm=0.0, mirror=False,
-        )
-        for edge in ("lens_od", "lens_os")
-    ]
+    return bezel.as_edge_features()
 
 
 def bezel_cutters(solid: TopoDS_Shape, partition: CastlePartition,

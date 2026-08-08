@@ -431,21 +431,17 @@ def carve_anterior_bezel(
     """The eyewire bezel's anterior band (M17): the M13.2 chamfer, cut into the
     front face around every lens aperture instead of / as well as the back.
 
-    Expressed as a whole-ring `EdgeFeature` so there is exactly one chamfer
-    implementation to trust rather than a second copy of the same maths.
+    Expressed as whole-ring `EdgeFeature`s so there is exactly one chamfer
+    implementation to trust rather than a copy of the same maths per kernel.
+    The list comes from `EyewireBezelParams.as_edge_features`, which is where it
+    lives so that the two solid kernels cut the identical band.
     """
     band = np.zeros_like(inside)
     if bezel.anterior_width_mm <= 0:
         return band
-    for edge in ("lens_od", "lens_os"):
-        if ring_for(partition, edge) is None:
+    for feature in bezel.as_edge_features():
+        if ring_for(partition, feature.edge) is None:
             continue
-        feature = EdgeFeature(
-            face="anterior", edge=edge, profile="chamfer",
-            width_mm=bezel.anterior_width_mm, angle_deg=bezel.anterior_angle_deg,
-            min_thickness_mm=bezel.min_thickness_mm,
-            zones=[], blend_mm=0.0, mirror=False,
-        )
         band |= carve_edge_feature(posterior, anterior, posterior, pre_anterior,
                                    feature, partition, inside, ox, oy, res)
     return band

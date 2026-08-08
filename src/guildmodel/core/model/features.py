@@ -315,22 +315,38 @@ def bezel_cutter(mesh, body: Polygon, ring, bezel, top: float,
 
 def bezel_cutters(mesh, partition, castle: CastleParams,
                   top: float) -> list[Manifold]:
-    """One band per aperture rim, when the bezel cuts the posterior face.
+    """The eyewire bezel's cutters — posterior band, anterior band, or both.
 
-    The anterior and edge-feature variants are `resolved_edge_cutters` on the
-    B-Rep path and are not ported yet.
+    The two faces are built by different machinery on purpose, the same way the
+    B-Rep path splits them. The posterior band is a purpose-built sweep
+    (`bezel_cutter`) anchored on the surface it seats the lens against. The
+    anterior band is a plain whole-ring chamfer, which `edge_feature_cutters`
+    already does — reading the *underside* via `surface_z_at(face="bottom")`,
+    because in a solid the front of the frame is the other side of one body.
+
+    Only the posterior half existed here until 2026-08-08, so `face="anterior"`
+    removed nothing and `face="both"` removed exactly what `"posterior"` did.
+    That is the same porting gap the B-Rep path had on 2026-08-07 and it went
+    unnoticed for the same reason: nothing compared the two kernels with the
+    bezel on a face other than its default.
     """
     bezel = getattr(castle, "eyewire_bezel", None)
-    if bezel is None or not bezel.enabled or not bezel.cuts_posterior():
+    if bezel is None or not bezel.enabled:
         return []
-    # Lens apertures only — a decorative OUTLINE opening seats no lens, so it
-    # has no bevel to make room for. The B-Rep path used to bezel them; the
-    # disagreement showed up as 2 cutters against 3 on the aviator, and the
-    # maker confirmed the filter is the correct behaviour. Both kernels now skip
-    # them.
-    return [bezel_cutter(mesh, partition.body, ring, bezel, top)
-            for ring in partition.body.interiors
-            if not partition.is_hole(ring)]
+
+    out: list[Manifold] = []
+    if bezel.cuts_posterior():
+        # Lens apertures only — a decorative OUTLINE opening seats no lens, so
+        # it has no bevel to make room for. The B-Rep path used to bezel them;
+        # the disagreement showed up as 2 cutters against 3 on the aviator, and
+        # the maker confirmed the filter is the correct behaviour. Both kernels
+        # now skip them.
+        out.extend(bezel_cutter(mesh, partition.body, ring, bezel, top)
+                   for ring in partition.body.interiors
+                   if not partition.is_hole(ring))
+    for feature in bezel.as_edge_features():
+        out.extend(edge_feature_cutters(mesh, partition, feature, top))
+    return out
 
 
 #: Sections lofted per millimetre along the bridge scoop's Y run.

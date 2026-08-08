@@ -681,16 +681,28 @@ curves, so this should be exactly equal — any diff is a bug found cheap).
 Flip the default. OCCT demoted to an optional cross-check behind a debug flag.
 ~1 session.
 
-*Two things the two-kernel sweep of 2026-08-08 says have to be in it.* First,
-**the mesh kernel does not build the anterior eyewire bezel at all** —
-`model.features.bezel_cutters` returns nothing unless `cuts_posterior()`, and
-the anterior band reaches the B-Rep as a synthesized whole-ring `EdgeFeature`
-that only `solid.features.anterior_bezel_features` produces. `face="anterior"`
-or `"both"` therefore models on one kernel and silently not on the other, and
-flipping the default would take the feature away from anyone using it. Second,
-the parity gates should be run over feature **combinations**, not one feature at
-a time: every M13 feature was individually clean when the whole-ring defect in
-risk 0 was still there, and it took a combination sweep to find it.
+*From the two-kernel sweep of 2026-08-08.* Run the parity gates over feature
+**combinations**, not one feature at a time: every M13 feature was individually
+clean when the whole-ring defect in risk 0 was still there, and only a
+combination sweep found it.
+
+**The anterior eyewire bezel is ported** *(2026-08-08)*, and it was a blocker:
+`model.features.bezel_cutters` returned nothing unless `cuts_posterior()`, so
+the mesh kernel modelled `face="anterior"` as a bare frame and `"both"` as
+`"posterior"` — flipping the default would have taken the feature away from
+anyone using it. Precisely the gap the B-Rep had until UI-0 finding 3, missed
+for the same reason: nothing compared the kernels with the bezel anywhere but
+its default face. The band now comes from one derivation,
+`EyewireBezelParams.as_edge_features`, that all three paths read; the raster and
+the B-Rep each had their own copy of it and the mesh had none.
+
+It removes 291 / 353 / 320 mm3 on the three drawings where it removed nothing,
+`both` is the exact sum of its halves, and all six builds verify clean. **The
+B-Rep does not**, which is worth stating plainly because it inverts the usual
+direction: with the anterior band on, OCCT self-touches along **74** edges on
+the demo and the gabriel, and on the aviator it leaves 6 boundary edges and
+removes **3.1 mm3** where the mesh removes 352.7. There is no B-Rep control for
+this feature to hold to.
 
 **M-N4 — the payoff.** Retire the raster relief path (its only remaining role
 is being the third opinion) and then the OCCT path; `cadquery-ocp` becomes an

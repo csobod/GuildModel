@@ -423,6 +423,76 @@ def test_the_bezel_band_agrees_with_the_brep_kernel(fixture, request):
         f"{brep_removed:.3f} in the B-Rep one")
 
 
+def test_the_anterior_bezel_cuts_the_front_face_on_the_mesh_kernel(demo_front):
+    """`face="anterior"` used to remove exactly nothing here.
+
+    The anterior band reaches a solid kernel as a whole-ring `EdgeFeature`, and
+    only the B-Rep's `bezel_cutters` asked for it — so the mesh path modelled
+    `"anterior"` as a bare frame and `"both"` as `"posterior"`, silently. The
+    same porting gap the B-Rep had until UI-0 finding 3, missed for the same
+    reason: nothing compared the kernels with the bezel anywhere but its default
+    face. `EyewireBezelParams.as_edge_features` is now the single derivation all
+    three paths read.
+
+    Asserted as *removal*, and with `both` against the sum of its halves, so
+    that a band in the wrong place fails rather than merely a small one. Not
+    compared against the B-Rep: measured 2026-08-08, OCCT self-touches along 74
+    edges on this drawing with the anterior band on, and on the aviator it
+    removes 3.1 mm3 where this path removes 352.7. There is no control to hold
+    to here — see BUILDPLAN-NEW risk 0.
+    """
+    from guildmodel.core.mesh_check import verify_mesh
+    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.project.schema import CastleParams
+
+    def built(face=None):
+        castle = CastleParams()
+        if face is not None:
+            castle.eyewire_bezel.enabled = True
+            castle.eyewire_bezel.face = face
+        return to_trimesh(build_castle_model(demo_front.partition, castle,
+                                             demo_front.hinge_polys))
+
+    bare = built()
+    post, ant, both = built("posterior"), built("anterior"), built("both")
+
+    removed = {f: bare.volume - m.volume for f, m in
+               (("posterior", post), ("anterior", ant), ("both", both))}
+    assert removed["anterior"] > 100.0, (
+        f"the anterior band removed {removed['anterior']:.3f} mm3 — it is not "
+        "reaching the front face at all")
+    assert removed["both"] == pytest.approx(
+        removed["posterior"] + removed["anterior"], rel=0.02), removed
+
+    for face, m in (("anterior", ant), ("both", both)):
+        verdict = verify_mesh(m)
+        assert verdict.ok, (face, verdict.problems)
+
+
+def test_the_three_paths_derive_the_same_anterior_band():
+    """One derivation, not one per kernel — which is the whole reason the gap
+    above could exist. The raster and the B-Rep each had their own copy and the
+    mesh had none."""
+    from guildmodel.core.project.schema import EyewireBezelParams
+    from guildmodel.core.solid.features import anterior_bezel_features
+
+    off = EyewireBezelParams()
+    assert off.as_edge_features() == []                    # default: posterior
+    assert EyewireBezelParams(face="anterior").as_edge_features() == [], (
+        "a disabled bezel must not produce a band whatever its face")
+
+    on = EyewireBezelParams(enabled=True, face="both", anterior_width_mm=1.5)
+    bands = on.as_edge_features()
+    assert [b.edge for b in bands] == ["lens_od", "lens_os"]
+    assert all(b.face == "anterior" and b.zones == [] and b.blend_mm == 0.0
+               for b in bands), "the band is a whole ring and does not feather"
+    assert all(b.width_mm == 1.5 for b in bands)
+    assert anterior_bezel_features(on) == bands            # B-Rep reads the same
+
+    assert EyewireBezelParams(enabled=True, face="both",
+                              anterior_width_mm=0.0).as_edge_features() == []
+
+
 # ------------------------------------------------------- splay and the scoop
 
 @pytest.mark.parametrize("feature", ["pad_splay", "bridge_relief"])
