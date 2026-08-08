@@ -148,6 +148,51 @@ def span_intervals(
     return out
 
 
+def spans_whole_ring(interval: tuple[float, float], total: float) -> bool:
+    """True when a run closes on itself — no ends, so nothing to cap or taper.
+
+    Every feature here is written for an *open* run: it lays stations from `s0`
+    to `s1` inclusive, sweeps them open, caps each end, and feathers the depth
+    to nothing over `blend_mm` so the cut does not stop dead. On a run that goes
+    all the way round, every one of those is wrong:
+
+    * `s0` and `s1` are the **same point**, so the last station duplicates the
+      first — a zero-length step, which the mesh strip's fold guard rejects and
+      which `BRepOffsetAPI_ThruSections` lofts into a shape that fails
+      `BRepCheck_Analyzer` and takes the whole castle build down with it.
+    * the run is then swept open, so its two end caps sit exactly on top of each
+      other *inside* the solid. That is the self-touch: a posterior 1.5 mm
+      round-over round the demo outline carried 19 self-touching edges, the
+      aviator 18, the gabriel 21, and all of them are these caps. Sweeping the
+      run closed takes every one of them to zero.
+    * the taper puts a dimple in the cut at the ring's *coordinate seam*, which
+      is an artifact of where the DXF happened to start and nowhere the maker
+      can see or ask for.
+
+    A whole-ring run is what an empty `zones` means, and it is a reasonable
+    thing to want — a round-over all the way round the back edge. Sweep it
+    closed, drop the duplicate station, and leave the depth at full.
+
+    **The B-Rep path does not take this exception, and that is deliberate.** It
+    was tried: drop the duplicate wire, drop the taper, and repeat the first
+    section last, which is the standard way to close a `ThruSections` loft. At a
+    1.5 mm radius the loft still failed `BRepCheck_Analyzer` on all three
+    fixtures, exactly as before. At 0.4 mm, where it does build, the change made
+    it **worse** — a clean solid became one with 7 boundary edges — so it was
+    reverted rather than shipped.
+
+    What that measurement exposed is that OCCT's whole-ring cutter does not cut
+    at all. The demo frame is 7825.881 mm3 uncut; with a 0.4 mm round-over run
+    all the way round the back edge it is 7826.841 — *larger*, within
+    tessellation noise of having done nothing. The mesh path removes 11.4 mm3
+    for the same feature. So the B-Rep is not a control here and there is no
+    parity to hold: it is a pre-existing defect in the kernel M-N4 retires,
+    recorded rather than fixed.
+    """
+    s0, s1 = interval
+    return (s1 - s0) >= total - 1e-9
+
+
 def taper_weight(s: np.ndarray, intervals: list[tuple[float, float]],
                  blend_mm: float, total: float) -> np.ndarray:
     """Cut strength at each station: 1 inside a run, ramping to 0 over `blend_mm`

@@ -171,6 +171,14 @@ Inspector.
 It takes triangles, not a kernel handle, so it survives M-N1 unchanged. That is
 deliberate: **the check must not inherit the bias of whatever built the mesh.**
 
+*Amended 2026-08-08.* It inherited one anyway. Counting edges by vertex index is
+asking whether the producer's own invariant holds, and index-manifold is exactly
+what a mesh kernel guarantees — including across a place where the surface
+touches itself, which it keeps manifold by duplicating the vertex. The check now
+welds by position first (`welded_surface`), which is what an exporter does and
+what a slicer sees. It was blind to 157 self-touching edges on the demo frame's
+base until then; see risk 0 in §8.
+
 **Escape hatch shipped.** Preferences ▸ Appearance ▸ UI scale (Auto, or
 100–200%) with a live sample and immediate apply.
 
@@ -673,6 +681,17 @@ curves, so this should be exactly equal — any diff is a bug found cheap).
 Flip the default. OCCT demoted to an optional cross-check behind a debug flag.
 ~1 session.
 
+*Two things the two-kernel sweep of 2026-08-08 says have to be in it.* First,
+**the mesh kernel does not build the anterior eyewire bezel at all** —
+`model.features.bezel_cutters` returns nothing unless `cuts_posterior()`, and
+the anterior band reaches the B-Rep as a synthesized whole-ring `EdgeFeature`
+that only `solid.features.anterior_bezel_features` produces. `face="anterior"`
+or `"both"` therefore models on one kernel and silently not on the other, and
+flipping the default would take the feature away from anyone using it. Second,
+the parity gates should be run over feature **combinations**, not one feature at
+a time: every M13 feature was individually clean when the whole-ring defect in
+risk 0 was still there, and it took a combination sweep to find it.
+
 **M-N4 — the payoff.** Retire the raster relief path (its only remaining role
 is being the third opinion) and then the OCCT path; `cadquery-ocp` becomes an
 optional dev dependency and 70 MB leaves the install. Slider dragging goes
@@ -770,6 +789,55 @@ corruption.
    per-feature control was for a while comparing the B-Rep at float64 against
    the mesh at float32: the same trap, one level up, after having written it
    down as a lesson.
+
+   **`verify_mesh` could not see any of this, which is UI-0's own complaint one
+   layer down.** *(Closed 2026-08-08.)* It counted edges by **vertex index**, and
+   index-manifold is exactly the invariant Manifold guarantees and keeps across
+   a self-contact by giving the contact two coincident vertices with different
+   indices. So the app said "Model verified" over all 157 while a slicer, which
+   has no index table, would have seen every one. `mesh_check.welded_surface`
+   now welds by position and drops the dead faces before anything is counted,
+   and the test measurement calls that same function rather than a copy of it —
+   two instruments disagreeing over precisely this is what produced the false
+   B-Rep reading above.
+
+   Turning a stricter check on could have lit up the shipped path in
+   combinations nobody had measured, so it was measured first: **11
+   configurations x 3 drawings x both kernels** — bare, each M13 feature, the
+   pairs a real frame uses, all four at once, an M17 brow chamfer, a whole-ring
+   fillet, and everything together. The B-Rep is **zero on every column of every
+   configuration it can build**. The mesh matches it everywhere except one, and
+   the sweep is what found that one:
+
+   **A whole-ring edge feature was broken in both kernels.** An empty `zones`
+   means the run covers the ring, `span_intervals` returns one interval spanning
+   it, and everything downstream assumes a run with two ends. The last station
+   duplicated the first, the run was swept *open*, and its two end caps landed
+   on top of each other inside the solid: **19 / 18 / 21** self-touching edges on
+   the mesh, and on the B-Rep a `ThruSections` loft that fails
+   `BRepCheck_Analyzer` and takes the whole castle build down. The taper feathered
+   the cut to nothing at the ring's arbitrary coordinate seam as well.
+   `relief.edges.spans_whole_ring` is the exception the mesh path now takes —
+   no duplicate station, no taper where there is no end, swept closed. It goes
+   to **zero** contacts and zero open edges on all three drawings, at a 1.5 mm
+   radius that genuinely folds at the ~0.7 mm endpiece corners and so still
+   takes the `hull_chain` fallback: the fallback was never what was wrong.
+
+   **The B-Rep does not get the exception, and trying to give it one is how we
+   learned its whole-ring cutter does not cut.** Repeating the first section
+   last is the standard way to close a `ThruSections` loft; at 1.5 mm the loft
+   still failed `BRepCheck_Analyzer`, and at 0.4 mm — where it does build — it
+   turned a clean solid into one with 7 boundary edges. Reverted. But the A/B
+   that showed that also showed the *old* path's answer: the demo frame is
+   7825.881 mm3 uncut and **7826.841** with a 0.4 mm round-over run all the way
+   round, i.e. larger, within tessellation noise of having done nothing at all,
+   and reported "Model verified". The mesh removes 11.4 mm3 for the same
+   feature. There is no parity to hold here; this is a pre-existing defect in
+   the kernel M-N4 retires, recorded rather than fixed.
+
+   **Left open:** a whole-ring *chamfer* keeps **3** self-touching edges on the
+   mesh path on the demo and aviator (none on the gabriel). It is now reported
+   instead of hidden, which is the improvement; it is not yet fixed.
 
 1. ~~**The footing blends are unproven in the new kernel**~~ — **retired
    2026-08-08 for parity; see risk 0 for what they did break.** They agree to

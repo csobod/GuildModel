@@ -49,9 +49,18 @@ vertex of it may lie in a face of its target.*
 * `ZONE_WELD_MM` — the odd one out: grow each zone so neighbours overlap, rather
   than asking two independently computed copies of a wall to cancel.
 
+A fifth arrived later, from sweeping feature *combinations* across both kernels
+rather than one feature at a time: `relief.edges.spans_whole_ring`. An M17 edge
+feature covering the whole ring was swept **open**, so its two end caps landed
+on top of each other inside the solid — 19 / 18 / 21 contacts, and a B-Rep loft
+that would not build at all. Same rule, third dimension: it is not a vertex or a
+face of the tool lying in its target, it is a whole *cap*.
+
 What remains is a handful of **zero-area triangles** — at most 12, against the
 B-Rep's none. `mesh_check` does not report them and slicers generally discard
 them, so they are a gap rather than a defect. `_KNOWN_DEGENERATE` holds them.
+A whole-ring *chamfer* also keeps 3 contacts on two of the three drawings; that
+one `mesh_check` does report, and it is not fixed.
 """
 import zipfile
 from pathlib import Path
@@ -109,25 +118,27 @@ def self_touching_edges(mesh) -> dict:
     Returns `{"zero_area", "raw", "touching", "open"}`. `raw` is the count
     *without* step 2, kept because the gap between it and `touching` is the
     whole reason this function exists rather than a one-liner.
+
+    Steps 1 and 2 are `mesh_check.welded_surface` — deliberately the app's own
+    function rather than a copy. A measurement that drifts from the shipped
+    oracle is worse than no measurement: it was two instruments disagreeing,
+    over exactly this, that produced the false B-Rep reading these tests were
+    written to correct.
     """
-    welded = trimesh.Trimesh(vertices=np.asarray(mesh.vertices).copy(),
-                             faces=np.asarray(mesh.faces).copy(), process=False)
-    welded.merge_vertices()
+    from guildmodel.core.mesh_check import welded_surface
 
-    faces = welded.faces
-    repeated = ((faces[:, 0] == faces[:, 1]) | (faces[:, 1] == faces[:, 2])
-                | (faces[:, 0] == faces[:, 2]))
-    corners = welded.vertices[faces]
-    area = 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0],
-                                         corners[:, 2] - corners[:, 0]), axis=1)
-    dead = repeated | (area <= _NO_AREA_MM2)
+    raw_welded = trimesh.Trimesh(vertices=np.asarray(mesh.vertices).copy(),
+                                 faces=np.asarray(mesh.faces).copy(),
+                                 process=False)
+    raw_welded.merge_vertices()
+    raw = np.unique(raw_welded.edges_sorted, axis=0, return_counts=True)[1]
 
-    raw = np.unique(welded.edges_sorted, axis=0, return_counts=True)[1]
-    kept = trimesh.Trimesh(vertices=welded.vertices, faces=faces[~dead],
-                           process=False)
+    kept = welded_surface(mesh)
+    assert kept is not None, "the mesh could not be welded at all"
     counts = np.unique(kept.edges_sorted, axis=0, return_counts=True)[1]
-    return {"zero_area": int(dead.sum()), "raw": int((raw > 2).sum()),
-            "touching": int((counts > 2).sum()), "open": int((counts == 1).sum())}
+    return {"zero_area": int(len(raw_welded.faces) - len(kept.faces)),
+            "raw": int((raw > 2).sum()), "touching": int((counts > 2).sum()),
+            "open": int((counts == 1).sum())}
 
 
 def _model(front, **features):
@@ -289,6 +300,40 @@ def test_the_degenerate_faces_do_not_grow(fixture, feature, request):
         f"zero-area triangles rose to {found['zero_area']} from a known "
         f"{budget} — see the module docstring")
     assert found["open"] == 0, found
+
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_a_run_all_the_way_round_does_not_stack_its_end_caps(fixture, request):
+    """A posterior round-over round the whole outline. Was 19 / 18 / 21.
+
+    Found by sweeping feature *combinations* across both kernels rather than one
+    feature at a time — the four M13 features were all clean by then, and this
+    was the only configuration in the sweep that was not. An empty `zones` means
+    the whole ring, `span_intervals` hands back one interval covering it, and
+    everything downstream is written for a run with two ends: the last station
+    duplicated the first and the two end caps were swept on top of each other
+    inside the solid. `relief.edges.spans_whole_ring` is the exception.
+
+    Deliberately at 1.5 mm, larger than the ~0.7 mm corner radius at the
+    endpieces, so the sweep genuinely folds and takes `hull_chain`. That is the
+    point: the fallback is not what was causing the self-touch, and a radius
+    small enough to avoid it would not prove the fix.
+    """
+    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+
+    front = request.getfixturevalue(fixture)
+    castle = CastleParams(edge_features=[EdgeFeature(
+        id="ring", label="Back round-over", face="posterior", edge="outline",
+        zones=[], profile="fillet", radius_mm=1.5, mirror=False)])
+    mesh = to_trimesh(build_castle_model(front.partition, castle,
+                                         front.hinge_polys))
+
+    found = self_touching_edges(mesh)
+    assert found["touching"] == 0, found
+    assert found["open"] == 0, found
+    assert mesh.body_count == 1
 
 
 def test_the_sweep_never_falls_back_to_the_hull_chain(demo_front):

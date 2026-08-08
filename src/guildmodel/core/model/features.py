@@ -15,6 +15,22 @@ construction cannot self-intersect however tight the corner, which is why
 shared section instead of overlapping, and the union does not reliably cancel
 it. The lens groove reached the part with 76 self-touching edges from that
 alone. `kernel.sweep_sections` builds the tube directly and is exact.
+
+**Where the hull chain still earns its place.** An edge feature run all the way
+round the outline folds at the endpiece corners: those turn 89 degrees over a
+0.4 mm step, a corner radius of about 0.7 mm, and any inward offset deeper than
+that crosses itself. There is no non-self-intersecting swept surface to build,
+so the strip's fold guard declines and the fallback takes it — correctly. A
+1.5 mm round-over does this; a 0.4 mm one, inside the corner radius, goes
+straight through the strip.
+
+Neither is what made the whole-ring feature self-touch. That was the run being
+swept *open* when it has no ends, stacking its two end caps on top of each other
+inside the solid — `relief.edges.spans_whole_ring`. With the run closed, the
+1.5 mm fillet takes the fallback and still reads zero self-touching edges and
+zero open ones on all three drawings. The whole-ring **chamfer** keeps three,
+which is the one case in the M-N1 sweep that `mesh_check` still reports, and it
+is reported rather than hidden.
 """
 from __future__ import annotations
 
@@ -169,13 +185,15 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
     exactly the same run of ring in all three. A span is *named*, not measured —
     the M17 decision, and it survives every rewrite.
 
-    Spans are open runs rather than closed rings, so the sweep is not closed and
-    the end sections cap it.
+    A span is normally an open run, so the sweep is open and the end sections
+    cap it. A span covering the whole ring is the exception — see
+    `relief.edges.spans_whole_ring`, which is where the reasoning lives because
+    the B-Rep path needs exactly the same exception for exactly the same reason.
     """
     import math
 
-    from ..relief.edges import (ring_for, span_intervals, station_fraction,
-                                taper_weight)
+    from ..relief.edges import (ring_for, span_intervals, spans_whole_ring,
+                                station_fraction, taper_weight)
 
     ring = ring_for(partition, feature.edge)
     if ring is None or ring.length <= 0:
@@ -192,8 +210,9 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
     out: list[Manifold] = []
 
     for s0, s1 in intervals:
+        whole = spans_whole_ring((s0, s1), total)
         n = max(6, int((s1 - s0) * EDGE_SECTIONS_PER_MM))
-        ss = np.linspace(s0, s1, n)
+        ss = np.linspace(s0, s1, n, endpoint=not whole)
 
         pts, tans = [], []
         for s in ss:
@@ -207,7 +226,8 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
         pts, tans = np.array(pts), np.array(tans)
         into = inward_normals(partition.body, pts, tans)
 
-        weight = taper_weight(ss, intervals, feature.blend_mm, total)
+        weight = (np.ones(len(ss)) if whole
+                  else taper_weight(ss, intervals, feature.blend_mm, total))
         frac = station_fraction(ss, intervals, total)
         widths = np.array([float(feature.width_at(float(v))) for v in frac])
         if feature.profile == "fillet":
@@ -228,7 +248,7 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
                           feature.profile, posterior) + np.array([0.0, float(a)])
             for w, d, a in zip(widths, drops, anchors)
         ]
-        out.append(swept_profile(pts, into, profiles, far, closed=False))
+        out.append(swept_profile(pts, into, profiles, far, closed=whole))
     return out
 
 

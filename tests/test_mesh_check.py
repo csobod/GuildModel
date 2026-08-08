@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from guildmodel.core.mesh_check import MIN_VOLUME_MM3, verify_mesh
+from guildmodel.core.mesh_check import (MIN_VOLUME_MM3, verify_mesh,
+                                        welded_surface)
 
 
 def _box(size=10.0):
@@ -68,6 +69,69 @@ def test_a_self_overlapping_model_is_named_correctly_not_called_a_gap():
     assert "overlaps itself" in text
     assert "gaps" not in text, "a model with no holes must not be called gappy"
     assert "STL" in text
+
+
+def test_the_overlap_is_found_without_being_welded_first():
+    """The same two cubes, handed over **unwelded** — which is how a kernel
+    hands them over.
+
+    This is the gap that made `verify_mesh` blind for the length of the M-N1
+    work. Manifold's invariant is index-manifold, and it keeps that invariant
+    across a self-contact by giving the contact two coincident vertices with
+    different indices. Every index edge then has exactly two faces, trimesh's
+    `is_watertight` says True, and the app said "Model verified" over 157
+    self-touching edges on the demo frame's base (BUILDPLAN-NEW risk 0). A
+    slicer, which has no index table, would have seen all 157.
+
+    The assertion on `is_watertight` is the point of the test as much as the
+    verdict is: it pins that the naive reading really does disagree, so nobody
+    later simplifies the welding away as redundant.
+    """
+    a = _box(1.0)
+    b = _box(1.0)
+    b.apply_translation([1.0, 1.0, 0.0])
+    unwelded = trimesh.util.concatenate([a, b])
+
+    assert unwelded.is_watertight, (
+        "fixture is not index-manifold, so it does not exercise the gap")
+
+    verdict = verify_mesh(unwelded)
+    assert not verdict.ok
+    assert not verdict.watertight
+    assert any("overlaps itself" in p for p in verdict.problems), verdict.problems
+
+
+def test_welding_does_not_invent_problems_on_a_clean_solid():
+    """A closed box stays closed, and its faces all survive the drop.
+
+    The measurement has two steps that can each go wrong in the safe-looking
+    direction: a weld tolerance too loose merges distinct vertices into false
+    contacts, and a zero-area threshold too high deletes real surface and opens
+    real holes. Both were seen during risk 0 — the first through a float32 STL
+    round-trip that reported 26 contacts on a clean B-Rep.
+    """
+    box = _box()
+    welded = welded_surface(box)
+    assert welded is not None
+    assert len(welded.faces) == len(box.faces)
+    assert welded.is_watertight
+    assert welded.volume == pytest.approx(box.volume)
+
+
+def test_an_unreadable_mesh_falls_back_instead_of_failing_the_build():
+    """`welded_surface` returns None rather than raising, and the verdict still
+    comes back — a check that can itself fail the build is one more way for the
+    app to go dark."""
+    class NotQuiteAMesh:
+        vertices = "no"
+        faces = np.zeros((1, 3), int)
+        is_watertight = False
+        volume = 5.0
+
+    assert welded_surface(NotQuiteAMesh()) is None
+    verdict = verify_mesh(NotQuiteAMesh())
+    assert not verdict.ok
+    assert "STL" in " ".join(verdict.problems)
 
 
 def test_an_empty_result_is_caught_and_explained():

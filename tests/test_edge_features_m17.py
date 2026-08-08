@@ -28,7 +28,7 @@ from guildmodel.core.project.schema import (
 )
 from guildmodel.core.relief.edges import (
     chamfer_drop, fillet_drop, lens_rings, ring_for, span_intervals,
-    station_fraction, taper_weight,
+    spans_whole_ring, station_fraction, taper_weight,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -196,6 +196,36 @@ def test_mirror_off_cuts_one_side_only(demo):
     x, _ = _cut_xy(r)
     assert (x > 0).sum() > 0
     assert (x < 0).sum() == 0
+
+
+def test_a_run_with_no_ends_is_recognised_as_one(demo):
+    """`spans_whole_ring` is what stops the solid kernels treating the ring's
+    arbitrary coordinate seam as two ends of a run — duplicating a station,
+    capping the sweep twice in the same place, and feathering the cut to nothing
+    somewhere the maker never asked for.
+
+    Both ways of getting there are checked. An empty `zones` is the documented
+    one; a `zones` list that happens to cover every station is the one that
+    would be missed, because it arrives through a different branch of
+    `span_intervals` and looks like an ordinary run until you measure it.
+    """
+    part, _ = demo
+    ring = ring_for(part, "outline")
+    total = ring.length
+
+    whole = span_intervals(ring, part, [])
+    assert whole == [(0.0, total)]
+    assert spans_whole_ring(whole[0], total)
+
+    every = span_intervals(ring, part, [z.name for z in part.zones])
+    assert every, "no zone owns any of the outline; this tests nothing"
+    assert spans_whole_ring(every[0], total)
+
+    brow = span_intervals(ring, part, ["eyewire_superior_od"])
+    assert brow and not spans_whole_ring(brow[0], total)
+
+    # A hair short of the ring is still a run with two real ends.
+    assert not spans_whole_ring((0.0, total - 1e-3), total)
 
 
 def test_mirrored_swaps_od_and_os_and_never_re_mirrors():

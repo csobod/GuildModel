@@ -446,6 +446,10 @@ def edge_feature_cutters(solid: TopoDS_Shape, partition: CastlePartition,
     named by castle zone covers exactly the same run of ring either way — the
     M17 decision that a span is named, not measured, survives the rewrite
     untouched.
+
+    **A span covering the whole ring does not work here**, and this function
+    deliberately does not take the exception the mesh path takes — see
+    `relief.edges.spans_whole_ring` for the measurement. It was tried.
     """
     from ..geometry.regions import CastlePartition as _CP    # noqa: F401
     from ..relief.edges import ring_for, span_intervals, station_fraction, taper_weight
