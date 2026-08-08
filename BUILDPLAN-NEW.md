@@ -597,15 +597,41 @@ the existing gates, fall back to hybrid — OCCT builds the (cacheable, rarely
 failing) base, Manifold applies every feature to its tessellation; §3.1 shows
 the features, not the terraces, are where the kernel dies.
 
-*Everything but the footing blends is ported as of 2026-08-08.* Terraces agree
-to 0.0000%, and the six surface-feature gates (splay × scoop over all three
-fixtures) are live with no skips. The port paid for itself before shipping: it
-found three defects in the B-Rep path that the B-Rep path's own tests passed,
-including two that cut through real frames — see §3.5. Both are fixed on **both**
-kernels; the shipped aviator scoop changed by 4.98 mm³, with the maker's
-agreement that the old geometry was wrong. Anything kernel-neutral that both
-paths need now lives in `core/geometry/rings.py` rather than being copied, for
-exactly the reason §3.5 documents: two copies of a rule become two rules.
+**M-N1 is complete as of 2026-08-08, footing blends included — the risk in §8.1
+did not materialise.** Every feature is ported, every gate is live with no
+skips, and the whole base agrees with the B-Rep one to **0.00000%** on all three
+fixtures while building in 2.4 s against 12.7 s.
+
+The blends needed one idea that is worth carrying forward. The obvious
+construction clips each blend band to the zone it acts on and applies it —
+`solid - (band & zone)`, `solid + (band & zone)` — but a zone prism's walls *are*
+the terraces' walls, so every clipped band arrives with a face lying exactly in a
+face of the target. Manifold is exact and answers coplanar input with
+zero-thickness shells: ten of them on the demo base, seven of those inverted
+(internal voids), in a part that was watertight, one connected body to look at,
+and correct to 7927.958 mm³. Only `decompose()` saw it. **The fix is to clip
+nothing** — a carve is subtracted from its high zone's own prism, and a raised
+zone is extruded full height and cut back down by a slab the band has been
+subtracted from first. Exact, one boolean cheaper, and no coplanar tool faces.
+
+`Manifold.simplify` was tried first and rejected on measurement: it collapses
+sub-tolerance edges across the whole part and severed a real hair-thin
+connection, turning a clean bare frame into two pieces. `drop_degenerate` filters
+components instead, which moves no vertex and cannot sever anything.
+
+The port paid for itself before shipping: it found three defects in the B-Rep
+path that the B-Rep path's own tests passed, two of which cut through real
+frames — see §3.5. Both are fixed on **both** kernels; the shipped aviator scoop
+changed by 4.98 mm³, with the maker's agreement that the old geometry was wrong.
+Anything kernel-neutral that both paths need now lives in `core/geometry/`
+(`rings.py`, `footings.py`) rather than being copied, for exactly the reason §3.5
+documents: two copies of a rule become two rules.
+
+*Not yet done, and not blocking M-N2:* the base is 2.4 s where the featureless
+spike was 39 ms, and essentially all of it is the blends — 20 bands × 40 profile
+segments × 29 stations is ~23,000 convex hulls. `FOOTING_SECTION_POINTS` is 40
+only because the B-Rep path uses 40, and the sagitta says 16 would hold the
+0.01 mm chord tolerance. That is M-N4's live-slider work, not parity's.
 
 **M-N2 — into the app behind a flag.** `MultiMeshWorker` gains the Manifold
 path; readiness dot = Manifold `status()` + our own boundary-edge count (the
@@ -633,11 +659,19 @@ corruption.
 
 ## 8. Risks, stated plainly
 
-1. **The footing blends are unproven in the new kernel** — the spike's volume
-   delta (85 mm³) is exactly the unported footings. They are ruled sections
-   swept along measured stations, i.e. the same per-segment-hull pattern as the
-   groove, but until built this is the schedule risk. Mitigated by the M-N1
-   kill switch (hybrid mode), which is itself a fully acceptable end state.
+1. ~~**The footing blends are unproven in the new kernel**~~ — **retired
+   2026-08-08. Built, and they agree to 0.00000%.** The kill switch was not
+   needed and hybrid mode was not entered.
+
+   Two things about the guess in this paragraph were wrong, and both are worth
+   keeping. It said the blends are "the same per-segment-hull pattern as the
+   groove": they are not. Both halves of every fillet in the schedule are
+   **non-convex** sections — measured, `z''` from -0.19 to +0.32, with the
+   nosepad pair S-shaped inside a single half — so a hull chain would have
+   flattened all ten into straight ramps, silently. They need the slab
+   decomposition that was built for the round-over. And the real difficulty was
+   not the sweep at all but the *clipping*, which is not mentioned here; see the
+   M-N1 note in §7.
 2. **Mesh density becomes a quality knob.** Chord 0.01 mm matches today's
    contract everywhere, but edge crispness in the *viewer* now depends on our
    analytic edge overlay landing exactly on the mesh — needs one careful test.

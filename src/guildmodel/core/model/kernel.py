@@ -36,6 +36,7 @@ from shapely.geometry import Polygon
 __all__ = [
     "ManifoldError",
     "cross_section",
+    "drop_degenerate",
     "extrude",
     "hull_chain",
     "subtract_all",
@@ -115,6 +116,57 @@ def subtract_all(solid: Manifold, tools: list[Manifold]) -> Manifold:
                   "subtract")
 
 
+#: Largest component volume treated as numerical debris rather than part of the
+#: frame, in mm3. Exact booleans on near-tangent inputs answer with
+#: zero-thickness shells — real triangles, correctly wound, enclosing nothing.
+#: The footing blends produce them because a blend band's boundary runs along a
+#: terrace wall by construction, and the finely triangulated blend surface then
+#: gives every later feature something to be tangent to.
+#:
+#: Measured, not guessed. Across the three fixtures with every feature enabled
+#: the strays total 1.6e-8, 2.5e-8 and 6.8e-7 mm3, the largest single one being
+#: 2.7e-7 — a cube six microns on a side. This threshold sits ~370x above that
+#: and orders of magnitude below the smallest fragment of frame that could
+#: matter, so it separates debris from geometry with room on both sides.
+DEGENERATE_VOLUME_MM3 = 1e-4
+
+
+def drop_degenerate(man: Manifold,
+                    max_volume: float = DEGENERATE_VOLUME_MM3) -> Manifold:
+    """Discard connected components too small to be material.
+
+    **This deletes components; it never moves a vertex.** That is the whole
+    reason it is preferred to `Manifold.simplify`, which was tried first and
+    made things worse: collapsing sub-tolerance edges across a finished part
+    severed a genuine hair-thin connection and turned a clean bare frame into
+    two pieces. A filter cannot do that — every surviving triangle is bit-for-bit
+    what the boolean produced.
+
+    It also cannot hide a real disconnection, which is the failure this project
+    has actually suffered: when the pad splay cut Gabriel's frame in half the
+    halves were thousands of mm3 each. Anything that survives the filter is
+    still counted, so `verify_mesh` still reports "the model is in N separate
+    pieces" for a part that genuinely is.
+
+    An inverted shell — an internal void, which `volume()` reports negative —
+    fails the comparison and is dropped too, which is correct: seven of the ten
+    strays on the first footing build were voids.
+    """
+    parts = man.decompose()
+    if len(parts) < 2:
+        return man
+    keep = [p for p in parts if p.volume() > float(max_volume)]
+    if len(keep) == len(parts):
+        return man
+    if not keep:
+        raise ManifoldError("every component was below the degeneracy floor")
+    if len(keep) == 1:
+        return keep[0]
+    # Disjoint by construction, so compose rather than union: no boolean to run
+    # and nothing for it to get wrong.
+    return _check(Manifold.compose(keep), "compose")
+
+
 def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     """Sweep a profile along a path as the union of per-segment convex hulls.
 
@@ -139,10 +191,16 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
       `v = anchor - r + sqrt(r^2 - (r-u)^2)`, the upper half of a circle, which
       is concave; the region above it is not a convex set. Hulling it would
       quietly turn every round-over into a chamfer.
+    * footing blend, **both halves — not convex.** Measured `z''` over every
+      fillet in the default schedule at three step heights: the high half's
+      curve is concave throughout (-0.031 to -0.188), so the region above it is
+      not convex, and the low half's is convex (up to +0.32), so the region
+      below it is not either. The nosepad pair are S-shaped *within* a single
+      half. All ten blends go through `swept_profile`.
 
-    So the fillet profile does not come through here at all. `swept_profile`
-    below decomposes it into per-sample convex slabs; use that for anything
-    whose convexity you have not checked.
+    So neither the fillet nor the footings come through here at all.
+    `swept_profile` below decomposes them into per-sample convex slabs; use that
+    for anything whose convexity you have not checked.
     """
     if len(profiles) < 2:
         raise ManifoldError("a sweep needs at least two stations")

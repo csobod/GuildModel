@@ -11,21 +11,28 @@ same part before either can be trusted to replace the other. Improvements that
 the mesh domain makes possible (live slider rebuilds, no cached base) come after
 parity, not instead of it.
 
-Reuses `core.solid.build.zone_heights` and the geometry helpers in
-`core.solid.features` outright. Those are kernel-neutral — they compute *where*
-things go from the partition and the parameters — and duplicating them is how a
-port grows a second set of subtly different answers.
+Reuses `core.solid.build.zone_heights`, the ring geometry in
+`core.geometry.rings` and the SCULPT-cut geometry in `core.geometry.footings`.
+All of it is kernel-neutral — it computes *where* things go from the partition
+and the parameters — and duplicating any of it is how a port grows a second set
+of subtly different answers.
+
+One place this path does **not** mirror the B-Rep one, and deliberately: the
+footing blends are applied per zone rather than as clipped tools. See
+`build_base` for why the mirror-image construction produces a part that is
+watertight, correct to four decimal places, and still wrong.
 """
 from __future__ import annotations
 
 from typing import Callable, Optional
 
+import numpy as np
 from manifold3d import Manifold
 
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams
-from .kernel import (ManifoldError, extrude, subtract_all, to_trimesh,
-                     union_all)
+from .kernel import (ManifoldError, drop_degenerate, extrude,
+                     subtract_all, swept_profile, to_trimesh, union_all)
 
 ProgressFn = Optional[Callable[[str, float], None]]
 
@@ -34,6 +41,25 @@ ProgressFn = Optional[Callable[[str, float], None]]
 #: it exits, never stop on it. M-N0 is what a grazing cutter costs — one
 #: tangency left a non-manifold edge that read as valid all the way to the user.
 CUT_MARGIN_MM = 1.0
+
+#: Stations sampled along a SCULPT cut when sweeping its footing profile. Same
+#: as the B-Rep path's `FOOTING_STATIONS`, so both kernels inscribe the same
+#: polyline in the same cut and a volume difference is about the sweep rather
+#: than the sampling.
+FOOTING_STATIONS = 30
+
+#: Points across one S-blend half-section. Matches the B-Rep `_blend_section`
+#: default for the same reason.
+FOOTING_SECTION_POINTS = 40
+
+#: How far past its outer end a blend profile ramps clear of the terrace it
+#: meets there, mm. See `_blend_profile` — this is M-N0's rule, not a fudge.
+FOOTING_LEAD_MM = 0.25
+
+#: How far the slab that cuts a raised zone back down to its terrace overhangs
+#: the part in XY, mm. Only has to be enough that none of the slab's walls comes
+#: near the part's — see `build_base`.
+SLAB_MARGIN_MM = 5.0
 
 
 def _report(progress: ProgressFn, label: str, frac: float) -> None:
@@ -52,6 +78,170 @@ def build_terraces(partition: CastlePartition,
     return union_all(parts)
 
 
+def _blend_profile(h_high: float, h_low: float, fillet, side: str) -> np.ndarray:
+    """One half of the S-blend as `(u, v)` — `u` across the seam, `v` in Z.
+
+    `side="high"` is the material the blend CARVES off the high terrace, over
+    `u in [-span_high, 0]`; `side="low"` is the material it RAISES the low one
+    by, over `u in [0, span_low]`. Two halves rather than one band because they
+    act on different terraces, which is the raster's rule and the B-Rep path's.
+
+    The curve itself is `relief.castle._footing_z`, which the raster and the
+    B-Rep path also call. Only the sweep differs between the three.
+
+    **Each half runs `FOOTING_LEAD_MM` past its outer end**, and it is M-N0's
+    rule rather than a fudge: a tool must cross every surface it meets, never
+    lie flush against it. At `u = -span_high` the blend curve *equals* `h_high`
+    and at `u = span_low` it equals `h_low`, so without the lead the carve's
+    floor would be coplanar with the high terrace's top face and the raise's
+    ceiling with the low one's. The carve ramps up into air above the high
+    terrace; the raise ramps down into material already solid below the low one.
+    Neither changes the part, and the parity gate pins that.
+
+    `_footing_z` is defined across the whole range — it flattens to `h_high` /
+    `h_low` outside the arcs — so the lead is the real curve continued rather
+    than an extrapolation.
+    """
+    from ..relief.castle import _footing_spans, _footing_z
+
+    span_hi, span_lo = _footing_spans(h_high - h_low, fillet.exterior_mm,
+                                      fillet.interior_mm, fillet.first)
+    if (span_hi if side == "high" else span_lo) <= 0:
+        raise ManifoldError(f"degenerate {side}-side footing span")
+
+    lead = FOOTING_LEAD_MM
+    u = (np.linspace(-span_hi, 0.0, FOOTING_SECTION_POINTS) if side == "high"
+         else np.linspace(0.0, span_lo, FOOTING_SECTION_POINTS))
+    v = _footing_z(u, h_high, h_low, fillet.exterior_mm, fillet.interior_mm,
+                   fillet.first)
+    uv = np.column_stack([u, v])
+
+    if side == "high":
+        return np.vstack([[-span_hi - lead, h_high + lead], uv])
+    return np.vstack([uv, [span_lo + lead, h_low - lead]])
+
+
+def footing_tools(partition: CastlePartition, castle: CastleParams,
+                  heights: dict[str, float], top: float,
+                  stations: int = FOOTING_STATIONS
+                  ) -> tuple[dict[str, list[Manifold]], dict[str, list[Manifold]]]:
+    """`(carve_by_zone, raise_by_zone)` for every named seam with a fillet.
+
+    The bands come back **unclipped**, keyed by the zone each one acts on, and
+    that is the whole trick — see `build_base`. A seam whose span is degenerate
+    or whose neighbours are level contributes nothing and stays a hard step,
+    exactly as on the other two paths.
+
+    Swept with `swept_profile` rather than `hull_chain`: **neither half of the
+    blend is a convex section**, checked over every fillet in the schedule
+    rather than assumed. `kernel.hull_chain` carries the measurement. A hull
+    would span the S and deliver a straight ramp — the same silent flattening
+    that would have turned every round-over into a chamfer.
+
+    The B-Rep path fits a spline through the stations and pipe-sweeps it; here
+    the stations are the polyline. At 30 stations along a gentle SCULPT cut the
+    two inscribe the same curve well inside the chord tolerance, and the parity
+    gate measures that rather than trusting it.
+    """
+    from ..geometry.footings import cut_stations, orient_high_side
+
+    carve: dict[str, list[Manifold]] = {}
+    raise_: dict[str, list[Manifold]] = {}
+    for edge in partition.edges:
+        if not edge.canonical:
+            continue
+        try:
+            fillet = castle.footing.for_edge(edge.canonical)
+        except AttributeError:
+            continue
+        names = edge.zone_names
+        if len(names) != 2 or not all(n in heights for n in names):
+            continue
+        hi, lo = ((names[0], names[1]) if heights[names[0]] > heights[names[1]]
+                  else (names[1], names[0]))
+        if heights[hi] - heights[lo] < 1e-9:
+            continue
+
+        pts, perps = cut_stations(edge.cut, stations)
+        perps = orient_high_side(partition, pts, perps, names, heights)
+        for side, zone, far, into in (("high", hi, top, carve),
+                                      ("low", lo, -CUT_MARGIN_MM, raise_)):
+            try:
+                profile = _blend_profile(heights[hi], heights[lo], fillet, side)
+            except ManifoldError:
+                continue
+            into.setdefault(zone, []).append(
+                swept_profile(pts, perps, [profile] * len(pts), far,
+                              closed=False))
+    return carve, raise_
+
+
+def build_base(partition: CastlePartition, castle: CastleParams,
+               heights: dict[str, float], top: float) -> Manifold:
+    """The terraces with the footing blends already in them.
+
+    **Every blend band cuts a zone prism; none of them is a clipped tool.** That
+    is the difference between this and the obvious construction, and it is worth
+    stating because the obvious one produces a valid, watertight, volumetrically
+    exact part that is nonetheless wrong.
+
+    The obvious construction clips each band to the zone it acts on and then
+    applies it: `solid - (band & zone)` and `solid + (band & zone)`. But a zone
+    prism's walls *are* the terraces' walls, so every clipped band arrives with
+    a face lying exactly in a face of the target. Manifold's booleans are exact
+    and answer with zero-thickness shells: on the demo base ten of them, seven
+    inverted — internal voids in a part that was watertight, one body to look
+    at, and correct to 7927.958 mm3. Only `decompose()` saw them.
+
+    So neither band is clipped:
+
+    * A **carve** is subtracted from its high zone's own prism, `A - B` instead
+      of `A - (B & A)`. The zone restricts it for free and the band's faces cut
+      the target transversally. Exact, and one boolean cheaper.
+    * A **raise** is the mirror image, once a raised terrace is read as a cut
+      rather than an addition. The zone is extruded to full height and cut back
+      down to its terrace by a slab — and the band is subtracted from that slab
+      first, so the cut stops short exactly where the blend rises. The slab
+      overhangs the part in XY, so none of its walls sit near the part's.
+
+    Zones with no blend are extruded plainly, so a frame with no footings builds
+    exactly as `build_terraces` does.
+
+    What remains after that is genuine numerical degeneracy rather than a
+    construction error — two zero-volume tetrahedra on the aviator — which
+    `drop_degenerate` discards.
+    """
+    from shapely.geometry import box as shapely_box
+
+    carve, raise_ = footing_tools(partition, castle, heights, top)
+
+    minx, miny, maxx, maxy = partition.body.bounds
+    footprint = shapely_box(minx - SLAB_MARGIN_MM, miny - SLAB_MARGIN_MM,
+                            maxx + SLAB_MARGIN_MM, maxy + SLAB_MARGIN_MM)
+
+    parts = []
+    for zone in partition.zones:
+        if zone.polygon.is_empty or zone.polygon.area <= 0:
+            continue
+        height = heights[zone.name]
+        raises = raise_.get(zone.name)
+        if raises:
+            above = extrude(footprint, top + SLAB_MARGIN_MM - height,
+                            base=height)
+            solid = subtract_all(extrude(zone.polygon, top),
+                                 [subtract_all(above, raises)])
+        else:
+            solid = extrude(zone.polygon, height)
+        carves = carve.get(zone.name)
+        if carves:
+            solid = subtract_all(solid, carves)
+        parts.append(solid)
+
+    if not parts:
+        raise ManifoldError("partition has no zones with area")
+    return drop_degenerate(union_all(parts))
+
+
 def hinge_pockets(hinges, castle: CastleParams, top: float) -> list[Manifold]:
     """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
     ray, so these never care what has already been cut."""
@@ -68,11 +258,14 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
                        hinges: list | None = None,
                        heights: dict[str, float] | None = None,
                        progress: ProgressFn = None) -> Manifold:
-    """Terraces and hinge pockets.
+    """The whole castle: terraces, footing blends, every finishing feature,
+    hinge pockets.
 
-    The features — footing blends, groove, bezel, edge features, splay, scoop —
-    land here as the port proceeds. Until then this is the "bare" castle, which
-    is exactly the stage the parity gate can already check against OCCT.
+    Order mirrors the B-Rep path exactly — terraces, footings, surface features
+    one at a time, then everything that can share a pass — because parity is the
+    point of this milestone. The mesh domain makes a cheaper arrangement
+    possible (no cached base, live slider rebuilds); that comes after parity,
+    not instead of it.
     """
     from ..geometry.rings import lip_partition
     from ..solid.build import SWEEP_MARGIN_MM, zone_heights
@@ -93,7 +286,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     top = max(h.values()) + SWEEP_MARGIN_MM
 
     _report(progress, "Building terraces", 0.20)
-    solid = build_terraces(partition, h)
+    solid = build_base(partition, castle, h, top)
 
     # Splay then scoop, each subtracted before the next is built. The order is
     # load-bearing: both anchor on the centreline, so with the splay enabled the
@@ -135,6 +328,13 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     _report(progress, "Hinge pockets", 0.85)
     tools.extend(hinge_pockets(hinges, castle, top))
     solid = subtract_all(solid, tools)
+
+    # Once more at the end, for the reason `build_base` gives. With the blends
+    # in, every later feature has a finely triangulated curved surface to be
+    # tangent to, and an exact boolean answers a near-tangency with a
+    # zero-thickness shell. Without this the fully featured demo frame comes out
+    # in four pieces, three of which total 1.6e-8 mm3.
+    solid = drop_degenerate(solid)
 
     _report(progress, "Model ready", 1.0)
     return solid

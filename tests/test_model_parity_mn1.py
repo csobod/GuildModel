@@ -69,10 +69,7 @@ def gabriel_front(tmp_path_factory):
 
 
 def _bare_params():
-    """Defaults, which carry no finishing features — the stage the mesh kernel
-    has ported so far. The footing blends are excluded on the B-Rep side by
-    going through `build_terraces` directly (see `_terraces_only`) rather than
-    by switching them off, because the schedule has no such switch."""
+    """Defaults, which carry no finishing features."""
     from guildmodel.core.project.schema import CastleParams
 
     return CastleParams()
@@ -81,14 +78,54 @@ def _bare_params():
 def _terraces_only(partition, castle):
     """The B-Rep terraces without footing blends, for a like-for-like compare.
 
-    `castle_base` also applies the blends, which the mesh path has not ported
-    yet; asking it for the whole base would compare a featured part against an
-    unfeatured one and report the difference as a parity failure.
+    `castle_base` also applies the blends, so asking it for the whole base would
+    compare a blended part against a plain one. The footing schedule has no
+    enable switch, so the way to get terraces alone is to call `build_terraces`
+    directly. `test_the_base_agrees_with_the_brep_kernel` covers the blends.
     """
     from guildmodel.core.solid.build import build_terraces, zone_heights
 
     return build_terraces(partition, zone_heights(partition, castle, None),
                           curved=False)
+
+
+def _brep_base(partition, castle):
+    """B-Rep terraces **plus** footing blends, polygonal.
+
+    Not `castle_base`, which builds curved terraces off the authored splines —
+    that is a real difference of about 0.017% and nothing to do with the blends.
+    This assembles the same stage the mesh `build_base` does, from the same
+    flattened polygons, so the comparison is about the sweep alone.
+    """
+    from guildmodel.core.solid.build import (SWEEP_MARGIN_MM, build_terraces,
+                                             footing_bodies, zone_heights)
+    from guildmodel.core.solid.occ import BooleanError, cut_many, fuse_all
+
+    heights = zone_heights(partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+    solid = build_terraces(partition, heights, curved=False)
+
+    carves, fills, prisms = [], [], {}
+    for edge in partition.edges:
+        if not edge.canonical:
+            continue
+        try:
+            fillet = castle.footing.for_edge(edge.canonical)
+        except AttributeError:
+            continue
+        try:
+            carve, fill = footing_bodies(partition, edge, heights, fillet, top,
+                                         prisms)
+        except BooleanError:
+            continue
+        if carve is not None:
+            carves.append(carve)
+        if fill is not None:
+            fills.append(fill)
+
+    if fills:
+        solid = fuse_all([solid, *fills])
+    return cut_many(solid, carves) if carves else solid
 
 
 # ------------------------------------------------------------------ the kernel
@@ -137,6 +174,86 @@ def test_terraces_agree_with_the_brep_kernel(fixture, request):
 
     assert mesh == pytest.approx(brep, rel=VOLUME_TOL), (
         f"terrace volumes disagree: B-Rep {brep:.3f}, mesh {mesh:.3f}")
+
+
+#: Volume agreement on the **footing blends**, as a fraction. Ten S-profile
+#: bands swept along ten SCULPT cuts, and the two kernels sweep them
+#: differently: the B-Rep path fits a spline through the 30 stations and
+#: pipe-sweeps it, the mesh path treats the stations as a polyline. That is a
+#: real chord difference, so this cannot be pinned at `VOLUME_TOL`.
+#:
+#: Measured at 0.00000% on all three fixtures — the cuts are gentle enough that
+#: 30 stations inscribe the same curve either way. 1e-5 leaves three orders of
+#: magnitude over what was observed and is still far tighter than losing any
+#: single blend (the smallest is 47 mm3, 0.6% of the part).
+BLEND_TOL = 1e-5
+
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_the_base_agrees_with_the_brep_kernel(fixture, request):
+    """Terraces with the ten footing blends in them — M-N1's named schedule
+    risk, and the last feature to port.
+
+    Checked on the finished base rather than on the bands, unlike the bezel and
+    the groove, because a blend is not a small correction: the ten of them move
+    97 mm3 onto the frame and take 174 mm3 off it, ~3% of the part. A gate on
+    the total is sensitive enough here.
+    """
+    from guildmodel.core.model import build_base, to_trimesh
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+    from guildmodel.core.solid.occ import mesh_volume
+
+    front = request.getfixturevalue(fixture)
+    castle = _bare_params()
+    heights = zone_heights(front.partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+
+    brep = mesh_volume(_brep_base(front.partition, castle))
+    base = build_base(front.partition, castle, heights, top)
+    mesh = to_trimesh(base)
+
+    assert mesh.is_watertight
+    assert mesh.volume == pytest.approx(brep, rel=BLEND_TOL), (
+        f"base volumes disagree: B-Rep {brep:.4f}, mesh {mesh.volume:.4f}")
+
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_the_blends_actually_change_the_part(fixture, request):
+    """The gate above would pass with every blend missing if the terraces
+    happened to match, so pin that the blends do something.
+
+    This is the lesson from the groove's backwards V and the bezel's
+    part-volume tolerance: a parity gate has to be checked against a
+    known-*wrong* input, and "no blends at all" is the wrong input closest to
+    hand.
+
+    **Measured in each direction, not as a net.** A blend fills the low side of
+    a seam and carves the high side, so the two nearly cancel: on Gabriel the
+    net is 33 mm3 while 116 goes on and 150 comes off. A gate on the net would
+    have been a gate on the cancellation.
+    """
+    from guildmodel.core.model import (build_base, build_terraces,
+                                       subtract_all, to_trimesh)
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+
+    front = request.getfixturevalue(fixture)
+    castle = _bare_params()
+    heights = zone_heights(front.partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+
+    plain = build_terraces(front.partition, heights)
+    blended = build_base(front.partition, castle, heights, top)
+
+    part = to_trimesh(plain).volume
+    added = to_trimesh(subtract_all(blended, [plain])).volume
+    removed = to_trimesh(subtract_all(plain, [blended])).volume
+
+    assert added > 0.005 * part, (
+        f"the blends raise only {added:.3f} mm3 of {part:.3f}")
+    assert removed > 0.005 * part, (
+        f"the blends carve only {removed:.3f} mm3 of {part:.3f}")
 
 
 def test_hinge_pockets_remove_the_same_material(demo_front):
