@@ -679,9 +679,40 @@ corruption.
 
 ## 8. Risks, stated plainly
 
+0. **The mesh surface touches itself, and the B-Rep's does not. M-N3 is blocked
+   on this.** *(Found 2026-08-08, chasing §8.2's edge problem.)*
+
+   Welded by position and with degenerate faces removed, the mesh base carries
+   **157 / 247 / 232** edges with more than two faces on demo / aviator /
+   gabriel; the B-Rep carries **0** on all three, with the bezel on. An STL has
+   no index table, so this is what a slicer sees. It is the M-N0 condition
+   again — the one `mesh_check` describes as "will not export as a valid STL" —
+   and `verify_mesh` cannot currently see it, because Manifold keeps its
+   index-manifold invariant across a self-contact by duplicating the vertex.
+
+   Everything else about the part is right: watertight, one body, volume exact
+   to 0.00000%. That combination is precisely why it needed looking for.
+
+   Localised to the **footing blends**, and specifically to their two halves
+   meeting at the seam: terraces alone are 0, the base is already at the full
+   count before any feature, and carves alone give 20 on the demo frame against
+   raises alone 29 but 194 together. Invariant to `FOOTING_LEAD_MM` (0 to 1 mm),
+   `FOOTING_SECTION_POINTS` (16 to 60) and `SLAB_MARGIN_MM` (2 to 20), which
+   rules out tangency and points at the construction. Ratcheted by
+   `test_mesh_selftouch` so it cannot grow while it waits.
+
+   **Measuring this is easy to get wrong in two ways, both of which I did.**
+   Skipping the degenerate-face removal inflates the count about threefold (194
+   reported where 157 is honest), because a zero-area triangle contributes its
+   long edge twice. And round-tripping through **binary STL, which stores
+   float32**, quantises distinct vertices into false contacts: that route showed
+   26 and 16 on the *B-Rep*, and I briefly concluded the shipped path was broken.
+   It is not.
+
 1. ~~**The footing blends are unproven in the new kernel**~~ — **retired
-   2026-08-08. Built, and they agree to 0.00000%.** The kill switch was not
-   needed and hybrid mode was not entered.
+   2026-08-08 for parity; see risk 0 for what they did break.** They agree to
+   0.00000% on volume. The kill switch was not needed and hybrid mode was not
+   entered.
 
    Two things about the guess in this paragraph were wrong, and both are worth
    keeping. It said the blends are "the same per-segment-hull pattern as the
@@ -696,7 +727,21 @@ corruption.
    contract everywhere, but edge crispness in the *viewer* now depends on our
    analytic edge overlay landing exactly on the mesh — needs one careful test.
 
-   *Sharpened by M-N2, 2026-08-08, and it is the milestone's one shortfall.* The
+   *Resolved as a diagnosis, 2026-08-08 — and it led to risk 0 above, which is
+   the more serious finding.* The unexplained lines were **zero-area triangles**:
+   Manifold emits them (357 on the demo frame, its own, not something our merge
+   map creates — the map comes back empty), their normal is the zero vector, and
+   the angle between a zero vector and a real normal computes as exactly 90
+   degrees. So the detector was reading creases off faces that have no
+   orientation. That accounts for the whole unexplained population, and the
+   original criticism of dihedral guessing is not what was wrong here.
+
+   Whether the detector is usable once those faces are excluded is now a smaller
+   question, but it sits behind risk 0: the same degenerate triangles are the
+   stitches holding the self-contacts together, so both go away together or
+   neither does.
+
+   *The original M-N2 shortfall, for the record.* The
    viewer's four display modes are drawings **of the edges**, and the B-Rep path
    supplies its real topological ones. Deriving them from dihedral angle instead
    was built, measured, and backed out; the mesh kernel ships with `edges=None`
