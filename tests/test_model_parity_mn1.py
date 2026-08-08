@@ -44,15 +44,28 @@ def demo_front():
     return ws
 
 
-@pytest.fixture(scope="module")
-def aviator_front(tmp_path_factory):
+def _gdraw_front(tmp_path_factory, name):
     from guildmodel.gui.component_workspace import build_workspaces_from_gdraw
 
-    path = tmp_path_factory.mktemp("gdraw") / "aviator.gdraw"
+    path = tmp_path_factory.mktemp("gdraw") / f"{name}.gdraw"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in sorted((FIXTURES / "aviator").iterdir()):
+        for f in sorted((FIXTURES / name).iterdir()):
             zf.write(f, f.name)
     return build_workspaces_from_gdraw(path)[0][0]
+
+
+@pytest.fixture(scope="module")
+def aviator_front(tmp_path_factory):
+    return _gdraw_front(tmp_path_factory, "aviator")
+
+
+@pytest.fixture(scope="module")
+def gabriel_front(tmp_path_factory):
+    """The maker's own drawing, and the only fixture that catches the pad splay
+    severing the frame. Two real drawings were not enough: M-N0's tangency
+    existed on exactly one of them, and this one adds a failure neither of the
+    others shows."""
+    return _gdraw_front(tmp_path_factory, "gabriel")
 
 
 def _bare_params():
@@ -106,7 +119,8 @@ def test_the_weld_uses_the_merge_map(demo_front):
 
 # ------------------------------------------------------------------- parity
 
-@pytest.mark.parametrize("fixture", ["demo_front", "aviator_front"])
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
 def test_terraces_agree_with_the_brep_kernel(fixture, request):
     """Same zones, same heights, two kernels, one part."""
     from guildmodel.core.model import build_terraces as mesh_terraces

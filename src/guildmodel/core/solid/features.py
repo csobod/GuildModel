@@ -34,6 +34,7 @@ from typing import Iterable
 
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
+from shapely.prepared import prep
 
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams, EyewireBezelParams
@@ -534,6 +535,38 @@ def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
 
 # ---------------------------------------------------------------- pad splay
 
+def _crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
+                  c: np.ndarray, steps: int = 24) -> np.ndarray:
+    """Shorten each crest offset until the crest point is inside the material.
+
+    **Inward from the outline is not the same as into the body.** At the bottom
+    centre a frame has the nose notch, and the default 6 mm crest offset steps
+    straight out through it. The anchor ray then finds nothing, `surface_z_at`
+    reports its `missing` value — 0.0, indistinguishable from "the surface is
+    at the anterior face" — and the chamfer, which spans from the cut surface
+    *up* to `top`, removes the entire thickness at that station.
+
+    On the Gabriel fixture that cut the frame into two halves: left
+    x[-67.65, -1.38], right x[1.38, 67.65], watertight, `IsValid` true, zero
+    holes. Only the body count caught it.
+
+    Clamping here rather than repairing the anchor afterwards, because a crest
+    outside the body is wrong on its own terms — every downstream quantity
+    (drop, width, anchor) is measured from it.
+    """
+    prepared = prep(body)
+    out = np.asarray(c, dtype=float).copy()
+    for i, (point, normal, offset) in enumerate(zip(pts, inward, c)):
+        if offset <= 0.0:
+            continue
+        for t in np.linspace(float(offset), 0.0, steps):
+            q = point + normal * t
+            if t <= 0.0 or prepared.contains(Point(float(q[0]), float(q[1]))):
+                out[i] = t
+                break
+    return out
+
+
 def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
                  ) -> TopoDS_Shape:
     """The pad splay as a swept chamfer along the outline's bottom-center run.
@@ -595,6 +628,9 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     if rims is not None and not rims.is_empty:
         c = np.minimum(c, 0.8 * _distance(_points(pts), rims))
     c = np.maximum(c, 0.0)
+    # ...and held inside the body, which the rim clamp above does not
+    # guarantee. See `_crest_inside`.
+    c = _crest_inside(body, pts, inward, c)
 
     tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
     feather = min(max(float(p.feather_mm), 0.0), run)
@@ -619,6 +655,24 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     # pins it.
     anchors = surface_z_at(solid, pts + inward * np.maximum(c, _RIM_PROBE_MM)[:, None])
     top = float(anchors.max()) + CUT_MARGIN_MM
+
+    # Floor the cut at `anterior_clamp_mm` above the front face, the same way
+    # `scoop_cutter` and the bezel do. The parameter has always existed and
+    # carried the comment "no knife edge"; this path simply never read it, so
+    # the drop was whatever the crest offset and the angle multiplied out to.
+    #
+    # On the Gabriel fixture that reached 3.464 mm BELOW the anterior face with
+    # 19 of 41 stations sitting over less material than that, and the splay cut
+    # the frame **into two halves** — left x[-67.65, -1.38], right x[1.38,
+    # 67.65]. Zero holes, zero non-manifold edges, `IsValid` true: a clean cut
+    # in the wrong place, which is why only the body count caught it.
+    #
+    # The lower bound keeps the loft buildable where the surface is already
+    # thinner than the clamp (an anchor ray that misses reads 0.0), matching
+    # `scoop_cutter`; at 0.02 mm it cannot sever anything.
+    floor = float(p.anterior_clamp_mm)
+    drops = np.clip(drops, MIN_TAPER_DROP_MM,
+                    np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
 
     sections = [
         _edge_section(q, nn, float(a), float(wd), float(dr), "chamfer", 0.0,

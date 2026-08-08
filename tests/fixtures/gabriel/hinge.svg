@@ -1,0 +1,41 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1">
+  <metadata>{
+  "calibration": {
+    "px_per_mm": null
+  },
+  "mirror": {
+    "x": 0.0,
+    "enabled": true
+  },
+  "forming": {
+    "bridge_angle_deg": 15.0,
+    "apical_radius_mm": 8.0
+  },
+  "machined_bridge": {
+    "depth_mm": 4.0,
+    "width_mm": 5.0
+  },
+  "face_images": [],
+  "curves": [],
+  "layers": {
+    "HINGE": {
+      "visible": true,
+      "locked": false
+    },
+    "REF": {
+      "visible": true,
+      "locked": false
+    }
+  },
+  "fill": {
+    "visible": false,
+    "color": "#2a6099",
+    "opacity": 0.5
+  },
+  "bevel": {
+    "preset": "acetate",
+    "depth_mm": 1.0
+  }
+}</metadata>
+</svg>
