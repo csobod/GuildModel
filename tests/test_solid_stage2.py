@@ -873,7 +873,13 @@ def test_build_component_mesh_emits_edges_on_the_solid_path(demo_partition,
 
     `edges` is what the four Fusion-parity display modes are drawn from, so a
     None here is exactly what makes the viewer disable the mode combo.
+
+    B-Rep only. The Manifold path does not carry edges yet and that costs it
+    three display modes — see `mesh_build._build_castle_mesh` for why deriving
+    them from dihedral angle was built and then backed out, and
+    `test_model_kernel_mn2` for the assertion that keeps it honest.
     """
+    kernel = "brep"
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.gui.mesh_build import build_component_mesh
 
@@ -881,18 +887,21 @@ def test_build_component_mesh_emits_edges_on_the_solid_path(demo_partition,
             "castle": CastleParams(), "hinge": list(demo_hinges),
             "stage": "pockets"}
 
-    mesh, edges, guide = build_component_mesh(spec, resolution=0.6, solid=True)
+    mesh, edges, guide = build_component_mesh(spec, resolution=0.6,
+                                              kernel=kernel)
     assert guide is None
-    assert edges, "the solid path must carry its topological edges"
+    assert edges, f"the {kernel} path must carry edges"
     assert len(edges) > 100, f"only {len(edges)} edges — that is not the frame"
 
     raster_mesh, raster_edges, _ = build_component_mesh(spec, resolution=0.6)
     assert raster_edges is None, "the raster has no edges to give"
     assert len(raster_mesh.faces) > len(mesh.faces), (
-        "the raster mesh should be far heavier than the tessellated solid")
+        "the raster mesh should be far heavier than a modelled one")
 
 
-def test_build_3d_reaches_the_solid_path(demo_partition, demo_hinges, monkeypatch):
+@pytest.mark.parametrize("kernel", ["brep", "mesh"])
+def test_build_3d_reaches_the_modelled_path(kernel, demo_partition,
+                                            demo_hinges, monkeypatch):  # noqa: D401
     """Regression for the 2026-08-07 finding 2: the dead display-mode dropdown.
 
     Build 3D goes through `MultiMeshWorker`, which had never been given the
@@ -900,6 +909,9 @@ def test_build_3d_reaches_the_solid_path(demo_partition, demo_hinges, monkeypatc
     viewer correctly disabled the combo, and clicking it did nothing. Meanwhile
     a *parameter* change went through `MeshWorker` and did build a solid, which
     is why the fault looked intermittent.
+
+    Run against both kernels, because the shape of that bug was a second build
+    path that had not been told about a new option, and M-N2 adds a new option.
 
     Driven synchronously: no threads, no VTK.
     """
@@ -915,14 +927,16 @@ def test_build_3d_reaches_the_solid_path(demo_partition, demo_hinges, monkeypatc
               "hinge": list(demo_hinges), "stage": "pockets"}]
 
     built, errors = [], []
-    w = MultiMeshWorker(specs, resolution=0.6, solid=True)
+    w = MultiMeshWorker(specs, resolution=0.6, kernel=kernel)
     w.built.connect(lambda i, m, e, g: built.append((i, m, e, g)))
     w.error.connect(lambda tb: errors.append(tb))
     w.run()
 
     assert errors == [], errors[0] if errors else ""
     assert len(built) == 1
-    assert built[0][2], "Build 3D on the solid path must emit edges"
+    assert built[0][1] is not None, f"Build 3D built nothing on {kernel}"
+    if kernel == "brep":
+        assert built[0][2], "Build 3D on the B-Rep path must emit edges"
 
 
 def test_workspace_carries_its_own_edge_cache():

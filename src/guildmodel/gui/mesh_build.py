@@ -25,6 +25,18 @@ from typing import Callable, Optional
 
 ProgressFn = Optional[Callable[[str, float], None]]
 
+#: The three ways to build a frame front, newest last.
+#:
+#: * `raster` — the M17 heightfield. No edges, and the resolution settings apply.
+#: * `brep` — OpenCASCADE (BUILDPLAN Stage 2). Exact, and the reason
+#:   BUILDPLAN-NEW exists: see its §3 for what it costs.
+#: * `mesh` — Manifold (BUILDPLAN-NEW M-N1). Agrees with `brep` on every parity
+#:   gate and builds the base in 2.4 s against 12.7 s.
+#:
+#: All three are kept while the migration runs, because being able to build the
+#: same part three ways is what has caught every silent defect this season.
+KERNELS = ("raster", "brep", "mesh")
+
 #: Preview grid step for an engraved temple. The engraving v-groove is ~0.5 mm
 #: wide, so at the frame-front preview resolution (0.3 mm) it spans <2 cells and
 #: the 3D groove looks blocky. A temple is a small part (a ~135 mm strip), so
@@ -40,40 +52,44 @@ def temple_preview_res(base_res: float, engraving) -> float:
     return min(base_res, ENGRAVE_PREVIEW_RES_MM) if engraving else base_res
 
 
-def build_component_mesh(spec: dict, *, resolution: float, solid: bool = False,
-                         progress: ProgressFn = None):
+def build_component_mesh(spec: dict, *, resolution: float,
+                         kernel: str = "raster", progress: ProgressFn = None):
     """Build one component's preview mesh from a plain build description.
 
     `spec` is what `MainWindow._build_spec` produces — geometry and parameters
     only, no live widget state — so any worker can build any component off the
     GUI thread without touching the active working set.
 
+    `kernel` is one of `KERNELS` and applies to the frame front only; a temple
+    and a base-curve block are flat parts the raster builds exactly.
+
     Returns `(mesh, edges, core_guide)`:
 
-    * `edges` is the solid's real topological edge polylines, or None on the
-      raster path. The four Fusion-parity display modes are drawings *of the
-      edges*, so a None here is what makes the viewer disable the combo.
+    * `edges` is the part's feature edge polylines, or None on the raster path.
+      The four Fusion-parity display modes are drawings *of the edges*, so a
+      None here is what makes the viewer disable the combo.
     * `core_guide` is the temple injected-core bar bounds, or None for anything
       else.
     """
     mode = spec["mode"]
     if mode == "castle":
-        return _build_castle(spec, resolution, solid, progress)
+        return _build_castle(spec, resolution, kernel, progress)
     if mode == "temple":
         return _build_temple(spec, resolution, progress)
     return _build_block(spec, resolution, progress)
 
 
-def _build_castle(spec, resolution, solid, progress):
+def _build_castle(spec, resolution, kernel, progress):
     from guildmodel.core.relief.castle import build_castle_mesh, build_castle_stage
 
     stage = spec.get("stage", "pockets")
-    if solid and stage == "pockets":
-        # The solid path only models the FULL posterior. The teaching stepper's
-        # partial stages stay on the raster builder — they are a pedagogical
-        # decomposition of the raster construction, not states the solid passes
-        # through.
-        return _build_castle_solid(spec, progress)
+    if kernel != "raster" and stage == "pockets":
+        # The modelled paths only build the FULL posterior. The teaching
+        # stepper's partial stages stay on the raster builder — they are a
+        # pedagogical decomposition of the raster construction, not states a
+        # solid passes through.
+        builder = _build_castle_mesh if kernel == "mesh" else _build_castle_solid
+        return builder(spec, progress)
 
     relief = build_castle_stage(
         spec["partition"], spec["castle"], spec["hinge"],
@@ -92,6 +108,29 @@ def _build_castle_solid(spec, progress):
         progress("Tessellating", 0.95)
     tess = tessellate(solid)
     return tess.to_trimesh(), tess.edges, None
+
+
+def _build_castle_mesh(spec, progress):
+    """The Manifold path: closed by construction, and **no edges yet**.
+
+    No tessellation step, because there is nothing to tessellate — the model is
+    already triangles, and `to_trimesh` only re-indexes them through the
+    library's own merge map.
+
+    `edges=None` costs the maker three of the four display modes when this
+    kernel is selected, so it is a deliberate choice rather than an oversight.
+    Deriving them from dihedral angle was built and then backed out on its own
+    measurements: it finds 89% of what the B-Rep's tessellation calls a crease,
+    so it misses little, but only 44% of what it would *draw* has a counterpart
+    there — and the surplus is real, manifold geometry of this mesh that could
+    not be accounted for. Drawing unexplained lines on the part is worse than
+    drawing none. BUILDPLAN-NEW §8.2 carries the figures.
+    """
+    from guildmodel.core.model import build_castle_model, to_trimesh
+
+    model = build_castle_model(
+        spec["partition"], spec["castle"], spec["hinge"], progress=progress)
+    return to_trimesh(model), None, None
 
 
 def _build_temple(spec, resolution, progress):

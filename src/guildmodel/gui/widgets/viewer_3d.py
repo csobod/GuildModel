@@ -247,12 +247,18 @@ class Viewer3D(QWidget):
         # edges; with a raster mesh the edge set is empty and the edge-drawing
         # modes fall back to plain shading rather than drawing 396,000 triangle
         # borders, which is noise rather than a wireframe.
+        #
+        # The Manifold kernel (BUILDPLAN-NEW M-N2) also has none for now, which
+        # is why the tooltip names the kernel that does rather than blaming the
+        # raster. Deriving them from dihedral angle was tried and backed out —
+        # see `mesh_build._build_castle_mesh`.
         lay.addSpacing(8)
         self._display_combo = QComboBox()
         self._display_combo.setFixedHeight(22)
         self._display_combo.setToolTip(
             "Display mode — how the model is drawn.\n"
-            "Edge modes need a solid model; a raster mesh has no edges to draw.")
+            "The edge modes draw the part's real edges, so they need a model\n"
+            "that has some: today that is the B-Rep kernel, set in Preferences.")
         for label, value in self._DISPLAY_MODES:
             self._display_combo.addItem(label, value)
         self._display_combo.setCurrentIndex(

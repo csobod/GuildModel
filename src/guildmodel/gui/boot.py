@@ -24,6 +24,16 @@ def main() -> None:
         from guildmodel.gui.diag import run_diag
         sys.exit(run_diag())
 
+    # A/B the two model kernels on a drawing (BUILDPLAN-NEW M-N2). Also before
+    # Qt: it builds geometry and prints a table, and wants no window.
+    if "--diag-kernels" in sys.argv:
+        from guildmodel.core.model.compare import run_diag as run_kernel_diag
+        args = sys.argv[sys.argv.index("--diag-kernels") + 1:]
+        if not args:
+            print("usage: guildmodel --diag-kernels <drawing.gdraw>")
+            sys.exit(2)
+        sys.exit(run_kernel_diag(args[0]))
+
     # Before QApplication: Qt reads QT_QPA_PLATFORM when the app is constructed,
     # so an XWayland switch is only possible here.
     from guildmodel.gui.hidpi import (apply_ui_scale, force_x11_on_wayland,

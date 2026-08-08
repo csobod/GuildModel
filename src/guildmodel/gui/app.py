@@ -201,19 +201,19 @@ class MeshWorker(_ProgressWorker):
 
     def __init__(
         self, partition, castle, hinge_polys=(), stage: str = "pockets",
-        resolution: float = 0.3, solid: bool = False,
+        resolution: float = 0.3, kernel: str = "raster",
     ) -> None:
         super().__init__()
         self.spec = {"mode": "castle", "partition": partition, "castle": castle,
                      "hinge": list(hinge_polys), "stage": stage}
         self.stage_name = stage
         self.resolution = resolution
-        self.solid = solid
+        self.kernel = kernel
 
     def run(self) -> None:
         try:
             mesh, edges, _guide = build_component_mesh(
-                self.spec, resolution=self.resolution, solid=self.solid,
+                self.spec, resolution=self.resolution, kernel=self.kernel,
                 progress=self._progress)
             self.finished.emit(mesh, self.stage_name, edges)
         except _Cancelled:
@@ -261,7 +261,7 @@ class MultiMeshWorker(_ProgressWorker):
     finishes, then ``finished``. ``specs`` are plain build descriptions (see
     _build_spec).
 
-    `solid` reaches this worker too. It did not used to, and that was the whole
+    `kernel` reaches this worker too. It did not used to, and that was the whole
     of the 2026-08-07 finding 2: Build 3D came through here and so always
     produced raster meshes with no edges, which left the display-mode combo
     correctly disabled and apparently dead, while changing a parameter went
@@ -273,11 +273,11 @@ class MultiMeshWorker(_ProgressWorker):
     error = Signal(str)
 
     def __init__(self, specs: list[dict], resolution: float,
-                 solid: bool = False) -> None:
+                 kernel: str = "raster") -> None:
         super().__init__()
         self.specs = specs
         self.resolution = resolution
-        self.solid = solid
+        self.kernel = kernel
 
     def run(self) -> None:
         try:
@@ -290,7 +290,7 @@ class MultiMeshWorker(_ProgressWorker):
 
                 sub("starting", 0.0)
                 mesh, edges, guide = build_component_mesh(
-                    spec, resolution=self.resolution, solid=self.solid,
+                    spec, resolution=self.resolution, kernel=self.kernel,
                     progress=sub)
                 self.built.emit(spec["index"], mesh, edges, guide)
             self.finished.emit()
@@ -1873,19 +1873,35 @@ class PrefsDialog(QDialog):
         prev_form.addRow("Preview resolution:", self._preview_res)
         prev_form.addRow("Export resolution:", self._export_res)
 
-        # BUILDPLAN Stage 2. The solid is the master representation; the raster
-        # stays available so the two can be compared (report §3.5).
-        self._solid_model = QCheckBox("Build the model as a B-Rep solid")
-        self._solid_model.setChecked(bool(prefs.get("use_solid_model", False)))
-        self._solid_model.setToolTip(
-            "Model with the OpenCASCADE solid kernel instead of the raster\n"
-            "heightfield. Cuts get exact edges, the solid is watertight by\n"
-            "construction, and the viewer's wireframe / hidden-edge display\n"
-            "modes become available — they draw the part's real edges, which a\n"
-            "heightfield mesh does not have.\n\n"
-            "Slower to rebuild, and the resolution settings above no longer\n"
-            "apply to the preview: a solid has no grid.")
-        prev_form.addRow("", self._solid_model)
+        # BUILDPLAN Stage 2, then BUILDPLAN-NEW M-N2. All three paths stay
+        # selectable while the migration runs: building the same part three
+        # ways is what has caught every silent defect this season.
+        from guildmodel.gui.mesh_build import KERNELS
+
+        self._model_kernel_combo = QComboBox()
+        for key, label in (("raster", "Raster heightfield"),
+                           ("brep", "B-Rep solid (OpenCASCADE)"),
+                           ("mesh", "Mesh solid (Manifold)")):
+            self._model_kernel_combo.addItem(label, key)
+        current = str(prefs.get("model_kernel", "raster"))
+        if current not in KERNELS:
+            current = "raster"
+        self._model_kernel_combo.setCurrentIndex(KERNELS.index(current))
+        self._model_kernel_combo.setToolTip(
+            "Which kernel builds the frame front's 3D model.\n\n"
+            "Raster heightfield — the original. Fast and grid-based; the\n"
+            "resolution settings above apply to it and to nothing else. It has\n"
+            "no edges, so the wireframe and hidden-edge display modes stay\n"
+            "disabled.\n\n"
+            "B-Rep solid — exact surfaces, watertight when it succeeds, and\n"
+            "slow: 20-35 s for a full rebuild.\n\n"
+            "Mesh solid — closed by construction rather than by luck, and the\n"
+            "fastest of the three to rebuild. It agrees with the B-Rep path on\n"
+            "every parity check. It carries no edges yet, so the wireframe and\n"
+            "hidden-edge display modes stay disabled on it; and it is not the\n"
+            "default only because the posted G-code has still to be shown\n"
+            "identical.")
+        prev_form.addRow("3D model kernel:", self._model_kernel_combo)
         gen_lay.addWidget(prev_box)
 
         # Paths
@@ -2853,7 +2869,7 @@ class PrefsDialog(QDialog):
             "dark_mode": self._dark_check.isChecked(),
             "ui_scale": scale_key if scale_key == "auto" else float(scale_key),
             "show_log_on_start": self._log_check.isChecked(),
-            "use_solid_model": self._solid_model.isChecked(),
+            "model_kernel": self._model_kernel_combo.currentData(),
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
             "last_output_dir": self._out_dir.text(),
@@ -6093,6 +6109,18 @@ class MainWindow(QMainWindow):
                 "lens": ws.lens_od,
                 "block": ws.block_params or self.params.block_params()}
 
+    def _model_kernel(self) -> str:
+        """Which kernel builds the frame front — one of `mesh_build.KERNELS`.
+
+        Read here rather than at each call site so the two build paths cannot
+        end up disagreeing, which is the shape of the 2026-08-07 finding this
+        module has already been bitten by once.
+        """
+        from guildmodel.gui.mesh_build import KERNELS
+
+        choice = str(self._prefs.get("model_kernel", "raster"))
+        return choice if choice in KERNELS else "raster"
+
     def _build_all(self, targets: list[int]) -> None:
         """Build every target component's mesh in a single background thread."""
         if self._mesh_thread is not None and self._mesh_thread.isRunning():
@@ -6106,7 +6134,7 @@ class MainWindow(QMainWindow):
 
         self._mesh_worker = MultiMeshWorker(
             specs, self._prefs["preview_resolution_mm"],
-            solid=bool(self._prefs.get("use_solid_model", False)))
+            kernel=self._model_kernel())
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
         self._mesh_thread.started.connect(self._mesh_worker.run)
@@ -6347,7 +6375,7 @@ class MainWindow(QMainWindow):
             self._partition, self.params.castle_params(),
             hinge_polys=self._hinge_polys, stage=self._stage,
             resolution=self._prefs["preview_resolution_mm"],
-            solid=bool(self._prefs.get("use_solid_model", False)),
+            kernel=self._model_kernel(),
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)

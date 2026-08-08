@@ -638,6 +638,26 @@ path; readiness dot = Manifold `status()` + our own boundary-edge count (the
 direct check from the spike, it costs microseconds). A/B command in the debug
 menu: build both, diff volumes and silhouettes. ~1 session.
 
+*Done 2026-08-08.* The `use_solid_model` checkbox becomes a three-way
+`model_kernel` choice in Preferences — raster / B-Rep / mesh — carried through
+the one `build_component_mesh` choke point all three workers already share, so
+there is no second copy for the next option to be forgotten in. A saved
+`use_solid_model` migrates to `brep`, because prefs are restored over the schema
+defaults on every launch and a new key with a new default would otherwise
+silently undo a maker's choice.
+
+The A/B landed as `guildmodel --diag-kernels <drawing>` rather than a debug menu
+item, following the `--diag-display` precedent: it runs headless, it is testable,
+and it works on the drawing in front of the maker rather than on a fixture. On
+Gabriel it reports volume -0.0055%, silhouette -0.3585%, and 2.66 s against
+13.06 s. The silhouette sign is the expected one — this path extrudes the
+partition's flattened polygons, which are inscribed in the splines the B-Rep
+extrudes — and the report says so, because otherwise it reads as a defect.
+
+**One shortfall, and it is not cosmetic: the mesh kernel carries no edges**, so
+selecting it costs three of the four display modes. See §8.2 for what was tried
+and the numbers that stopped it.
+
 **M-N3 — parity and the flip.** Demo + aviator + Gabriel: volume, silhouette,
 V-profile, chamfer gates, **posted G-code byte-equivalence** (it posts from
 curves, so this should be exactly equal — any diff is a bug found cheap).
@@ -675,6 +695,32 @@ corruption.
 2. **Mesh density becomes a quality knob.** Chord 0.01 mm matches today's
    contract everywhere, but edge crispness in the *viewer* now depends on our
    analytic edge overlay landing exactly on the mesh — needs one careful test.
+
+   *Sharpened by M-N2, 2026-08-08, and it is the milestone's one shortfall.* The
+   viewer's four display modes are drawings **of the edges**, and the B-Rep path
+   supplies its real topological ones. Deriving them from dihedral angle instead
+   was built, measured, and backed out; the mesh kernel ships with `edges=None`
+   and three of the four modes disabled.
+
+   The measurements, so the next attempt starts from them rather than repeating
+   them. On the demo frame with the bezel on: **89.1%** of the length the B-Rep's
+   own tessellation calls a crease was found, so the detector misses little; but
+   only **43.7%** of what it would *draw* had a counterpart there (**61.0%**
+   against the full topological set). No threshold separates them — the figure is
+   flat at ~60% from 25° through 85°. The surplus is not corruption: the mesh is
+   watertight with every edge used exactly twice and zero duplicate faces, and it
+   matches on volume and silhouette. It is real geometry — exact 90° creases
+   running up to 13.9 mm across a terrace top — that the B-Rep does not have, and
+   I could not account for it.
+
+   Two things are worth recording about the attempt. `trimesh.graph.traversals`
+   returns the order nodes were **visited**, not a walk along adjacent ones, so
+   chaining sharp edges with it drew straight lines across the frame at every DFS
+   backtrack: 92% accurate as loose segments, 62% once "chained". And the
+   comparison against `tessellate().edges` is not a fair target in the other
+   direction — that explores every `TopAbs_EDGE`, so a 180-section bezel loft
+   contributes thousands of tangent patch seams, and the demo frame hands the
+   viewer 5,878 curves for a part with perhaps a hundred features.
 3. **A second geometry dependency.** Manifold is small (~MBs vs OCCT's 70),
    Apache-2.0, and load-bearing for OpenSCAD; risk accepted. It was installed
    into the venv for the spike but is *not* yet in `pyproject.toml` — M-N1

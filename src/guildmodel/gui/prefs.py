@@ -54,11 +54,18 @@ DEFAULTS: dict = {
     "prompt_set_default_bed": True,
     # Recently opened files (most recent first)
     "recent_files":          [],
-    # Build the 3D model with the B-Rep solid kernel instead of the raster
-    # heightfield (BUILDPLAN Stage 2). The solid carries real topological edges,
-    # which is what the viewer's edge display modes draw; the raster path has
-    # none. Off by default while Stage 2 is in progress — report §3.5 keeps both
-    # paths alive so they can be compared.
+    # Which kernel builds the frame front's 3D model — one of
+    # `gui.mesh_build.KERNELS`. "raster" is the M17 heightfield, "brep" is
+    # OpenCASCADE (BUILDPLAN Stage 2), "mesh" is Manifold (BUILDPLAN-NEW M-N1).
+    # The two modelled paths carry feature edges, which is what the viewer's
+    # edge display modes draw; the raster has none.
+    #
+    # Still "raster" by default: M-N3 flips it once posted G-code is shown
+    # byte-equivalent. Keeping all three alive is not indecision — building the
+    # same part three ways is what has caught every silent defect this season.
+    "model_kernel":          "raster",
+    # Superseded by `model_kernel`; read once on load to carry a maker's
+    # existing choice over, then dropped. See `_migrate`.
     "use_solid_model":       False,
     # 3D preview / STL export grid resolution (mm)
     "preview_resolution_mm": 0.3,
@@ -104,12 +111,28 @@ def _retire_m124_stepdown(cam: dict) -> None:
         cam.pop("contour_stepdown_mm", None)
 
 
+def _migrate_model_kernel(data: dict, merged: dict) -> None:
+    """Carry a saved `use_solid_model` over to `model_kernel` (BUILDPLAN-NEW M-N2).
+
+    A maker who had switched the B-Rep path on must not be silently moved back
+    to the raster by an upgrade — prefs are restored over the schema defaults on
+    every launch, so a new key with a new default would do exactly that.
+
+    Only applies when the old key is present and the new one is not, so it
+    cannot override a choice made since.
+    """
+    if "model_kernel" in data or not data.get("use_solid_model"):
+        return
+    merged["model_kernel"] = "brep"
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present."""
     try:
         if _FILE.exists():
             data = json.loads(_FILE.read_text(encoding="utf-8"))
             merged = {**DEFAULTS, **data}
+            _migrate_model_kernel(data, merged)
             # Deep-merge nested dicts so new default keys survive old prefs
             # files (GuildDraw's rule). EVERY nested dict pref must be listed
             # here — a missing entry means old files silently clobber new
