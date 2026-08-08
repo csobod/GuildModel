@@ -671,9 +671,11 @@ Gabriel it reports volume -0.0055%, silhouette -0.3585%, and 2.66 s against
 partition's flattened polygons, which are inscribed in the splines the B-Rep
 extrudes — and the report says so, because otherwise it reads as a defect.
 
-**One shortfall, and it is not cosmetic: the mesh kernel carries no edges**, so
-selecting it costs three of the four display modes. See §8.2 for what was tried
-and the numbers that stopped it.
+~~**One shortfall, and it is not cosmetic: the mesh kernel carries no edges**,
+so selecting it costs three of the four display modes.~~ **Closed 2026-08-08**;
+`core.model.edges` reads them off the surface and all four modes work on both
+solid kernels. What had stopped it was measuring through the zero-area triangles
+— see §8.2, which now carries the numbers both before and after.
 
 **M-N3 — parity and the flip.** Demo + aviator + Gabriel: volume, silhouette,
 V-profile, chamfer gates, **posted G-code byte-equivalence** (it posts from
@@ -878,29 +880,52 @@ corruption.
    orientation. That accounts for the whole unexplained population, and the
    original criticism of dihedral guessing is not what was wrong here.
 
-   Whether the detector is usable once those faces are excluded is now a smaller
-   question, and risk 0 has partly answered it: the degenerate triangles were
-   the stitches holding the self-contacts together, and fixing the base removed
-   both at once — the bare model now has **none**. So the detector can be
-   re-measured on a bare frame without them in the way. The bezel still emits
-   308, so a rerun with the features on is still measuring through them.
+   **Resolved, and the detector ships** *(2026-08-08)*. `core.model.edges`
+   supplies the mesh kernel's edges and all four display modes work on both
+   solid kernels. The whole surplus was the degenerate faces: they were also the
+   stitches over the surface's self-contacts, so risk 0 removed both at once,
+   and `mesh_check.welded_surface` drops whatever is left. Re-measured on all
+   three drawings, bare, matching within 0.15 mm:
 
-   *The original M-N2 shortfall, for the record.* The
-   viewer's four display modes are drawings **of the edges**, and the B-Rep path
-   supplies its real topological ones. Deriving them from dihedral angle instead
-   was built, measured, and backed out; the mesh kernel ships with `edges=None`
-   and three of the four modes disabled.
+   | | demo | aviator | gabriel |
+   |---|---|---|---|
+   | drawn length that is a real topological edge | **98.6%** | 98.8% | 98.8% |
+   | *the B-Rep's own tessellation*, same detector | 98.2% | 98.5% | 98.4% |
+   | B-Rep creases this finds | **100.0%** | 99.9% | 100.0% |
 
-   The measurements, so the next attempt starts from them rather than repeating
-   them. On the demo frame with the bezel on: **89.1%** of the length the B-Rep's
-   own tessellation calls a crease was found, so the detector misses little; but
-   only **43.7%** of what it would *draw* had a counterpart there (**61.0%**
-   against the full topological set). No threshold separates them — the figure is
-   flat at ~60% from 25° through 85°. The surplus is not corruption: the mesh is
-   watertight with every edge used exactly twice and zero duplicate faces, and it
-   matches on volume and silhouette. It is real geometry — exact 90° creases
-   running up to 13.9 mm across a terrace top — that the B-Rep does not have, and
-   I could not account for it.
+   Precision went 43.7% → 98.6% on one change of instrument. It is as good as
+   running the same detector on the mesh it replaces, and it misses nothing that
+   detector finds. The ~6% it draws that the B-Rep's *mesh* does not is real
+   topological edges its coarser tessellation did not resolve as creases.
+
+   **The threshold is 20°, and that is measured too.** `face_adjacency_angles`
+   is the angle between face *normals* — coplanar reads 0 — so a 30° chamfer
+   against a flat face reads 30, which is how the raster's `feature_angle=40.0`
+   came to smooth 30° chamfers away. Length drawn against threshold on the demo
+   frame fully featured: 6584 mm at 1°, 3273 at 5, 2639 at 12, then flat — 2527
+   at 20, 2517 at 25, 2508 at 28 — before the 30° eyewire bezel drops out at 32
+   (2266) and the 45° features at 40 (1744). Below 12° are the facets of the
+   curved footing blends, and drawing those lays a contour map over every blend.
+   Anywhere in 12–28 behaves identically; 20 has the most room either side.
+
+   **The two thirds it does not draw are not a shortfall.** The topological set
+   is ~6,200–6,800 mm against ~1,400–1,700 mm of actual crease: a 180-section
+   loft contributes thousands of tangent patch seams between surfaces that meet
+   smoothly. That is the "5,878 curves for a part with perhaps a hundred
+   features" already on record, quantified — the B-Rep viewer draws them and
+   this does not, which is the feature.
+
+   Cost: **15.7 ms** on a fully featured demo frame, 1.0% of the build.
+
+   *The original measurement, for the record*, since it was right about what it
+   measured and wrong only about what was in the way. On the demo frame with the
+   bezel on — when it carried 308 zero-area triangles — **89.1%** of the length
+   the B-Rep's own tessellation calls a crease was found, but only **43.7%** of
+   what it would *draw* had a counterpart there (**61.0%** against the full
+   topological set), flat at ~60% from 25° through 85°. The surplus was noted as
+   "real geometry — exact 90° creases running up to 13.9 mm across a terrace
+   top — that the B-Rep does not have, and I could not account for it." Exactly
+   90° is what a zero vector makes with a unit one.
 
    Two things are worth recording about the attempt. `trimesh.graph.traversals`
    returns the order nodes were **visited**, not a walk along adjacent ones, so

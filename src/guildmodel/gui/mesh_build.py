@@ -111,26 +111,29 @@ def _build_castle_solid(spec, progress):
 
 
 def _build_castle_mesh(spec, progress):
-    """The Manifold path: closed by construction, and **no edges yet**.
+    """The Manifold path: closed by construction, with its creases for edges.
 
     No tessellation step, because there is nothing to tessellate — the model is
     already triangles, and `to_trimesh` only re-indexes them through the
     library's own merge map.
 
-    `edges=None` costs the maker three of the four display modes when this
-    kernel is selected, so it is a deliberate choice rather than an oversight.
-    Deriving them from dihedral angle was built and then backed out on its own
-    measurements: it finds 89% of what the B-Rep's tessellation calls a crease,
-    so it misses little, but only 44% of what it would *draw* has a counterpart
-    there — and the surplus is real, manifold geometry of this mesh that could
-    not be accounted for. Drawing unexplained lines on the part is worse than
-    drawing none. BUILDPLAN-NEW §8.2 carries the figures.
+    The edges are read back off the surface by dihedral angle
+    (`core.model.edges`). That was built and backed out once, on a measurement
+    saying only 44% of what it drew was a real edge; the surplus turned out to
+    be zero-area triangles, whose normal is the zero vector and so reads as a
+    right-angle crease against anything. With those gone it draws 98.6% real
+    against the B-Rep tessellation's own 98.2%, and finds 100% of what the same
+    detector finds there. BUILDPLAN-NEW §8.2 carries the table.
     """
-    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.model import (build_castle_model, feature_edges,
+                                       to_trimesh)
 
     model = build_castle_model(
         spec["partition"], spec["castle"], spec["hinge"], progress=progress)
-    return to_trimesh(model), None, None
+    if progress is not None:
+        progress("Edges", 0.97)
+    mesh = to_trimesh(model)
+    return mesh, feature_edges(mesh), None
 
 
 def _build_temple(spec, resolution, progress):

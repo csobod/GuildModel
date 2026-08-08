@@ -248,17 +248,17 @@ class Viewer3D(QWidget):
         # modes fall back to plain shading rather than drawing 396,000 triangle
         # borders, which is noise rather than a wireframe.
         #
-        # The Manifold kernel (BUILDPLAN-NEW M-N2) also has none for now, which
-        # is why the tooltip names the kernel that does rather than blaming the
-        # raster. Deriving them from dihedral angle was tried and backed out —
-        # see `mesh_build._build_castle_mesh`.
+        # Both solid kernels supply them now: the B-Rep its own topological
+        # curves, the Manifold path its creases (`core.model.edges`). Only the
+        # raster preview goes without.
         lay.addSpacing(8)
         self._display_combo = QComboBox()
         self._display_combo.setFixedHeight(22)
         self._display_combo.setToolTip(
             "Display mode — how the model is drawn.\n"
             "The edge modes draw the part's real edges, so they need a model\n"
-            "that has some: today that is the B-Rep kernel, set in Preferences.")
+            "that has some: either solid kernel does, the raster preview\n"
+            "does not.")
         for label, value in self._DISPLAY_MODES:
             self._display_combo.addItem(label, value)
         self._display_combo.setCurrentIndex(

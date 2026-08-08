@@ -9,17 +9,20 @@ Cheap to import: `manifold3d` is a few MB against OCP's ~70, so unlike
 """
 from .build import (build_base, build_castle_model, build_terraces,
                     footing_tools, hinge_pockets)
+from .edges import CREASE_ANGLE_DEG, feature_edges
 from .kernel import (ManifoldError, cross_section, drop_degenerate, extrude,
                      hull_chain, intersect_all, subtract_all, to_trimesh,
                      union_all, volume)
 
 __all__ = [
+    "CREASE_ANGLE_DEG",
     "ManifoldError",
     "build_base",
     "build_castle_model",
     "build_terraces",
     "cross_section",
     "extrude",
+    "feature_edges",
     "footing_tools",
     "hinge_pockets",
     "drop_degenerate",

@@ -41,24 +41,26 @@ def aviator_front(tmp_path_factory):
 
 # ----------------------------------------------------------------- the edges
 
-def test_the_mesh_path_reports_no_edges_rather_than_guessing(demo_front):
-    """A deliberate gap, pinned so it stays deliberate.
+def test_the_mesh_path_supplies_edges(demo_front):
+    """It did not until 2026-08-08, and the gap was pinned here as deliberate.
 
-    The viewer's four Fusion-parity display modes are drawings *of the edges*,
-    and the B-Rep path supplies its real topological ones. A mesh has no
-    topology to ask, so deriving them from dihedral angle was built — and then
-    backed out on its own measurements.
+    The viewer's four display modes are drawings *of the edges*. A mesh has no
+    topology to ask, so deriving them from dihedral angle was built and then
+    backed out: against the demo frame with the bezel on it found 89% of what
+    the B-Rep's tessellation calls a crease, but only **44%** of what it would
+    have drawn had any counterpart there, the surplus being 90-degree creases
+    running 14 mm across a terrace top that could not be accounted for.
+    Unexplained lines on a maker's part are worse than no lines.
 
-    Against the demo frame with the bezel on: the detector found 89% of what
-    the B-Rep's own tessellation calls a crease, so it was missing little. But
-    only 44% of the length it would have *drawn* had any counterpart there, and
-    the surplus was real, manifold, watertight geometry of this mesh that could
-    not be accounted for — 90-degree creases running 14 mm across a terrace top.
-    Unexplained lines on the maker's part are worse than no lines.
+    They were **zero-area triangles**. Their normal is the zero vector and its
+    angle to a unit one is exactly 90 degrees, so each read as a right-angle
+    crease; they were also the stitches over the surface's self-contacts, and
+    risk 0 took both away together. Re-measured with them gone, the detector
+    draws 98.6% real against the B-Rep tessellation's own 98.2% and finds 100%
+    of what that finds — `test_mesh_edges_mn2` holds the table.
 
-    So the mesh kernel costs three display modes for now, the viewer says so,
-    and this test fails the moment someone supplies edges without also updating
-    the reasoning. BUILDPLAN-NEW §8.2 carries the figures.
+    The predecessor of this test was written to fail the moment someone supplied
+    edges without updating the reasoning, and that is exactly how it went.
     """
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.gui.mesh_build import build_component_mesh
@@ -69,9 +71,7 @@ def test_the_mesh_path_reports_no_edges_rather_than_guessing(demo_front):
     mesh, edges, _guide = build_component_mesh(spec, resolution=0.8,
                                                kernel="mesh")
     assert len(mesh.faces) > 0
-    assert edges is None, (
-        "the mesh path now supplies edges — good, but §8.2 and "
-        "`_build_castle_mesh` still say it does not")
+    assert edges, "no edges: the viewer disables three of its four modes"
 
 
 # ----------------------------------------------------------------- the flag
@@ -88,9 +88,10 @@ def test_every_kernel_name_builds(demo_front):
         mesh, edges, _guide = build_component_mesh(spec, resolution=0.8,
                                                    kernel=kernel)
         assert len(mesh.faces) > 0, f"{kernel} built nothing"
-        # Only the B-Rep path carries edges today — see
-        # `test_the_mesh_path_reports_no_edges_rather_than_guessing`.
-        assert (edges is not None) == (kernel == "brep")
+        # Both solid kernels carry edges; the raster preview has none, because
+        # at the export grid its triangle borders are grid seams rather than
+        # edges of the frame.
+        assert bool(edges) == (kernel in ("brep", "mesh")), kernel
 
 
 def test_a_teaching_stage_stays_on_the_raster(demo_front):
