@@ -28,6 +28,12 @@ dependencies = [
     # differently after a dependency bump (BREP-REWRITE-REPORT.md §5.4).
     # LGPL-2.1 + OCCT Exception — see NOTICE for the relinking obligation.
     "cadquery-ocp==7.9.3.1.1",
+    # Mesh-domain CSG (BUILDPLAN-NEW M-N1). Apache-2.0, a few MB against OCCT's
+    # 70, and the guarantee that matters here is structural: a Manifold is
+    # closed and manifold by construction, so the failure class this project
+    # spent a season chasing cannot be represented. Floated, not pinned: unlike
+    # the B-Rep kernel it produces meshes we verify directly every build.
+    "manifold3d>=3.5",
 ]
 
 [project.optional-dependencies]
