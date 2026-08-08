@@ -24,7 +24,8 @@ from manifold3d import Manifold
 
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams
-from .kernel import ManifoldError, extrude, subtract_all, union_all
+from .kernel import (ManifoldError, extrude, subtract_all, to_trimesh,
+                     union_all)
 
 ProgressFn = Optional[Callable[[str, float], None]]
 
@@ -75,7 +76,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     """
     from ..geometry.rings import lip_partition
     from ..solid.build import SWEEP_MARGIN_MM, zone_heights
-    from .features import groove_cutters
+    from .features import bezel_cutters, groove_cutters
 
     # With the groove on, the visible aperture is the rim *lip* — cut
     # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
@@ -92,10 +93,17 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     _report(progress, "Building terraces", 0.20)
     solid = build_terraces(partition, h)
 
-    _report(progress, "Lens groove", 0.60)
+    _report(progress, "Lens groove", 0.55)
     tools = groove_cutters(partition, castle)
 
-    _report(progress, "Hinge pockets", 0.80)
+    # The bezel anchors on the surface under it, so it needs the part as it
+    # stands — but only the *terraces* under it, which is what the B-Rep path
+    # feeds it too: the groove and the pockets do not touch the rim band, so
+    # every cutter here still sees the same target and one pass suffices.
+    _report(progress, "Eyewire bezel", 0.70)
+    tools.extend(bezel_cutters(to_trimesh(solid), partition, castle, top))
+
+    _report(progress, "Hinge pockets", 0.85)
     tools.extend(hinge_pockets(hinges, castle, top))
     solid = subtract_all(solid, tools)
 

@@ -121,10 +121,27 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     shared stations, which is what makes the union a solid tube rather than a
     string of beads.
 
-    Requires each profile to be convex — every section this project sweeps is (a
-    triangle, a trapezoid, a half-ellipse closed upward). A concave profile
-    would have its hull fill in the concavity silently, so callers that grow one
-    must decompose it first.
+    Requires each profile to be convex, and a concave one is filled in
+    **silently** — the hull simply spans the dent and the feature comes out as
+    something smoother than it should be. No error, no clue.
+
+    Which sections qualify, checked rather than assumed:
+
+    * groove V — a triangle. Convex.
+    * bezel band — a trapezoid. Convex.
+    * bridge scoop — a half-ellipse closed upward. The lower boundary is
+      `-sqrt(1 - x^2)`, which is a convex *function*, and the region above a
+      convex function is a convex set. Convex.
+    * edge feature, `profile="chamfer"` — region above a straight line. Convex.
+    * edge feature, `profile="fillet"` — **not convex.** The round-over is
+      `v = anchor - r + sqrt(r^2 - (r-u)^2)`, the upper half of a circle, which
+      is concave; the region above it is not a convex set. Hulling it would
+      quietly turn every round-over into a chamfer.
+
+    So the fillet profile has to be decomposed before it can come through here —
+    slice it into per-sample slabs, each a convex trapezoid, sweep each slab as
+    its own chain and union them. Not yet written; the edge-feature port is
+    where it lands.
     """
     if len(profiles) < 2:
         raise ManifoldError("a sweep needs at least two stations")
@@ -139,6 +156,37 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
 
 def volume(man: Manifold) -> float:
     return float(man.volume())
+
+
+def surface_z_at(mesh, pts_xy, missing: float = float("nan"),
+                 face: str = "top") -> np.ndarray:
+    """Surface height above each (x, y), by vertical ray. The mesh counterpart
+    of `core.solid.occ.surface_z_at`.
+
+    `face="bottom"` takes the lowest hit instead — the anterior face.
+
+    **`missing` defaults to NaN, not 0.0.** The B-Rep version defaults to 0.0,
+    and that cost a real bug: a ray that hits nothing is indistinguishable from
+    a surface sitting exactly on the anterior face, so the pad splay treated the
+    empty nose notch as solid material at z=0 and cut Gabriel's frame in half.
+    A caller here has to decide what a miss means, and NaN makes forgetting
+    loud instead of silent.
+    """
+    origins = np.column_stack([np.asarray(pts_xy, dtype=float),
+                               np.full(len(pts_xy), -1e4)])
+    directions = np.tile([0.0, 0.0, 1.0], (len(origins), 1))
+    locations, index_ray, _tri = mesh.ray.intersects_location(
+        origins, directions, multiple_hits=True)
+
+    out = np.full(len(origins), float(missing), dtype=float)
+    if len(locations) == 0:
+        return out
+    take_top = face != "bottom"
+    for i, z in zip(index_ray, locations[:, 2]):
+        current = out[i]
+        if np.isnan(current) or (z > current if take_top else z < current):
+            out[i] = z
+    return out
 
 
 def to_trimesh(man: Manifold):

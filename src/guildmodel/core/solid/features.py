@@ -282,6 +282,18 @@ def bezel_cutters(solid: TopoDS_Shape, partition: CastlePartition,
     out = []
     if bezel.cuts_posterior():
         for interior in partition.body.interiors:
+            # Lens apertures only. A decorative OUTLINE opening — an aviator's
+            # bridge keyhole, a temple cut-out — is a through-cut, not an
+            # eyewire: it seats no lens, so there is no bevel for a bezel band
+            # to make room for, and chamfering its rim thins a deliberately
+            # slender piece of the frame. Same rule the lens groove already
+            # follows (`lip_body`), applied here for the reason it was applied
+            # there.
+            #
+            # Found by M-N1 parity: the mesh kernel filtered these and this path
+            # did not, 2 cutters against 3 on the aviator.
+            if partition.is_hole(interior):
+                continue
             try:
                 out.append(bezel_cutter(solid, partition.body, interior, bezel, top))
             except BooleanError:

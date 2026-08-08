@@ -262,6 +262,108 @@ def test_the_groove_actually_undercuts(demo_front):
     assert deep >= 36, f"the undercut is present at only {deep}/40 stations"
 
 
+# ------------------------------------------------------------ eyewire bezel
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_the_bezel_band_agrees_with_the_brep_kernel(fixture, request):
+    """Terraces plus the rim chamfer, both kernels, same anchors.
+
+    Compared on the material removed for the same reason as the groove: the
+    band is a small fraction of the part, and a gate on the finished volume
+    would tolerate the band being in the wrong place entirely.
+    """
+    from guildmodel.core.model import subtract_all, to_trimesh
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model.features import bezel_cutters as mesh_bezels
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+    from guildmodel.core.solid.build import build_terraces as occ_terraces
+    from guildmodel.core.solid.features import bezel_cutters as occ_bezels
+    from guildmodel.core.solid.occ import cut_many, mesh_volume
+
+    front = request.getfixturevalue(fixture)
+    castle = CastleParams()
+    castle.eyewire_bezel.enabled = True
+    heights = zone_heights(front.partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+
+    occ_bare = occ_terraces(front.partition, heights, curved=False)
+    occ_tools = occ_bezels(occ_bare, front.partition, castle, top)
+    assert occ_tools, "the fixture has no rims to bezel"
+    brep_removed = mesh_volume(occ_bare) - mesh_volume(cut_many(occ_bare,
+                                                                occ_tools))
+
+    mesh_bare = mesh_terraces(front.partition, heights)
+    mesh_tools = mesh_bezels(to_trimesh(mesh_bare), front.partition, castle, top)
+    assert len(mesh_tools) == len(occ_tools)
+    banded = to_trimesh(subtract_all(mesh_bare, mesh_tools))
+    mesh_removed = to_trimesh(mesh_bare).volume - banded.volume
+
+    assert banded.is_watertight
+    assert mesh_removed == pytest.approx(brep_removed, rel=0.04), (
+        f"the bezel removes {mesh_removed:.3f} mm3 in the mesh kernel against "
+        f"{brep_removed:.3f} in the B-Rep one")
+
+
+def test_neither_kernel_bezels_a_decorative_opening(aviator_front):
+    """A decorative OUTLINE hole is a through-cut, not an eyewire.
+
+    The aviator's bridge keyhole seats no lens, so there is no bevel for a rim
+    band to make room for, and chamfering it thins a deliberately slender part
+    of the frame. The lens groove has always skipped these (`lip_body`); the
+    B-Rep bezel did not, which M-N1 parity exposed as 2 cutters against 3.
+
+    Pinned on both kernels, because the whole value of the second one is that a
+    disagreement like this becomes visible.
+    """
+    from guildmodel.core.model.features import bezel_cutters as mesh_bezels
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model import to_trimesh
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+    from guildmodel.core.solid.build import build_terraces as occ_terraces
+    from guildmodel.core.solid.features import bezel_cutters as occ_bezels
+
+    partition = aviator_front.partition
+    holes = [r for r in partition.body.interiors if partition.is_hole(r)]
+    lenses = [r for r in partition.body.interiors if not partition.is_hole(r)]
+    assert holes and lenses, "the aviator must have both, or this proves nothing"
+
+    castle = CastleParams()
+    castle.eyewire_bezel.enabled = True
+    heights = zone_heights(partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+
+    occ = occ_bezels(occ_terraces(partition, heights, curved=False), partition,
+                     castle, top)
+    mesh = mesh_bezels(to_trimesh(mesh_terraces(partition, heights)), partition,
+                       castle, top)
+    assert len(occ) == len(lenses), "the B-Rep path bezelled a decorative hole"
+    assert len(mesh) == len(lenses), "the mesh path bezelled a decorative hole"
+
+
+def test_the_mesh_anchor_ray_reports_a_miss_as_nan(demo_front):
+    """Not 0.0. The B-Rep default of 0.0 is indistinguishable from "the surface
+    sits on the anterior face", and that is precisely how the pad splay came to
+    treat Gabriel's empty nose notch as solid material and cut the frame in
+    half. A miss has to be loud."""
+    import numpy as np
+
+    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.model.kernel import surface_z_at
+    from guildmodel.core.project.schema import CastleParams
+
+    mesh = to_trimesh(build_castle_model(demo_front.partition, CastleParams(),
+                                         demo_front.hinge_polys))
+    far_away = [(10_000.0, 10_000.0)]
+    assert np.isnan(surface_z_at(mesh, far_away)[0])
+
+    inside = demo_front.partition.body.representative_point()
+    hit = surface_z_at(mesh, [(inside.x, inside.y)])[0]
+    assert not np.isnan(hit) and hit > 0.0
+
+
 def test_subtraction_does_not_depend_on_tool_order(demo_front):
     """`(X \\ A) \\ B == X \\ (A u B)` — true of the algebra, and on the B-Rep
     path *not* true in practice: reordering tools flipped results between
