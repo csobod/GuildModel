@@ -306,6 +306,83 @@ def test_the_bezel_band_agrees_with_the_brep_kernel(fixture, request):
         f"{brep_removed:.3f} in the B-Rep one")
 
 
+# ------------------------------------------------------------ edge features
+
+def _brow(profile="chamfer"):
+    """The M17 brow chamfer: over each eyewire, not across the bridge."""
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+
+    castle = CastleParams()
+    castle.edge_features = [EdgeFeature(
+        id="brow", label="Brow", face="anterior", edge="outline",
+        zones=["eyewire_superior_od"], profile=profile,
+        width_mm=2.0, angle_deg=45.0, radius_mm=2.0)]
+    return castle
+
+
+@pytest.mark.parametrize("profile", ["chamfer", "fillet"])
+def test_edge_features_agree_with_the_brep_kernel(demo_front, profile):
+    """Both profiles, because they take different routes through the kernel:
+    the chamfer's section is convex and the fillet's is not, so the fillet is
+    the one that exercises `swept_profile`'s slab decomposition end to end."""
+    from guildmodel.core.model import subtract_all, to_trimesh
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model.features import (resolved_edge_cutters as
+                                                mesh_edges)
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+    from guildmodel.core.solid.build import build_terraces as occ_terraces
+    from guildmodel.core.solid.features import resolved_edge_cutters as occ_edges
+    from guildmodel.core.solid.occ import cut_many, mesh_volume
+
+    castle = _brow(profile)
+    partition = demo_front.partition
+    heights = zone_heights(partition, castle, None)
+    top = max(heights.values()) + SWEEP_MARGIN_MM
+
+    occ_bare = occ_terraces(partition, heights, curved=False)
+    occ_tools = occ_edges(occ_bare, partition, castle, top)
+    assert occ_tools, "the brow feature produced no spans; the fixture is wrong"
+    brep_removed = mesh_volume(occ_bare) - mesh_volume(cut_many(occ_bare,
+                                                                occ_tools))
+
+    mesh_bare = mesh_terraces(partition, heights)
+    mesh_tools = mesh_edges(to_trimesh(mesh_bare), partition, castle, top)
+    assert len(mesh_tools) == len(occ_tools), "different number of spans"
+    cut = to_trimesh(subtract_all(mesh_bare, mesh_tools))
+    mesh_removed = to_trimesh(mesh_bare).volume - cut.volume
+
+    assert cut.is_watertight
+    assert mesh_removed == pytest.approx(brep_removed, rel=0.05), (
+        f"{profile}: mesh removes {mesh_removed:.3f} mm3 against the B-Rep "
+        f"path's {brep_removed:.3f}")
+
+
+def test_the_fillet_removes_less_than_the_chamfer_it_would_collapse_to(demo_front):
+    """A round-over is strictly shallower than the chamfer spanning the same
+    corner, so if the slab decomposition ever regresses to a plain hull this
+    goes the other way. The direct guard on the failure `swept_profile` exists
+    to prevent."""
+    from guildmodel.core.model import subtract_all, to_trimesh
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model.features import resolved_edge_cutters
+    from guildmodel.core.solid.build import SWEEP_MARGIN_MM, zone_heights
+
+    partition = demo_front.partition
+    removed = {}
+    for profile in ("chamfer", "fillet"):
+        castle = _brow(profile)
+        heights = zone_heights(partition, castle, None)
+        top = max(heights.values()) + SWEEP_MARGIN_MM
+        bare = mesh_terraces(partition, heights)
+        tools = resolved_edge_cutters(to_trimesh(bare), partition, castle, top)
+        removed[profile] = (to_trimesh(bare).volume
+                            - to_trimesh(subtract_all(bare, tools)).volume)
+
+    assert removed["fillet"] < removed["chamfer"], (
+        "the fillet removed at least as much as the chamfer — the concave "
+        "profile is being hulled flat")
+
+
 def test_neither_kernel_bezels_a_decorative_opening(aviator_front):
     """A decorative OUTLINE hole is a through-cut, not an eyewire.
 

@@ -76,7 +76,8 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     """
     from ..geometry.rings import lip_partition
     from ..solid.build import SWEEP_MARGIN_MM, zone_heights
-    from .features import bezel_cutters, groove_cutters
+    from .features import (bezel_cutters, groove_cutters,
+                           resolved_edge_cutters)
 
     # With the groove on, the visible aperture is the rim *lip* — cut
     # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
@@ -100,8 +101,21 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     # stands — but only the *terraces* under it, which is what the B-Rep path
     # feeds it too: the groove and the pockets do not touch the rim band, so
     # every cutter here still sees the same target and one pass suffices.
-    _report(progress, "Eyewire bezel", 0.70)
-    tools.extend(bezel_cutters(to_trimesh(solid), partition, castle, top))
+    # Tessellated lazily: the anchor rays need a mesh, and with no
+    # surface-reading feature enabled that conversion is the whole build. It
+    # cost 9 ms -> 828 ms on the demo frame before this was made conditional.
+    surface = None
+    bezel = getattr(castle, "eyewire_bezel", None)
+    wants_rays = ((bezel is not None and bezel.enabled)
+                  or castle.resolved_edge_features())
+    if wants_rays:
+        surface = to_trimesh(solid)
+
+        _report(progress, "Eyewire bezel", 0.70)
+        tools.extend(bezel_cutters(surface, partition, castle, top))
+
+        _report(progress, "Edge features", 0.78)
+        tools.extend(resolved_edge_cutters(surface, partition, castle, top))
 
     _report(progress, "Hinge pockets", 0.85)
     tools.extend(hinge_pockets(hinges, castle, top))

@@ -22,9 +22,10 @@ from shapely.geometry import LineString, Polygon
 
 from ..geometry.rings import inward_normals, ring_stations
 from ..project.schema import CastleParams
-from .kernel import hull_chain, surface_z_at
+from .kernel import hull_chain, surface_z_at, swept_profile
 
-__all__ = ["bezel_cutter", "bezel_cutters", "groove_cutters", "v_groove_cutter"]
+__all__ = ["bezel_cutter", "bezel_cutters", "edge_feature_cutters",
+           "groove_cutters", "resolved_edge_cutters", "v_groove_cutter"]
 
 #: Stations around an aperture for a bezel band. Same as the B-Rep path's
 #: `BEZEL_STATIONS`, and pinned by the same argument: what matters is chord
@@ -99,6 +100,128 @@ def v_groove_cutter(body: Polygon, ring, groove,
         ])
 
     return hull_chain([profile(i) for i in range(stations)], closed=True)
+
+
+#: Sections per millimetre along an edge-feature span. Matches the B-Rep path's
+#: `EDGE_SECTIONS_PER_MM`, so both kernels sample the same run at the same
+#: places and a volume difference is about the sweep rather than the sampling.
+EDGE_SECTIONS_PER_MM = 1.2
+
+#: The shallowest cut a taper is allowed to reach before it is simply zero.
+MIN_TAPER_DROP_MM = 0.02
+
+
+def _edge_profile(width: float, drop: float, radius: float, profile: str,
+                  posterior: bool, n: int = 12) -> np.ndarray:
+    """One edge-feature section as `(u, v)` offsets from the anchor.
+
+    `u` runs from `-CUT_MARGIN_MM` (outside the edge, so the cutter crosses it
+    rather than stopping on it) to `width`. `v` is signed relative to the
+    anchor: down for a posterior feature, up for an anterior one, since the
+    anterior face is just the underside of the same body.
+
+    The chamfer is a straight ramp. The **fillet is concave** — see
+    `kernel.swept_profile`, which is why edge features go through that rather
+    than `hull_chain`.
+    """
+    us = np.linspace(0.0, width, n)
+    if profile == "fillet":
+        r = max(radius, 1e-6)
+        inner = np.clip(r - us, 0.0, r)
+        prof = np.where(us < r,
+                        r - np.sqrt(np.maximum(r * r - inner * inner, 0.0)), 0.0)
+        if prof[0] > 0:
+            prof = prof * (drop / prof[0])
+    else:
+        prof = np.maximum(0.0, width - us) * (drop / max(width, 1e-9))
+
+    vs = (-1.0 if posterior else 1.0) * prof
+    # A leading point outside the edge at the section's own start height, so the
+    # cutter opens out into air instead of terminating on the face it exits.
+    return np.vstack([[-CUT_MARGIN_MM, vs[0]], np.column_stack([us, vs])])
+
+
+def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]:
+    """Swept cutters for one resolved `EdgeFeature`, one per span it covers.
+
+    The spans come from `relief.edges.span_intervals`, the same function the
+    raster and the B-Rep path use, so a feature named by castle zone covers
+    exactly the same run of ring in all three. A span is *named*, not measured —
+    the M17 decision, and it survives every rewrite.
+
+    Spans are open runs rather than closed rings, so the sweep is not closed and
+    the end sections cap it.
+    """
+    import math
+
+    from ..relief.edges import (ring_for, span_intervals, station_fraction,
+                                taper_weight)
+
+    ring = ring_for(partition, feature.edge)
+    if ring is None or ring.length <= 0:
+        return []
+    intervals = span_intervals(ring, partition, feature.zones,
+                               feature.trim_start_mm, feature.trim_end_mm)
+    if not intervals:
+        return []
+
+    posterior = feature.face == "posterior"
+    tan_a = math.tan(math.radians(float(feature.angle_deg)))
+    total = ring.length
+    far = top if posterior else -CUT_MARGIN_MM
+    out: list[Manifold] = []
+
+    for s0, s1 in intervals:
+        n = max(6, int((s1 - s0) * EDGE_SECTIONS_PER_MM))
+        ss = np.linspace(s0, s1, n)
+
+        pts, tans = [], []
+        for s in ss:
+            p = ring.interpolate(float(s % total))
+            a = ring.interpolate(float((s - 0.05) % total))
+            b = ring.interpolate(float((s + 0.05) % total))
+            t = np.array([b.x - a.x, b.y - a.y])
+            t /= max(np.linalg.norm(t), 1e-12)
+            pts.append([p.x, p.y])
+            tans.append(t)
+        pts, tans = np.array(pts), np.array(tans)
+        into = inward_normals(partition.body, pts, tans)
+
+        weight = taper_weight(ss, intervals, feature.blend_mm, total)
+        frac = station_fraction(ss, intervals, total)
+        widths = np.array([float(feature.width_at(float(v))) for v in frac])
+        if feature.profile == "fillet":
+            widths = np.full_like(widths, float(feature.radius_mm))
+            base = np.full_like(widths, float(feature.radius_mm))
+        else:
+            base = widths * tan_a
+        drops = np.maximum(base * weight, MIN_TAPER_DROP_MM)
+        if feature.depth_limit_mm is not None:
+            drops = np.minimum(drops, float(feature.depth_limit_mm))
+
+        anchors = surface_z_at(mesh, pts + into * _RIM_PROBE_MM,
+                               face="top" if posterior else "bottom")
+        # A miss means no material at that station. Anchoring it at `far` makes
+        # the section collapse to nothing there, which removes nothing —
+        # the safe reading. Never 0.0; see `kernel.surface_z_at`.
+        anchors = np.where(np.isnan(anchors), far, anchors)
+
+        profiles = [
+            _edge_profile(float(w), float(d), float(feature.radius_mm),
+                          feature.profile, posterior) + np.array([0.0, float(a)])
+            for w, d, a in zip(widths, drops, anchors)
+        ]
+        out.append(swept_profile(pts, into, profiles, far, closed=False))
+    return out
+
+
+def resolved_edge_cutters(mesh, partition, castle: CastleParams,
+                          top: float) -> list[Manifold]:
+    """Cutters for every resolved edge feature, mirrored twins included."""
+    cutters: list[Manifold] = []
+    for feature in castle.resolved_edge_features():
+        cutters.extend(edge_feature_cutters(mesh, partition, feature, top))
+    return cutters
 
 
 def bezel_cutter(mesh, body: Polygon, ring, bezel, top: float,
