@@ -883,11 +883,23 @@ def spline_wire(pts_xy: np.ndarray, z: float):
 # ------------------------------------------------------------------ booleans
 
 def _run(op, label: str) -> TopoDS_Shape:
-    # OCCT's boolean core is thread-parallel and it is simply off by default.
-    # Measured on the demo frame's all-features build: 82.0 s -> 62.2 s, with a
-    # bit-identical result (same volume, same face count). There is no accuracy
-    # trade here — it is the same algorithm on more cores.
+    # Three switches OCCT leaves off by default, none of which trades accuracy.
+    #
+    # `SetRunParallel` — the boolean core is thread-parallel. Measured on the
+    # demo frame's all-features build: 82.0 s -> 62.2 s, bit-identical result.
+    #
+    # `SetUseOBB` — oriented rather than axis-aligned bounding boxes when
+    # rejecting face pairs that cannot intersect. Worth 8% on the demo's
+    # eight-tool feature cut (17.6 s -> 16.2 s, same 4,981 faces, same volume);
+    # it pays off here because a chamfer band round a curved rim is exactly the
+    # kind of long thin diagonal shape an axis-aligned box describes badly.
+    #
+    # `SetToFillHistory` — off because nothing in `core/solid` asks a boolean
+    # what became of which input face. If anything ever does (a feature tree
+    # would), this has to go back on.
     op.SetRunParallel(True)
+    op.SetUseOBB(True)
+    op.SetToFillHistory(False)
     op.Build()
     if not op.IsDone():
         raise BooleanError(f"{label}: operation did not complete")

@@ -4682,22 +4682,62 @@ inscribed — `BEZEL_STATIONS = 180` exists precisely to bound the chord error
 that discretisation introduces. This is not a curve problem; the polygonal build
 pays 10.7 s for the same pass.
 
-The curve work makes the fix available: **sweep the profile along the authored
-curve** instead of lofting stations around it. Prototyped on the groove —
-`MakePipeShell` with the lens curve as spine and one V profile — and it gives
-**3 faces instead of 540, with the cut falling from 4.9 s to 0.5 s**, watertight
-and valid. It would also have *no* chord error, retiring the reason
-`BEZEL_STATIONS` is 180.
+The curve work makes a fix available for *some* of them: **sweep the profile
+along the authored curve** instead of lofting stations around it.
 
-Not shipped: the prototype's profile placement is not right yet (the cut differs
-by ~105 mm³, and `_inward` is the wrong tool for locating it — it probes the
-body, and the original contour lies *inside* the material once the aperture has
-been shrunk, so both probes land in solid and the vote is meaningless). Two
-further notes for whoever picks it up: `MakePipeShell` **refuses a
-`Geom_OffsetCurve` spine** with `Standard_ConstructionError`, which is why the
-spine must be the original lens curve with the profile placed `depth` inboard;
-and the bezel cannot use a single-profile sweep at all, because it fires an
-anchor ray per station to follow the footing swells.
+**The groove converted, and handsomely.** `MakePipeShell` with the lens curve as
+spine and one V profile: **540 faces to 3**, the cut 4.7 s → 1.1 s, the
+groove-only warm build 5.7 s → 1.8 s, watertight and valid, and the finished
+part within 0.023% of the lofted one. Two things it took two attempts to learn,
+both now in `_swept_groove_cutter`:
+
+* The spine must be the **original lens curve, not the lip** — `MakePipeShell`
+  refuses a `Geom_OffsetCurve` spine with `Standard_ConstructionError`. It also
+  does not matter, because a pipe shell holds the profile perpendicular to the
+  spine, so a profile point `depth` inboard traces exactly the inward offset.
+* The profile placement is **read off the lip ring**, not derived from the
+  offset's sign. Measured, the lip is `basis - d * (Z x T)`; deriving it the
+  other way put the V on the wrong side of the apex and left the cut 105 mm³
+  out. `_inward` is no help either — it probes the body, and once the aperture
+  is shrunk the contour lies *inside* the material, so every probe lands in
+  solid and the vote is meaningless.
+
+**The bezel does not convert, and this is worth recording carefully because the
+cutter looks like a triumph right up to the moment you use it.** The note in
+`bezel_cutter` said `MakePipeShell` fails above ~60 profiles on a closed spine;
+that turns out to be a symptom of a polyline spine. Given the ring's authored
+curve as a single-edge spine it takes all 180 profiles and returns a **valid
+four-face solid**, 0.16% larger than the 720-face loft — exact against
+inscribed, the right direction, everything you would want. Then cutting the
+castle with it takes **260 s and returns an invalid solid with negative volume**
+(against 13 s and a valid one for the loft). Interpolating 180 *differing*
+profiles into one surface per profile edge produces a surface the boolean engine
+cannot work with. The groove sweeps cleanly precisely because its profile is
+constant; a bezel section changes at every station, each anchored by its own ray
+onto the surface beneath. The edge features are the same shape of problem —
+their sections vary in anchor, width and taper — so the same result is expected
+there and the loft stays.
+
+The remaining boolean switches were swept for free wins and one landed:
+`SetUseOBB(True)` is worth 8% on the eight-tool feature cut (17.6 s → 16.2 s,
+identical result) because a chamfer band round a curved rim is exactly what an
+axis-aligned bounding box describes badly. `SetToFillHistory(False)` costs
+nothing since no caller asks a boolean what became of an input face.
+
+**Where that leaves it.** Warm all-features build, curved, after all of the
+above: splay cut 7.4 s + scoop cut 3.7 s + the eight-tool feature cut 16.2 s +
+1.7 s of closing guards. The feature cut turns a 2,102-face solid and 4,330
+faces of tooling into a **4,981-face** result, and that is the honest ceiling of
+this approach — most of those faces exist only because a chamfer is being
+described as 277 ruled patches rather than as a chamfer.
+
+The way past it is not another sweep. It is `BRepFilletAPI_MakeChamfer` /
+`MakeFillet` — asking the kernel to chamfer *an edge*, which is what Fusion does
+and what would give one exact face per feature instead of hundreds. That is a
+genuine architectural change (it needs the target edge to exist and be
+selectable in the solid, and OCCT's variable-radius support is linear along an
+edge where `taper_weight` is not), and it is the natural next milestone rather
+than a tweak.
 
 ### Still open on the curve work
 

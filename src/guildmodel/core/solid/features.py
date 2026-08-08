@@ -220,13 +220,29 @@ def bezel_cutter(solid: TopoDS_Shape, body: Polygon, ring,
         for p_xy, nn, a in zip(pts, inward, anchors)
     ]
 
-    # Lofted, not pipe-swept. `BRepOffsetAPI_MakePipeShell` builds this shape
-    # only up to ~60 profiles on a closed spine and then throws
-    # "BRepAdaptor_Curve::No geometry" — measured: 40 and 60 fine, 80/100/120/160
-    # all fail. `ThruSections` takes 60, 120 and 240 without complaint and the
-    # volume converges (3179.5 / 3188.0 / 3189.9 mm^3), so the station count can
-    # be chosen for fidelity instead of to appease the kernel. Adding the first
-    # section again closes the loop around the ring.
+    # Lofted, not pipe-swept — and unlike the lens groove, which *is* swept
+    # (`_swept_groove_cutter`), this one cannot be. Two measurements, and the
+    # second is the one that decides it.
+    #
+    # `BRepOffsetAPI_MakePipeShell` was recorded here as failing above ~60
+    # profiles on a closed spine ("BRepAdaptor_Curve::No geometry"). That is a
+    # symptom of a *polyline* spine, not a limit of the operation: given the
+    # ring's authored curve as a single-edge spine it takes all 180 profiles and
+    # returns a valid solid of FOUR faces against this loft's 720, 0.16% larger
+    # (exact against inscribed — the right direction).
+    #
+    # It is still not usable, because those four faces are the problem rather
+    # than the prize. Interpolating 180 profiles into one surface per profile
+    # edge produces a surface the boolean engine cannot work with: cutting the
+    # demo castle with it takes **260 s and returns an invalid solid with
+    # negative volume**, against 13 s and a valid one for the loft. The groove
+    # sweeps cleanly because its profile is constant, so its three faces are
+    # simple; a bezel section changes at every station, because each is anchored
+    # by its own ray onto the surface below.
+    #
+    # `ThruSections` takes 60, 120 and 240 without complaint and the volume
+    # converges (3179.5 / 3188.0 / 3189.9 mm^3), so the station count can be
+    # chosen for fidelity. Adding the first section again closes the loop.
     ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)     # solid, ruled
     for wire in sections:
         ts.AddWire(wire)
