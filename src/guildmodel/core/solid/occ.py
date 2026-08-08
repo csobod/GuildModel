@@ -22,7 +22,7 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
-from OCP.BRep import BRep_Tool
+from OCP.BRep import BRep_Builder, BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCP.BRepBuilderAPI import (
@@ -45,7 +45,7 @@ from OCP.TColgp import TColgp_Array1OfPnt, TColgp_HArray1OfPnt
 from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_ShapeEnum
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS, TopoDS_Shape
+from OCP.TopoDS import TopoDS, TopoDS_Shape, TopoDS_Vertex
 from OCP.TopTools import TopTools_ListOfShape
 from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
 
@@ -639,6 +639,20 @@ def _arc_spans(tagged, source: "SourceCurves"):
     return verified
 
 
+#: Positional uncertainty of a vertex where an arc meets a straight run, mm.
+#: The same 1 um `SourceCurves.classify` uses to decide a point lies on a curve:
+#: a vertex we were willing to call "on this curve" is a vertex we know to 1 um.
+#: See `curved_ring_wire` for what happens without it, and why 1e-7 is wrong.
+JUNCTION_TOL_MM = 1e-3
+
+
+def _junction_vertex(point: gp_Pnt):
+    """A `TopoDS_Vertex` at `point`, honest about how well it is located."""
+    vertex = TopoDS_Vertex()
+    BRep_Builder().MakeVertex(vertex, point, JUNCTION_TOL_MM)
+    return vertex
+
+
 def _arc_edge(geom, v0, v1, ua: float, ub: float):
     """One edge carrying **only** the arc `[ua, ub]`, not the whole curve.
 
@@ -702,13 +716,28 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
     Raises `BooleanError` if no arc survives verification, so the caller can
     fall back to the plain polygon rather than pay for this twice.
 
-    **Vertices are shared explicitly.** Arc endpoints are exact points on the
-    curve; straight endpoints are flattened ring vertices; the two differ by up
-    to the flattening tolerance. Left to match them by proximity,
-    `BRepBuilderAPI_MakeWire` stitched the gap where it could and produced a
-    disordered wire where it could not — while still reporting `IsDone()`.
-    Building each `TopoDS_Vertex` once and handing it to both neighbours took
-    this from five of nine zones to seven.
+    **Vertices are shared explicitly, and carry a real tolerance.** Arc
+    endpoints are exact points on the curve; straight endpoints are ring
+    vertices, and a *zone* ring's vertices are not the drawing's — Shapely nodes
+    the boundary against the SCULPT cuts, which moves them by a fraction of a
+    micron. Left to match them by proximity, `BRepBuilderAPI_MakeWire` stitched
+    the gap where it could and produced a disordered wire where it could not,
+    while still reporting `IsDone()`. Building each `TopoDS_Vertex` once and
+    handing it to both neighbours took this from five of nine zones to seven.
+
+    The last two needed the tolerance as well. A junction vertex sits at a
+    flattened point but is claimed to be at parameter `u` on the curve, and
+    `BRepBuilderAPI_MakeEdge` rejects the pair outright when the two disagree by
+    more than the vertex's own tolerance — 0.19 um and 0.54 um on the demo's two
+    largest zones, against a default of 1e-7 mm. The caller then dropped the
+    whole span back to one line edge per vertex, which is why
+    `eyewire_superior_od` was a 48-edge face with a single arc in it while its
+    neighbours were 8-edge faces with two.
+
+    `JUNCTION_TOL_MM` states that uncertainty instead of pretending it away. It
+    is the same 1 um `SourceCurves.classify` already uses to decide a point is
+    on a curve at all, so the two agree by construction: a vertex we were
+    willing to call "on this curve" is a vertex whose position we know to 1 um.
     """
     pts = list(coords)
     if len(pts) > 1 and tuple(pts[0][:2]) == tuple(pts[-1][:2]):
@@ -740,7 +769,7 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
 
     starts = [source.geom(s[1])[0].Value(float(s[2])) if s[0] == "arc"
               else ring_pnt(s[1]) for s in segs]
-    verts = [BRepBuilderAPI_MakeVertex(p).Vertex() for p in starts]
+    verts = [_junction_vertex(p) for p in starts]
 
     edges = []
     for idx, seg in enumerate(segs):

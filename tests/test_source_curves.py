@@ -711,3 +711,78 @@ def test_a_curveless_aperture_still_gets_its_groove(partition_with_curves):
     ring = next(r for r in lip.body.interiors if not lip.is_hole(r))
     cutter = groove_cutter(lip.body, ring, g, curve=None)
     assert sum(1 for _ in explore(cutter, TopAbs_ShapeEnum.TopAbs_FACE)) == 540
+
+
+# ------------------------------------------------------- every verified arc lands
+
+def test_a_junction_vertex_admits_how_well_it_is_located():
+    """A vertex where an arc meets a straight run sits at a flattened point but
+    is claimed to be at a parameter on the curve. `MakeEdge` rejects the pair
+    outright when they disagree by more than the vertex's tolerance, and the
+    default is 1e-7 mm — tighter than Shapely's own noding noise."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.gp import gp_Pnt
+    from guildmodel.core.geometry.curves import cubic_bezier_chain
+    from guildmodel.core.solid.occ import (JUNCTION_TOL_MM, _arc_edge, _junction_vertex,
+                                           nurbs_edge)
+
+    curve = cubic_bezier_chain([((0.0, 0.0), (5.0, 10.0), (15.0, 10.0), (20.0, 0.0))])
+    geom = BRep_Tool.Curve_s(nurbs_edge(curve, 0.0), 0.0, 1.0)
+    ua, ub = 0.2, 0.8
+    exact = geom.Value(ub)
+    # nudge the far vertex by half the tolerance, as Shapely's noding would
+    off = gp_Pnt(exact.X() + JUNCTION_TOL_MM / 2.0, exact.Y(), exact.Z())
+
+    v0 = _junction_vertex(geom.Value(ua))
+    assert BRep_Tool.Tolerance_s(v0) == pytest.approx(JUNCTION_TOL_MM)
+    _arc_edge(geom, v0, _junction_vertex(off), ua, ub)          # must not raise
+
+    with pytest.raises(Exception):
+        _arc_edge(geom, BRepBuilderAPI_MakeVertex(geom.Value(ua)).Vertex(),
+                  BRepBuilderAPI_MakeVertex(off).Vertex(), ua, ub)
+
+
+def test_every_verified_arc_becomes_an_arc(partition_with_curves):
+    """No silent fallbacks.
+
+    `_arc_spans` verifies a span and then `curved_ring_wire` tries to build it;
+    on any exception it re-emits the span's vertices as line edges instead. That
+    fallback fired on the demo frame's two largest zones and nothing noticed:
+    `eyewire_superior_od` came out a 48-edge face carrying one arc, where its
+    neighbours were 8-edge faces carrying two. The zone vertices still
+    *classified* at 94%, so every measure short of counting the edges said the
+    model was curved.
+    """
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopoDS import TopoDS
+    from guildmodel.core.solid.occ import (SourceCurves, _arc_spans, explore,
+                                           polygon_to_face)
+
+    part = partition_with_curves
+    src = SourceCurves(part)
+    for zone in part.zones:
+        coords = list(zone.polygon.exterior.coords)[:-1]
+        tagged = [(float(x), float(y)) + src.classify(x, y) for x, y in coords]
+        want = len(_arc_spans(tagged, src))
+        face = polygon_to_face(zone.polygon, 0.0, curves=src)
+        got = sum(1 for e in explore(face, TopAbs_ShapeEnum.TopAbs_EDGE)
+                  if "BSpline" in str(BRepAdaptor_Curve(TopoDS.Edge_s(e)).GetType()))
+        assert got == want, f"{zone.name}: {want} verified spans, {got} arcs built"
+
+
+def test_a_zone_face_is_a_handful_of_edges_not_a_polygon(partition_with_curves):
+    """The consequence, stated as the number a reader can check by eye. Nine
+    zones built from 645 ring vertices come to well under a hundred edges."""
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from guildmodel.core.solid.occ import SourceCurves, explore, polygon_to_face
+
+    part = partition_with_curves
+    src = SourceCurves(part)
+    verts = sum(len(z.polygon.exterior.coords) - 1 for z in part.zones)
+    edges = sum(sum(1 for _ in explore(polygon_to_face(z.polygon, 0.0, curves=src),
+                                       TopAbs_ShapeEnum.TopAbs_EDGE))
+                for z in part.zones)
+    assert verts > 600
+    assert edges < 100, f"{verts} vertices became {edges} edges"
