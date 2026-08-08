@@ -39,6 +39,8 @@ __all__ = [
     "extrude",
     "hull_chain",
     "subtract_all",
+    "surface_z_at",
+    "swept_profile",
     "to_trimesh",
     "union_all",
     "volume",
@@ -138,10 +140,9 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
       is concave; the region above it is not a convex set. Hulling it would
       quietly turn every round-over into a chamfer.
 
-    So the fillet profile has to be decomposed before it can come through here —
-    slice it into per-sample slabs, each a convex trapezoid, sweep each slab as
-    its own chain and union them. Not yet written; the edge-feature port is
-    where it lands.
+    So the fillet profile does not come through here at all. `swept_profile`
+    below decomposes it into per-sample convex slabs; use that for anything
+    whose convexity you have not checked.
     """
     if len(profiles) < 2:
         raise ManifoldError("a sweep needs at least two stations")
@@ -151,6 +152,53 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     for i in range(last):
         pts = np.vstack([profiles[i], profiles[(i + 1) % n]])
         cells.append(Manifold.hull_points([tuple(map(float, p)) for p in pts]))
+    return union_all(cells)
+
+
+def swept_profile(points, normals, profile_uv, far: float,
+                  closed: bool = True) -> Manifold:
+    """Sweep a possibly-concave (u, v) profile along a ring.
+
+    `profile_uv[k]` is the profile at station k as an (m, 2) array of
+    `(u, v)` — `u` measured along `normals[k]` from `points[k]`, `v` in Z. The
+    region swept is everything between the profile and `far`, which is the
+    shape all four of this project's surface features describe: a boundary
+    curve, and material to be removed above or below it.
+
+    Works where `hull_chain` cannot, by slicing the section into one convex
+    trapezoid per profile segment and sweeping each slice as its own chain.
+    The slices share faces and their union is the section, exactly.
+
+    That matters for the round-over profile: it is the upper half of a circle,
+    so the region above it is concave and a single hull would span the dent —
+    silently delivering a chamfer where the maker asked for a fillet. Costs
+    `(m - 1)` chains instead of one, which is why `hull_chain` stays the
+    direct route for the sections that are genuinely convex.
+    """
+    profile_uv = [np.asarray(p, dtype=float) for p in profile_uv]
+    n = len(points)
+    if n < 2 or len(profile_uv) != n:
+        raise ManifoldError("a sweep needs a profile at every station")
+    m = len(profile_uv[0])
+    if m < 2:
+        raise ManifoldError("a profile needs at least two points")
+
+    def slab(k: int, i: int) -> np.ndarray:
+        """Profile segment i at station k, closed off to `far`."""
+        p, d = np.asarray(points[k], dtype=float), np.asarray(normals[k], float)
+        (u0, v0), (u1, v1) = profile_uv[k][i], profile_uv[k][i + 1]
+        a, b = p + d * u0, p + d * u1
+        return np.array([[a[0], a[1], v0], [b[0], b[1], v1],
+                         [b[0], b[1], far], [a[0], a[1], far]])
+
+    last = n if closed else n - 1
+    cells = []
+    for i in range(m - 1):
+        for k in range(last):
+            nxt = (k + 1) % n
+            pts = np.vstack([slab(k, i), slab(nxt, i)])
+            cells.append(Manifold.hull_points([tuple(map(float, q))
+                                               for q in pts]))
     return union_all(cells)
 
 
