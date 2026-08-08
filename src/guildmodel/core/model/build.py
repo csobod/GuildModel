@@ -73,7 +73,18 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     land here as the port proceeds. Until then this is the "bare" castle, which
     is exactly the stage the parity gate can already check against OCCT.
     """
+    from ..geometry.rings import lip_partition
     from ..solid.build import SWEEP_MARGIN_MM, zone_heights
+    from .features import groove_cutters
+
+    # With the groove on, the visible aperture is the rim *lip* — cut
+    # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
+    # into the annulus the shrink exposes. Same rule and the same function as
+    # the B-Rep path; every feature downstream is built against this partition,
+    # not the original.
+    groove = getattr(castle, "lens_groove", None)
+    if groove is not None and groove.enabled and groove.depth_mm > 0:
+        partition = lip_partition(partition, groove.depth_mm)
 
     h = zone_heights(partition, castle, heights)
     top = max(h.values()) + SWEEP_MARGIN_MM
@@ -81,8 +92,12 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     _report(progress, "Building terraces", 0.20)
     solid = build_terraces(partition, h)
 
+    _report(progress, "Lens groove", 0.60)
+    tools = groove_cutters(partition, castle)
+
     _report(progress, "Hinge pockets", 0.80)
-    solid = subtract_all(solid, hinge_pockets(hinges, castle, top))
+    tools.extend(hinge_pockets(hinges, castle, top))
+    solid = subtract_all(solid, tools)
 
     _report(progress, "Model ready", 1.0)
     return solid

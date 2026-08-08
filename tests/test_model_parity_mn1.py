@@ -163,6 +163,105 @@ def test_hinge_pockets_remove_the_same_material(demo_front):
         "a pocket is a prism: area x depth, whatever the kernel")
 
 
+# -------------------------------------------------------------- lens groove
+
+def _groove_params():
+    from guildmodel.core.project.schema import CastleParams
+
+    castle = CastleParams()
+    castle.lens_groove.enabled = True
+    return castle
+
+
+def _lip(front, castle):
+    from guildmodel.core.geometry.rings import lip_partition
+    from guildmodel.core.solid.build import zone_heights
+
+    lip = lip_partition(front.partition, castle.lens_groove.depth_mm)
+    return lip, zone_heights(lip, castle, None)
+
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_the_groove_v_agrees_with_the_brep_kernel(fixture, request):
+    """Terraces plus the groove, both kernels, same lip partition.
+
+    Compared without the footing blends on either side — the mesh path has not
+    ported them yet, and comparing a featured part against an unfeatured one
+    would report the difference as a groove disagreement.
+    """
+    from guildmodel.core.model import subtract_all, to_trimesh
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model.features import groove_cutters as mesh_grooves
+    from guildmodel.core.solid.build import build_terraces as occ_terraces
+    from guildmodel.core.solid.features import groove_cutters as occ_grooves
+    from guildmodel.core.solid.occ import cut_many, mesh_volume
+
+    front = request.getfixturevalue(fixture)
+    castle = _groove_params()
+    lip, heights = _lip(front, castle)
+
+    occ_tools = occ_grooves(lip, castle)
+    assert occ_tools, "the fixture has no lens apertures to groove"
+    occ_bare = occ_terraces(lip, heights, curved=False)
+    brep_removed = mesh_volume(occ_bare) - mesh_volume(cut_many(occ_bare,
+                                                                occ_tools))
+
+    mesh_tools = mesh_grooves(lip, castle)
+    assert len(mesh_tools) == len(occ_tools), "different number of V cutters"
+    mesh_bare = mesh_terraces(lip, heights)
+    grooved = to_trimesh(subtract_all(mesh_bare, mesh_tools))
+    mesh_removed = to_trimesh(mesh_bare).volume - grooved.volume
+
+    assert grooved.is_watertight
+
+    # **Compared on the material REMOVED, not on the finished part.** The groove
+    # is ~187 mm3 of an ~9,000 mm3 castle, so a 1% gate on the part tolerates a
+    # 48% error in the feature — and did: it passed a V built backwards, mouth
+    # buried in the wall and apex out in the hole, with no undercut whatever.
+    # Only the ray test below caught that.
+    #
+    # 4% of the removed volume is the honest bound. Both cutters inscribe the
+    # same polygon in the same ring at the same station count, but the B-Rep one
+    # is a ruled loft between planar sections and the mesh one a chain of convex
+    # hulls, so they differ by the sagitta of the V's flanks.
+    assert mesh_removed == pytest.approx(brep_removed, rel=0.04), (
+        f"the groove removes {mesh_removed:.3f} mm3 in the mesh kernel against "
+        f"{brep_removed:.3f} in the B-Rep one")
+
+
+def test_the_groove_actually_undercuts(demo_front):
+    """The whole reason this project left the heightfield behind.
+
+    A vertical ray through the eyewire wall must cross the surface at least
+    four times — in, into the groove, out of the groove, out — because a V cut
+    sideways into the wall is exactly what a Z-map cannot represent.
+    """
+    import numpy as np
+    from shapely.geometry import LineString
+
+    from guildmodel.core.geometry.rings import inward_normals, ring_stations
+    from guildmodel.core.model import build_castle_model, to_trimesh
+
+    castle = _groove_params()
+    lip, _heights = _lip(demo_front, castle)
+    mesh = to_trimesh(build_castle_model(demo_front.partition, castle,
+                                         demo_front.hinge_polys))
+
+    ring = next(r for r in lip.body.interiors if not lip.is_hole(r))
+    pts, tans = ring_stations(LineString(ring), 40)
+    into_wall = inward_normals(lip.body, pts, tans)
+
+    deep = 0
+    for point, normal in zip(pts, into_wall):
+        probe = point + normal * (castle.lens_groove.depth_mm / 2.0)
+        hits = mesh.ray.intersects_location(
+            [[probe[0], probe[1], -100.0]], [[0.0, 0.0, 1.0]])[0]
+        if len({round(float(h[2]), 6) for h in hits}) >= 4:
+            deep += 1
+    assert deep >= 36, f"the undercut is present at only {deep}/40 stations"
+
+
 def test_subtraction_does_not_depend_on_tool_order(demo_front):
     """`(X \\ A) \\ B == X \\ (A u B)` — true of the algebra, and on the B-Rep
     path *not* true in practice: reordering tools flipped results between
