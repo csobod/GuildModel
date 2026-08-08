@@ -22,10 +22,12 @@ from shapely.geometry import LineString, Polygon
 
 from ..geometry.rings import inward_normals, ring_stations
 from ..project.schema import CastleParams
-from .kernel import hull_chain, surface_z_at, swept_profile
+from .kernel import (ManifoldError, hull_chain, surface_z_at,
+                     swept_profile)
 
 __all__ = ["bezel_cutter", "bezel_cutters", "edge_feature_cutters",
-           "groove_cutters", "resolved_edge_cutters", "v_groove_cutter"]
+           "groove_cutters", "resolved_edge_cutters", "scoop_cutter",
+           "splay_cutter", "surface_feature_cutters", "v_groove_cutter"]
 
 #: Stations around an aperture for a bezel band. Same as the B-Rep path's
 #: `BEZEL_STATIONS`, and pinned by the same argument: what matters is chord
@@ -109,6 +111,31 @@ EDGE_SECTIONS_PER_MM = 1.2
 
 #: The shallowest cut a taper is allowed to reach before it is simply zero.
 MIN_TAPER_DROP_MM = 0.02
+
+
+def _carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
+    """Fill missed anchor rays from their nearest neighbour along the run.
+
+    A ray that grazes the silhouette misses a triangle mesh where it still
+    registers against a B-Rep surface — measured on the bridge scoop, where the
+    last station sits exactly on the body's top edge. The surface has not
+    vanished there; our probe simply slid off it, so the honest reading is the
+    height of the station next door, not "no material".
+
+    Substituting a constant instead is what made the mesh scoop remove 21% more
+    than the B-Rep one: dropping that station to the anterior clamp took its
+    section from z 5.3 down to 1.48 and cut a gouge nothing asked for.
+
+    `fallback` applies only when *every* station missed, which means the feature
+    is over empty space and should cut nothing.
+    """
+    out = np.asarray(anchors, dtype=float).copy()
+    valid = ~np.isnan(out)
+    if not valid.any():
+        return np.full_like(out, float(fallback))
+    idx = np.arange(len(out))
+    out[~valid] = np.interp(idx[~valid], idx[valid], out[valid])
+    return out
 
 
 def _edge_profile(width: float, drop: float, radius: float, profile: str,
@@ -201,10 +228,7 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
 
         anchors = surface_z_at(mesh, pts + into * _RIM_PROBE_MM,
                                face="top" if posterior else "bottom")
-        # A miss means no material at that station. Anchoring it at `far` makes
-        # the section collapse to nothing there, which removes nothing —
-        # the safe reading. Never 0.0; see `kernel.surface_z_at`.
-        anchors = np.where(np.isnan(anchors), far, anchors)
+        anchors = _carry_anchors(anchors, far)
 
         profiles = [
             _edge_profile(float(w), float(d), float(feature.radius_mm),
@@ -254,11 +278,8 @@ def bezel_cutter(mesh, body: Polygon, ring, bezel, top: float,
     pts, tans = ring_stations(LineString(ring), stations)
     into_wall = inward_normals(body, pts, tans)
 
-    anchors = surface_z_at(mesh, pts + into_wall * _RIM_PROBE_MM)
-    # A ray that misses means there is no material at that station, so there is
-    # nothing to chamfer; the clamp is the floor and the section collapses to a
-    # sliver the boolean removes nothing with. Never 0.0 — see `surface_z_at`.
-    anchors = np.where(np.isnan(anchors), clamp, anchors)
+    anchors = _carry_anchors(surface_z_at(mesh, pts + into_wall * _RIM_PROBE_MM),
+                             clamp)
 
     drop = width * tan_a
     u0, u1 = -CUT_MARGIN_MM, width * _BEZEL_REACH
@@ -295,6 +316,172 @@ def bezel_cutters(mesh, partition, castle: CastleParams,
     return [bezel_cutter(mesh, partition.body, ring, bezel, top)
             for ring in partition.body.interiors
             if not partition.is_hole(ring)]
+
+
+#: Sections lofted per millimetre along the bridge scoop's Y run.
+SCOOP_SECTIONS_PER_MM = 2.0
+
+#: Points across one scoop section.
+SCOOP_SECTION_POINTS = 28
+
+
+def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
+    """The pad splay as a swept chamfer along the outline's bottom-centre run.
+
+    Falls from a crest — an inward offset of the outline — toward the outline
+    edge at the splay angle. The crest is held off the lens rims and, because of
+    what M-N0 found on the Gabriel drawing, held *inside the body*: inward from
+    the outline is not into the material at the bottom centre, where the frame
+    has the nose notch, and a crest out in that notch reads as no material at
+    all.
+    """
+    import math
+
+    from shapely import distance as _distance, points as _points
+    from shapely.ops import unary_union
+
+    from ..geometry.rings import crest_inside
+    from ..relief.features import _bottom_center_station, _splay_angles_deg
+
+    ring, total, s0 = _bottom_center_station(body)
+    run = min(float(p.run_mm), 0.45 * total)
+    if run <= res_hint or p.crest_deviation_center_mm <= 0.0:
+        raise ManifoldError("degenerate pad splay")
+
+    n = max(9, int(run * 2.0 * EDGE_SECTIONS_PER_MM))
+    u = np.linspace(-run, run, n)
+    au = np.abs(u)
+    stations = np.mod(s0 + u, total)
+
+    pts, tans = [], []
+    eps = max(3.0 * res_hint, 0.75)
+    for s in stations:
+        q = ring.interpolate(float(s))
+        a = ring.interpolate(float((s - eps) % total))
+        b = ring.interpolate(float((s + eps) % total))
+        t = np.array([b.x - a.x, b.y - a.y])
+        t /= max(np.linalg.norm(t), 1e-12)
+        pts.append([q.x, q.y])
+        tans.append(t)
+    pts, tans = np.array(pts), np.array(tans)
+    into = inward_normals(body, pts, tans)
+
+    crest = (p.crest_deviation_center_mm
+             + (p.crest_deviation_end_mm - p.crest_deviation_center_mm)
+             * (au / run))
+    rims = (unary_union([LineString(r) for r in body.interiors])
+            if body.interiors else None)
+    if rims is not None and not rims.is_empty:
+        crest = np.minimum(crest, 0.8 * _distance(_points(pts), rims))
+    crest = crest_inside(body, pts, into, np.maximum(crest, 0.0))
+
+    tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
+    feather = min(max(float(p.feather_mm), 0.0), run)
+    if feather > 0.0:
+        weight = np.where(
+            au <= run - feather, 1.0,
+            0.5 * (1.0 + np.cos(np.pi * (au - (run - feather)) / feather)))
+    else:
+        weight = np.ones_like(au)
+
+    drops = np.maximum(crest * tan_t * weight, MIN_TAPER_DROP_MM)
+    widths = np.maximum(crest, MIN_TAPER_DROP_MM)
+
+    anchors = surface_z_at(mesh, pts + into * np.maximum(crest,
+                                                         _RIM_PROBE_MM)[:, None])
+    floor = float(p.anterior_clamp_mm)
+    # No material at a station means nothing to splay. Anchoring at the clamp
+    # collapses the section there; 0.0 would have cut the whole thickness away,
+    # which is exactly the Gabriel failure.
+    anchors = _carry_anchors(anchors, floor)
+    drops = np.clip(drops, MIN_TAPER_DROP_MM,
+                    np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
+    top = float(np.nanmax(anchors)) + CUT_MARGIN_MM
+
+    profiles = [
+        _edge_profile(float(w), float(d), 0.0, "chamfer", True)
+        + np.array([0.0, float(a)])
+        for w, d, a in zip(widths, drops, anchors)
+    ]
+    return swept_profile(pts, into, profiles, top, closed=False)
+
+
+def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
+    """The bridge relief as a lofted elliptical cone running on Y.
+
+    Base widest and deepest at the top edge of the bridge on the centreline,
+    tapering to a tip down the lower bridge. Sections are half-ellipses closed
+    upward, which are convex, so this goes through `hull_chain`.
+    """
+    import math
+
+    half_w = float(p.width_mm) / 2.0
+    depth = float(p.depth_mm)
+    if depth <= 0.0 or half_w <= 0.0:
+        raise ManifoldError("degenerate bridge relief")
+    tan_b = math.tan(math.radians(min(max(float(p.taper_angle_deg), 1.0), 89.0)))
+
+    minx, miny, maxx, maxy = body.bounds
+    centre = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
+    if centre.is_empty:
+        raise ManifoldError("no body on the centreline")
+    y_base = max(g.bounds[3] for g in getattr(centre, "geoms", [centre]))
+    y_tip = y_base - half_w / tan_b
+
+    n = max(8, int((y_base - y_tip) * SCOOP_SECTIONS_PER_MM))
+    ys = np.linspace(y_tip, y_base, n + 1)[1:]           # skip the exact apex
+    rs = np.clip((ys - y_tip) * tan_b, 0.0, half_w)
+    ds = depth * (rs / half_w)
+    keep = rs > MIN_TAPER_DROP_MM
+    ys, rs, ds = ys[keep], rs[keep], np.maximum(ds[keep], MIN_TAPER_DROP_MM)
+    if len(ys) < 2:
+        raise ManifoldError("bridge relief too small to loft")
+
+    anchors = surface_z_at(mesh, np.column_stack([np.zeros_like(ys), ys]))
+    floor = float(p.anterior_clamp_mm)
+    anchors = _carry_anchors(anchors, floor)
+    ds = np.minimum(ds, np.maximum(anchors - floor, 0.0))
+    ds = np.maximum(ds, MIN_TAPER_DROP_MM)
+    top = float(anchors.max()) + CUT_MARGIN_MM
+
+    xs = np.linspace(-1.0, 1.0, SCOOP_SECTION_POINTS)
+
+    def section(y, r, d, a):
+        px = xs * r
+        pz = a - d * np.sqrt(np.maximum(1.0 - xs ** 2, 0.0))
+        lower = np.column_stack([px, np.full_like(px, y), pz])
+        return np.vstack([lower,
+                          [[r, y, top], [-r, y, top]]])
+
+    profiles = [section(float(y), float(r), float(d), float(a))
+                for y, r, d, a in zip(ys, rs, ds, anchors)]
+    # One prismatic station past the base, so the cone crosses the bridge wall
+    # instead of ending tangent to it — the M-N0 defect, carried across as a
+    # rule rather than as a bug to rediscover.
+    profiles.append(section(float(ys[-1]) + CUT_MARGIN_MM, float(rs[-1]),
+                            float(ds[-1]), float(anchors[-1])))
+    return hull_chain(profiles, closed=False)
+
+
+def surface_feature_cutters(mesh, body: Polygon,
+                            castle: CastleParams) -> list[Manifold]:
+    """Pad splay and bridge relief.
+
+    **These two read the surface each other leaves behind**, so on the B-Rep
+    path they are cut one at a time: with the splay enabled the scoop's anchor
+    rays land on material the splay has already removed, moving them by up to
+    2.59 mm on the demo frame. The same is true here, and the caller applies
+    them sequentially for the same reason — they are the one group that cannot
+    be folded into a single pass.
+    """
+    out = []
+    splay = getattr(castle, "pad_splay", None)
+    if splay is not None and splay.enabled:
+        out.append(("splay", splay))
+    scoop = getattr(castle, "bridge_relief", None)
+    if scoop is not None and scoop.enabled:
+        out.append(("scoop", scoop))
+    return out
 
 
 def groove_cutters(partition, castle: CastleParams) -> list[Manifold]:

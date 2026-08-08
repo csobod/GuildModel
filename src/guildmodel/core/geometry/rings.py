@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
+from shapely.prepared import prep
 
 from .curves import OffsetCurve
 from .regions import CastlePartition
 
-__all__ = ["inward_normals", "lip_body", "lip_partition", "offset_aperture",
-           "ring_stations"]
+__all__ = ["crest_inside", "inward_normals", "lip_body", "lip_partition",
+           "offset_aperture", "ring_stations"]
 
 def ring_stations(ring: LineString, n: int):
     """Points and unit tangents evenly spaced around a closed ring."""
@@ -225,3 +226,33 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
     return lip
 
 
+def crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
+                  c: np.ndarray, steps: int = 24) -> np.ndarray:
+    """Shorten each crest offset until the crest point is inside the material.
+
+    **Inward from the outline is not the same as into the body.** At the bottom
+    centre a frame has the nose notch, and the default 6 mm crest offset steps
+    straight out through it. The anchor ray then finds nothing, `surface_z_at`
+    reports its `missing` value — 0.0, indistinguishable from "the surface is
+    at the anterior face" — and the chamfer, which spans from the cut surface
+    *up* to `top`, removes the entire thickness at that station.
+
+    On the Gabriel fixture that cut the frame into two halves: left
+    x[-67.65, -1.38], right x[1.38, 67.65], watertight, `IsValid` true, zero
+    holes. Only the body count caught it.
+
+    Clamping here rather than repairing the anchor afterwards, because a crest
+    outside the body is wrong on its own terms — every downstream quantity
+    (drop, width, anchor) is measured from it.
+    """
+    prepared = prep(body)
+    out = np.asarray(c, dtype=float).copy()
+    for i, (point, normal, offset) in enumerate(zip(pts, inward, c)):
+        if offset <= 0.0:
+            continue
+        for t in np.linspace(float(offset), 0.0, steps):
+            q = point + normal * t
+            if t <= 0.0 or prepared.contains(Point(float(q[0]), float(q[1]))):
+                out[i] = t
+                break
+    return out

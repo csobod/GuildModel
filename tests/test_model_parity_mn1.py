@@ -306,6 +306,122 @@ def test_the_bezel_band_agrees_with_the_brep_kernel(fixture, request):
         f"{brep_removed:.3f} in the B-Rep one")
 
 
+# ------------------------------------------------------- splay and the scoop
+
+#: The one combination where the kernels legitimately disagree, and why.
+#:
+#: The aviator's bridge keyhole is a decorative OUTLINE hole sitting on the
+#: scoop's centreline, so several anchor rays pass straight through it. OCCT's
+#: `surface_z_at` reports a miss as **0.0**, indistinguishable from "the surface
+#: is at the anterior face", and the scoop then plunges the full thickness
+#: across the opening. That is the identical defect that cut Gabriel's frame in
+#: half through the pad splay (M-N0) — a miss read as solid material at z=0.
+#:
+#: The mesh path carries the neighbouring anchors across the gap instead, so the
+#: scoop follows the surrounding surface over the opening rather than diving to
+#: the floor. That is the behaviour we believe is correct, which is why this is
+#: recorded as a divergence to resolve rather than papered over with a wider
+#: tolerance. See `test_the_scoop_does_not_dive_through_a_decorative_opening`.
+_KNOWN_DIVERGENCE = {("aviator_front", "bridge_relief")}
+
+
+@pytest.mark.parametrize("feature", ["pad_splay", "bridge_relief"])
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_surface_features_agree_with_the_brep_kernel(fixture, feature, request):
+    """The two features that read the surface beneath them, one at a time."""
+    if (fixture, feature) in _KNOWN_DIVERGENCE:
+        pytest.skip("known divergence — see _KNOWN_DIVERGENCE")
+    from guildmodel.core.model import subtract_all, to_trimesh
+    from guildmodel.core.model import build_terraces as mesh_terraces
+    from guildmodel.core.model.features import scoop_cutter, splay_cutter
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.build import build_terraces as occ_terraces
+    from guildmodel.core.solid.build import zone_heights
+    from guildmodel.core.solid.features import (scoop_cutter as occ_scoop,
+                                                splay_cutter as occ_splay)
+    from guildmodel.core.solid.occ import cut_many, mesh_volume
+
+    front = request.getfixturevalue(fixture)
+    castle = CastleParams()
+    getattr(castle, feature).enabled = True
+    params = getattr(castle, feature)
+    heights = zone_heights(front.partition, castle, None)
+
+    occ_bare = occ_terraces(front.partition, heights, curved=False)
+    occ_build = occ_splay if feature == "pad_splay" else occ_scoop
+    occ_tool = occ_build(occ_bare, front.partition.body, params)
+    brep_removed = mesh_volume(occ_bare) - mesh_volume(cut_many(occ_bare,
+                                                                [occ_tool]))
+
+    mesh_bare = mesh_terraces(front.partition, heights)
+    build = splay_cutter if feature == "pad_splay" else scoop_cutter
+    tool = build(to_trimesh(mesh_bare), front.partition.body, params)
+    cut = to_trimesh(subtract_all(mesh_bare, [tool]))
+    mesh_removed = to_trimesh(mesh_bare).volume - cut.volume
+
+    assert cut.is_watertight
+    assert cut.body_count == 1, "a surface feature severed the frame"
+    assert mesh_removed == pytest.approx(brep_removed, rel=0.06), (
+        f"{feature}: mesh removes {mesh_removed:.3f} mm3 against the B-Rep "
+        f"path's {brep_removed:.3f}")
+
+
+def test_the_scoop_does_not_dive_through_a_decorative_opening(aviator_front):
+    """Pins the divergence above, and which side of it we are on.
+
+    Anchor rays that cross the aviator's bridge keyhole find nothing. Read as
+    0.0 they mean "the surface is at the anterior face" and the scoop cuts the
+    full thickness; carried from the neighbouring stations they mean "the
+    surface continues", which is what a scoop running over an opening actually
+    does.
+
+    Asserted as a *floor on the cutter*, not as a volume, because the volume is
+    the symptom and the cutter reaching z=0 is the defect.
+    """
+    from guildmodel.core.model import build_terraces, to_trimesh
+    from guildmodel.core.model.features import scoop_cutter
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.solid.build import zone_heights
+
+    partition = aviator_front.partition
+    assert any(partition.is_hole(r) for r in partition.body.interiors), (
+        "this fixture is chosen for its decorative opening")
+
+    castle = CastleParams()
+    castle.bridge_relief.enabled = True
+    heights = zone_heights(partition, castle, None)
+    bare = build_terraces(partition, heights)
+    cutter = to_trimesh(scoop_cutter(to_trimesh(bare), partition.body,
+                                     castle.bridge_relief))
+
+    floor = float(castle.bridge_relief.anterior_clamp_mm)
+    assert cutter.bounds[0][2] >= floor - 0.05, (
+        f"the scoop reaches z={cutter.bounds[0][2]:.3f}, below its own "
+        f"anterior clamp of {floor} — it is diving through the opening")
+
+
+@pytest.mark.parametrize("fixture",
+                         ["demo_front", "aviator_front", "gabriel_front"])
+def test_every_feature_at_once_is_one_verified_body(fixture, request):
+    """What the maker actually clicks, on every drawing we own."""
+    from guildmodel.core.mesh_check import verify_mesh
+    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.project.schema import CastleParams
+
+    front = request.getfixturevalue(fixture)
+    castle = CastleParams()
+    castle.pad_splay.enabled = True
+    castle.bridge_relief.enabled = True
+    castle.lens_groove.enabled = True
+    castle.eyewire_bezel.enabled = True
+
+    mesh = to_trimesh(build_castle_model(front.partition, castle,
+                                         front.hinge_polys))
+    verdict = verify_mesh(mesh)
+    assert verdict.ok, verdict.problems
+
+
 # ------------------------------------------------------------ edge features
 
 def _brow(profile="chamfer"):

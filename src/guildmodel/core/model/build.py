@@ -77,7 +77,8 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     from ..geometry.rings import lip_partition
     from ..solid.build import SWEEP_MARGIN_MM, zone_heights
     from .features import (bezel_cutters, groove_cutters,
-                           resolved_edge_cutters)
+                           resolved_edge_cutters, scoop_cutter,
+                           splay_cutter, surface_feature_cutters)
 
     # With the groove on, the visible aperture is the rim *lip* — cut
     # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
@@ -93,6 +94,20 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
 
     _report(progress, "Building terraces", 0.20)
     solid = build_terraces(partition, h)
+
+    # Splay then scoop, each subtracted before the next is built. The order is
+    # load-bearing: both anchor on the centreline, so with the splay enabled the
+    # scoop's rays land on material the splay has already taken away — measured
+    # at up to 2.59 mm of anchor movement on the demo frame. Everything after
+    # this point sees the same target either way and goes in one pass.
+    _report(progress, "Surface features", 0.40)
+    for kind, params in surface_feature_cutters(None, partition.body, castle):
+        build = splay_cutter if kind == "splay" else scoop_cutter
+        try:
+            tool = build(to_trimesh(solid), partition.body, params)
+        except ManifoldError:
+            continue
+        solid = subtract_all(solid, [tool])
 
     _report(progress, "Lens groove", 0.55)
     tools = groove_cutters(partition, castle)
