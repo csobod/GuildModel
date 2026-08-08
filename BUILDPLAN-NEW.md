@@ -279,6 +279,58 @@ found four off-by-default switches this week alone (`SetRunParallel`,
 `SetUseOBB`, `SetToFillHistory`, `SetNonDestructive`) and the fifth does not
 exist.
 
+> #### Correction, M-N0 (2026-08-07): the headline defect was ours, not the kernel's
+>
+> Everything above is left as written, because the way it was wrong matters more
+> than the conclusion it reached.
+>
+> M-N0 set out to apply the two mitigations §7 proposes for this table. Both
+> were **measured and both failed** (`scripts/probe_base_reuse.py`), on the same
+> aviator sequence:
+>
+> | mode | corrupt | wall time |
+> | --- | --- | --- |
+> | shared base (today) | 1 — `bridge` | 42.22 s |
+> | deep-copied base (mitigation *a*) | 1 — `bridge` | 41.28 s |
+> | no cache at all (mitigation *b*) | 1 — `bridge` | **80.41 s** |
+>
+> Identical failure, identical volume (8209.238 mm³), from a **cold** build. The
+> base cache is exonerated: dropping it doubles build time and fixes nothing.
+> The stale-triangulation theory died the same way — `BRepTools.Clean_s` changed
+> the result bit for bit not at all (`scripts/probe_stale_mesh.py`).
+>
+> What the failure actually is: the bridge relief's loft ends exactly on
+> `y_base`, the highest body point on the centreline, so its end cap is a plane
+> *tangent* to the bridge wall. The cut leaves **one edge of 33,683 carrying
+> four faces** — at x = 0.000, y = 21.695, the cutter's own base. Zero boundary
+> edges. The model was never leaking; it was **non-manifold**, which is a
+> different defect that our own interface was mislabelling as "gaps".
+>
+> Fix: one prismatic station past the base, so the cutter crosses the wall
+> instead of grazing it. Aviator and demo both watertight and manifold; the part
+> moves by 0.046 mm³ (0.0006%), which is the sliver the corrupt mesh had been
+> mis-measuring. Pinned by `tests/test_bridge_tangency_mn0.py`.
+>
+> **What this costs the argument in §6, honestly.** One row of the table above —
+> the biggest one, the one behind the maker's screenshot — was a bug in our
+> geometry that any kernel would have punished, not evidence against OCCT. The
+> "order-dependent corruption" framing came from varying the history and reading
+> the pattern of failures without ever running the one control that would have
+> falsified it: a cold `bridge`. That is a methodology error and it is mine.
+>
+> **What survives.** The rest of §3.2 is untouched: empty-but-valid,
+> `BRepGProp` disagreeing with itself, the silent vertex-tolerance rejection,
+> `MakePipeShell`, `MakeChamfer` at 0/30 rim edges. And the deepest point stands
+> *reinforced* — `BRepCheck_Analyzer` called this valid, and the tessellation
+> caught it. A kernel whose only reliable oracle is the mesh is still a kernel we
+> are using as an expensive middleman. But §6 should now be read as an argument
+> from **the class of failure**, not from a count of incidents, and the count is
+> one lower than it was.
+>
+> Residual: probe run 1 showed `splay` leaking where runs 2 and 3 show it clean,
+> which is unexplained and may be a second, rarer defect. Not chased — it is not
+> reproducible on demand, and the mesh oracle now catches it if it recurs.
+
 ### 3.2 The season's full catalog
 
 Each of these cost real time this week, each is recorded with numbers in
@@ -481,14 +533,29 @@ Staged so that at every point the app still works and the old path can referee.
 the maker's daily use, and its honest-status work is the same mesh-oracle gate
 M-N0 needs.
 
-**M-N0 — stop the bleeding (immediately, on the current branch).**
-The §3.1 history-dependence is a shipping bug today. Mitigation candidates, in
-order: (a) copy the cached base (`BRepBuilderAPI_Copy`) before each feature
-pass; (b) failing that, drop `_BASE_CACHE` (costs the 0.6 s warm win; honesty:
-measure first). Gate every GUI-facing build on the *mesh* oracle (closed +
-volume sane), not `IsValid` — on failure, rebuild once from cold before
-surfacing an error. Also: obtain the Gabriel drawing from the screenshot as a
-third fixture. ~1 session.
+**M-N0 — stop the bleeding (immediately, on the current branch).** *Done
+2026-08-07, and it did not go the way this paragraph expected — see the
+correction in §3.1.*
+
+- ~~(a) copy the cached base (`BRepBuilderAPI_Copy`)~~ — **measured, fixes
+  nothing, reverted.**
+- ~~(b) failing that, drop `_BASE_CACHE`~~ — **measured, fixes nothing and costs
+  2× (80.4 s vs 42.2 s). Not taken.** The warm win is 14 s on a groove rebuild,
+  not the 0.6 s guessed here.
+- ~~rebuild once from cold on failure~~ — **not shipped.** The cold build fails
+  identically, so a retry would double the wait and recover nothing. It was
+  written, measured, and deleted rather than kept as a comfort.
+- **The actual fix**: the bridge relief cutter was tangent to the bridge wall,
+  leaving one non-manifold edge. One extra loft station past the base. Both
+  fixtures watertight and manifold.
+- **Honest status, completed.** `_show_active_3d` now verifies too — Build 3D
+  and every component-tab switch displayed unverified meshes, or worse, left the
+  *previous* component's verdict in the status bar and Inspector. Same
+  three-worker hole `gui/mesh_build.py` exists to prevent.
+- `verify_mesh` now distinguishes holes from self-overlap. It called a model
+  with zero gaps "gappy", which cost real investigation time.
+- **Still open**: the Gabriel drawing from the screenshot as a third fixture.
+  Needs the file from the maker.
 
 **M-N1 — the mesh feature kernel.** `core/model/` with terraces, pockets,
 groove, bezel, edge features, splay, scoop. Port the per-feature parity tests

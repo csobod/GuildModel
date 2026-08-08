@@ -708,6 +708,21 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
 
     sections = [_scoop_section(float(y), float(r), float(d), float(a), top)
                 for y, r, d, a in zip(ys, rs, ds, anchors)]
+
+    # One prismatic station past the base, because `y_base` is *on* the body's
+    # top edge: without it the loft's end cap is the plane y = y_base, which
+    # touches the bridge wall along a single vertical line at x = 0 instead of
+    # crossing it. The cut then leaves exactly one edge with four faces on it —
+    # a non-manifold model that `BRepCheck_Analyzer` calls valid, that has no
+    # gaps at all, and that will not export as an STL. Found on the aviator
+    # fixture (BUILDPLAN-NEW M-N0); one edge of 33,683.
+    #
+    # A cutter has to *cross* every surface it exits. Nothing extra is removed:
+    # y_base is the highest body point on the centreline, so the extension runs
+    # through empty space.
+    sections.append(_scoop_section(float(ys[-1]) + CUT_MARGIN_MM, float(rs[-1]),
+                                   float(ds[-1]), float(anchors[-1]), top))
+
     ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
     for wire in sections:
         ts.AddWire(wire)

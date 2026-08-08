@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 #: A part smaller than this is not a frame, it is debris from a failed boolean.
 #: The demo frame is ~7,800 mm3 and the smallest real component (a base-curve
 #: template) is a couple of hundred; 1 mm3 sits far below anything legitimate
@@ -43,6 +45,43 @@ class MeshVerdict:
     @property
     def severity(self) -> str:
         return "info" if self.ok else "error"
+
+
+def _surface_problems(mesh) -> list[str]:
+    """Say *how* a surface fails to close, because the two ways differ.
+
+    A closed surface uses every edge exactly twice. Used once is a hole. Used
+    three or more times is the opposite failure — surfaces overlapping along a
+    shared edge — and it points at a different cause: a cutter grazing a face it
+    should have crossed cleanly, rather than a boolean losing material.
+
+    Worth separating because the bridge relief on the aviator fixture produces
+    the second kind with **zero** edges of the first, and reporting it as "gaps"
+    sent this investigation looking for missing material that was never missing.
+    """
+    try:
+        counts = np.unique(mesh.edges_sorted, axis=0, return_counts=True)[1]
+    except Exception:                                        # noqa: BLE001
+        return ["This is not a closed solid. It will not export as a valid STL."]
+
+    holes = int((counts == 1).sum())
+    overlaps = int((counts > 2).sum())
+    out = []
+    if holes:
+        out.append(
+            f"The surface has gaps along {holes:,} edges, so this is not a "
+            "closed solid. It will not export as a valid STL and any volume "
+            "shown is unreliable.")
+    if overlaps:
+        out.append(
+            f"The model overlaps itself along {overlaps:,} edges, where more "
+            "than two surfaces meet. It will not export as a valid STL. This "
+            "usually means a feature grazes a face instead of crossing it — "
+            "try changing that feature's depth slightly.")
+    if not out:                       # unwatertight for a reason we can't name
+        out.append("This is not a closed solid. It will not export as a valid "
+                   "STL.")
+    return out
 
 
 def verify_mesh(mesh) -> MeshVerdict:
@@ -74,9 +113,7 @@ def verify_mesh(mesh) -> MeshVerdict:
     volume = float(getattr(mesh, "volume", 0.0) or 0.0)
 
     if not watertight:
-        problems.append(
-            "The surface has gaps, so this is not a closed solid. It will not "
-            "export as a valid STL and any volume shown is unreliable.")
+        problems.extend(_surface_problems(mesh))
     if not bool(getattr(mesh, "is_winding_consistent", True)):
         problems.append(
             "Parts of the surface face inward, so inside and outside are "

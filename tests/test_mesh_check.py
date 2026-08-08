@@ -44,6 +44,32 @@ def test_a_hole_in_the_surface_is_caught():
     assert "STL" in " ".join(verdict.problems)
 
 
+def test_a_self_overlapping_model_is_named_correctly_not_called_a_gap():
+    """The bridge relief on the aviator failed this way: **zero** holes, one
+    edge with four faces on it. Reporting that as "gaps" sends the maker (and
+    this investigation, for a while) hunting for missing material that was
+    never missing, so the two failures are worded apart.
+
+    Two cubes sharing one edge is the same topology in miniature.
+    """
+    a = _box(1.0)
+    b = _box(1.0)
+    b.apply_translation([1.0, 1.0, 0.0])
+    joined = trimesh.util.concatenate([a, b])          # process=True merges the
+    joined.merge_vertices()                            # two shared corners
+
+    counts = np.unique(joined.edges_sorted, axis=0, return_counts=True)[1]
+    assert (counts > 2).sum() > 0, "fixture is not non-manifold"
+    assert (counts == 1).sum() == 0, "fixture has holes; it must have none"
+
+    verdict = verify_mesh(joined)
+    assert not verdict.ok
+    text = " ".join(verdict.problems)
+    assert "overlaps itself" in text
+    assert "gaps" not in text, "a model with no holes must not be called gappy"
+    assert "STL" in text
+
+
 def test_an_empty_result_is_caught_and_explained():
     """OCCT's signature failure — a boolean that ate the whole part and still
     reported IsValid. It reached the Z-map once; it must never reach the user

@@ -5500,10 +5500,23 @@ class MainWindow(QMainWindow):
 
     def _show_active_3d(self) -> None:
         """Show the active component's built mesh in the 3D preview (cached). Clears
-        the view if nothing is built yet, so the 3D always reflects the active tab."""
+        the view if nothing is built yet, so the 3D always reflects the active tab.
+
+        Verifies here as well as at the two `finished` handlers, because this is
+        the path Build 3D and every component-tab switch take. Without it the
+        toolbar button displayed unverified meshes, and switching tabs left the
+        *previous* component's verdict in the status bar and the Inspector —
+        UI-0's hole reopening in the third worker, which is the exact failure
+        `gui/mesh_build.py` was created to stop repeating.
+        """
         mesh = self._stage_cache.get(self._active_mesh_key())
         if mesh is None:
             self.view3d.clear()
+            # Nothing on screen to have an opinion about. Without this, the
+            # verdict from whichever component was shown last would keep
+            # flagging problems against an empty viewer.
+            self._mesh_verdict = None
+            self._refresh_inspector()
             return
         zero, _ = self._active_program_zero_3d()
         edges = self._edge_cache.get(self._active_mesh_key())
@@ -5514,6 +5527,7 @@ class MainWindow(QMainWindow):
         else:
             self.view3d.show_mesh(mesh, stock=self.params.castle_params().stock,
                                   program_zero=zero, edges=edges)
+        self._set_mesh_verdict(mesh)
 
     # -------------------------------------------------------- component notebook
 
@@ -6136,6 +6150,9 @@ class MainWindow(QMainWindow):
         self._mesh_built = True
         self._show_active_3d()                    # show whichever component is active
         self._refresh_readiness()
+        verdict = self._mesh_verdict
+        if verdict is not None and not verdict.ok:
+            self.status_lbl.setText("⚠ 3D model has problems")
         self.append_log("[3D] All component models built.")
 
     def _on_multi_mesh_error(self, tb: str) -> None:
