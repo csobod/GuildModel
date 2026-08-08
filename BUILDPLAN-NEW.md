@@ -614,6 +614,15 @@ nothing** — a carve is subtracted from its high zone's own prism, and a raised
 zone is extruded full height and cut back down by a slab the band has been
 subtracted from first. Exact, one boolean cheaper, and no coplanar tool faces.
 
+That was not the whole of it, and the rest only surfaced under a measurement
+nobody had run yet — see risk 0. The bands still *stopped* on the seam wall
+rather than crossing it, and two zone prisms were still being asked to cancel a
+wall that two separate booleans had computed. `FOOTING_CROSS_MM` and
+`ZONE_WELD_MM` fix both, and the base went from 157 / 247 / 232 self-touching
+edges to none without moving. The lesson to carry is not any of the three
+constructions but the measurement: *watertight, one body, and exact on volume is
+not the same as manifold*, and only a position-weld will tell them apart.
+
 `Manifold.simplify` was tried first and rejected on measurement: it collapses
 sub-tolerance edges across the whole part and severed a real hair-thin
 connection, turning a clean bare frame into two pieces. `drop_degenerate` filters
@@ -680,9 +689,10 @@ corruption.
 ## 8. Risks, stated plainly
 
 0. **The mesh surface touches itself, and the B-Rep's does not. M-N3 is blocked
-   on this.** *(Found 2026-08-08, chasing §8.2's edge problem.)*
+   on this.** *(Found 2026-08-08, chasing §8.2's edge problem. **Base fixed the
+   same day; three features remain.**)*
 
-   Welded by position and with degenerate faces removed, the mesh base carries
+   Welded by position and with degenerate faces removed, the mesh base carried
    **157 / 247 / 232** edges with more than two faces on demo / aviator /
    gabriel; the B-Rep carries **0** on all three, with the bezel on. An STL has
    no index table, so this is what a slicer sees. It is the M-N0 condition
@@ -693,13 +703,56 @@ corruption.
    Everything else about the part is right: watertight, one body, volume exact
    to 0.00000%. That combination is precisely why it needed looking for.
 
-   Localised to the **footing blends**, and specifically to their two halves
-   meeting at the seam: terraces alone are 0, the base is already at the full
-   count before any feature, and carves alone give 20 on the demo frame against
-   raises alone 29 but 194 together. Invariant to `FOOTING_LEAD_MM` (0 to 1 mm),
-   `FOOTING_SECTION_POINTS` (16 to 60) and `SLAB_MARGIN_MM` (2 to 20), which
-   rules out tangency and points at the construction. Ratcheted by
-   `test_mesh_selftouch` so it cannot grow while it waits.
+   **The base is now zero, and so is the bare model.** Two causes, both in
+   `model/build.py`, both the same rule stated at a surface nobody had counted
+   as one:
+
+   * *The blend halves stopped exactly on the seam.* Each half's profile ended
+     at `u = 0`, which is the vertical wall between the two zones — a face of
+     the tool lying inside a face of its target, which is the very thing the
+     unclipped-band construction was adopted to avoid. It also left the band's
+     `u = 0` edge a 30-station chord of a seam the prism carries at full
+     resolution, so wherever the chord fell inside the zone the subtraction left
+     a standing hairline fin. Fixed by `FOOTING_CROSS_MM`, which carries each
+     half 0.05 mm past the seam into the zone it does not act on, where that
+     zone's own prism clips it away for free.
+   * *Two booleans computed the same wall and did not agree.* Zone polygons tile
+     the body exactly — neighbours share a seam with the same endpoints,
+     collinear, distance 0.0 — so two plain prisms raise the same wall twice and
+     the union cancels it. That is why `build_terraces` was always clean. But
+     subtracting a blend band re-nodes the wall it crosses and hands it back
+     displaced by up to **7.6e-7 mm**, and an exact kernel is right not to
+     pretend two walls that differ are one. Fixed by `ZONE_WELD_MM`: grow every
+     zone by a micron so neighbours genuinely overlap, and clip the union back
+     to the frame outline.
+
+   Neither moves the part — the crossing is clipped off by the zone it reaches
+   into, the growth by the outline — and the zero-area triangles went with them,
+   56 / 68 / 68 to none. Parity against the B-Rep base is unchanged.
+
+   **What is left is per feature, and none of it is the blend defect:**
+
+   * **lens groove, 76 / 94 / 82.** The V arrives with 60 to 72 *before it meets
+     the part*. Root-caused to `kernel.hull_chain`: consecutive cells **abut**
+     on a shared section rather than overlapping — the docstring claimed
+     otherwise and was wrong — and the union fails to cancel that shared
+     triangle at roughly one station in ten, leaving the section standing inside
+     the tube. A triangle swept round a plain circle, nothing else in the scene,
+     self-touches on 3 edges at 12 stations, 12 at 60 and 33 at 120. Running the
+     cells past each other so they genuinely overlap **was tried and rejected**:
+     it helped at 12 stations, hurt at 60, and applied to `swept_profile` it took
+     the base from 0 to 2,500 by breaking the exact agreement between a blend's
+     two halves at the seam.
+   * **pad splay.** No contacts, but *open* edges once degenerate faces are
+     dropped — 6 / 21 / 12 — which means those faces are load-bearing and the
+     surface pinches. The chamfer profile reaches zero drop exactly at the
+     anchor, so the tool's inner corner rides along the surface it is cutting
+     instead of crossing it: `FOOTING_LEAD_MM`'s problem at the other end of a
+     different feature.
+   * **eyewire bezel.** 308 / 400 / 428 zero-area triangles, up to 2 contacts.
+
+   Ratcheted by `test_mesh_selftouch`, which now asserts **zero** for the base
+   and holds the three features at their current numbers.
 
    **Measuring this is easy to get wrong in two ways, both of which I did.**
    Skipping the degenerate-face removal inflates the count about threefold (194
@@ -737,9 +790,11 @@ corruption.
    original criticism of dihedral guessing is not what was wrong here.
 
    Whether the detector is usable once those faces are excluded is now a smaller
-   question, but it sits behind risk 0: the same degenerate triangles are the
-   stitches holding the self-contacts together, so both go away together or
-   neither does.
+   question, and risk 0 has partly answered it: the degenerate triangles were
+   the stitches holding the self-contacts together, and fixing the base removed
+   both at once — the bare model now has **none**. So the detector can be
+   re-measured on a bare frame without them in the way. The bezel still emits
+   308, so a rerun with the features on is still measuring through them.
 
    *The original M-N2 shortfall, for the record.* The
    viewer's four display modes are drawings **of the edges**, and the B-Rep path

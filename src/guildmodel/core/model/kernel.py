@@ -39,6 +39,7 @@ __all__ = [
     "drop_degenerate",
     "extrude",
     "hull_chain",
+    "intersect_all",
     "subtract_all",
     "surface_z_at",
     "swept_profile",
@@ -101,6 +102,20 @@ def union_all(parts: list[Manifold]) -> Manifold:
     if len(parts) == 1:
         return parts[0]
     return _check(Manifold.batch_boolean(parts, OpType.Add), "union")
+
+
+def intersect_all(parts: list[Manifold]) -> Manifold:
+    """The common part of every operand, in one batched pass.
+
+    Used to clip a build back to a boundary it was deliberately allowed to
+    overrun — see `model.build.build_base`, where every zone is grown before
+    extruding and the frame outline puts it back.
+    """
+    if not parts:
+        raise ManifoldError("nothing to intersect")
+    if len(parts) == 1:
+        return parts[0]
+    return _check(Manifold.batch_boolean(parts, OpType.Intersect), "intersect")
 
 
 def subtract_all(solid: Manifold, tools: list[Manifold]) -> Manifold:
@@ -171,9 +186,20 @@ def hull_chain(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     """Sweep a profile along a path as the union of per-segment convex hulls.
 
     `profiles[i]` is the (k, 3) section at station i. Each consecutive pair is
-    hulled into a convex cell and the cells are unioned. The cells overlap at
-    shared stations, which is what makes the union a solid tube rather than a
-    string of beads.
+    hulled into a convex cell and the cells are unioned.
+
+    **Consecutive cells abut rather than overlap** — the section at station i+1
+    is a face of the cell before it and of the cell after, as the same coplanar
+    triangle, and the union is left to cancel two faces that are the same face.
+    At roughly one station in ten it does not, and that section stays inside the
+    tube as a membrane: a triangle swept round a plain circle self-touches on 3
+    edges at 12 stations, 12 at 60, 33 at 120, and the groove V reaches the part
+    with 60 to 72 before it has met anything. Running the cells past each other
+    so they genuinely overlap was tried and is not the answer — it helped at 12
+    stations, hurt at 60, and when applied to `swept_profile` took the footing
+    base from 0 contacts to 2,500 by breaking the exact agreement between a
+    blend's two halves at the seam. Open, and the reason the lens groove is
+    still on BUILDPLAN-NEW's risk list.
 
     Requires each profile to be convex, and a concave one is filled in
     **silently** — the hull simply spans the dent and the feature comes out as

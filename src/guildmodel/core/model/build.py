@@ -18,9 +18,11 @@ and the parameters — and duplicating any of it is how a port grows a second se
 of subtly different answers.
 
 One place this path does **not** mirror the B-Rep one, and deliberately: the
-footing blends are applied per zone rather than as clipped tools. See
-`build_base` for why the mirror-image construction produces a part that is
-watertight, correct to four decimal places, and still wrong.
+footing blends are applied per zone rather than as clipped tools, each carried a
+hair past the seam, onto zones themselves grown a hair and clipped back. See
+`build_base`. All three departures were forced by the same discovery — that a
+part can be watertight, one body, and correct on volume to every digit printed
+and still not be a surface a slicer will accept — and none of them moves it.
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ from manifold3d import Manifold
 
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams
-from .kernel import (ManifoldError, drop_degenerate, extrude,
+from .kernel import (ManifoldError, drop_degenerate, extrude, intersect_all,
                      subtract_all, swept_profile, to_trimesh, union_all)
 
 ProgressFn = Optional[Callable[[str, float], None]]
@@ -56,6 +58,50 @@ FOOTING_SECTION_POINTS = 40
 #: meets there, mm. See `_blend_profile` — this is M-N0's rule, not a fudge.
 FOOTING_LEAD_MM = 0.25
 
+#: How far past the seam a blend profile is carried, into the terrace it does
+#: **not** act on, mm. `FOOTING_LEAD_MM`'s counterpart at the inner end, and the
+#: same rule: a tool must cross every surface it meets rather than stop on it.
+#:
+#: The surface being crossed here is the vertical zone wall at the seam, and it
+#: was being landed on exactly — each half's profile ended at `u = 0`, which is
+#: the boundary between the two zones. That put a face of the tool inside a face
+#: of its target, and left the band's `u = 0` edge a 30-station chord of a seam
+#: the prism carries at full resolution, so wherever the chord fell inside the
+#: zone the subtraction left a standing hairline fin. Between them those two
+#: accounted for most of the 157, 247 and 232 self-touching edges on the three
+#: fixtures; `ZONE_WELD_MM` accounts for the rest.
+#:
+#: Nothing is added or removed by the crossing: a carve is only ever subtracted
+#: from its own high zone's prism and a raise only ever acts inside its low
+#: zone, so each extension is clipped off by the very zone it reaches into. All
+#: it costs is that the last chord before the seam is three times the usual
+#: length, which moves the base by 3e-7 of itself — thirty times inside the
+#: parity gate, and a quarter-micron of chord error against a 0.01 mm budget.
+#:
+#: Must stay comfortably larger than `ZONE_WELD_MM` — the two grown zones
+#: overlap by that much across the seam, and both must find the blend curve
+#: there rather than one of them finding the terrace it came from.
+FOOTING_CROSS_MM = 0.05
+
+#: How far each zone polygon is grown before it is extruded, mm, undone by
+#: clipping the union back to the frame outline. See `build_base`.
+#:
+#: Zone polygons tile the body exactly — neighbours share a seam with the same
+#: endpoints, collinear, at distance 0.0 — so two plain prisms present the same
+#: wall twice and the union cancels it. That holds right up until a boolean
+#: touches one of them: subtracting a blend band re-nodes the wall it crosses
+#: and returns it displaced by up to 7.6e-7 mm. Two walls that are no longer the
+#: same wall do not cancel, and an exact kernel is right not to pretend
+#: otherwise; what is left is a zero-thickness membrane standing on the seam.
+#:
+#: 1e-3 mm makes the neighbours genuinely overlap instead: ~1300x the measured
+#: displacement, so there is real geometry for the boolean to resolve rather
+#: than a coincidence to adjudicate; 10x below the finest step the machine can
+#: take; and 1e-8 of the part by volume, which is four orders below the parity
+#: gate. The terrace step it sits under moves by that micron and nothing else
+#: does.
+ZONE_WELD_MM = 1e-3
+
 #: How far the slab that cuts a raised zone back down to its terrace overhangs
 #: the part in XY, mm. Only has to be enough that none of the slab's walls comes
 #: near the part's — see `build_base`.
@@ -78,6 +124,26 @@ def build_terraces(partition: CastlePartition,
     return union_all(parts)
 
 
+def _weld_grown(poly):
+    """A zone polygon grown by `ZONE_WELD_MM`, ready to extrude.
+
+    Mitred rather than rounded, so a corner stays a corner: this is meant to be
+    the same polygon a micron bigger, not a smoothed one. The mitre limit caps
+    what an acute corner can throw out to twice the growth, which matters
+    because a zone can come to a genuine point where three of them meet.
+
+    A buffer can in principle hand back several polygons; it cannot here, since
+    growing a single connected region only ever joins things. Guarded anyway
+    rather than left to fail one ring at a time inside `cross_section`.
+    """
+    grown = poly.buffer(ZONE_WELD_MM, join_style=2, mitre_limit=2.0)
+    if grown.geom_type == "MultiPolygon":
+        grown = max(grown.geoms, key=lambda g: g.area)
+    if grown.is_empty or grown.area <= 0:
+        raise ManifoldError("growing a zone left nothing to extrude")
+    return grown
+
+
 def _blend_profile(h_high: float, h_low: float, fillet, side: str) -> np.ndarray:
     """One half of the S-blend as `(u, v)` — `u` across the seam, `v` in Z.
 
@@ -98,9 +164,20 @@ def _blend_profile(h_high: float, h_low: float, fillet, side: str) -> np.ndarray
     terrace; the raise ramps down into material already solid below the low one.
     Neither changes the part, and the parity gate pins that.
 
+    **And `FOOTING_CROSS_MM` past its inner end**, for the same reason applied
+    to a surface that went unnoticed for a whole milestone: `u = 0` is the
+    vertical wall between the two zones, and stopping there put a face of the
+    tool inside a face of its target. The sample that used to sit at `u = 0` is
+    *moved* across rather than a new one appended — leaving it in place keeps a
+    vertex lying exactly in the wall, which is the same defect one dimension
+    down and measured 330 zero-area triangles against 0.
+
+    Every other sample keeps the position it had, so the blend's own
+    tessellation is unchanged and the extra reach is one chord long.
+
     `_footing_z` is defined across the whole range — it flattens to `h_high` /
-    `h_low` outside the arcs — so the lead is the real curve continued rather
-    than an extrapolation.
+    `h_low` outside the arcs — so both extensions are the real curve continued
+    rather than an extrapolation.
     """
     from ..relief.castle import _footing_spans, _footing_z
 
@@ -110,8 +187,12 @@ def _blend_profile(h_high: float, h_low: float, fillet, side: str) -> np.ndarray
         raise ManifoldError(f"degenerate {side}-side footing span")
 
     lead = FOOTING_LEAD_MM
-    u = (np.linspace(-span_hi, 0.0, FOOTING_SECTION_POINTS) if side == "high"
-         else np.linspace(0.0, span_lo, FOOTING_SECTION_POINTS))
+    if side == "high":
+        u = np.linspace(-span_hi, 0.0, FOOTING_SECTION_POINTS)
+        u[-1] = FOOTING_CROSS_MM
+    else:
+        u = np.linspace(0.0, span_lo, FOOTING_SECTION_POINTS)
+        u[0] = -FOOTING_CROSS_MM
     v = _footing_z(u, h_high, h_low, fillet.exterior_mm, fillet.interior_mm,
                    fillet.first)
     uv = np.column_stack([u, v])
@@ -180,6 +261,11 @@ def build_base(partition: CastlePartition, castle: CastleParams,
                heights: dict[str, float], top: float) -> Manifold:
     """The terraces with the footing blends already in them.
 
+    Two things here are not the obvious construction, and both were arrived at
+    the same way — by a part that was watertight, one body, and correct on
+    volume to every printed digit while still not being a surface a slicer would
+    accept.
+
     **Every blend band cuts a zone prism; none of them is a clipped tool.** That
     is the difference between this and the obvious construction, and it is worth
     stating because the obvious one produces a valid, watertight, volumetrically
@@ -207,6 +293,24 @@ def build_base(partition: CastlePartition, castle: CastleParams,
     Zones with no blend are extruded plainly, so a frame with no footings builds
     exactly as `build_terraces` does.
 
+    **And every zone is grown by `ZONE_WELD_MM` before it is extruded, with the
+    frame outline clipping the union back.** Neighbouring zones share a seam
+    exactly — same endpoints, collinear, distance 0.0 — so two plain prisms
+    raise the same wall twice and the union cancels it, which is why
+    `build_terraces` is clean. But a blend band re-nodes every wall it crosses,
+    and the wall comes back displaced by up to 7.6e-7 mm. Two walls that are no
+    longer the same wall do not cancel, and the union is left holding a
+    zero-thickness membrane standing on the seam from the anterior face up to
+    the blend. Grown, the neighbours genuinely overlap and there is no
+    coincidence to adjudicate; the outline puts the silhouette and the apertures
+    back, and it cuts the grown walls transversally because they now stand a
+    micron proud of it.
+
+    Neither change moves the part. The seam crossing is clipped off by the zone
+    it reaches into, the growth by the outline; the base agrees with the B-Rep
+    to well inside the parity gate, and the three fixtures went from 157, 247
+    and 232 self-touching edges to none.
+
     What remains after that is genuine numerical degeneracy rather than a
     construction error — two zero-volume tetrahedra on the aviator — which
     `drop_degenerate` discards.
@@ -223,15 +327,16 @@ def build_base(partition: CastlePartition, castle: CastleParams,
     for zone in partition.zones:
         if zone.polygon.is_empty or zone.polygon.area <= 0:
             continue
+        poly = _weld_grown(zone.polygon)
         height = heights[zone.name]
         raises = raise_.get(zone.name)
         if raises:
             above = extrude(footprint, top + SLAB_MARGIN_MM - height,
                             base=height)
-            solid = subtract_all(extrude(zone.polygon, top),
+            solid = subtract_all(extrude(poly, top),
                                  [subtract_all(above, raises)])
         else:
-            solid = extrude(zone.polygon, height)
+            solid = extrude(poly, height)
         carves = carve.get(zone.name)
         if carves:
             solid = subtract_all(solid, carves)
@@ -239,7 +344,13 @@ def build_base(partition: CastlePartition, castle: CastleParams,
 
     if not parts:
         raise ManifoldError("partition has no zones with area")
-    return drop_degenerate(union_all(parts))
+
+    # Deep enough in Z that only the outline's walls do any cutting: a clip
+    # plane coincident with the anterior face would be the very coincidence
+    # this is here to avoid.
+    outline = extrude(partition.body, top + 2 * CUT_MARGIN_MM,
+                      base=-CUT_MARGIN_MM)
+    return drop_degenerate(intersect_all([union_all(parts), outline]))
 
 
 def hinge_pockets(hinges, castle: CastleParams, top: float) -> list[Manifold]:
