@@ -4653,6 +4653,14 @@ Two traps, both recorded in `_offset_aperture`:
 
 Demo frame, `scripts/bench_solid.py`, back to back on the same machine:
 
+> **2026-08-07, later:** user-visible corruption on a real drawing prompted a
+> strategic audit of the whole OCCT approach. The findings (order- and
+> history-dependent boolean corruption invisible to `BRepCheck`, reproduced on
+> the aviator; a 220× mesh-CSG feasibility spike) and the recommended
+> direction live in **BUILDPLAN-NEW.md**. Read that before continuing any
+> `core/solid` performance work — the plan supersedes further optimization of
+> this path.
+
 Final state of the branch, both columns measured back to back on the same
 machine (`scripts/bench_solid.py [--no-curves]`):
 
