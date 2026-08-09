@@ -145,9 +145,13 @@ def test_an_existing_solid_user_is_not_moved_back_to_the_raster(tmp_path,
                                 "model_kernel": "mesh"}), encoding="utf-8")
     assert P.load()["model_kernel"] == "mesh"
 
-    # ...and someone who never turned it on stays where they are.
+    # ...and someone who never turned it on is not carried anywhere: they get
+    # whatever the shipped default is, which M-N3 moved from "raster" to "mesh".
+    # Asserted against DEFAULTS rather than a literal, because the thing being
+    # pinned is "the migration does not fire", not what the default happens to
+    # be this milestone.
     path.write_text(json.dumps({"use_solid_model": False}), encoding="utf-8")
-    assert P.load()["model_kernel"] == "raster"
+    assert P.load()["model_kernel"] == P.DEFAULTS["model_kernel"] != "brep"
 
 
 # --------------------------------------------------------------- the A/B tool

@@ -13,7 +13,21 @@ import pathlib
 _DIR = pathlib.Path.home() / ".guildmodel"
 _FILE = _DIR / "prefs.json"
 
+#: Bumped whenever a shipped default changes in a way an existing prefs file
+#: should be carried over to rather than pinned away from. `load()` runs the
+#: migrations between a file's version and this one, then stamps it.
+#:
+#: Needed because `save()` writes *every* key, so a maker who has ever opened
+#: Preferences has every default frozen into their file — changing a default
+#: then reaches new installs only, and there is no way to tell a value they
+#: chose from one they inherited. A version says which defaults they could
+#: possibly have had an opinion about.
+#:
+#: 1 — M-N3 (2026-08-08): the model kernel default moved raster -> mesh.
+PREFS_VERSION = 1
+
 DEFAULTS: dict = {
+    "prefs_version":         PREFS_VERSION,
     # Appearance
     "dark_mode":             False,
     # UI scale. "auto" derives it from the panel's true DPI against the 96 Qt
@@ -57,13 +71,22 @@ DEFAULTS: dict = {
     # Which kernel builds the frame front's 3D model — one of
     # `gui.mesh_build.KERNELS`. "raster" is the M17 heightfield, "brep" is
     # OpenCASCADE (BUILDPLAN Stage 2), "mesh" is Manifold (BUILDPLAN-NEW M-N1).
-    # The two modelled paths carry feature edges, which is what the viewer's
-    # edge display modes draw; the raster has none.
     #
-    # Still "raster" by default: M-N3 flips it once posted G-code is shown
-    # byte-equivalent. Keeping all three alive is not indecision — building the
-    # same part three ways is what has caught every silent defect this season.
-    "model_kernel":          "raster",
+    # **"mesh" as of M-N3** (2026-08-08). The condition this line used to state
+    # — posted G-code shown byte-equivalent — is met, and tracing why was worth
+    # more than the gate: the CAM never sees a kernel. Every G-code path builds
+    # a `CastleRelief` from the partition and posts from that, so this setting
+    # governs the 3D model and the edges drawn on it, and nothing a machine
+    # cuts. `test_kernel_flip_mn3` pins both the parity and that insulation.
+    #
+    # Parity over 12 feature combinations x 3 drawings: volume within 0.0413%,
+    # silhouette within 0.3609%, every build verified on both kernels. It is
+    # also 20-55x faster (0.23-0.70 s against 12.75-37.91 s) and, unlike the
+    # raster, carries the feature edges the viewer's edge modes draw.
+    #
+    # Keeping all three alive is not indecision — building the same part three
+    # ways is what has caught every silent defect this season.
+    "model_kernel":          "mesh",
     # Superseded by `model_kernel`; read once on load to carry a maker's
     # existing choice over, then dropped. See `_migrate`.
     "use_solid_model":       False,
@@ -126,6 +149,28 @@ def _migrate_model_kernel(data: dict, merged: dict) -> None:
     merged["model_kernel"] = "brep"
 
 
+def _migrate_kernel_flip(data: dict, merged: dict) -> None:
+    """Carry a pre-M-N3 file onto the mesh kernel (BUILDPLAN-NEW M-N3).
+
+    A file written before `PREFS_VERSION` existed has `"model_kernel":
+    "raster"` in it whether the maker chose that or merely never opened
+    Preferences, because `save()` writes every key. Left alone they would keep
+    the old default forever and the flip would reach new installs only.
+
+    So a *raster* setting from an unversioned file is treated as inherited and
+    moved. `"brep"` is left exactly where it is: that one can only have got
+    there by a deliberate choice or by `_migrate_model_kernel` carrying one
+    over, and moving it would be the silent reassignment that migration exists
+    to prevent.
+
+    Only fires once — `load()` stamps the version, `save()` writes it back.
+    """
+    if data.get("prefs_version", 0) >= 1:
+        return
+    if merged.get("model_kernel") == "raster":
+        merged["model_kernel"] = DEFAULTS["model_kernel"]
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present."""
     try:
@@ -133,6 +178,8 @@ def load() -> dict:
             data = json.loads(_FILE.read_text(encoding="utf-8"))
             merged = {**DEFAULTS, **data}
             _migrate_model_kernel(data, merged)
+            _migrate_kernel_flip(data, merged)
+            merged["prefs_version"] = PREFS_VERSION
             # Deep-merge nested dicts so new default keys survive old prefs
             # files (GuildDraw's rule). EVERY nested dict pref must be listed
             # here — a missing entry means old files silently clobber new

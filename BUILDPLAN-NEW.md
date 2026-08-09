@@ -677,16 +677,37 @@ so selecting it costs three of the four display modes.~~ **Closed 2026-08-08**;
 solid kernels. What had stopped it was measuring through the zero-area triangles
 — see §8.2, which now carries the numbers both before and after.
 
-**M-N3 — parity and the flip.** Demo + aviator + Gabriel: volume, silhouette,
-V-profile, chamfer gates, **posted G-code byte-equivalence** (it posts from
-curves, so this should be exactly equal — any diff is a bug found cheap).
-Flip the default. OCCT demoted to an optional cross-check behind a debug flag.
-~1 session.
+**M-N3 — parity and the flip. Done 2026-08-08**, `test_kernel_flip_mn3`.
 
-*From the two-kernel sweep of 2026-08-08.* Run the parity gates over feature
-**combinations**, not one feature at a time: every M13 feature was individually
-clean when the whole-ring defect in risk 0 was still there, and only a
-combination sweep found it.
+Parity is gated over feature **combinations** rather than one feature at a
+time — every M13 feature was individually clean when the whole-ring defect in
+risk 0 was still there, and only a combination sweep found it. 12 combinations
+x 3 drawings, volume and silhouette together because volume is one number and
+two very different parts can share it:
+
+* worst **volume** delta **0.0413%** (gabriel, bezel+groove); gate at 0.1%
+* worst **silhouette** delta **0.3609%** (gabriel, bridge relief); gate at
+  0.75%. Looser on purpose: the mesh path extrudes the partition's flattened
+  polygons, which are inscribed in the splines the B-Rep extrudes, so its shadow
+  is the smaller of the two — the deficit is a property of the drawing, sitting
+  between 0.22% and 0.36% across all 36 pairs and barely moving as features
+  are switched on. Its *sign* is pinned too.
+* every one of the 36 builds verified clean on both kernels — a real assertion
+  now that `verify_mesh` welds by position rather than counting index edges
+* mesh **0.23-0.70 s** against the B-Rep's **12.75-37.91 s**: 20-55x
+
+**The default is now `mesh`**, and existing prefs files come with it
+(`prefs.PREFS_VERSION`, added for this). It is safe because the setting governs
+the 3D model and the edges drawn on it and *nothing a machine cuts* — which is
+the real finding behind the "posted G-code byte-equivalence" clause. The clause
+is satisfied, but trivially: **the CAM never sees a kernel.** Every G-code path
+builds a `CastleRelief` from the partition and posts from that. So the gate that
+means something is structural — `core.cam` must not be able to import either
+kernel, checked by AST — plus determinism of the posting itself.
+
+OCCT is *not* yet demoted behind a debug flag; it is still a first-class choice
+in Preferences and still the third opinion the parity gates are measured
+against. That belongs with M-N4, which is where retiring a path belongs.
 
 **The anterior eyewire bezel is ported** *(2026-08-08)*, and it was a blocker:
 `model.features.bezel_cutters` returned nothing unless `cuts_posterior()`, so
@@ -706,11 +727,41 @@ the demo and the gabriel, and on the aviator it leaves 6 boundary edges and
 removes **3.1 mm3** where the mesh removes 352.7. There is no B-Rep control for
 this feature to hold to.
 
-**M-N4 — the payoff.** Retire the raster relief path (its only remaining role
-is being the third opinion) and then the OCCT path; `cadquery-ocp` becomes an
-optional dev dependency and 70 MB leaves the install. Slider dragging goes
-live-continuous: the spike's 39 ms full build is faster than one frame of the
-current progress dialog. Update BUILDPLAN.md to point here.
+**M-N4 — the payoff.** Retire the raster relief path and then the OCCT path;
+`cadquery-ocp` becomes an optional dev dependency and 70 MB leaves the install.
+Slider dragging goes live-continuous: the spike's 39 ms full build is faster
+than one frame of the current progress dialog. Update BUILDPLAN.md to point here.
+
+*Three corrections from M-N3's measurements (2026-08-08). This milestone is
+larger than the paragraph above, and two of its steps change output rather than
+delete code.*
+
+1. **"The raster's only remaining role is being the third opinion" is wrong —
+   it is the production CAM path.** Every G-code path calls
+   `relief.castle.build_castle_relief`; the `model_kernel` preference has never
+   touched posting. Retiring it means the CAM posts from a solid-derived
+   `Heightfield` instead, and that **changes what a machine cuts**: on a bare
+   frame the three agree on ~99% of cells, but on a fully featured frame the
+   raster differs from *both* solid kernels on ~60% of cells, by up to several
+   millimetres. The solid answer is the better one — the raster approximates
+   chamfers the solids cut exactly, and the two solid kernels agree with each
+   other to two decimal places while disagreeing with it identically — but this
+   is a deliberate, measured step with a maker's eyes on it, not a deletion.
+2. **The bridge for step 1 exists now**: `core/zmap.py` (kernel-neutral
+   rasteriser and relief assembly), `model/zmap.py` (the mesh side),
+   `solid/zmap.py` (two lines of tessellation on top). Stage 2 had built the
+   OCCT half and never wired it in. Mesh-derived and B-Rep-derived Z-maps agree
+   on 99.95% of cells within 5 um on a bare frame, and the mesh is 13-35x faster
+   with no chordal tolerance to choose, because it *is* the triangles.
+3. **"70 MB leaves the install" is not free.** Per feature, in a fresh
+   interpreter, a mesh-kernel G-code build loads **zero** OCP modules for a bare
+   frame, the eyewire bezel, the pad splay and the bridge relief — and **349**
+   for the **lens groove**. `geometry.rings.offset_aperture` builds the rim lip
+   as an exact parallel of the authored curve via `Geom_OffsetCurve` rather than
+   buffering the flattened ring, which is the exact-curve work §8.5 calls the
+   part that survives. Dropping OCCT there means either accepting the Shapely
+   buffer it already falls back to, or offsetting `OffsetCurve` ourselves. A
+   decision, not a cleanup.
 
 Total estimate: **5–7 working sessions** at this codebase's demonstrated pace,
 with the app never broken in between. Compare: staying the course spent one
