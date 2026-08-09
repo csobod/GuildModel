@@ -37,7 +37,15 @@ from .relief.heightfield import Heightfield
 
 ProgressFn = Callable[[str, float], None]
 
-__all__ = ["grid_for", "masks_for", "relief_from_zmap", "triangles_to_zmap"]
+__all__ = ["grid_for", "masks_for", "relief_from_zmap", "triangle_envelopes",
+           "triangles_to_zmap"]
+
+#: Cap on (triangle, cell) pairs held at once by `triangle_envelopes`. The
+#: barycentric test needs about a dozen float64 temporaries per pair, so 4M
+#: pairs is roughly 200 MB. The cap exists for the blank's underside, which is
+#: a handful of triangles each spanning the entire grid; the average triangle
+#: covers a few cells.
+_MAX_PAIRS = 4_000_000
 
 
 def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
@@ -60,21 +68,95 @@ def grid_for(body: Polygon, resolution: float = CUT_RES_MM,
     return origin, rows, cols
 
 
-def triangles_to_zmap(vertices, faces, origin: tuple[float, float],
-                      rows: int, cols: int, resolution: float,
-                      background: float = 0.0,
-                      progress: Optional[ProgressFn] = None) -> np.ndarray:
-    """Upper envelope of a triangle soup on the grid, as a (rows, cols) array.
+def _envelope_pass(idx, up, dn, want_up, want_dn, ncell, nw, lo_c, lo_r,
+                   x0, x1, x2, y0, y1, y2, tz, denom, cols) -> None:
+    """Accumulate one facing's triangles into `up` / `dn`, in bounded batches."""
+    start = 0
+    while start < len(idx):
+        end, taken = start, 0
+        while end < len(idx) and (taken == 0
+                                  or taken + ncell[idx[end]] <= _MAX_PAIRS):
+            taken += ncell[idx[end]]
+            end += 1
+        batch, start = idx[start:end], end
 
-    Cells no triangle covers keep `background`. Nothing here knows or cares
-    which kernel produced the triangles.
+        counts = ncell[batch]
+        t = np.repeat(batch, counts)
+        # Each pair's offset within its own triangle's bounding box.
+        ends = np.cumsum(counts)
+        k = np.arange(ends[-1], dtype=np.int64) - np.repeat(ends - counts, counts)
+        w = nw[t]
+        px = (lo_c[t] + k % w).astype(np.float64)
+        py = (lo_r[t] + k // w).astype(np.float64)
+
+        # Barycentric weights; inside when all three are non-negative.
+        d = denom[t]
+        w0 = ((y1[t] - y2[t]) * (px - x2[t]) + (x2[t] - x1[t]) * (py - y2[t])) / d
+        w1 = ((y2[t] - y0[t]) * (px - x2[t]) + (x0[t] - x2[t]) * (py - y2[t])) / d
+        w2 = 1.0 - w0 - w1
+        hit = (w0 >= -1e-9) & (w1 >= -1e-9) & (w2 >= -1e-9)
+        if not hit.any():
+            continue
+
+        t, w0, w1, w2 = t[hit], w0[hit], w1[hit], w2[hit]
+        flat = py[hit].astype(np.int64) * cols + px[hit].astype(np.int64)
+        zt = w0 * tz[t, 0] + w1 * tz[t, 1] + w2 * tz[t, 2]
+
+        # Group by cell, then reduce. `np.maximum.at` says this directly and is
+        # an order of magnitude slower than sorting first.
+        order = np.argsort(flat, kind="stable")
+        flat, zt = flat[order], zt[order]
+        edges = np.flatnonzero(np.r_[True, flat[1:] != flat[:-1]])
+        cells = flat[edges]
+        if want_up:
+            up[cells] = np.maximum(up[cells], np.maximum.reduceat(zt, edges))
+        if want_dn:
+            dn[cells] = np.minimum(dn[cells], np.minimum.reduceat(zt, edges))
+
+
+def triangle_envelopes(vertices, faces, origin: tuple[float, float],
+                       rows: int, cols: int, resolution: float,
+                       background: float = 0.0,
+                       progress: Optional[ProgressFn] = None
+                       ) -> tuple[np.ndarray, np.ndarray]:
+    """Upper *and* lower envelope of a triangle soup, as two (rows, cols) arrays.
+
+    The upper envelope is the posterior surface the CAM cuts. The lower is the
+    anterior face: flat zero on every frame that does not cut the front, and
+    exactly what `CastleRelief.anterior` wants on one that does. They come out
+    of one pass because the expensive part — locating each triangle's cells and
+    solving the barycentric test there — is shared. Cells no triangle covers
+    keep `background`, and nothing here knows which kernel made the triangles.
+
+    **Batched, rather than a loop over triangles.** The loop this replaced
+    issued about ten numpy calls per triangle, and the average triangle covers
+    a handful of cells, so nearly all of its 0.3 s on a real frame was call
+    overhead rather than arithmetic. One flat array of (triangle, cell) pairs
+    makes it a single vectorised pass — but that array cannot be unbounded,
+    because the blank's underside is a few triangles whose bounding box is the
+    whole grid. Hence `_MAX_PAIRS`. Measured bit-identical to the loop on the
+    gabriel and the aviator, at 5-6.5x.
+
+    **The two envelopes come from disjoint sets of triangles.** `denom` is
+    twice the signed area of the triangle projected on the grid, so its sign is
+    the sign of the normal's z. On a closed, outward-wound solid only an
+    upward-facing face can reach the upper envelope and only a downward-facing
+    one the lower; a vertical wall projects to a line and is already dropped as
+    degenerate. That halves the arithmetic and takes the underside out of the
+    upper pass entirely — those being the largest triangles in the model, it is
+    most of the speedup.
+
+    Outward winding is not taken on faith. Inverted or inconsistent winding
+    would put the upper envelope *below* the lower one, which is a body of
+    negative thickness; that is checked, and the split abandoned for a single
+    pass over every triangle if it fails.
     """
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
     if len(f) == 0:
-        return np.full((rows, cols), background, dtype=np.float64)
+        bg = np.full((rows, cols), float(background), dtype=np.float64)
+        return bg, bg.copy()
 
-    z = np.full((rows, cols), -np.inf, dtype=np.float64)
     ox, oy = origin
 
     # Triangle coordinates in grid space (columns = x, rows = y).
@@ -92,33 +174,43 @@ def triangles_to_zmap(vertices, faces, origin: tuple[float, float],
     y0, y1, y2 = gy[:, 0], gy[:, 1], gy[:, 2]
     denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
 
+    nw = np.maximum(hi_c - lo_c, 0)
+    ncell = nw * np.maximum(hi_r - lo_r, 0)
+    live = (ncell > 0) & (np.abs(denom) >= 1e-12)     # edge-on / degenerate out
+    args = (ncell, nw, lo_c, lo_r, x0, x1, x2, y0, y1, y2, tz, denom, cols)
+
     _report(progress, "Sampling the model", 0.40)
-    for t in range(len(f)):
-        c0, c1, r0, r1 = lo_c[t], hi_c[t], lo_r[t], hi_r[t]
-        if c1 <= c0 or r1 <= r0:
-            continue
-        d = denom[t]
-        if abs(d) < 1e-12:
-            continue                                  # edge-on / degenerate
-        cc = np.arange(c0, c1, dtype=np.float64)
-        rr = np.arange(r0, r1, dtype=np.float64)
-        px, py = np.meshgrid(cc, rr)
+    up = np.full(rows * cols, -np.inf, dtype=np.float64)
+    dn = np.full(rows * cols, np.inf, dtype=np.float64)
+    _envelope_pass(np.flatnonzero(live & (denom > 0)), up, dn, True, False, *args)
+    _envelope_pass(np.flatnonzero(live & (denom < 0)), up, dn, False, True, *args)
 
-        # Barycentric weights; inside when all three are non-negative.
-        w0 = ((y1[t] - y2[t]) * (px - x2[t]) + (x2[t] - x1[t]) * (py - y2[t])) / d
-        w1 = ((y2[t] - y0[t]) * (px - x2[t]) + (x0[t] - x2[t]) * (py - y2[t])) / d
-        w2 = 1.0 - w0 - w1
-        hit = (w0 >= -1e-9) & (w1 >= -1e-9) & (w2 >= -1e-9)
-        if not hit.any():
-            continue
-
-        zt = w0 * tz[t, 0] + w1 * tz[t, 1] + w2 * tz[t, 2]
-        sub = z[r0:r1, c0:c1]
-        np.maximum(sub, np.where(hit, zt, -np.inf), out=sub)
+    both = np.isfinite(up) & np.isfinite(dn)
+    if np.any(up[both] < dn[both] - 1e-9):
+        up = np.full(rows * cols, -np.inf, dtype=np.float64)
+        dn = np.full(rows * cols, np.inf, dtype=np.float64)
+        _envelope_pass(np.flatnonzero(live), up, dn, True, True, *args)
 
     _report(progress, "Z-map ready", 1.0)
-    z[~np.isfinite(z)] = background
-    return z
+    up = up.reshape(rows, cols)
+    dn = dn.reshape(rows, cols)
+    up[~np.isfinite(up)] = background
+    dn[~np.isfinite(dn)] = background
+    return up, dn
+
+
+def triangles_to_zmap(vertices, faces, origin: tuple[float, float],
+                      rows: int, cols: int, resolution: float,
+                      background: float = 0.0,
+                      progress: Optional[ProgressFn] = None) -> np.ndarray:
+    """Just the upper envelope — the posterior surface, and the historical API.
+
+    Kept because that is all the parity gates and the viewer ever wanted; the
+    lower envelope costs a second reduction over pairs that are already
+    gathered, so asking for both is barely dearer than asking for one.
+    """
+    return triangle_envelopes(vertices, faces, origin, rows, cols, resolution,
+                              background, progress)[0]
 
 
 def masks_for(partition: CastlePartition, origin, rows, cols, resolution,
