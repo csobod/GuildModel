@@ -379,7 +379,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     not instead of it.
     """
     from ..geometry.rings import lip_partition
-    from ..solid.build import SWEEP_MARGIN_MM, zone_heights
+    from ..geometry.heights import SWEEP_MARGIN_MM, zone_heights
     from .features import (bezel_cutters, groove_cutters,
                            resolved_edge_cutters, scoop_cutter,
                            splay_cutter, surface_feature_cutters)

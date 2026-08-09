@@ -29,6 +29,7 @@ from typing import Callable, Optional
 import numpy as np
 from shapely.geometry import Point
 
+from ..geometry.heights import SWEEP_MARGIN_MM, zone_heights
 from ..geometry.regions import CastlePartition, ZoneEdge
 from ..project.schema import CastleParams, FootingFillet
 from ..relief.castle import _footing_spans, _footing_z
@@ -60,9 +61,8 @@ ProgressFn = Callable[[str, float], None]
 #: detail; 30 was ample on the demo frame and costs ~10 ms per edge.
 FOOTING_STATIONS = 30
 
-#: How far the swept cutter reaches above the tallest terrace and, for fills,
-#: below the anterior face. Only needs to guarantee overlap for the boolean.
-SWEEP_MARGIN_MM = 1.0
+# SWEEP_MARGIN_MM comes from `geometry.heights` — see the note where
+# `zone_heights` used to be defined, below.
 
 
 def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
@@ -70,20 +70,10 @@ def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
         progress(label, frac)
 
 
-def zone_heights(partition: CastlePartition, castle: CastleParams,
-                 heights: dict[str, float] | None = None) -> dict[str, float]:
-    """Zone name -> posterior height, same resolution order as the raster path."""
-    if heights is not None:
-        return dict(heights)
-    if not partition.classified:
-        raise ValueError(
-            "the section cuts did not yield recognisable castle zones; "
-            "pass explicit zone heights"
-        )
-    out = {z.name: castle.zones.for_kind(z.kind) for z in partition.zones}
-    out.update({n: mm for n, mm in castle.zone_height_overrides.items()
-                if n in out})
-    return out
+# `zone_heights` and `SWEEP_MARGIN_MM` moved to `geometry.heights` and are
+# imported above: both kernels need them and neither owns them, and reaching in
+# here for them dragged 349 OCP modules into every mesh build. Re-exported so
+# every existing `from ...solid.build import zone_heights` still resolves.
 
 
 # ------------------------------------------------------------------ terraces

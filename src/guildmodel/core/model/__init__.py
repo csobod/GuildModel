@@ -13,6 +13,7 @@ from .edges import CREASE_ANGLE_DEG, feature_edges
 from .kernel import (ManifoldError, cross_section, drop_degenerate, extrude,
                      hull_chain, intersect_all, subtract_all, to_trimesh,
                      union_all, volume)
+from .zmap import mesh_to_relief, mesh_to_zmap
 
 __all__ = [
     "CREASE_ANGLE_DEG",
@@ -28,6 +29,8 @@ __all__ = [
     "drop_degenerate",
     "hull_chain",
     "intersect_all",
+    "mesh_to_relief",
+    "mesh_to_zmap",
     "subtract_all",
     "to_trimesh",
     "union_all",
