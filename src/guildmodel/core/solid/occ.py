@@ -10,7 +10,7 @@ worth stating up front:
 * `SetTransitionMode` takes a `BRepBuilderAPI_TransitionMode` enum member, not
   the plain int the OCCT docs imply.
 
-Importing this module pulls in OCP (~70 MB of shared libraries), so nothing on
+Importing this module pulls in OCP (264 MB of shared libraries), so nothing on
 the application's startup path may import `core.solid` eagerly — the splash in
 `gui/boot.py` exists to get ahead of exactly this kind of cost for VTK.
 """

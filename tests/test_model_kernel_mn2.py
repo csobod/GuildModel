@@ -110,18 +110,29 @@ def test_a_teaching_stage_stays_on_the_raster(demo_front):
     assert edges is None, "a partial stage is a raster build and has no edges"
 
 
-def test_an_unknown_kernel_name_falls_back_to_the_raster(monkeypatch):
+def test_an_unknown_kernel_name_falls_back_to_the_shipped_default(monkeypatch):
     """A prefs file hand-edited to a name we do not have must not crash the
-    build; it must land on the path that always works."""
+    build; it must land on the path that always works.
+
+    That path was the raster when this was written and is the mesh now
+    (M-N4): `manifold3d` is a required dependency, the mesh is the default, and
+    it is what the CAM posts from — while `cadquery-ocp` is an optional extra
+    and the raster is the one kernel that approximates. The assertion is
+    against `prefs.DEFAULTS` rather than a literal, so it pins the intent
+    instead of the constant.
+    """
     pytest.importorskip("PySide6.QtWidgets")
+    from guildmodel.gui import prefs as P
     from guildmodel.gui.app import MainWindow
 
     window = MainWindow.__new__(MainWindow)
     window._prefs = {"model_kernel": "nurbs-from-the-future"}
-    assert MainWindow._model_kernel(window) == "raster"
+    assert MainWindow._model_kernel(window) == P.DEFAULTS["model_kernel"] == "mesh"
 
     window._prefs = {"model_kernel": "mesh"}
     assert MainWindow._model_kernel(window) == "mesh"
+    window._prefs = {"model_kernel": "raster"}
+    assert MainWindow._model_kernel(window) == "raster"
 
 
 # ------------------------------------------------------------- the migration

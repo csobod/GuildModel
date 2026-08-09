@@ -6,7 +6,7 @@ of this, produced by ray-casting for the CAM alone — see BREP-REWRITE-REPORT.m
 carries the INCIDENT-2026-07-29 fix, so it keeps consuming a `Heightfield` with
 exactly today's semantics.
 
-Importing this package loads OCP (~70 MB of shared libraries). Keep it off the
+Importing this package loads OCP (264 MB of shared libraries). Keep it off the
 application startup path — import it where a solid is actually built.
 """
 from .build import (build_castle_solid, build_terraces, castle_base,

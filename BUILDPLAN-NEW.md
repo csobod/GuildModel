@@ -358,7 +358,7 @@ The pattern across all seven: the kernel fails *sideways*. Not an error, not an
 invalid flag — a wrong shape, a leak, a hang, delivered with a clean bill of
 health. **The only oracle that has ever caught any of these is the
 tessellation**: watertightness of the mesh and volume of the mesh. Our ground
-truth is already the mesh. The kernel is a 70 MB middleman between us and the
+truth is already the mesh. The kernel is a 264 MB middleman between us and the
 representation we actually trust.
 
 ### 3.3 What OCCT genuinely delivered (fairness)
@@ -728,9 +728,20 @@ removes **3.1 mm3** where the mesh removes 352.7. There is no B-Rep control for
 this feature to hold to.
 
 **M-N4 — the payoff.** Retire the raster relief path and then the OCCT path;
-`cadquery-ocp` becomes an optional dev dependency and 70 MB leaves the install.
-Slider dragging goes live-continuous: the spike's 39 ms full build is faster
-than one frame of the current progress dialog. Update BUILDPLAN.md to point here.
+`cadquery-ocp` becomes an optional dev dependency and **264 MB** leaves the
+install (measured: 163 MB of `OCP` plus 101 MB of `cadquery_ocp.libs` — the
+"70 MB" this line carried for a season was wrong and too kind). Slider dragging
+goes live-continuous: the spike's 39 ms full build is faster than one frame of
+the current progress dialog. Update BUILDPLAN.md to point here.
+
+**Landed 2026-08-09:** the CAM posts from the chosen kernel (`core.zmap.castle_relief`),
+the lens groove no longer needs OCCT (`curves.sample_curve`), both solid kernels
+honour `min_thickness_mm`, and `cadquery-ocp` is now an extra. The B-Rep is
+demoted rather than deleted — `core.kernels` keeps it out of Preferences unless
+`GUILDMODEL_BREP` is set, and `dev` still installs it, because it is the third
+opinion every parity gate measures the mesh against and building the same part
+two ways is what caught this season's silent defects. Still open: live sliders,
+retiring the raster *relief* path, and BUILDPLAN.md.
 
 *Three corrections from M-N3's measurements (2026-08-08). This milestone is
 larger than the paragraph above, and two of its steps change output rather than
@@ -1034,7 +1045,7 @@ corruption.
    direction — that explores every `TopAbs_EDGE`, so a 180-section bezel loft
    contributes thousands of tangent patch seams, and the demo frame hands the
    viewer 5,878 curves for a part with perhaps a hundred features.
-3. **A second geometry dependency.** Manifold is small (~MBs vs OCCT's 70),
+3. **A second geometry dependency.** Manifold is small (~MBs vs OCCT's 264),
    Apache-2.0, and load-bearing for OpenSCAD; risk accepted. It was installed
    into the venv for the spike but is *not* yet in `pyproject.toml` — M-N1
    adds it.

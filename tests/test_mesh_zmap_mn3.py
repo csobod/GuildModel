@@ -157,7 +157,7 @@ def test_the_rasteriser_is_kernel_neutral():
     reaches the B-Rep when a maker asks for it, and it imports `solid.zmap`
     inside the function. This used to walk the whole tree and so read that as
     the coupling it exists to forbid. The coupling was never "the file mentions
-    OCCT" — it was "importing this drags in 70 MB of kernel", and a lazy import
+    OCCT" — it was "importing this drags in 264 MB of kernel", and a lazy import
     in a branch nobody takes does not. `test_importing_the_bridge_does_not_load_occt`
     below checks the thing itself, so this half only has to hold the structure.
     """
@@ -192,7 +192,7 @@ def test_importing_the_bridge_does_not_load_occt():
 
     `core.zmap.castle_relief` can reach OpenCASCADE, because a maker may ask it
     to. What must stay true is that *importing* the module does not — otherwise
-    every G-code build pays 70 MB for a branch it never takes, which is the
+    every G-code build pays 264 MB for a branch it never takes, which is the
     coupling this module was split out of `core/solid` to break.
 
     A subprocess, because `sys.modules` is cumulative and by this point in a

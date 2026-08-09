@@ -31,6 +31,7 @@ from shapely import contains_xy, prepare
 from shapely.geometry import Polygon
 
 from .geometry.regions import CastlePartition
+from .kernels import resolve_kernel
 from .project.schema import CastleParams
 from .relief.castle import CUT_RES_MM, GRID_MARGIN_MM, CastleRelief
 from .relief.heightfield import Heightfield
@@ -412,8 +413,16 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     """The relief every G-code path posts from — one entry point, one choice.
 
     `kernel` is `gui.mesh_build.KERNELS`: "raster" is the M17 heightfield,
-    "mesh" is Manifold, "brep" is OpenCASCADE. Anything else falls back to the
-    raster rather than raising, because a prefs file is not a contract.
+    "mesh" is Manifold, "brep" is OpenCASCADE. Anything else falls back rather
+    than raising, because a prefs file is not a contract — and since M-N4
+    neither is an *install*: `cadquery-ocp` is an optional extra, so
+    `kernels.resolve_kernel` also catches a saved "brep" on a machine without
+    it. A maker must never be unable to post a job because of either.
+
+    The fallback is `resolve_kernel`'s and not a second opinion of our own.
+    Deciding it here is how the viewer and the CAM would come to disagree about
+    the same unrecognised name, which is the failure `_model_kernel` was
+    written to prevent from the other end.
 
     **This is the line the `model_kernel` preference did not used to cross.**
     Through M-N3 the setting governed the 3D viewer and nothing a machine cut,
@@ -427,6 +436,7 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     checks by AST. Choosing the surface is the caller's job; cutting it is the
     CAM's.
     """
+    kernel = resolve_kernel(kernel)
     if kernel == "mesh":
         from .model.zmap import mesh_cam_relief
         return mesh_cam_relief(partition, castle, hinges, resolution, margin,

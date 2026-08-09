@@ -27,7 +27,7 @@ poles and knots, but a chain of cubic Beziers is a cubic B-spline — see
 `cubic_bezier_chain`, which re-spells one as the other with no tolerance either.
 
 **Kernel-neutral on purpose.** `core/io_import` must not import OCP: the
-importer runs on every startup and OCP is ~70 MB of shared libraries. This
+importer runs on every startup and OCP is 264 MB of shared libraries. This
 module is plain data. `core/solid/occ.py` is the only place that turns it into a
 `Geom_BSplineCurve`.
 """

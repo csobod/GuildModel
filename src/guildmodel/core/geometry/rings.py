@@ -7,7 +7,7 @@ trimmed surfaces, and both `core/solid` (OpenCASCADE) and `core/model`
 (Manifold) need every one of them.
 
 They lived in `core/solid/features.py` until the mesh kernel needed them, which
-would have meant importing OCP — ~70 MB of shared libraries — to ask a Shapely
+would have meant importing OCP — 264 MB of shared libraries — to ask a Shapely
 question. Moved rather than copied: a port that duplicates its geometry grows a
 second set of subtly different answers, and these are exactly the functions
 whose answers must not drift between the two paths.

@@ -17,7 +17,7 @@ copies and the next feature lands in one or two of them. The workers keep their
 own signals and threading, and all of them call `build_component_mesh` here.
 
 Deliberately Qt-free: this module is importable and testable without a display,
-and it defers the heavy imports (OCP is ~70 MB) to call time.
+and it defers the heavy imports (OCP is 264 MB) to call time.
 """
 from __future__ import annotations
 

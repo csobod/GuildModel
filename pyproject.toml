@@ -23,23 +23,39 @@ dependencies = [
     "rtree>=1.2",       # trimesh's bounds-tree backend (the STL-gate test needs it)
     "pydantic>=2.7",
     "pyyaml>=6.0",
-    # B-Rep solid kernel (OCCT 7.9). Pinned exactly, not floated: the rebuilt
-    # geometry must be reproducible across versions or a saved project previews
-    # differently after a dependency bump (BREP-REWRITE-REPORT.md §5.4).
-    # LGPL-2.1 + OCCT Exception — see NOTICE for the relinking obligation.
-    "cadquery-ocp==7.9.3.1.1",
-    # Mesh-domain CSG (BUILDPLAN-NEW M-N1). Apache-2.0, a few MB against OCCT's
-    # 70, and the guarantee that matters here is structural: a Manifold is
-    # closed and manifold by construction, so the failure class this project
-    # spent a season chasing cannot be represented. Floated, not pinned: unlike
-    # the B-Rep kernel it produces meshes we verify directly every build.
+    # Mesh-domain CSG (BUILDPLAN-NEW M-N1), and since M-N4 the only geometry
+    # kernel a normal install carries. Apache-2.0, a few MB against OCCT's 264,
+    # and the guarantee that matters is structural: a Manifold is closed and
+    # manifold by construction, so the failure class this project spent a
+    # season chasing cannot be represented. Floated, not pinned: unlike the
+    # B-Rep kernel it produces meshes we verify directly on every build.
     "manifold3d>=3.5",
 ]
 
 [project.optional-dependencies]
+# B-Rep solid kernel (OCCT 7.9) — **optional as of BUILDPLAN-NEW M-N4**.
+#
+# 264 MB installed (163 MB of `OCP` plus 101 MB of `cadquery_ocp.libs`), for a
+# kernel that is no longer the default, no longer posts G-code, and is no
+# longer needed by any feature — every posterior feature loads zero OCP modules
+# on the mesh path since the rim lip got a native curve evaluator.
+#
+# Demoted rather than deleted: it is the third opinion every parity gate
+# measures the mesh against, and building the same part two ways is what has
+# caught this season's silent defects. `dev` therefore includes it, and
+# `core.kernels` keeps it out of Preferences unless `GUILDMODEL_BREP` is set.
+#
+# Pinned exactly, not floated: the rebuilt geometry must be reproducible across
+# versions or a saved project previews differently after a dependency bump
+# (BREP-REWRITE-REPORT.md §5.4). LGPL-2.1 + OCCT Exception — see NOTICE for the
+# relinking obligation.
+brep = [
+    "cadquery-ocp==7.9.3.1.1",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "guildmodel[brep]",           # the parity gates need the third opinion
 ]
 packaging = [
     "pyinstaller>=6.6",

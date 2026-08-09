@@ -1892,34 +1892,41 @@ class PrefsDialog(QDialog):
         prev_form.addRow("Preview resolution:", self._preview_res)
         prev_form.addRow("Export resolution:", self._export_res)
 
-        # BUILDPLAN Stage 2, then BUILDPLAN-NEW M-N2. All three paths stay
-        # selectable while the migration runs: building the same part three
-        # ways is what has caught every silent defect this season.
-        from guildmodel.gui.mesh_build import KERNELS
+        # BUILDPLAN Stage 2, then M-N2, then M-N4. The B-Rep is demoted: it
+        # only appears where it is installed *and* `GUILDMODEL_BREP` is set,
+        # because a developer has 264 MB of OCCT installed permanently for the
+        # parity gates and that is no reason to offer a maker a third kernel.
+        # See `core.kernels`.
+        from guildmodel.core.kernels import available_kernels, resolve_kernel
 
+        kernels = available_kernels()
+        labels = {"raster": "Raster heightfield",
+                  "brep": "B-Rep solid (OpenCASCADE)",
+                  "mesh": "Mesh solid (Manifold)"}
         self._model_kernel_combo = QComboBox()
-        for key, label in (("raster", "Raster heightfield"),
-                           ("brep", "B-Rep solid (OpenCASCADE)"),
-                           ("mesh", "Mesh solid (Manifold)")):
-            self._model_kernel_combo.addItem(label, key)
-        current = str(prefs.get("model_kernel", "raster"))
-        if current not in KERNELS:
-            current = "raster"
-        self._model_kernel_combo.setCurrentIndex(KERNELS.index(current))
-        self._model_kernel_combo.setToolTip(
-            "Which kernel builds the frame front's 3D model.\n\n"
-            "Raster heightfield — the original. Fast and grid-based; the\n"
-            "resolution settings above apply to it and to nothing else. It has\n"
-            "no edges, so the wireframe and hidden-edge display modes stay\n"
-            "disabled.\n\n"
-            "B-Rep solid — exact surfaces, watertight when it succeeds, and\n"
-            "slow: 20-35 s for a full rebuild.\n\n"
-            "Mesh solid — closed by construction rather than by luck, and the\n"
-            "fastest of the three to rebuild. It agrees with the B-Rep path on\n"
-            "every parity check. It carries no edges yet, so the wireframe and\n"
-            "hidden-edge display modes stay disabled on it; and it is not the\n"
-            "default only because the posted G-code has still to be shown\n"
-            "identical.")
+        for key in kernels:
+            self._model_kernel_combo.addItem(labels[key], key)
+        current = resolve_kernel(str(prefs.get("model_kernel",
+                                               prefs_mod.DEFAULTS["model_kernel"])))
+        if current not in kernels:
+            current = prefs_mod.DEFAULTS["model_kernel"]
+        self._model_kernel_combo.setCurrentIndex(kernels.index(current))
+        tip = ["Which kernel builds the frame front's 3D model — and, since\n"
+               "the model is what the CAM now posts from, what a machine cuts.\n\n"
+               "Mesh solid (the default) — closed by construction rather than\n"
+               "by luck, and much the fastest to rebuild. It carries feature\n"
+               "edges, so the wireframe and hidden-edge display modes work.\n\n"
+               "Raster heightfield — the original. Fast and grid-based; the\n"
+               "resolution settings above apply to it and to nothing else. It\n"
+               "approximates chamfers the solid kernels cut exactly, and has\n"
+               "no edges, so the wireframe and hidden-edge modes stay off."]
+        if "brep" in kernels:
+            tip.append("\n\nB-Rep solid — OpenCASCADE. Exact surfaces and slow:\n"
+                       "20-35 s for a full rebuild against well under a second.\n"
+                       "An optional extra, shown because GUILDMODEL_BREP is set;\n"
+                       "it exists as the third opinion the parity gates measure\n"
+                       "the mesh against, not as a working choice.")
+        self._model_kernel_combo.setToolTip("".join(tip))
         prev_form.addRow("3D model kernel:", self._model_kernel_combo)
         gen_lay.addWidget(prev_box)
 
@@ -6137,10 +6144,11 @@ class MainWindow(QMainWindow):
         end up disagreeing, which is the shape of the 2026-08-07 finding this
         module has already been bitten by once.
         """
-        from guildmodel.gui.mesh_build import KERNELS
+        from guildmodel.core.kernels import resolve_kernel
+        from guildmodel.gui import prefs as prefs_mod
 
-        choice = str(self._prefs.get("model_kernel", "raster"))
-        return choice if choice in KERNELS else "raster"
+        return resolve_kernel(str(self._prefs.get(
+            "model_kernel", prefs_mod.DEFAULTS["model_kernel"])))
 
     def _build_all(self, targets: list[int]) -> None:
         """Build every target component's mesh in a single background thread."""
