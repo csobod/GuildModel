@@ -762,6 +762,16 @@ delete code.*
    part that survives. Dropping OCCT there means either accepting the Shapely
    buffer it already falls back to, or offsetting `OffsetCurve` ourselves. A
    decision, not a cleanup.
+4. **The third opinion has started refusing input the mesh accepts** *(added
+   2026-08-09)*. `footings.CUT_LEAD_MM` runs each blend band past the ends of
+   its seam. At 2 mm — the length first shipped, on the reasoning that margin
+   past convergence is free — **OpenCASCADE stops building the aviator** with
+   the lens groove on: zero volume on two feature combinations, 320
+   self-overlapping edges on a third. Manifold builds all of them clean. The
+   length is now 0.5 mm, which is where the fix actually converges, so nothing
+   is owed here today; but the parity gates measure the mesh *against* OCCT,
+   and a referee that falls over on valid input is a referee on a clock. It
+   argues for doing step 1's measurements while the third opinion still works.
 
 Total estimate: **5–7 working sessions** at this codebase's demonstrated pace,
 with the app never broken in between. Compare: staying the course spent one

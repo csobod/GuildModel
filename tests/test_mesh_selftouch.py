@@ -252,13 +252,22 @@ def test_no_blend_sample_lands_on_the_seam():
 #: `features.EDGE_CROSS_MM` for the body outline under the pad splay, and
 #: `kernel.sweep_sections` for the sections a hull chain left abutting inside
 #: its own tube. The splay alone went 105 / 97 / 93 to 6 / 4 / 2.
+#:
+#: **gabriel/pad_splay went 2 -> 4 with `footings.CUT_LEAD_MM`, and it is the
+#: same graze, re-triangulated.** All four sit at (+-9.93, -1.47, 9.998) and
+#: (+-9.65, -1.50, 9.950) — a symmetric pair per side at full nosepad height,
+#: where the splay grazes the `nosepad_superior` blend, 8.2 mm from the nearest
+#: seam end and so nowhere near anything the lead moves. Changing the band's
+#: stations re-triangulates that surface and the count of faces the graze lands
+#: on jitters with it, non-monotonically: 2 at the old 2%..98% trim, 4 at 0.0
+#: and 0.5, 2 again at 2.0. A budget, held where the measurement is.
 _KNOWN_DEGENERATE = {
     "demo_front":    {"eyewire_bezel": 2, "lens_groove": 8,
                       "pad_splay": 6, "bridge_relief": 0},
     "aviator_front": {"eyewire_bezel": 12, "lens_groove": 0,
                       "pad_splay": 4, "bridge_relief": 0},
     "gabriel_front": {"eyewire_bezel": 12, "lens_groove": 8,
-                      "pad_splay": 2, "bridge_relief": 0},
+                      "pad_splay": 4, "bridge_relief": 0},
 }
 
 

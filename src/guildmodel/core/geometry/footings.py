@@ -18,22 +18,90 @@ them. So the only thing each kernel owns is the sweep.
 from __future__ import annotations
 
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
 from .regions import CastlePartition
 
-__all__ = ["cut_stations", "orient_high_side"]
+__all__ = ["CUT_LEAD_MM", "cut_stations", "orient_high_side"]
+
+#: How far the stations run *past* each end of a SCULPT cut, mm.
+#:
+#: A footing band is a ribbon swept along the seam, so it has square ends, and
+#: material in the corner just off an end is never carved. The raster has no
+#: such notion — it carves by Euclidean distance to the seam, which rounds the
+#: corner for free — so the two disagree exactly there, and both solid kernels
+#: disagree with it identically.
+#:
+#: That is the sharp fin at the inferior nosepad, present since before UI-0
+#: ("a visibly corrupt model — a spike of material off the nosepad") and never
+#: caught by a gate, because the part is watertight, one body, and correct to
+#: 0.04% on volume with it. Only an eye on the render found it.
+#:
+#: It bites where the fillet is large against the seam it runs along. Gabriel's
+#: `nosepad_inferior` seam is **5.19 mm** long with **9.0 / 10.0 mm** fillet
+#: radii — the blend reaches nearly twice as far as the seam is long — so the
+#: uncarved corner came out as a 9 mm wedge tapering to a point. The demo's same
+#: seam is 10.14 mm and shows nothing at all, which is why three drawings' worth
+#: of parity gates all passed.
+#:
+#: **The length is the measured convergence point, and margin on top of it is
+#: not free.** Lowest full-height cell in the nosepad zones, gabriel then
+#: aviator, against the raster's own -4.747 / -7.016:
+#:
+#:     shipped (2%..98%)   -6.697 / -5.797     -8.366
+#:     0.00 (the full cut) -5.947 / -5.797     -7.766
+#:     0.25                -4.897 / -4.747     -7.016
+#:     0.50                -4.597 / -4.747     -7.016   <- converged
+#:     2.00                -4.597 / -4.747     -7.016
+#:
+#: 2 mm shipped first, on the reasoning that convergence plus margin costs
+#: nothing because `build_base` clips every band to the zone it acts on. The
+#: clip does bound where the blend lands, but not what the boolean has to
+#: adjudicate on the way there: at 2 mm **OpenCASCADE stops building the
+#: aviator** with the lens groove on — zero volume on two combinations and 320
+#: self-overlapping edges on a third — while Manifold takes the same input
+#: without complaint. The mesh kernel's tolerance for a longer band is not a
+#: reason to spend length it does not need.
+#:
+#: A lead cannot round the cap; it only moves a square one out of the zone. The
+#: exact fix is a round cap — the raster's Euclidean distance to a *segment* is
+#: rounded at the ends by construction — which means fanning the profile about
+#: the endpoint, and consecutive stations at the same point are the degenerate
+#: case `kernel.sweep_sections` was rewritten to avoid. Convergence at 0.5 mm
+#: says the square cap is clear of the zone by then, so the rounding it is
+#: missing is rounding of empty space.
+CUT_LEAD_MM = 0.5
 
 
-def cut_stations(cut_line, n: int) -> tuple[np.ndarray, np.ndarray]:
-    """Points and unit left-normals along a SCULPT cut, ends trimmed slightly.
+def cut_stations(cut_line, n: int, lead_mm: float = CUT_LEAD_MM
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """Points and unit left-normals along a SCULPT cut, running past both ends.
 
-    The cut lines are deliberately extended past the body (`_CUT_EXTEND_MM`) so
-    they always sever it; sampling the very ends would fit the spine through
-    points beyond anything that matters.
+    The cut lines are already extended past the body (`_CUT_EXTEND_MM`) so they
+    always sever it, and this used to sample 2%..98% of that on the grounds that
+    "sampling the very ends would fit the spine through points beyond anything
+    that matters". It mattered: on a short seam that trim is a tenth of a
+    millimetre, and a tenth of a millimetre of missing seam under a 9 mm blend
+    is a 9 mm wedge of uncarved material. See `CUT_LEAD_MM`.
+
+    So the stations now cover the whole cut and `lead_mm` beyond each end,
+    extrapolated along the end tangents. Straight-line extrapolation is safe at
+    this distance — the cut is a gentle spline and the lead is short — and a
+    band that reaches past its zone is clipped back by the caller.
     """
+    coords = list(cut_line.coords)
+    if lead_mm > 0.0 and len(coords) >= 2:
+        head, nxt = np.asarray(coords[0]), np.asarray(coords[1])
+        tail, prv = np.asarray(coords[-1]), np.asarray(coords[-2])
+        t_head = head - nxt
+        t_tail = tail - prv
+        t_head = t_head / max(np.linalg.norm(t_head), 1e-12)
+        t_tail = t_tail / max(np.linalg.norm(t_tail), 1e-12)
+        cut_line = LineString([tuple(head + t_head * lead_mm), *coords,
+                               tuple(tail + t_tail * lead_mm)])
+
     total = cut_line.length
-    ss = np.linspace(0.02 * total, 0.98 * total, n)
+    ss = np.linspace(0.0, total, n)
     pts, perps = [], []
     for s in ss:
         p = cut_line.interpolate(float(s))

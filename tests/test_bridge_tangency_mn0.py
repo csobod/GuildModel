@@ -115,8 +115,14 @@ def test_the_extension_removes_no_extra_material(scooped):
     assertions above carry that. The tolerance is for tessellation portability
     across platforms, not because the figure is soft.
 
-    Pinned at 8209.238 mm3 when M-N0 landed and now 8214.220, because the scoop
+    Pinned at 8209.238 mm3 when M-N0 landed, then 8214.220 because the scoop
     stopped diving through the keyhole and 4.98 mm3 of bridge stayed on the
-    frame. That is the fix in the test above, measured from the other end.
+    frame — that is the fix in the test above, measured from the other end.
+
+    Now 8213.546, 0.674 mm3 lighter, and none of it is the scoop:
+    `footings.CUT_LEAD_MM` runs each footing band past the ends of its seam, so
+    the corner just off a seam end is carved instead of left standing. On this
+    drawing that is 0.008% of the part and invisible; on the gabriel the same
+    corner was a 9 mm wedge off the inferior nosepad.
     """
-    assert scooped.volume == pytest.approx(8214.22, abs=0.5)
+    assert scooped.volume == pytest.approx(8213.55, abs=0.5)
