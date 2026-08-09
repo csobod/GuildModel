@@ -134,6 +134,7 @@ from ..geometry.rings import (                                   # noqa: E402
     lip_partition,
     offset_aperture as _offset_aperture,
     ring_stations as _ring_stations,
+    thickness_limit as _thickness_limit,
 )
 
 def _bezel_section(p_xy, inward, rim_z: float, width: float, tan_a: float,
@@ -384,13 +385,20 @@ MIN_TAPER_DROP_MM = 0.02
 
 def _edge_section(p_xy, inward, anchor: float, width: float, drop: float,
                   profile: str, radius: float, top: float, posterior: bool,
-                  n: int = 20):
+                  n: int = 20, limit: float | None = None):
     """One station's cutting section for an edge feature, in (inward, Z).
 
     Posterior runs remove material above the profile; anterior runs are the
     mirror image and remove it below. In a solid that is the whole of the
     difference — there is no second surface to keep in step, because the
     anterior face *is* the underside of the same body.
+
+    `limit` is how far the cut may go before the wall gets thinner than
+    `EdgeFeature.min_thickness_mm` — a floor for a posterior run, a ceiling for
+    an anterior one, from `rings.thickness_limit`. Truncates the V rather than
+    shrinking it, matching the raster's `max(pre - drop, floor)`: the cut keeps
+    its width and flattens where it would have gone too deep, instead of
+    narrowing and leaving a step. `None` means the feature asked for no minimum.
     """
     us = np.linspace(0.0, width, n)
     if profile == "fillet":
@@ -403,6 +411,8 @@ def _edge_section(p_xy, inward, anchor: float, width: float, drop: float,
 
     sign = -1.0 if posterior else 1.0
     vs = anchor + sign * prof
+    if limit is not None:
+        vs = np.maximum(vs, limit) if posterior else np.minimum(vs, limit)
     far = top if posterior else -CUT_MARGIN_MM
 
     px, py = float(p_xy[0]), float(p_xy[1])
@@ -486,11 +496,25 @@ def edge_feature_cutters(solid: TopoDS_Shape, partition: CastlePartition,
         # collapses there instead of spanning the part.
         anchors = _carry_anchors(anchors, top if posterior else -CUT_MARGIN_MM)
 
+        # Never leave the wall thinner than the feature asks for. Read from the
+        # opposite face by the same ray this kernel anchors everything else
+        # with; see `rings.thickness_limit` for why neither solid kernel had
+        # this until the CAM started posting from one.
+        limits = [None] * len(pts)
+        if feature.min_thickness_mm > 0.0:
+            opposite = surface_z_at(solid, pts + inward * _RIM_PROBE_MM,
+                                    face="bottom" if posterior else "top")
+            opposite = _carry_anchors(
+                opposite, 0.0 if posterior else top)
+            limits = list(_thickness_limit(
+                opposite, float(feature.min_thickness_mm), posterior))
+
         sections = [
             _edge_section(p, nn, float(a), float(wd), float(dr),
                           feature.profile, float(feature.radius_mm), top,
-                          posterior)
-            for p, nn, a, wd, dr in zip(pts, inward, anchors, widths, drops)
+                          posterior, limit=lim)
+            for p, nn, a, wd, dr, lim in zip(pts, inward, anchors, widths,
+                                             drops, limits)
         ]
         ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
         for wire in sections:

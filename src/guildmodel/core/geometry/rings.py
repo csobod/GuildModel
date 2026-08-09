@@ -37,7 +37,8 @@ from .curves import OffsetCurve
 from .regions import CastlePartition
 
 __all__ = ["carry_anchors", "crest_inside", "inward_normals", "lip_body",
-           "lip_partition", "offset_aperture", "ring_stations"]
+           "lip_partition", "offset_aperture", "ring_stations",
+           "thickness_limit"]
 
 
 def ring_stations(ring: LineString, n: int):
@@ -322,3 +323,39 @@ def carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
     out[~valid] = np.interp(idx[~valid], idx[valid], out[valid])
     return out
 
+
+def thickness_limit(opposite: np.ndarray, min_thickness_mm: float,
+                    posterior: bool) -> np.ndarray:
+    """How far a cut may go before it leaves the wall too thin, per station.
+
+    `opposite` is the *other* face's height under each station — the anterior
+    surface for a posterior cut and the posterior surface for an anterior one.
+    Returns the Z a posterior cut must stay above, or an anterior cut below.
+
+    **Why this is here and not in either kernel.** `EdgeFeature.min_thickness_mm`
+    says "never leave the frame thinner than this where the feature cuts", and
+    until M-N4 only the raster obeyed it: `relief.edges.carve_edge_feature`
+    clamps each cell against the opposite face, and neither solid kernel had any
+    clamp at all. That was survivable while the raster was the production CAM
+    path. It stopped being survivable the moment the CAM started posting from a
+    solid, because the number then reaches metal.
+
+    Measured on the demo frame with a posterior brow chamfer, thinnest wall
+    where the feature cut, raster against mesh:
+
+        4 mm wide, min 1.0 mm    1.000    0.789
+        6 mm wide, min 1.0 mm    1.000    0.000
+        6 mm wide, min 2.5 mm    2.500    0.000
+
+    Zero is not a rounding — the mesh cut clean through a frame the maker had
+    asked to keep 2.5 mm of.
+
+    Both kernels read the opposite face by ray at each station and clamp their
+    section against it, which is coarser than the raster's per-cell clamp and
+    exactly as good wherever the opposite face is flat under the run. That is
+    every frame with nothing cutting its front, which is the default and very
+    nearly all of them; where it is not, the reading is the same one every other
+    surface-riding feature in this kernel already trusts.
+    """
+    o = np.asarray(opposite, dtype=float)
+    return o + min_thickness_mm if posterior else o - min_thickness_mm

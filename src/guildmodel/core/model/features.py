@@ -38,7 +38,8 @@ import numpy as np
 from manifold3d import Manifold
 from shapely.geometry import LineString, Polygon
 
-from ..geometry.rings import carry_anchors, inward_normals, ring_stations
+from ..geometry.rings import (carry_anchors, inward_normals,
+                             ring_stations, thickness_limit)
 from ..project.schema import CastleParams
 from .kernel import (ManifoldError, surface_z_at, sweep_sections,
                      swept_profile)
@@ -239,15 +240,38 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
         if feature.depth_limit_mm is not None:
             drops = np.minimum(drops, float(feature.depth_limit_mm))
 
-        anchors = surface_z_at(mesh, pts + into * _RIM_PROBE_MM,
-                               face="top" if posterior else "bottom")
-        anchors = carry_anchors(anchors, far)
+        probes = pts + into * _RIM_PROBE_MM
+        anchors = carry_anchors(
+            surface_z_at(mesh, probes, face="top" if posterior else "bottom"),
+            far)
 
-        profiles = [
-            _edge_profile(float(w), float(d), float(feature.radius_mm),
-                          feature.profile, posterior) + np.array([0.0, float(a)])
-            for w, d, a in zip(widths, drops, anchors)
-        ]
+        # Never leave the wall thinner than the feature asks for. The raster has
+        # clamped every carve against the opposite face since M17 and neither
+        # solid kernel did, which was survivable only while the raster was the
+        # production CAM path — see `rings.thickness_limit` for what it measured
+        # once that stopped being true.
+        limits = None
+        if feature.min_thickness_mm > 0.0:
+            opposite = carry_anchors(
+                surface_z_at(mesh, probes,
+                             face="bottom" if posterior else "top"),
+                0.0 if posterior else far)
+            limits = thickness_limit(opposite, float(feature.min_thickness_mm),
+                                     posterior)
+
+        profiles = []
+        for i, (w, d, a) in enumerate(zip(widths, drops, anchors)):
+            prof = (_edge_profile(float(w), float(d), float(feature.radius_mm),
+                                  feature.profile, posterior)
+                    + np.array([0.0, float(a)]))
+            if limits is not None:
+                # Truncates the V at the limit rather than shrinking it, which
+                # is what the raster's `max(pre - drop, floor)` does too: the
+                # cut keeps its width and flattens out where it would have gone
+                # too deep, instead of narrowing and leaving a step.
+                prof[:, 1] = (np.maximum(prof[:, 1], limits[i]) if posterior
+                              else np.minimum(prof[:, 1], limits[i]))
+            profiles.append(prof)
         out.append(swept_profile(pts, into, profiles, far, closed=whole))
     return out
 
