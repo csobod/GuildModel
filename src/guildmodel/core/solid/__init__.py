@@ -13,7 +13,7 @@ from .build import (build_castle_solid, build_terraces, castle_base,
                     clear_base_cache, zone_heights)
 from .occ import BooleanError, cut_many, is_valid, volume
 from .tessellate import Tessellation, tessellate
-from .zmap import grid_for, solid_to_relief, solid_to_zmap
+from .zmap import grid_for, solid_cam_relief, solid_to_relief, solid_to_zmap
 
 __all__ = [
     "BooleanError",
@@ -25,6 +25,7 @@ __all__ = [
     "cut_many",
     "grid_for",
     "is_valid",
+    "solid_cam_relief",
     "solid_to_relief",
     "solid_to_zmap",
     "tessellate",

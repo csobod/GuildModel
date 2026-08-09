@@ -740,13 +740,31 @@ delete code.*
    it is the production CAM path.** Every G-code path calls
    `relief.castle.build_castle_relief`; the `model_kernel` preference has never
    touched posting. Retiring it means the CAM posts from a solid-derived
-   `Heightfield` instead, and that **changes what a machine cuts**: on a bare
-   frame the three agree on ~99% of cells, but on a fully featured frame the
-   raster differs from *both* solid kernels on ~60% of cells, by up to several
-   millimetres. The solid answer is the better one — the raster approximates
-   chamfers the solids cut exactly, and the two solid kernels agree with each
-   other to two decimal places while disagreeing with it identically — but this
-   is a deliberate, measured step with a maker's eyes on it, not a deletion.
+   `Heightfield` instead, and that **changes what a machine cuts**.
+
+   *Re-measured 2026-08-09 against the complete relief, and the "~60% of cells"
+   here was wrong — it had no tolerance attached to it.* Featured gabriel,
+   65,494 cells inside the body, share differing by more than the stated amount:
+
+   | pair | max | mean | >0.01 mm | >0.05 mm | >0.2 mm | >1 mm |
+   |---|---|---|---|---|---|---|
+   | mesh vs brep | 8.342 | 0.0025 | 1.6% | **0.3%** | 0.1% | 0.0% |
+   | raster vs mesh | 2.066 | 0.0611 | 21.3% | **12.8%** | 6.4% | 2.1% |
+   | raster vs brep | 8.348 | 0.0625 | 21.3% | **12.9%** | 6.5% | 2.1% |
+
+   A bare frame agrees far more closely still: 0/17/2 cells over 0.05 mm across
+   the three drawings, worst cell 0.037 / 0.154 / 0.058 mm.
+
+   **The claim that justifies the change, as a number.** On the 8,392 cells
+   where the raster and the mesh differ by more than 0.05 mm, the two solid
+   kernels — written independently, on unrelated geometry libraries — sit
+   **0.0045 mm** apart on average, while the raster is **0.4525 mm** from the
+   B-Rep. Two orders of magnitude, exactly where it matters. 95.5% of those
+   cells lie on the raster's own feature band; the remaining 4.5% are 374 cells
+   in the bridge zone, where the scoop feathers to nothing and the raster stops
+   carving before the solids do. `test_cam_relief_mn4` pins this rather than
+   leaving it in a paragraph. It is still a deliberate step with a maker's eyes
+   on it, not a deletion.
 2. **The bridge for step 1 exists now**: `core/zmap.py` (kernel-neutral
    rasteriser and relief assembly), `model/zmap.py` (the mesh side),
    `solid/zmap.py` (two lines of tessellation on top). Stage 2 had built the

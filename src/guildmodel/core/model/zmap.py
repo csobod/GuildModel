@@ -35,11 +35,12 @@ import numpy as np
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams
 from ..relief.castle import CUT_RES_MM, GRID_MARGIN_MM, CastleRelief
-from ..zmap import grid_for, groove_body, relief_from_zmap, triangles_to_zmap
+from ..zmap import (cam_relief, grid_for, groove_body, relief_from_zmap,
+                    triangles_to_zmap)
 
 ProgressFn = Callable[[str, float], None]
 
-__all__ = ["mesh_to_relief", "mesh_to_zmap"]
+__all__ = ["mesh_cam_relief", "mesh_to_relief", "mesh_to_zmap"]
 
 
 def mesh_to_zmap(mesh, origin: tuple[float, float], rows: int, cols: int,
@@ -73,3 +74,26 @@ def mesh_to_relief(model, partition: CastlePartition, castle: CastleParams,
     z = mesh_to_zmap(mesh, origin, rows, cols, resolution, progress=progress)
     return relief_from_zmap(z, partition, castle, origin, rows, cols,
                             resolution, body, groove)
+
+
+def _triangles(partition: CastlePartition, castle: CastleParams, hinges):
+    from .build import build_castle_model
+    from .kernel import to_trimesh
+
+    mesh = to_trimesh(build_castle_model(partition, castle, list(hinges)))
+    return mesh.vertices, mesh.faces
+
+
+def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
+                    hinges=(), resolution: float = CUT_RES_MM,
+                    margin: float = GRID_MARGIN_MM,
+                    progress: Optional[ProgressFn] = None) -> CastleRelief:
+    """The complete relief the CAM posts from, built by Manifold.
+
+    Takes the *parameters* rather than a model, because filling
+    `surface_field` and `feature_band` means building the part more than once —
+    see `core.zmap.cam_relief`, which owns that and knows nothing about which
+    kernel is answering.
+    """
+    return cam_relief(_triangles, partition, castle, hinges, resolution,
+                      margin, progress)

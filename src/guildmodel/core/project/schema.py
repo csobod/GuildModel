@@ -389,6 +389,54 @@ class CastleParams(BaseModel):
         return (self.eyewire_bezel.cuts_anterior()
                 or any(f.face == "anterior" for f in self.resolved_edge_features()))
 
+    def cuts_posterior_features(self) -> bool:
+        """True when any posterior finishing feature is on — the condition for
+        there being a feature band at all (M13/M17)."""
+        return (self.pad_splay.enabled or self.eyewire_bezel.cuts_posterior()
+                or self.bridge_relief.enabled
+                or any(f.face == "posterior"
+                       for f in self.resolved_edge_features()))
+
+    def posterior_feature_slope(self) -> float:
+        """The steepest enabled posterior finishing feature, in degrees.
+
+        The CAM turns this into a stepover: on a chamfer the contour rings are
+        its level curves, so a flat tool leaves facet ridges of
+        `stepover * tan(slope)` between them, and the feature-finish pass picks
+        a stepover from a cusp height instead (`cam.castle_ops`).
+
+        Here on the params, in the pattern `EyewireBezelParams.as_edge_features`
+        set, because more than one path needs the identical number and a second
+        copy of a derivation is how this project has repeatedly ended up with
+        two answers. The raster accumulates the same figures as it carves, so it
+        drops a feature that turned out to carve nothing; this cannot know that
+        and reports the enabled one. The difference is a finer stepover in the
+        one case where a feature is on and removes nothing, never a coarser one.
+        """
+        import math
+
+        slope = 0.0
+        splay = self.pad_splay
+        if splay.enabled:
+            slope = max(slope, splay.angle_center_deg,
+                        *((splay.angle_middle_deg, splay.angle_end_deg)
+                          if splay.toric else ()))
+        if self.eyewire_bezel.cuts_posterior():
+            slope = max(slope, self.eyewire_bezel.angle_deg)
+        scoop = self.bridge_relief
+        if scoop.enabled:
+            # Steepest cross-slope of the cone-scaled cosine bell is constant
+            # along the scoop: max |dz/dx| = pi * depth / width.
+            slope = max(slope, math.degrees(math.atan(
+                math.pi * scoop.depth_mm / max(scoop.width_mm, 1e-6))))
+        for f in self.resolved_edge_features():
+            if f.face != "posterior":
+                continue
+            # A round-over's steepest tangent is vertical at the edge; the
+            # useful number for a finishing stepover is its 45 degree mid-slope.
+            slope = max(slope, 45.0 if f.profile == "fillet" else f.angle_deg)
+        return float(slope)
+
 
 # Canonical posterior op names, in machining order. These are the keys for the
 # per-operation tool assignment (BUILDPLAN M6.1) and the labels the post / sim /

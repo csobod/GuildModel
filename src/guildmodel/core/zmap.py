@@ -37,8 +37,8 @@ from .relief.heightfield import Heightfield
 
 ProgressFn = Callable[[str, float], None]
 
-__all__ = ["grid_for", "masks_for", "relief_from_zmap", "triangle_envelopes",
-           "triangles_to_zmap"]
+__all__ = ["FEATURE_BAND_MM", "cam_relief", "grid_for", "masks_for",
+           "relief_from_zmap", "triangle_envelopes", "triangles_to_zmap"]
 
 #: Cap on (triangle, cell) pairs held at once by `triangle_envelopes`. The
 #: barycentric test needs about a dozen float64 temporaries per pair, so 4M
@@ -268,16 +268,36 @@ def groove_body(partition: CastlePartition, castle: CastleParams):
 
 def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
                      castle: CastleParams, origin, rows: int, cols: int,
-                     resolution: float, body: Polygon,
-                     groove) -> CastleRelief:
+                     resolution: float, body: Polygon, groove,
+                     surface_z: np.ndarray | None = None,
+                     pocket_polys=(), feature_band: np.ndarray | None = None,
+                     feature_max_slope_deg: float = 0.0,
+                     anterior: np.ndarray | None = None) -> CastleRelief:
     """Assemble the `CastleRelief` the CAM consumes around a sampled Z-map.
 
     Everything downstream — ops generation, posting, simulation — reads this
     exactly as it reads the raster builder's output. The masks are 2D and come
     from the partition either way; only `field` changes provenance.
+
+    The keyword fields default to what a *surface comparison* needs, which is
+    nothing but `field`. Posting needs all of them, and `cam_relief` is what
+    fills them; the defaults are here so the parity gates and the viewer can go
+    on asking for one surface and paying for one build.
     """
     inside, zone_index = masks_for(partition, origin, rows, cols, resolution,
                                    body)
+    surface_field = None
+    if surface_z is not None:
+        surface_field = Heightfield(z=np.where(inside, surface_z, 0.0),
+                                    origin=origin, resolution=resolution)
+    if anterior is not None:
+        anterior = np.where(inside, anterior, 0.0)
+        if not anterior.any():
+            anterior = None           # nothing cuts the front: the M17 fast path
+    if feature_band is not None:
+        feature_band = feature_band & inside
+        if not feature_band.any():
+            feature_band, feature_max_slope_deg = None, 0.0
     return CastleRelief(
         field=Heightfield(z=np.where(inside, z, 0.0), origin=origin,
                           resolution=resolution),
@@ -288,4 +308,96 @@ def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
         groove_lens_polys=([Polygon(r) for r in partition.body.interiors
                             if not partition.is_hole(r)] if groove else []),
         mask_body_override=body if groove else None,
+        pocket_polys=list(pocket_polys),
+        surface_field=surface_field,
+        feature_band=feature_band,
+        feature_max_slope_deg=feature_max_slope_deg,
+        anterior=anterior,
     )
+
+
+#: A cell counts as feature-carved when the featured surface sits this far
+#: below the unfeatured one, mm. Not a tolerance on the features — they cut
+#: tenths of a millimetre at least — but a floor under the difference between
+#: two tessellations of the same terraces, which have different boolean
+#: histories and so triangulate curved ground differently.
+FEATURE_BAND_MM = 0.005
+
+
+def _unfeatured(castle: CastleParams):
+    """`castle` with every posterior finishing feature off, or None if none was
+    on — in which case there is no band to look for and no third build to pay.
+
+    The lens groove stays *on*. It is cut by its own V-tool op rather than by
+    the finishing pass, and counting its annulus into the band would add fine
+    rings all the way round both rims for nothing.
+    """
+    if not castle.cuts_posterior_features():
+        return None
+    plain = castle.model_copy(deep=True)
+    plain.pad_splay.enabled = False
+    plain.eyewire_bezel.enabled = False
+    plain.bridge_relief.enabled = False
+    for feature in plain.edge_features:
+        feature.enabled = False
+    return plain
+
+
+def cam_relief(build, partition: CastlePartition, castle: CastleParams,
+               hinges=(), resolution: float = CUT_RES_MM,
+               margin: float = GRID_MARGIN_MM,
+               progress: Optional[ProgressFn] = None) -> CastleRelief:
+    """A *complete* `CastleRelief` from whichever kernel `build` speaks for.
+
+    `build(partition, castle, hinges) -> (vertices, faces)`. Both kernels
+    supply one; nothing here knows which.
+
+    `relief_from_zmap` alone fills `field` and the groove fields and leaves the
+    rest at their defaults. That was enough for the parity gates, which only
+    ever compared surfaces, and it is not enough to post from — the CAM also
+    reads `surface_field` (the pre-pocket surface the relief passes ride over,
+    so they sail across an already-cut pocket instead of diving back to its
+    floor), `pocket_polys`, `feature_band` and `feature_max_slope_deg` (the
+    fine-relief rings), and `anterior`. Shipping a relief with those defaulted
+    would post a program that machines the pockets twice, skips the feature
+    finish and cannot see the front — none of it visible in a surface
+    comparison, which is the shape of defect this milestone keeps finding.
+
+    **Up to three builds, and usually one.** The pre-pocket surface needs a
+    build with no pockets and the band needs one with the finishing features
+    off; a frame with neither asks for neither. Fully featured with pockets the
+    three cost about 2.2 s against the raster's 0.9 s on the gabriel. The
+    raster gets its extra surfaces free because it carves them in sequence into
+    one array, which is the one thing a raster is genuinely good at; buying
+    them back at 2.5x is the price of a surface that is exact where the raster
+    approximates, and it is paid inside a background worker.
+
+    A cheaper arrangement exists — have the kernel hand back its intermediate
+    solids rather than rebuild them from the parameters — and it needs surgery
+    inside both kernels to save under a second. Measure before spending it.
+    """
+    body, groove = groove_body(partition, castle)
+    origin, rows, cols = grid_for(body, resolution, margin)
+    grid = (origin, rows, cols, resolution)
+
+    _report(progress, "Building the part", 0.10)
+    z, anterior = triangle_envelopes(*build(partition, castle, hinges), *grid)
+
+    surface_z = z
+    if len(hinges):
+        _report(progress, "Building the surface under the pockets", 0.45)
+        surface_z, _ = triangle_envelopes(*build(partition, castle, ()), *grid)
+
+    band, slope = None, 0.0
+    plain = _unfeatured(castle)
+    if plain is not None:
+        _report(progress, "Finding the feature band", 0.70)
+        plain_z, _ = triangle_envelopes(*build(partition, plain, ()), *grid)
+        band = (plain_z - surface_z) > FEATURE_BAND_MM
+        slope = castle.posterior_feature_slope()
+
+    _report(progress, "Relief ready", 0.92)
+    return relief_from_zmap(
+        z, partition, castle, origin, rows, cols, resolution, body, groove,
+        surface_z=surface_z, pocket_polys=list(hinges), feature_band=band,
+        feature_max_slope_deg=slope, anterior=anterior)
