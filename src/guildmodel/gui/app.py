@@ -177,6 +177,15 @@ class _ProgressWorker(QObject):
     stage = Signal(str, int)   # human label, percent 0..100
     cancelled = Signal()
 
+    #: Which kernel builds the surface this worker cuts from — one of
+    #: `mesh_build.KERNELS`. Set by the window from `_model_kernel()` after
+    #: construction, on the class rather than in five constructors because
+    #: every worker that reaches the CAM needs the same answer and the failure
+    #: mode of two of them disagreeing is a program that does not match the
+    #: model on screen. "raster" is the default so a worker built by a test,
+    #: or by a path that has not been threaded yet, behaves as it always did.
+    kernel: str = "raster"
+
     def __init__(self) -> None:
         super().__init__()
         self._cancel = False
@@ -325,15 +334,19 @@ class ExportWorker(_ProgressWorker):
 
     def run(self) -> None:
         try:
-            from guildmodel.core.relief.castle import (
-                build_castle_mesh, build_castle_relief,
-            )
+            from guildmodel.core.relief.castle import build_castle_mesh
+            from guildmodel.core.zmap import castle_relief
             self.progress.emit(
-                f"[export] Building castle at {self.resolution} mm…"
+                f"[export] Building castle at {self.resolution} mm "
+                f"({self.kernel})…"
             )
-            relief = build_castle_relief(
+            # Same surface the CAM cuts and the viewer draws. Still remeshed
+            # from a heightfield rather than exported as the model's own
+            # triangles, which is the better end state and a separate change.
+            relief = castle_relief(
                 self.partition, self.castle, self.hinge_polys,
-                resolution=self.resolution, progress=self._progress,
+                kernel=self.kernel, resolution=self.resolution,
+                progress=self._progress,
             )
             mesh = build_castle_mesh(relief, progress=self._progress)
             self.progress.emit(
@@ -465,7 +478,8 @@ class GCodeWorker(_ProgressWorker):
         from guildmodel.core.post.machine import (
             clamp_cam_to_machine, lint_program, load_machine_profile,
         )
-        from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+        from guildmodel.core.relief.castle import CUT_RES_MM
+        from guildmodel.core.zmap import castle_relief
 
         p = self.params
         castle = self.castle
@@ -482,10 +496,10 @@ class GCodeWorker(_ProgressWorker):
         for w in clamp.warnings:
             self.progress.emit(f"[gcode] machine: {w}")
 
-        self.progress.emit("[gcode] Castle: building relief…")
-        relief = build_castle_relief(
-            self.partition, castle, self.hinge_polys, resolution=CUT_RES_MM,
-            progress=self._progress,
+        self.progress.emit(f"[gcode] Castle: building relief ({self.kernel})…")
+        relief = castle_relief(
+            self.partition, castle, self.hinge_polys, kernel=self.kernel,
+            resolution=CUT_RES_MM, progress=self._progress,
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
         ops = require_ops(generate_castle_program(
@@ -1018,7 +1032,8 @@ class GCodeWorker(_ProgressWorker):
             clamp_cam_to_machine, lint_program, load_machine_profile,
         )
         from guildmodel.core.project.schema import BaseCurveBlockParams
-        from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+        from guildmodel.core.relief.castle import CUT_RES_MM
+        from guildmodel.core.zmap import castle_relief
 
         cam = self.cam_params or CastleCamParams()
         castle = self.castle
@@ -1039,8 +1054,9 @@ class GCodeWorker(_ProgressWorker):
 
         # part 1 — the frame front (posterior cut)
         self.progress.emit("[gcode] Worktable: building the frame relief…")
-        relief = build_castle_relief(self.partition, castle, self.hinge_polys,
-                                     resolution=CUT_RES_MM, progress=self._progress)
+        relief = castle_relief(self.partition, castle, self.hinge_polys,
+                               kernel=self.kernel, resolution=CUT_RES_MM,
+                               progress=self._progress)
         frame_ops = generate_castle_program(
             relief, castle, self.hinge_polys, tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"]),
             params=cam, tools_cfg=tools_cfg)
@@ -1254,9 +1270,8 @@ class SimWorker(_ProgressWorker):
         try:
             import numpy as np
             import yaml
-            from guildmodel.core.relief.castle import (
-                build_castle_relief, stock_top_heightfield,
-            )
+            from guildmodel.core.relief.castle import stock_top_heightfield
+            from guildmodel.core.zmap import castle_relief
             from guildmodel.core.cam.castle_ops import (
                 CastleCamParams, build_tool_settings, generate_castle_program,
                 write_castle_program,
@@ -1275,10 +1290,12 @@ class SimWorker(_ProgressWorker):
             tool = tools_cfg.get(cam.tool_name, tools_cfg.get("flat_3175"))
             mat = mats_cfg.get(self.material_name.split()[0].lower(), mats_cfg["acetate"])
 
-            self.progress.emit(f"[sim] Building relief at {self.resolution} mm…")
-            relief = build_castle_relief(
+            self.progress.emit(f"[sim] Building relief at {self.resolution} mm "
+                               f"({self.kernel})…")
+            relief = castle_relief(
                 self.partition, self.castle, self.hinge_polys,
-                resolution=self.resolution, progress=self._progress,
+                kernel=self.kernel, resolution=self.resolution,
+                progress=self._progress,
             )
             self._progress("Generating program", 0.55)
             ops = generate_castle_program(
@@ -1582,7 +1599,8 @@ class NestWorker(_ProgressWorker):
             )
             from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
             from guildmodel.core.post.machine import clamp_cam_to_machine
-            from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+            from guildmodel.core.relief.castle import CUT_RES_MM
+            from guildmodel.core.zmap import castle_relief
 
             cam = self.cam_params or CastleCamParams()
             if self.machine is not None:
@@ -1598,9 +1616,9 @@ class NestWorker(_ProgressWorker):
                 self.progress.emit(f"[nest] {spec['label']}: generating program…")
                 mode = spec["mode"]
                 if mode == "castle":
-                    relief = build_castle_relief(
+                    relief = castle_relief(
                         spec["partition"], spec["castle"], spec["hinge"],
-                        resolution=CUT_RES_MM,
+                        kernel=self.kernel, resolution=CUT_RES_MM,
                         progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n))
                     ops = generate_castle_program(
                         relief, spec["castle"], spec["hinge"], default_tool,
@@ -1706,6 +1724,7 @@ class BedSimWorker(_ProgressWorker):
                 floor, target, inside, origin, res = simulate_component(
                     spec, cam=cam, tools_cfg=tools_cfg, mats_cfg=mats_cfg,
                     material_name=self.material_name, resolution=CUT_RES_MM,
+                    kernel=self.kernel,
                     progress=lambda lbl, fr, b=base: self._progress(lbl, b + fr / n))
                 pl = place[spec["label"]]
                 comps.append(ComponentSim(floor, target, inside, origin, res,
@@ -3869,6 +3888,7 @@ class MainWindow(QMainWindow):
         machine, mat = self._posting_limits(cam)
         self._nest_worker = NestWorker(specs, self._worktable, cam_params=cam,
                                        machine=machine, material=mat)
+        self._nest_worker.kernel = self._model_kernel()
         self._nest_thread = QThread()
         self._nest_worker.moveToThread(self._nest_thread)
         self._nest_thread.started.connect(self._nest_worker.run)
@@ -4212,6 +4232,7 @@ class MainWindow(QMainWindow):
             (self._worktable.work_area_width_mm, self._worktable.work_area_height_mm),
             cam_params=self.params.effective_cam_params(),
             material_name=self.params.effective_material_name())
+        self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
         self._sim_thread.started.connect(self._sim_worker.run)
@@ -6631,6 +6652,7 @@ class MainWindow(QMainWindow):
             self._sim_worker = SimWorker(
                 self._partition, self.params.castle_params(), cam_params=cam,
                 hinge_polys=self._hinge_polys, material_name=mat, resolution=res)
+        self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
         self._sim_thread.started.connect(self._sim_worker.run)
@@ -6717,6 +6739,7 @@ class MainWindow(QMainWindow):
             temple=self.params.temple_params(),
             is_temple=self._is_temple,
         )
+        self._gcode_worker.kernel = self._model_kernel()
         self._gcode_thread = QThread()
         self._gcode_worker.moveToThread(self._gcode_thread)
         self._gcode_thread.started.connect(self._gcode_worker.run)
@@ -6753,6 +6776,7 @@ class MainWindow(QMainWindow):
         worker.block_lens = self._lens_od
         worker.block = self.params.block_params()
         worker.is_block = True
+        worker.kernel = self._model_kernel()
         self._gcode_worker = worker
 
         self._gcode_thread = QThread()
@@ -6793,6 +6817,7 @@ class MainWindow(QMainWindow):
         worker.block_lens = self._lens_od
         worker.block = self.params.block_params()
         worker.is_worktable = True
+        worker.kernel = self._model_kernel()
         self._gcode_worker = worker
 
         self._gcode_thread = QThread()
@@ -7141,6 +7166,7 @@ class MainWindow(QMainWindow):
             self._partition, self.params.castle_params(), self._hinge_polys,
             resolution=self._prefs["export_resolution_mm"], path=Path(path_str),
         )
+        self._export_worker.kernel = self._model_kernel()
         self._export_thread = QThread()
         self._export_worker.moveToThread(self._export_thread)
         self._export_thread.started.connect(self._export_worker.run)

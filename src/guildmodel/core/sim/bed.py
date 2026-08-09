@@ -51,6 +51,7 @@ def simulate_component(
     mats_cfg: dict,
     material_name: str = "acetate",
     resolution: float = 0.4,
+    kernel: str = "raster",
     progress=None,
 ):
     """Build one component's relief + posted program and sweep the tools → its
@@ -71,11 +72,11 @@ def simulate_component(
     mode = spec["mode"]
     if mode == "castle":
         from ..cam.component import CASTLE_CONTOUR_OPS
-        from ..relief.castle import build_castle_relief
+        from ..zmap import castle_relief
         castle, hinge = spec["castle"], spec["hinge"]
         tool = resolve_tool(cam.tool_name, tools_cfg, tools_cfg.get("flat_3175"))
-        relief = build_castle_relief(spec["partition"], castle, hinge,
-                                     resolution=resolution, progress=progress)
+        relief = castle_relief(spec["partition"], castle, hinge, kernel=kernel,
+                               resolution=resolution, progress=progress)
         ops = generate_castle_program(relief, castle, hinge, tool,
                                       params=cam, tools_cfg=tools_cfg)
         contour_names, drill_names = set(CASTLE_CONTOUR_OPS), set()

@@ -37,8 +37,9 @@ from .relief.heightfield import Heightfield
 
 ProgressFn = Callable[[str, float], None]
 
-__all__ = ["FEATURE_BAND_MM", "cam_relief", "grid_for", "masks_for",
-           "relief_from_zmap", "triangle_envelopes", "triangles_to_zmap"]
+__all__ = ["FEATURE_BAND_MM", "cam_relief", "castle_relief", "grid_for",
+           "masks_for", "relief_from_zmap", "triangle_envelopes",
+           "triangles_to_zmap"]
 
 #: Cap on (triangle, cell) pairs held at once by `triangle_envelopes`. The
 #: barycentric test needs about a dozen float64 temporaries per pair, so 4M
@@ -401,3 +402,40 @@ def cam_relief(build, partition: CastlePartition, castle: CastleParams,
         z, partition, castle, origin, rows, cols, resolution, body, groove,
         surface_z=surface_z, pocket_polys=list(hinges), feature_band=band,
         feature_max_slope_deg=slope, anterior=anterior)
+
+
+def castle_relief(partition: CastlePartition, castle: CastleParams,
+                  hinges=(), kernel: str = "mesh",
+                  resolution: float = CUT_RES_MM,
+                  margin: float = GRID_MARGIN_MM,
+                  progress: Optional[ProgressFn] = None) -> CastleRelief:
+    """The relief every G-code path posts from — one entry point, one choice.
+
+    `kernel` is `gui.mesh_build.KERNELS`: "raster" is the M17 heightfield,
+    "mesh" is Manifold, "brep" is OpenCASCADE. Anything else falls back to the
+    raster rather than raising, because a prefs file is not a contract.
+
+    **This is the line the `model_kernel` preference did not used to cross.**
+    Through M-N3 the setting governed the 3D viewer and nothing a machine cut,
+    because every posting path called `relief.castle.build_castle_relief`
+    directly and a model had no way to become a `Heightfield`. Routing them all
+    through here is what makes the choice mean the same thing on screen and on
+    the spindle.
+
+    The CAM itself is untouched and stays that way: it consumes a
+    `CastleRelief` and cannot import either kernel, which `test_kernel_flip_mn3`
+    checks by AST. Choosing the surface is the caller's job; cutting it is the
+    CAM's.
+    """
+    if kernel == "mesh":
+        from .model.zmap import mesh_cam_relief
+        return mesh_cam_relief(partition, castle, hinges, resolution, margin,
+                               progress)
+    if kernel == "brep":
+        from .solid.zmap import solid_cam_relief
+        return solid_cam_relief(partition, castle, hinges, resolution, margin,
+                                progress=progress)
+    from .relief.castle import build_castle_relief
+    return build_castle_relief(partition, castle, list(hinges),
+                               resolution=resolution, margin=margin,
+                               progress=progress)

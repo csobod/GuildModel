@@ -152,6 +152,14 @@ def test_the_rasteriser_is_kernel_neutral():
     """It takes vertices and faces. Pinned because it lived inside `core/solid`
     for a milestone, and that is the whole reason the mesh kernel could not
     reach the CAM: importing the bridge meant importing the kernel it replaces.
+
+    **Module level only, as of M-N4.** `castle_relief` gained a branch that
+    reaches the B-Rep when a maker asks for it, and it imports `solid.zmap`
+    inside the function. This used to walk the whole tree and so read that as
+    the coupling it exists to forbid. The coupling was never "the file mentions
+    OCCT" — it was "importing this drags in 70 MB of kernel", and a lazy import
+    in a branch nobody takes does not. `test_importing_the_bridge_does_not_load_occt`
+    below checks the thing itself, so this half only has to hold the structure.
     """
     import ast
     import inspect
@@ -159,13 +167,13 @@ def test_the_rasteriser_is_kernel_neutral():
     from guildmodel.core import zmap
 
     imported = set()
-    for node in ast.walk(ast.parse(inspect.getsource(zmap))):
+    for node in ast.parse(inspect.getsource(zmap)).body:   # top level only
         if isinstance(node, ast.Import):
             imported.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
     assert not any("OCP" in m or "solid" in m for m in imported), (
-        f"core.zmap imports the B-Rep kernel: {sorted(imported)}")
+        f"core.zmap imports the B-Rep kernel at module level: {sorted(imported)}")
 
     # A flat quad at z=2 over x 0..4, y 0..3, on a grid reaching x 6, y 5.
     quad = np.array([[0.0, 0.0, 2.0], [4.0, 0.0, 2.0], [4.0, 3.0, 2.0],
@@ -177,6 +185,35 @@ def test_the_rasteriser_is_kernel_neutral():
     assert z[6, 0] == pytest.approx(2.0)      # y = 3.0, its far edge
     assert z[-1, -1] == 0.0                   # clear of it: background
     assert z.max() == pytest.approx(2.0)
+
+
+def test_importing_the_bridge_does_not_load_occt():
+    """The rule the AST check above is a proxy for, measured directly.
+
+    `core.zmap.castle_relief` can reach OpenCASCADE, because a maker may ask it
+    to. What must stay true is that *importing* the module does not — otherwise
+    every G-code build pays 70 MB for a branch it never takes, which is the
+    coupling this module was split out of `core/solid` to break.
+
+    A subprocess, because `sys.modules` is cumulative and by this point in a
+    suite run OCP is long since loaded by something else.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    root = Path(__file__).parents[1]
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(root / "src")!r})
+        import guildmodel.core.zmap                      # noqa: F401
+        print(len([m for m in sys.modules if m.startswith("OCP")]))
+    """)
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                         text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().splitlines()[-1] == "0", (
+        "importing core.zmap loaded OpenCASCADE")
 
 
 @pytest.mark.parametrize("feature", ["eyewire_bezel", "pad_splay",
