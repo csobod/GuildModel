@@ -217,17 +217,19 @@ def test_importing_the_bridge_does_not_load_occt():
 
 
 @pytest.mark.parametrize("feature", ["eyewire_bezel", "pad_splay",
-                                     "bridge_relief"])
+                                     "bridge_relief", "lens_groove"])
 def test_these_features_post_without_loading_occt(feature):
     """The point of the bridge: a mesh can reach the CAM without the kernel it
     replaces. Run in a subprocess because `sys.modules` is cumulative — the
     first version of this measurement ran four features in one interpreter and
     reported three false positives.
 
-    The **lens groove** is deliberately not in the list. It loads 349 OCP
-    modules through `geometry.rings.offset_aperture`, which builds the rim lip
-    as an exact parallel of the authored curve; that is a real dependency and a
-    decision for M-N4, not an oversight. See `core.model.zmap`.
+    **The lens groove joined the list in M-N4.** It used to load 349 OCP
+    modules through `geometry.rings.offset_aperture`, which samples the rim lip
+    as an exact parallel of the authored curve and had no sampler but OCCT's.
+    `curves.sample_curve` is that sampler now — de Boor and adaptive bisection,
+    held to `Geom_OffsetCurve` at 1e-9 by `test_curve_eval_mn4`. The list is
+    every posterior feature, and the answer is zero for all of them.
     """
     import subprocess
     import sys

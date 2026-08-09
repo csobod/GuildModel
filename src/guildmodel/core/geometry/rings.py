@@ -39,6 +39,7 @@ from .regions import CastlePartition
 __all__ = ["carry_anchors", "crest_inside", "inward_normals", "lip_body",
            "lip_partition", "offset_aperture", "ring_stations"]
 
+
 def ring_stations(ring: LineString, n: int):
     """Points and unit tangents evenly spaced around a closed ring."""
     total = ring.length
@@ -142,24 +143,32 @@ def offset_aperture(curve, reference, depth: float):
     without needing to enumerate them.
 
     Returns None on any of that, and the caller falls back to the buffer.
+
+    **No longer needs OpenCASCADE** *(M-N4, 2026-08-09)*. Sampling the offset
+    used to go through `occ.nurbs_edge` and `GCPnts_QuasiUniformDeflection`,
+    and that import was the only thing pulling OCP into a mesh-kernel G-code
+    build — 349 modules for the lens groove against zero for every other
+    feature. `curves.sample_curve` evaluates the offset directly.
+
+    The alternative considered was dropping the exact offset altogether and
+    keeping the Shapely buffer, which measured **8 - 10 um** away. It was tried
+    and reverted: the exactness turned out to be load-bearing for more than
+    precision. `solid.features._swept_groove_cutter` rides this curve, and
+    without it the B-Rep's grooved build stops being watertight on all three
+    drawings — which would have removed the third opinion for the one feature
+    whose surface is hardest to check.
     """
     if curve is None or reference is None or depth <= 0.0:
         return None
     from shapely.geometry import Polygon as _P
-    from OCP.BRepAdaptor import BRepAdaptor_Curve
-    from OCP.GCPnts import GCPnts_QuasiUniformDeflection
 
-    from ..solid.occ import nurbs_edge
-    from .curves import OffsetCurve
+    from .curves import OffsetCurve, sample_curve
 
     for signed in (-depth, depth):
         offset = OffsetCurve(basis=curve, distance=signed,
                              layer=getattr(curve, "layer", ""))
         try:
-            adaptor = BRepAdaptor_Curve(nurbs_edge(offset, 0.0))
-            sampler = GCPnts_QuasiUniformDeflection(adaptor, _LIP_CHORD_TOL_MM)
-            pts = [(sampler.Value(i).X(), sampler.Value(i).Y())
-                   for i in range(1, sampler.NbPoints() + 1)]
+            pts = [tuple(p) for p in sample_curve(offset, _LIP_CHORD_TOL_MM)]
             poly = _P(pts)
         except Exception:                                    # noqa: BLE001
             continue
@@ -312,3 +321,4 @@ def carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
     # a trend off the end of the run.
     out[~valid] = np.interp(idx[~valid], idx[valid], out[valid])
     return out
+

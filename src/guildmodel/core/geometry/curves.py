@@ -39,7 +39,25 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = ["NurbsCurve", "OffsetCurve", "circle_curve", "cubic_bezier_chain",
-           "mirror_x", "mirror_y"]
+           "mirror_x", "mirror_y", "sample_curve"]
+
+
+def _de_boor(poles: np.ndarray, knots: np.ndarray, degree: int,
+             span: int, u: float) -> np.ndarray:
+    """One point of a B-spline, by the de Boor recursion.
+
+    `poles` are homogeneous `(x*w, y*w, w)` so the same routine serves rational
+    and non-rational curves; the caller divides through. Degree 0 is the
+    recursion's own base case and falls out without a special path.
+    """
+    d = np.array(poles[span - degree:span + 1], dtype=float)
+    for r in range(1, degree + 1):
+        for j in range(degree, r - 1, -1):
+            lo = knots[j + span - degree]
+            hi = knots[j + 1 + span - r]
+            a = 0.0 if hi <= lo else (u - lo) / (hi - lo)
+            d[j] = (1.0 - a) * d[j - 1] + a * d[j]
+    return d[degree]
 
 
 @dataclass(frozen=True)
@@ -101,6 +119,75 @@ class NurbsCurve:
                                    n + 2 * self.degree + 1,      # periodic, DXF
                                    n + 1)                        # periodic, tight
 
+    # -------------------------------------------------------- evaluation
+    #
+    # De Boor, on the clamped interpretation — which is what the data is.
+    # `occ.nurbs_edge` builds every one of these with `Periodic=False` because
+    # closed DXF splines arrive clamped with coincident first and last poles,
+    # measured, and OCCT rejects them outright as periodic. Reading them any
+    # other way here would put this evaluator and the kernel on different
+    # curves, so `test_curve_eval_mn4` holds the two to 1e-9 rather than
+    # trusting the agreement.
+
+    @property
+    def domain(self) -> tuple[float, float]:
+        """The parameter interval the curve is defined on, `[U[p], U[n]]`."""
+        n = len(self.control_points)
+        return float(self.knots[self.degree]), float(self.knots[n])
+
+    def _span(self, u: float) -> int:
+        """Index `k` with `U[k] <= u < U[k+1]`, clamped into the live range."""
+        n, p = len(self.control_points), self.degree
+        lo, hi = self.domain
+        if u >= hi:
+            return n - 1
+        if u <= lo:
+            return p
+        k = int(np.searchsorted(self.knots, u, side="right")) - 1
+        return min(max(k, p), n - 1)
+
+    def _poles4(self) -> np.ndarray:
+        """Poles as `(x*w, y*w, w)`, so one routine covers rational and not."""
+        pts = self.control_points
+        w = (self.weights if self.rational
+             else np.ones(len(pts), dtype=float))
+        return np.column_stack([pts[:, 0] * w, pts[:, 1] * w, w])
+
+    def point(self, u: float) -> np.ndarray:
+        """The curve at `u`, as `(x, y)`."""
+        h = _de_boor(self._poles4(), self.knots, self.degree, self._span(u), u)
+        return h[:2] / h[2]
+
+    def tangent(self, u: float) -> np.ndarray:
+        """The unit tangent at `u`.
+
+        Taken from the hodograph — the derivative of a B-spline of degree `p` is
+        a B-spline of degree `p-1` over the same knots with the interior removed
+        — rather than by differencing two nearby points, which loses half the
+        digits and is what a chord-tolerance sampler is most sensitive to. The
+        rational case then needs the quotient rule, because the homogeneous
+        derivative is not the derivative of the projection.
+        """
+        p, knots = self.degree, self.knots
+        poles = self._poles4()
+        n = len(poles)
+        span = self._span(u)
+
+        # Hodograph poles, in homogeneous coordinates.
+        gaps = knots[p + 1:n + p] - knots[1:n]
+        dpoles = np.zeros((n - 1, 3))
+        live = gaps > 0.0
+        dpoles[live] = (p * (poles[1:][live] - poles[:-1][live])
+                        / gaps[live, None])
+
+        h = _de_boor(poles, knots, p, span, u)
+        dh = _de_boor(dpoles, knots[1:-1], p - 1,
+                      min(max(span - 1, p - 1), n - 2), u)
+        # C = A/w  ->  C' = (A' - w' C) / w
+        d = (dh[:2] - dh[2] * (h[:2] / h[2])) / h[2]
+        norm = float(np.linalg.norm(d))
+        return d / norm if norm > 0 else np.array([1.0, 0.0])
+
 
 @dataclass(frozen=True)
 class OffsetCurve:
@@ -142,6 +229,95 @@ class OffsetCurve:
     @property
     def closed(self) -> bool:
         return self.basis.closed
+
+    @property
+    def domain(self) -> tuple[float, float]:
+        return self.basis.domain
+
+    def point(self, u: float) -> np.ndarray:
+        """The offset curve at `u`.
+
+        `C(u) + d * (T x Z)`, which in the plane is the tangent turned a quarter
+        turn *clockwise*: `(tx, ty) -> (ty, -tx)`.
+
+        **That is the opposite of the documented reading, and it is measured.**
+        `Geom_OffsetCurve`'s reference direction argument reads like `V x T`,
+        which would be `(-ty, tx)`. It is not: written that way this sat
+        `2 * distance` from OCCT's own answer on every curve — 1.21 mm on a
+        0.6 mm offset. The class docstring above and
+        `solid.features._swept_groove_cutter` both record having been caught by
+        the same thing from the other side.
+
+        The sign has to be OCCT's exactly, because the same curve still reaches
+        the kernel through `occ.nurbs_edge` as a real `Geom_OffsetCurve`; if the
+        two disagreed, the sampled rim lip and the B-Rep's own aperture wire
+        would sit `2 * distance` apart with nothing to say so. `test_curve_eval_mn4`
+        pins it against OCCT rather than against a circle, whose offset is a
+        circle either way and so hides a flip completely.
+        """
+        t = self.basis.tangent(u)
+        return self.basis.point(u) + self.distance * np.array([t[1], -t[0]])
+
+    def tangent(self, u: float) -> np.ndarray:
+        """The unit tangent, which a parallel offset shares with its basis.
+
+        True wherever the offset is regular. It fails at a cusp — where the
+        basis curvature radius drops below `|distance|` the offset reverses —
+        and that is exactly the case `rings.offset_aperture` refuses by
+        comparing against the Shapely buffer, so nothing here has to detect it.
+        """
+        return self.basis.tangent(u)
+
+
+#: Largest parameter step `sample_curve` will accept without checking the chord
+#: between its ends. A curve can return to the same place with the same tangent
+#: — a closed ring does exactly that at its seam — so bisection that only asks
+#: "is the midpoint far from the chord?" can stop before it has started. Ten
+#: spans is enough to break that symmetry on any contour a frame is drawn with.
+_MAX_SAMPLE_STEP = 0.1
+
+
+def sample_curve(curve, chord_tol: float, max_depth: int = 20) -> np.ndarray:
+    """The curve as a polyline no further than `chord_tol` from it, in mm.
+
+    Adaptive bisection: keep a chord only when the true midpoint lies within
+    `chord_tol` of it, otherwise split. That spends points where the curve
+    bends and none where it does not, which is the whole reason not to sample
+    uniformly — the demo's apertures come back around 1300 points, and uniform
+    sampling fine enough for the tightest corner would be several times that.
+
+    Replaces `GCPnts_QuasiUniformDeflection`, the last thing pulling
+    OpenCASCADE into a mesh-kernel G-code build.
+    """
+    lo, hi = curve.domain
+    if not (hi > lo):
+        return np.empty((0, 2))
+
+    def refine(a, b, pa, pb, depth):
+        m = 0.5 * (a + b)
+        pm = curve.point(m)
+        if depth < max_depth and (b - a) > _MAX_SAMPLE_STEP * (hi - lo):
+            pass                                  # too coarse to judge yet
+        else:
+            chord = pb - pa
+            length = float(np.linalg.norm(chord))
+            if length <= 1e-12:
+                err = float(np.linalg.norm(pm - pa))
+            else:
+                # Perpendicular distance of the true midpoint from the chord.
+                # Spelled out rather than `np.cross`, which stopped accepting
+                # 2-D vectors in numpy 2.0.
+                ux, uy = chord / length
+                vx, vy = pm - pa
+                err = abs(ux * vy - uy * vx)
+            if depth >= max_depth or err <= chord_tol:
+                return [pb]
+        return refine(a, m, pa, pm, depth + 1) + refine(m, b, pm, pb, depth + 1)
+
+    p0 = curve.point(lo)
+    out = [p0]
+    out += refine(lo, hi, p0, curve.point(hi), 0)
+    return np.asarray(out, dtype=float)
 
 
 def mirror_x(curve):

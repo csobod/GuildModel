@@ -15,16 +15,28 @@ Manifold model *is* triangles: what the CAM samples is the model, not an
 approximation of it chosen by a tolerance. There is one less thing to get wrong
 and one less knob whose default nobody revisits.
 
-**This does not yet make the mesh path OCCT-free, and M-N4 should not assume it
-does.** Measured per feature in a fresh interpreter: a bare frame, the eyewire
-bezel, the pad splay and the bridge relief each load **zero** OCP modules; the
-**lens groove** loads 349. That one is not an accident to tidy away like
-`geometry.heights` was — `geometry.rings.offset_aperture` uses
-`Geom_OffsetCurve` to build the rim lip as an exact parallel of the authored
-curve rather than buffering the flattened ring, which is the exact-curve work
-§8.5 calls the part that survives. Dropping OCCT there means either accepting
-the Shapely buffer it already falls back to, or offsetting `OffsetCurve`
-ourselves. A decision, not a cleanup.
+**The mesh path is OCCT-free as of M-N4** *(2026-08-09)*. Measured per feature
+in a fresh interpreter — a bare frame, the eyewire bezel, the pad splay, the
+bridge relief and now the **lens groove** each load **zero** OCP modules.
+
+The groove used to load 349, through `geometry.rings.offset_aperture`, which
+samples the rim lip as an exact parallel of the authored curve and had no
+sampler but OCCT's. Both ways out were tried and only one survived:
+
+* **Take the Shapely buffer it already falls back to.** It measures 8 - 10 um
+  away, which against a model flattened at 10 um and cut on a 150 um grid
+  looked free. It is not: `solid.features._swept_groove_cutter` rides that
+  exact curve, and without it the B-Rep's grooved build stops being watertight
+  on all three drawings. Reverted — it would have removed the third opinion for
+  the one feature whose surface is hardest to check.
+* **Evaluate the curve ourselves.** `curves.sample_curve` — de Boor with a
+  hodograph tangent, and adaptive bisection to a chord tolerance. The exact lip
+  survives, the sweep survives, and the dependency goes.
+
+`test_curve_eval_mn4` holds the evaluator to `Geom_BSplineCurve` and
+`Geom_OffsetCurve` at 1e-9, which is not ceremony: the first version had the
+offset sign backwards and sat `2 * distance` from OCCT's answer on every curve.
+A circle cannot catch that — its offset is a circle either way.
 """
 from __future__ import annotations
 

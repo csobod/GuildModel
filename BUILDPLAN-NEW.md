@@ -771,15 +771,35 @@ delete code.*
    OCCT half and never wired it in. Mesh-derived and B-Rep-derived Z-maps agree
    on 99.95% of cells within 5 um on a bare frame, and the mesh is 13-35x faster
    with no chordal tolerance to choose, because it *is* the triangles.
-3. **"70 MB leaves the install" is not free.** Per feature, in a fresh
-   interpreter, a mesh-kernel G-code build loads **zero** OCP modules for a bare
-   frame, the eyewire bezel, the pad splay and the bridge relief — and **349**
-   for the **lens groove**. `geometry.rings.offset_aperture` builds the rim lip
-   as an exact parallel of the authored curve via `Geom_OffsetCurve` rather than
-   buffering the flattened ring, which is the exact-curve work §8.5 calls the
-   part that survives. Dropping OCCT there means either accepting the Shapely
-   buffer it already falls back to, or offsetting `OffsetCurve` ourselves. A
-   decision, not a cleanup.
+3. ~~**"70 MB leaves the install" is not free.**~~ — **settled 2026-08-09.**
+   Every posterior feature now loads **zero** OCP modules in a mesh-kernel
+   G-code build, the lens groove included. It used to load **349**, through
+   `geometry.rings.offset_aperture`, which samples the rim lip as an exact
+   parallel of the authored curve and had no sampler but OCCT's.
+
+   Both ways out were tried, and the cheap one failed for a reason worth
+   recording. **Taking the Shapely buffer** it already falls back to measures
+   **8 - 10 um** away — and that gap is real rather than a sampling floor,
+   since tightening the chord tolerance from 10 um to 0.1 um leaves it flat.
+   Against a model whose every other contour is flattened at 10 um and which is
+   cut on a 150 um grid, that looked free. It was not: `_swept_groove_cutter`
+   rides that exact curve, and on the buffer the B-Rep's grooved build stops
+   being watertight on **all three drawings**. Densifying the lip did not help
+   and the V section already carries a lead-in, so it is the sweep itself.
+   Reverted — it would have removed the third opinion for the one feature whose
+   surface is hardest to check, which is precisely the risk correction 4 raises.
+
+   **`curves.sample_curve` is the answer**: de Boor with a hodograph tangent,
+   and adaptive bisection to a chord tolerance. The exact lip survives, the
+   sweep survives, and the dependency goes. `test_curve_eval_mn4` holds it to
+   `Geom_BSplineCurve` and `Geom_OffsetCurve` at **1e-9** — not ceremony: the
+   first version had the offset sign backwards and sat `2 * distance` from
+   OCCT's answer, which no test on a circle can catch, its offset being a
+   circle either way.
+
+   It is also the first piece of the larger prize §8.5 describes. Nothing else
+   in the pipeline can yet evaluate a curve; with this, the app could stop
+   flattening at 10 um everywhere rather than being exact in one place.
 4. **The third opinion has started refusing input the mesh accepts** *(added
    2026-08-09)*. `footings.CUT_LEAD_MM` runs each blend band past the ends of
    its seam. At 2 mm — the length first shipped, on the reasoning that margin
