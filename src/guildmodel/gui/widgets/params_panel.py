@@ -154,6 +154,10 @@ class ParamsPanel(QTabWidget):
     stock_changed = Signal()       # blank / pad block dimensions
     cam_changed = Signal()         # tool / material / allowances / fallback
     zone_hovered = Signal(str)     # zone name under the cursor, "" on leave
+    # A Model-tab handle is being dragged: the value is not settled, but the
+    # shape it describes is worth showing. Separate from `castle_changed`
+    # because the two want different work — see `_connect_live_handles`.
+    castle_sliding = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -203,6 +207,7 @@ class ParamsPanel(QTabWidget):
         self.stock_changed.connect(self._refresh_limits)
         self._refresh_limits()
 
+        self._connect_live_handles()
         self.set_component_kind(ComponentKind.FRAME_FRONT)
 
     # ------------------------------------------------------------ kind-aware tabs
@@ -1192,6 +1197,23 @@ class ParamsPanel(QTabWidget):
             limit = bounds.get(path)
             if limit is not None and isinstance(widget, ParamSlider):
                 widget.set_safe_range(limit.low, limit.high, limit.reason)
+
+    def _connect_live_handles(self) -> None:
+        """Every Model-tab handle reports while it is being dragged.
+
+        Found by walking the tab rather than listed, so a control added later is
+        live without anyone remembering this method — the failure mode of a list
+        is one slider that drags dead, which looks like a broken slider rather
+        than a missing connection.
+
+        The **Stock** tab is deliberately not walked. Its numbers move the ghost
+        box drawn around the part, not the part, and `_on_stock_changed` already
+        redraws that from the cached mesh. Feeding them into the model rebuild
+        would make dragging a blank dimension the most expensive thing here and
+        buy nothing.
+        """
+        for handle in self.widget(self._tab_castle).findChildren(ParamSlider):
+            handle.sliding.connect(self.castle_sliding)
 
     def out_of_range_paths(self) -> list[tuple[str, str]]:
         """`(schema path, what is wrong)` for every control outside its safe range.

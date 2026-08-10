@@ -3089,8 +3089,16 @@ class MainWindow(QMainWindow):
         self._bed_report = None
         self._active_core_guide = None
 
-        # Debounce for live parametric rebuilds (every spinbox tick would
-        # otherwise queue a ~2 s build)
+        # Debounce for a value being *typed* — every spin-box keystroke would
+        # otherwise queue a build. A dragged handle does not go through here:
+        # it is already continuous, so waiting for 350 ms of stillness would
+        # show nothing until the drag stopped. `_drain_pending_rebuild` paces
+        # that case at the build's own rate instead.
+        self._rebuild_pending = False
+        # True while a handle is being dragged. Only silences the per-build log
+        # lines: at one to five rebuilds a second a drag would otherwise bury
+        # everything else in the log under its own frames.
+        self._live_preview = False
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
         self._rebuild_timer.setInterval(350)
@@ -5320,6 +5328,7 @@ class MainWindow(QMainWindow):
 
         # Live parametric rebuild (debounced; only while the 3D view is up)
         self.params.castle_changed.connect(self._on_castle_params_changed)
+        self.params.castle_sliding.connect(self._on_castle_sliding)
         self.params.stock_changed.connect(self._on_stock_changed)
         self.params.zone_hovered.connect(self._on_zone_hover)
         self.params.cam_changed.connect(self._on_cam_changed)
@@ -6224,9 +6233,34 @@ class MainWindow(QMainWindow):
         self._show_active_3d()
         self.append_log("[3D] Build cancelled.")
 
+    def _on_castle_sliding(self) -> None:
+        """A Model-tab handle is moving: show the shape, and nothing else.
+
+        Everything `_on_castle_params_changed` does besides the rebuild belongs
+        to a *settled* value. Invalidating a stored program on every pixel would
+        strobe the readiness light from green to yellow while the maker is still
+        deciding what the number should be, and a log line per frame would bury
+        the log. The commit that follows the drag does all of it once.
+
+        No debounce, deliberately — see `_rebuild_timer`. Measured on the demo,
+        one full rebuild is 224 ms bare and 753 ms with every feature on, so a
+        drag redraws between one and five times a second. That is the kernel's
+        rate, not a chosen one: the next lever is `build_castle_model`, where
+        `build_base` alone is 284 ms of a bare castle's 296 and does not change
+        when a *feature* parameter moves.
+        """
+        self._live_preview = True
+        self._stage_cache.clear()
+        self._edge_cache.clear()
+        if self.stack.currentIndex() == 1 and self._castle_ready():
+            self._start_mesh_build(show_progress=False)
+
     def _on_castle_params_changed(self) -> None:
         # Parameters changed: every cached stage is stale, and so is any stored
         # program (the relief it rode just changed) — drop green back to yellow.
+        # This is also where a drag ends: the handle's settled value arrives
+        # here, so the log goes back to recording builds.
+        self._live_preview = False
         self._stage_cache.clear()
         self._edge_cache.clear()
         self._invalidate_program()
@@ -6386,9 +6420,39 @@ class MainWindow(QMainWindow):
         rings += [list(r.coords) for r in poly.interiors]
         self.canvas.set_zone_highlight(rings)
 
+    def _mesh_busy(self) -> bool:
+        thread = getattr(self, "_mesh_thread", None)
+        return thread is not None and thread.isRunning()
+
+    def _drain_pending_rebuild(self) -> None:
+        """Run the rebuild that was asked for while the last one was building.
+
+        One flag rather than a queue, because the worker snapshots the live
+        parameters when it starts: however many changes arrived during a build,
+        what is owed afterwards is one build of the current state. That also
+        paces a drag at exactly the kernel's rate — start one, and when it lands
+        start another if anything moved — with no interval to tune and no way to
+        livelock by cancelling faster than a build can finish.
+        """
+        if not self._rebuild_pending:
+            return
+        self._rebuild_pending = False
+        # Only the "is anyone looking" test belongs here. Whether there is
+        # anything to build — a classified castle, a temple, a block — is
+        # `_start_mesh_build`'s own decision, and duplicating a castle check
+        # here would drop the drain after every flat part's build.
+        if self.stack.currentIndex() == 1:
+            self._start_mesh_build(show_progress=False)
+
     def _start_mesh_build(self, show_progress: bool = False) -> None:
-        if self._mesh_thread is not None and self._mesh_thread.isRunning():
-            return                            # don't spawn a second mesh thread
+        if self._mesh_busy():
+            # Remembered, not dropped. Returning here used to lose the change
+            # outright: nothing looked again, so a parameter edited during a
+            # build never reached the preview until something else happened to
+            # trigger one. Rare behind a 350 ms debounce on a spin box; the
+            # normal case for a handle that emits as it moves.
+            self._rebuild_pending = True
+            return
         mode = self._flat_build_mode()
         if mode is not None:
             self._start_flat_build(mode, show_progress)
@@ -6397,7 +6461,8 @@ class MainWindow(QMainWindow):
             return
         self.status_lbl.setText("Building 3D model…")
         self._act_build.setEnabled(False)
-        self.append_log(f"[3D] Building castle ({self._stage})…")
+        if not self._live_preview:
+            self.append_log(f"[3D] Building castle ({self._stage})…")
         self._switch_view(1)
 
         self._mesh_worker = MeshWorker(
@@ -6479,6 +6544,7 @@ class MainWindow(QMainWindow):
         self._act_build.setEnabled(True)
         self._mesh_built = True
         self._refresh_readiness()
+        self._drain_pending_rebuild()
 
     def _show_stage_mesh(self, mesh, edges=None) -> None:
         zero, _ = self._active_program_zero_3d()
@@ -6519,26 +6585,36 @@ class MainWindow(QMainWindow):
         self._edge_cache[stage] = edges
         if stage == self._stage:
             self._show_stage_mesh(mesh, edges)
-        self.append_log(
-            f"[3D] Done ({stage}) — {len(mesh.vertices):,} verts, "
-            f"{len(mesh.faces):,} tris"
-            + (f", {len(edges):,} edges" if edges else "")
-        )
+        if not self._live_preview:
+            self.append_log(
+                f"[3D] Done ({stage}) — {len(mesh.vertices):,} verts, "
+                f"{len(mesh.faces):,} tris"
+                + (f", {len(edges):,} edges" if edges else "")
+            )
         self._act_build.setEnabled(True)
         self._mesh_built = True
         self._refresh_readiness()
+        self._drain_pending_rebuild()
 
     def _on_mesh_error(self, tb: str) -> None:
         self._close_progress()
         self.append_log("[3D ERROR]\n" + tb)
         self.status_lbl.setText("Build failed — see log")
         self._act_build.setEnabled(True)
+        # Still drain: the parameters have moved on since the build that failed,
+        # and the state they have moved to may well build. Leaving the flag set
+        # would also wedge every later rebuild behind one bad one.
+        self._drain_pending_rebuild()
 
     def _on_mesh_cancelled(self) -> None:
         self._close_progress()
         self.append_log("[3D] Build cancelled.")
         self.status_lbl.setText("Build cancelled")
         self._act_build.setEnabled(True)
+        # Dropped, not drained. Cancel is the one case where the maker has said
+        # they do not want this build — starting the next one straight away
+        # would make the button look broken.
+        self._rebuild_pending = False
 
     # ------------------------------------------------------------------ other slots
 

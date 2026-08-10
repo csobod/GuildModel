@@ -801,6 +801,55 @@ work: the spin boxes shrank to font-metric width and the slider took the slack.
 and nothing connects `sliding` yet. That is the seam the live-continuous rebuild
 attaches to, which is the part of "live sliders" still open.
 
+**Landed 2026-08-10 — the drag reaches the 3D view, and "39 ms" was wrong by an
+order of magnitude.** Two things stood in the way, and only one was about
+sliders.
+
+*The window threw rebuild requests away.* `_start_mesh_build` returned early
+whenever a build was running, and nothing looked again — `_on_mesh_finished` had
+no notion of a pending request. A parameter changed during a build simply never
+reached the preview until something else happened to trigger one. Behind a spin
+box and a 350 ms debounce that was rare enough to sit unnoticed for a season;
+with a handle emitting as it moves it is the normal case. Now one flag, drained
+on finish: however many changes arrive during a build, what is owed afterwards
+is one build of the current state. Latest-wins, paced at the kernel's own rate,
+with no interval to tune and no way to livelock by cancelling faster than a
+build completes. Drained on failure too — the state the parameters moved on to
+may well build, and leaving the flag set would wedge every later rebuild behind
+one bad one — but *dropped* on cancel, the one case where the maker has said no.
+
+*And the debounce is the wrong instrument for a drag*, which wants no wait at
+all: 350 ms of stillness before starting means a drag shows nothing until it
+stops. `castle_sliding` bypasses it. It also skips the program invalidation and
+the readiness refresh, which belong to a settled value — strobing the readiness
+light green-to-yellow on every pixel is not information — and silences the
+per-build log lines, which would otherwise bury the log under the drag's own
+frames. The panel finds its live handles by walking the Model tab rather than
+listing them, so a control added later is live without anyone remembering; the
+Stock tab is deliberately not walked, since its numbers move the ghost box
+around the part rather than the part.
+
+**Measured, demo frame, this machine.** One full rebuild: **224 ms** bare,
+**634 ms** with every posterior feature, **753 ms** with the lens groove too —
+and it is all `build_castle_model`; `to_trimesh` is 1 ms and edge detection
+12–18 ms. Per stage on a bare castle, `build_base` is **284 ms of 296**. So the
+buildplan's "39 ms full build" predates most of these features and is not the
+number any more.
+
+End to end through the real window and the real kernel, counting redraws during
+a drag: **0 before this change** (7.7 s of dragging, nothing), **20 in 9.1 s**
+after on a bare castle's nosepad height, **16 in 9.3 s** on a splay angle with
+the splay and bezel on. Two redraws a second, not sixty. That is honest "live"
+rather than the word doing work it has not earned.
+
+The next lever is measured and named: `build_base` does not change when a
+*feature* parameter moves, and `core/solid` already caches exactly that
+(`clear_base_cache`) while the mesh path does not. Caching it would take a
+feature drag from ~630 ms to ~400 ms. Beyond that is `build.py`'s own note —
+features are subtracted one at a time for B-Rep parity, and "the mesh domain
+makes a cheaper arrangement possible". Both change behaviour rather than wiring,
+so neither belongs in the commit that connects a signal.
+
 *Three corrections from M-N3's measurements (2026-08-08). This milestone is
 larger than the paragraph above, and two of its steps change output rather than
 delete code.*
