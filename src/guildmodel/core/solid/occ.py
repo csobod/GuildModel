@@ -80,13 +80,9 @@ __all__ = [
 ]
 
 
-class BooleanError(RuntimeError):
-    """A kernel operation did not complete, or completed into an invalid shape.
-
-    Raised rather than returned because every caller in `core/solid` treats a
-    failed boolean as fatal to the build: a silently-dropped feature would post
-    G-code for geometry the maker never asked for.
-    """
+# Re-exported, not redefined. `geometry/rings.py` raises it too and cannot
+# import this module, so one class has to serve both — see its docstring there.
+from ..geometry.rings import BooleanError  # noqa: E402,F401  (public re-export)
 
 
 # ----------------------------------------------------------------- inspection

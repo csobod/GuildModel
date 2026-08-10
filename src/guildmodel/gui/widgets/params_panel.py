@@ -44,6 +44,7 @@ from PySide6.QtCore import Qt, Signal
 from guildmodel.core.layers import LAYER_STYLES
 from guildmodel.gui.style import theme
 from guildmodel.gui import material_store
+from guildmodel.gui.widgets.param_slider import ParamSlider
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BridgeReliefParams, CastleCamParams, CastleParams,
@@ -80,6 +81,12 @@ def _ro_field(value: str = "—") -> QLineEdit:
     return f
 
 
+#: Anything the panel reads a millimetre out of. `ParamSlider` is a drop-in for
+#: the spin box everywhere the panel touches one, so the two are interchangeable
+#: at every call site and only the constructor picks between them.
+Numeric = QDoubleSpinBox | ParamSlider
+
+
 def _spinbox(
     value: float,
     min_: float,
@@ -95,6 +102,30 @@ def _spinbox(
     sb.setValue(value)
     sb.setSuffix(suffix)
     return sb
+
+
+def _slider(
+    value: float,
+    min_: float,
+    max_: float,
+    step: float = 0.1,
+    decimals: int = 2,
+    suffix: str = " mm",
+) -> ParamSlider:
+    """A `_spinbox` you can also drag — same arguments, same API.
+
+    Used for the numbers that describe the *shape*: the Model tab and the Stock
+    tab. A frame is found by feel and then recorded, and you cannot feel a
+    footing radius by typing 6.0 and waiting for a rebuild.
+
+    Deliberately **not** used on the Cut and Machine tabs. A feed rate or a safe
+    Z is a decision, not a shape — there is nothing to scrub for, and a slider
+    there would only make an exact number harder to hit. The footing pairs keep
+    their spin boxes too: two of them share one row, which leaves no width for a
+    handle worth dragging, and neither radius has a derived limit to show.
+    """
+    return ParamSlider(value, min_, max_, step=step, decimals=decimals,
+                       suffix=suffix)
 
 
 def _section_label(text: str) -> QLabel:
@@ -129,6 +160,10 @@ class ParamsPanel(QTabWidget):
         self.setMinimumWidth(300)
 
         self._partition = None    # CastlePartition from the last import
+        # `_refresh_limits` reads widgets from every tab, and a few of the
+        # per-group setup calls (the groove toggle) reach it while those tabs are
+        # still being built. Set true once, at the end of __init__.
+        self._limits_ready = False
         # Per-zone height overrides keyed by Zone.name, for zones the per-kind
         # defaults don't suit. Cleared when the drawing no longer has the zone.
         self._zone_overrides: dict[str, float] = {}
@@ -156,6 +191,18 @@ class ParamsPanel(QTabWidget):
         self.apply_material_values(material_store.cam_values(self.material.currentText()))
         self.cam_changed.connect(self._update_chip_readout)   # keep it live (M7.10)
         self._update_chip_readout()
+
+        # What each Model / Stock number is allowed to be depends on the others,
+        # so it is re-derived after every change rather than only at build time.
+        # Connected here, before the window connects its rebuild, so the ranges a
+        # rebuild is about to be measured against are already current.
+        self._groove_ceiling: float | None = None
+        self._groove_ceiling_for = None
+        self._limits_ready = True
+        self.castle_changed.connect(self._refresh_limits)
+        self.stock_changed.connect(self._refresh_limits)
+        self._refresh_limits()
+
         self.set_component_kind(ComponentKind.FRAME_FRONT)
 
     # ------------------------------------------------------------ kind-aware tabs
@@ -382,31 +429,31 @@ class ParamsPanel(QTabWidget):
         self.ef_profile.addItems(["Chamfer", "Fillet (round-over)"])
         form.addRow("Profile:", self.ef_profile)
 
-        self.ef_width = _spinbox(d.width_mm, 0.1, 12.0, step=0.1, decimals=2)
+        self.ef_width = _slider(d.width_mm, 0.1, 12.0, step=0.1, decimals=2)
         self.ef_width.setToolTip("How far in from the edge the chamfer runs.")
         form.addRow("Width:", self.ef_width)
-        self.ef_width_end = _spinbox(0.0, 0.0, 12.0, step=0.1, decimals=2)
+        self.ef_width_end = _slider(0.0, 0.0, 12.0, step=0.1, decimals=2)
         self.ef_width_end.setSpecialValueText("(constant)")
         self.ef_width_end.setToolTip(
             "Width at the far end of the run — set it to taper the chamfer along "
             "its length. '(constant)' keeps the width above all the way.")
         form.addRow("Width at end:", self.ef_width_end)
-        self.ef_angle = _spinbox(d.angle_deg, 5.0, 85.0, step=1.0, decimals=1, suffix="°")
+        self.ef_angle = _slider(d.angle_deg, 5.0, 85.0, step=1.0, decimals=1, suffix="°")
         form.addRow("Angle:", self.ef_angle)
-        self.ef_radius = _spinbox(d.radius_mm, 0.1, 12.0, step=0.1, decimals=2)
+        self.ef_radius = _slider(d.radius_mm, 0.1, 12.0, step=0.1, decimals=2)
         form.addRow("Fillet radius:", self.ef_radius)
 
-        self.ef_trim_start = _spinbox(0.0, -50.0, 50.0, step=0.5, decimals=1)
+        self.ef_trim_start = _slider(0.0, -50.0, 50.0, step=0.5, decimals=1)
         self.ef_trim_start.setToolTip("Pull the start of the run in (+) or out (−) along the edge.")
         form.addRow("Trim start:", self.ef_trim_start)
-        self.ef_trim_end = _spinbox(0.0, -50.0, 50.0, step=0.5, decimals=1)
+        self.ef_trim_end = _slider(0.0, -50.0, 50.0, step=0.5, decimals=1)
         form.addRow("Trim end:", self.ef_trim_end)
-        self.ef_blend = _spinbox(d.blend_mm, 0.0, 30.0, step=0.5, decimals=1)
+        self.ef_blend = _slider(d.blend_mm, 0.0, 30.0, step=0.5, decimals=1)
         self.ef_blend.setToolTip(
             "Taper the cut to nothing over this distance at each end, so it "
             "feathers out instead of stopping at full depth.")
         form.addRow("Blend:", self.ef_blend)
-        self.ef_min_thickness = _spinbox(d.min_thickness_mm, 0.0, 8.0, step=0.1, decimals=2)
+        self.ef_min_thickness = _slider(d.min_thickness_mm, 0.0, 8.0, step=0.1, decimals=2)
         self.ef_min_thickness.setToolTip(
             "The frame is never cut thinner than this where the feature runs.")
         form.addRow("Min thickness:", self.ef_min_thickness)
@@ -497,6 +544,7 @@ class ParamsPanel(QTabWidget):
         self.ef_mirror.setChecked(f.mirror)
         self._edge_loading = False
         self._update_edge_editor_enabled()
+        self._refresh_limits()      # a different feature runs along a different wall
 
     def _update_edge_editor_enabled(self) -> None:
         """Only the profile's own numbers stay live — a fillet has no angle."""
@@ -698,10 +746,10 @@ class ParamsPanel(QTabWidget):
         towers = QFormLayout()
         towers.setContentsMargins(8, 0, 0, 0)
         towers.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.zone_endpiece = _spinbox(5.5, 0.5, 12.0, decimals=1)
-        self.zone_bridge = _spinbox(5.3, 0.5, 12.0, decimals=1)
-        self.zone_nosepad = _spinbox(10.0, 0.5, 15.0, decimals=1)
-        self.hinge_pocket_depth = _spinbox(1.0, 0.0, 3.0, decimals=1)
+        self.zone_endpiece = _slider(5.5, 0.5, 12.0, decimals=1)
+        self.zone_bridge = _slider(5.3, 0.5, 12.0, decimals=1)
+        self.zone_nosepad = _slider(10.0, 0.5, 15.0, decimals=1)
+        self.hinge_pocket_depth = _slider(1.0, 0.0, 3.0, decimals=1)
         towers.addRow("Endpieces:", self.zone_endpiece)
         towers.addRow("Bridge:", self.zone_bridge)
         towers.addRow("Nosepads:", self.zone_nosepad)
@@ -716,8 +764,8 @@ class ParamsPanel(QTabWidget):
         walls = QFormLayout()
         walls.setContentsMargins(8, 0, 0, 0)
         walls.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.zone_eyewire_superior = _spinbox(4.8, 0.5, 12.0, decimals=1)
-        self.zone_eyewire_inferior = _spinbox(4.2, 0.5, 12.0, decimals=1)
+        self.zone_eyewire_superior = _slider(4.8, 0.5, 12.0, decimals=1)
+        self.zone_eyewire_inferior = _slider(4.2, 0.5, 12.0, decimals=1)
         walls.addRow("Superior eyewires:", self.zone_eyewire_superior)
         walls.addRow("Inferior eyewires:", self.zone_eyewire_inferior)
         self.zone_eyewire_superior.setToolTip(
@@ -779,32 +827,32 @@ class ParamsPanel(QTabWidget):
         splay = QFormLayout()
         splay.setContentsMargins(8, 0, 0, 0)
         splay.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.splay_run = _spinbox(d.run_mm, 2.0, 60.0, step=1.0, decimals=1)
+        self.splay_run = _slider(d.run_mm, 2.0, 60.0, step=1.0, decimals=1)
         self.splay_run.setToolTip(
             "How far the chamfer runs along the outline each side of bottom-center.")
-        self.splay_dev_center = _spinbox(d.crest_deviation_center_mm, 0.0, 20.0,
-                                         step=0.5, decimals=1)
+        self.splay_dev_center = _slider(d.crest_deviation_center_mm, 0.0, 20.0,
+                                        step=0.5, decimals=1)
         self.splay_dev_center.setToolTip(
             "Crest inset from the outline at the bottom-center point.")
-        self.splay_dev_end = _spinbox(d.crest_deviation_end_mm, 0.0, 20.0,
-                                      step=0.5, decimals=1)
+        self.splay_dev_end = _slider(d.crest_deviation_end_mm, 0.0, 20.0,
+                                     step=0.5, decimals=1)
         self.splay_dev_end.setToolTip("Crest inset at each end of the run.")
-        self.splay_angle_center = _spinbox(d.angle_center_deg, 5.0, 60.0,
-                                           step=1.0, decimals=1, suffix="°")
-        self.splay_angle_middle = _spinbox(d.angle_middle_deg, 5.0, 60.0,
-                                           step=1.0, decimals=1, suffix="°")
-        self.splay_angle_end = _spinbox(d.angle_end_deg, 5.0, 60.0,
-                                        step=1.0, decimals=1, suffix="°")
+        self.splay_angle_center = _slider(d.angle_center_deg, 5.0, 60.0,
+                                          step=1.0, decimals=1, suffix="°")
+        self.splay_angle_middle = _slider(d.angle_middle_deg, 5.0, 60.0,
+                                          step=1.0, decimals=1, suffix="°")
+        self.splay_angle_end = _slider(d.angle_end_deg, 5.0, 60.0,
+                                       step=1.0, decimals=1, suffix="°")
         self.splay_toric = QCheckBox("Toric (blend three angles)")
         self.splay_toric.setChecked(d.toric)
         self.splay_toric.setToolTip(
             "Blend the splay from a center angle through a middle to an end angle.")
-        self.splay_clamp = _spinbox(d.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
+        self.splay_clamp = _slider(d.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
         self.splay_clamp.setToolTip(
             "Cut floor above the anterior face — the edge never gets thinner than this.")
-        self.splay_feather = _spinbox(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
+        self.splay_feather = _slider(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
         self.splay_feather.setToolTip("Blend-out length at each end of the run.")
-        self.splay_blend = _spinbox(d.crest_blend_mm, 0.0, 6.0, step=0.5, decimals=1)
+        self.splay_blend = _slider(d.crest_blend_mm, 0.0, 6.0, step=0.5, decimals=1)
         self.splay_blend.setToolTip(
             "Round-over radius where the chamfer meets the surface (0 = sharp crest).")
         splay.addRow("Run per side:", self.splay_run)
@@ -838,11 +886,11 @@ class ParamsPanel(QTabWidget):
         bezel = QFormLayout()
         bezel.setContentsMargins(8, 0, 0, 0)
         bezel.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.bezel_width = _spinbox(b.width_mm, 0.2, 8.0, step=0.1, decimals=1)
+        self.bezel_width = _slider(b.width_mm, 0.2, 8.0, step=0.1, decimals=1)
         self.bezel_width.setToolTip("Band width from the lens rim inward.")
-        self.bezel_angle = _spinbox(b.angle_deg, 5.0, 60.0, step=1.0,
-                                    decimals=1, suffix="°")
-        self.bezel_clamp = _spinbox(b.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
+        self.bezel_angle = _slider(b.angle_deg, 5.0, 60.0, step=1.0,
+                                   decimals=1, suffix="°")
+        self.bezel_clamp = _slider(b.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
         self.bezel_clamp.setToolTip(
             "Cut floor above the anterior face — the rim never gets thinner than this.")
         # Which face the band is cut into (M17). The posterior band seats the lens;
@@ -852,9 +900,9 @@ class ParamsPanel(QTabWidget):
         self.bezel_face.setToolTip(
             "Which side of the frame the bezel is cut into.\nAn anterior band is "
             "modelled and shown in 3D now; machining it needs the flip setup.")
-        self.bezel_ant_width = _spinbox(b.anterior_width_mm, 0.2, 8.0, step=0.1, decimals=1)
-        self.bezel_ant_angle = _spinbox(b.anterior_angle_deg, 5.0, 80.0, step=1.0,
-                                        decimals=1, suffix="°")
+        self.bezel_ant_width = _slider(b.anterior_width_mm, 0.2, 8.0, step=0.1, decimals=1)
+        self.bezel_ant_angle = _slider(b.anterior_angle_deg, 5.0, 80.0, step=1.0,
+                                       decimals=1, suffix="°")
         bezel.addRow("Cut into:", self.bezel_face)
         bezel.addRow("Band width:", self.bezel_width)
         bezel.addRow("Bezel angle:", self.bezel_angle)
@@ -884,16 +932,16 @@ class ParamsPanel(QTabWidget):
         groove = QFormLayout()
         groove.setContentsMargins(8, 0, 0, 0)
         groove.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.bridge_relief_width = _spinbox(g.width_mm, 1.0, 24.0, step=0.5, decimals=1)
+        self.bridge_relief_width = _slider(g.width_mm, 1.0, 24.0, step=0.5, decimals=1)
         self.bridge_relief_width.setToolTip("Scoop width at its base (the top edge).")
-        self.bridge_relief_depth = _spinbox(g.depth_mm, 0.1, 4.0, step=0.1, decimals=1)
+        self.bridge_relief_depth = _slider(g.depth_mm, 0.1, 4.0, step=0.1, decimals=1)
         self.bridge_relief_depth.setToolTip("Cut depth at the base centerline.")
-        self.bridge_relief_taper = _spinbox(g.taper_angle_deg, 5.0, 80.0,
-                                            step=1.0, decimals=1, suffix="°")
+        self.bridge_relief_taper = _slider(g.taper_angle_deg, 5.0, 80.0,
+                                           step=1.0, decimals=1, suffix="°")
         self.bridge_relief_taper.setToolTip(
             "Side taper of the cone — steeper reaches the tip sooner.")
-        self.bridge_relief_clamp = _spinbox(g.anterior_clamp_mm, 0.2, 5.0,
-                                            step=0.1, decimals=1)
+        self.bridge_relief_clamp = _slider(g.anterior_clamp_mm, 0.2, 5.0,
+                                           step=0.1, decimals=1)
         groove.addRow("Width:", self.bridge_relief_width)
         groove.addRow("Depth:", self.bridge_relief_depth)
         groove.addRow("Taper angle:", self.bridge_relief_taper)
@@ -924,15 +972,15 @@ class ParamsPanel(QTabWidget):
         gform = QFormLayout()
         gform.setContentsMargins(8, 0, 0, 0)
         gform.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.groove_offset = _spinbox(lg.anterior_offset_mm, 0.3, 6.0,
-                                      step=0.1, decimals=2)
+        self.groove_offset = _slider(lg.anterior_offset_mm, 0.3, 6.0,
+                                     step=0.1, decimals=2)
         self.groove_offset.setToolTip(
             "Groove apex height above the anterior (front) face.")
-        self.groove_depth = _spinbox(lg.depth_mm, 0.2, 2.0, step=0.05, decimals=2)
+        self.groove_depth = _slider(lg.depth_mm, 0.2, 2.0, step=0.05, decimals=2)
         self.groove_depth.setToolTip(
             "Radial depth into the rim — also how much smaller the visible\n"
             "aperture is than the drawn lens.")
-        self.groove_width = _spinbox(lg.width_mm, 0.5, 4.0, step=0.1, decimals=2)
+        self.groove_width = _slider(lg.width_mm, 0.5, 4.0, step=0.1, decimals=2)
         self.groove_width.setToolTip("V opening height at the rim face.")
         self.groove_angle_lbl = QLabel("")
         self.groove_angle_lbl.setObjectName("hintLabel")
@@ -969,6 +1017,8 @@ class ParamsPanel(QTabWidget):
         for w in (self.groove_offset, self.groove_depth, self.groove_width,
                   self.groove_tool):
             w.setEnabled(on)
+        if on:
+            self._refresh_limits()   # the depth ceiling is measured on first use
 
     def _update_groove_angle(self) -> None:
         """Included V angle read-out: 2·atan((width/2) / depth)."""
@@ -977,7 +1027,7 @@ class ParamsPanel(QTabWidget):
         ang = 2.0 * _math.degrees(_math.atan((self.groove_width.value() / 2.0) / d))
         self.groove_angle_lbl.setText(f"{ang:.0f}°")
 
-    def _bridge_relief_spinboxes(self) -> list[QDoubleSpinBox]:
+    def _bridge_relief_spinboxes(self) -> list[Numeric]:
         return [self.bridge_relief_width, self.bridge_relief_depth,
                 self.bridge_relief_taper, self.bridge_relief_clamp]
 
@@ -998,7 +1048,7 @@ class ParamsPanel(QTabWidget):
         for sb in (self.bezel_ant_width, self.bezel_ant_angle):
             sb.setEnabled(on and face in (1, 2))
 
-    def _splay_spinboxes(self) -> list[QDoubleSpinBox]:
+    def _splay_spinboxes(self) -> list[Numeric]:
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
                 self.splay_angle_center, self.splay_angle_middle,
                 self.splay_angle_end, self.splay_blend, self.splay_clamp,
@@ -1046,7 +1096,7 @@ class ParamsPanel(QTabWidget):
         self.splay_run.setValue(run_mm)
         self.splay_run.blockSignals(False)
 
-    def _castle_spinboxes(self) -> list[QDoubleSpinBox]:
+    def _castle_spinboxes(self) -> list[Numeric]:
         boxes = [
             self.zone_endpiece, self.zone_bridge, self.zone_nosepad,
             self.hinge_pocket_depth,
@@ -1060,6 +1110,103 @@ class ParamsPanel(QTabWidget):
         self._refresh_zone_list()
         self.castle_changed.emit()
 
+    # ------------------------------------------------------- what fits (limits)
+    #
+    # `core.project.limits` derives the safe range of every Model / Stock number
+    # from the rest of the project; this is the part that knows which widget each
+    # of its keys belongs to and when to ask again. Nothing here writes a value:
+    # a number that no longer fits is marked by its own `ParamSlider`, never
+    # rewritten, so opening a project whose nosepad no longer fits its stock says
+    # so instead of quietly shortening the tower.
+
+    def _limit_targets(self) -> dict[str, Numeric]:
+        """Widget per `core.project.limits` key."""
+        return {
+            "zones.endpiece_mm": self.zone_endpiece,
+            "zones.bridge_mm": self.zone_bridge,
+            "zones.nosepad_mm": self.zone_nosepad,
+            "zones.eyewire_superior_mm": self.zone_eyewire_superior,
+            "zones.eyewire_inferior_mm": self.zone_eyewire_inferior,
+            "hinge_pocket_depth_mm": self.hinge_pocket_depth,
+            "pad_splay.anterior_clamp_mm": self.splay_clamp,
+            "eyewire_bezel.anterior_clamp_mm": self.bezel_clamp,
+            "bridge_relief.anterior_clamp_mm": self.bridge_relief_clamp,
+            "bridge_relief.depth_mm": self.bridge_relief_depth,
+            "lens_groove.anterior_offset_mm": self.groove_offset,
+            "lens_groove.depth_mm": self.groove_depth,
+            "lens_groove.width_mm": self.groove_width,
+            "stock.pad_block_length_mm": self.pad_length,
+            "stock.pad_block_width_mm": self.pad_width,
+        }
+
+    def _groove_depth_ceiling(self) -> float | None:
+        """The deepest groove this drawing's apertures survive, or None.
+
+        Costs a castle re-partition per probe — about 0.6 s for the search — so
+        it is computed only when the groove is actually on, and cached against
+        the partition it was measured from. None while the groove is off leaves
+        the depth control its full range; nothing is being built from it.
+        """
+        part = getattr(self, "_partition", None)
+        if part is None or not self.groove_enable.isChecked():
+            return None
+        if getattr(self, "_groove_ceiling_for", None) is part:
+            return self._groove_ceiling
+        from guildmodel.core.project.limits import max_groove_depth
+
+        try:
+            ceiling = max_groove_depth(part, high=self.groove_depth.hard_range()[1])
+        except Exception:
+            ceiling = None        # never let a probe stop the panel from painting
+        self._groove_ceiling_for, self._groove_ceiling = part, ceiling
+        return ceiling
+
+    def _refresh_limits(self) -> None:
+        """Re-derive every safe range. Cheap, and idempotent.
+
+        Writes no values, so it cannot loop back through the signals that call
+        it — which is what lets it hang off `castle_changed` and `stock_changed`
+        rather than needing a list of everything that might have moved.
+        """
+        if not self._limits_ready:
+            return                # tabs still under construction
+        from guildmodel.core.project.limits import (castle_limits,
+                                                    edge_feature_limits)
+
+        castle = self.castle_params()
+        bounds = dict(castle_limits(castle, getattr(self, "_partition", None),
+                                    self._groove_depth_ceiling()))
+        widgets = dict(self._limit_targets())
+
+        row = self.edge_list.currentRow()
+        if 0 <= row < len(self._edge_features):
+            for key, limit in edge_feature_limits(
+                    castle, self._edge_features[row]).items():
+                bounds[f"edge.{key}"] = limit
+            widgets.update({"edge.width_mm": self.ef_width,
+                            "edge.angle_deg": self.ef_angle,
+                            "edge.radius_mm": self.ef_radius,
+                            "edge.min_thickness_mm": self.ef_min_thickness})
+
+        for path, widget in widgets.items():
+            limit = bounds.get(path)
+            if limit is not None and isinstance(widget, ParamSlider):
+                widget.set_safe_range(limit.low, limit.high, limit.reason)
+
+    def out_of_range_paths(self) -> list[tuple[str, str]]:
+        """`(schema path, what is wrong)` for every control outside its safe range.
+
+        The panel marks each one in place; this is how the rest of the app can
+        say the same thing in a job's issue list, where a maker looks before
+        posting rather than while dragging.
+        """
+        out: list[tuple[str, str]] = []
+        for path, widget in self._limit_targets().items():
+            if isinstance(widget, ParamSlider) and widget.out_of_range():
+                lo, hi = widget.safe_range()
+                out.append((path, f"{widget.value():g} is outside {lo:g}–{hi:g}"))
+        return out
+
     # ------------------------------------------------------------------ Stock tab
 
     def _build_stock_tab(self, lay: QVBoxLayout) -> None:
@@ -1070,9 +1217,9 @@ class ParamsPanel(QTabWidget):
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        self.blank_length = _spinbox(170.0, 50.0, 300.0, step=1.0, decimals=1)
-        self.blank_width = _spinbox(85.0, 30.0, 200.0, step=1.0, decimals=1)
-        self.blank_thickness = _spinbox(6.0, 1.0, 12.0, step=0.5, decimals=1)
+        self.blank_length = _slider(170.0, 50.0, 300.0, step=1.0, decimals=1)
+        self.blank_width = _slider(85.0, 30.0, 200.0, step=1.0, decimals=1)
+        self.blank_thickness = _slider(6.0, 1.0, 12.0, step=0.5, decimals=1)
         form.addRow("Blank length:", self.blank_length)
         form.addRow("Blank width:", self.blank_width)
         form.addRow("Blank thickness:", self.blank_thickness)
@@ -1083,9 +1230,9 @@ class ParamsPanel(QTabWidget):
             "Add a raised pad block for the tall nosepad towers.")
         form.addRow("", self.use_pad_block)
 
-        self.pad_length = _spinbox(45.0, 10.0, 120.0, step=1.0, decimals=1)
-        self.pad_width = _spinbox(45.0, 10.0, 120.0, step=1.0, decimals=1)
-        self.pad_thickness = _spinbox(4.0, 0.5, 10.0, step=0.5, decimals=1)
+        self.pad_length = _slider(45.0, 10.0, 120.0, step=1.0, decimals=1)
+        self.pad_width = _slider(45.0, 10.0, 120.0, step=1.0, decimals=1)
+        self.pad_thickness = _slider(4.0, 0.5, 10.0, step=0.5, decimals=1)
         form.addRow("Pad block length:", self.pad_length)
         form.addRow("Pad block width:", self.pad_width)
         form.addRow("Pad block thickness:", self.pad_thickness)
@@ -1289,8 +1436,16 @@ class ParamsPanel(QTabWidget):
         current = self._zone_overrides.get(
             name, self._castle_zone_thicknesses().for_kind(zone.kind)
             if zone.kind != "generic" else 4.0)
+        # An override answers to this zone's own footprint, which is the whole
+        # point of having one: a nosepad that runs off the pad block does not
+        # get the block's height just because its twin does.
+        from guildmodel.core.project.limits import stock_ceiling
+
+        ceiling = stock_ceiling(self.stock_definition(), zone.polygon)
         value, ok = QInputDialog.getDouble(
-            self, "Zone height", f"{name} height (mm):", current, 0.5, 15.0, 2)
+            self, "Zone height",
+            f"{name} height (mm) — {ceiling:g} mm of stock over it:",
+            current, 0.0, ceiling, 2)
         if not ok:
             return
         self._zone_overrides[name] = value
@@ -1307,6 +1462,11 @@ class ParamsPanel(QTabWidget):
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
         self._partition = partition
+        # Both are measured against the drawing: the stock ceilings from where
+        # each zone's footprint stands, the groove ceiling from how far the
+        # apertures can shrink. A new drawing invalidates both.
+        self._groove_ceiling = None
+        self._groove_ceiling_for = None
         # The edge-feature span picker lists this drawing's zones (M17), so it has
         # to be rebuilt whenever the drawing changes.
         if hasattr(self, "ef_zones"):
@@ -2103,6 +2263,20 @@ class ParamsPanel(QTabWidget):
             eyewire_inferior_mm=self.zone_eyewire_inferior.value(),
         )
 
+    def stock_definition(self) -> StockDefinition:
+        """Just the Stock tab. Split out of `castle_params` because the zone
+        limits need the stock without the cost — and without the recursion — of
+        snapshotting the whole castle."""
+        return StockDefinition(
+            blank_length_mm=self.blank_length.value(),
+            blank_width_mm=self.blank_width.value(),
+            blank_thickness_mm=self.blank_thickness.value(),
+            pad_block_length_mm=self.pad_length.value(),
+            pad_block_width_mm=self.pad_width.value(),
+            pad_block_thickness_mm=self.pad_thickness.value(),
+            use_pad_block=self.use_pad_block.isChecked(),
+        )
+
     def castle_params(self) -> CastleParams:
         """Snapshot the panel into the CastleParams schema (API vocabulary)."""
         defaults = FootingSchedule()
@@ -2119,15 +2293,7 @@ class ParamsPanel(QTabWidget):
             zone_height_overrides=dict(self._zone_overrides),
             footing=footing,
             hinge_pocket_depth_mm=self.hinge_pocket_depth.value(),
-            stock=StockDefinition(
-                blank_length_mm=self.blank_length.value(),
-                blank_width_mm=self.blank_width.value(),
-                blank_thickness_mm=self.blank_thickness.value(),
-                pad_block_length_mm=self.pad_length.value(),
-                pad_block_width_mm=self.pad_width.value(),
-                pad_block_thickness_mm=self.pad_thickness.value(),
-                use_pad_block=self.use_pad_block.isChecked(),
-            ),
+            stock=self.stock_definition(),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
             holding=self.holding_params(),

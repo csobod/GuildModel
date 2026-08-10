@@ -743,6 +743,64 @@ opinion every parity gate measures the mesh against and building the same part
 two ways is what caught this season's silent defects. Still open: live sliders,
 retiring the raster *relief* path, and BUILDPLAN.md.
 
+**Landed 2026-08-10 — the Model and Stock tabs became draggable, and doing it
+found three ways to ask for a frame that cannot be made.** Every measurement on
+those two tabs is now a `ParamSlider`: a slider over the range the *project*
+allows, a spin box over the range the *schema* means. The split is the whole
+design. Dragging can never build something impossible; typing is never refused
+and — the part that took a second attempt — never silently rewritten, because
+`QSlider.setRange` clamps its own value and emits `valueChanged` doing it, which
+came back through the sync and quietly shortened a 10 mm nosepad to 6 when the
+stock changed. A value that no longer fits is kept, marked, and reported by
+`ParamsPanel.out_of_range_paths`.
+
+`core.project.limits` derives the ranges — pure, kernel-free, gated as such.
+What sweeping the panel's own spin-box ranges on all three fixtures turned up:
+
+  1. **Stock is invisible to the model.** A 15 mm nosepad out of a 6 + 4 mm
+     stack builds a clean, watertight, *verified* solid. Nothing between the
+     drawing and the G-code had ever compared a zone height to its material.
+     The ceiling is measured per zone footprint, not assumed from the zone's
+     name: overlap is worth nothing, because the part hanging off the pad block
+     has only blank under it. On all three drawings the bridge and both nosepads
+     sit wholly on the default 45x45 block, the eyewires lap over it (18–44% of
+     their area) and the endpieces are entirely off.
+  2. **A hinge pocket can come out of the front of the frame.** Demo, 5.5 mm
+     endpiece: removed volume stops changing at 5.5 mm of depth (7362.9 mm3 at
+     5.5, 6.0 and 8.0) because by then it is a through hole. The panel offered
+     3.0 mm against an endpiece that could be set to 0.5.
+  3. **A lens groove can dissolve the castle** — the rim-lip re-partition stops
+     yielding the same zones at 2.30 mm on the demo, **1.55 mm on the gabriel**
+     and 1.90 mm on the aviator. Two of those are inside the 0.2–2.0 mm the
+     panel offered, so it was reachable by dragging. Drawing-dependent and not
+     derivable, so `max_groove_depth` bisects for it (~0.6 s, once per drawing,
+     only when the groove is on).
+
+And a bug that had been sitting under (3): `lip_partition`'s guard raised
+`BooleanError`, which lives in `solid/occ.py` and was never imported into
+`geometry/rings.py` — importing it would pull in the 264 MB that module exists
+to avoid. Nothing swallowed this one, so the maker got `NameError: name
+'BooleanError' is not defined` instead of the guard's sentence. **This is the
+second undefined name to come out of that same move**, after `nurbs_edge` (§3.2);
+the class now lives in `rings.py` and `occ` re-exports it, so every
+`except BooleanError` in `core/solid` catches the same object it always did.
+
+Cross-platform behaviour is specified in the widget rather than inherited, since
+Qt's slider defaults differ by style: a click on the groove jumps there (macOS
+does, Fusion pages), the wheel only turns a control that has focus (both
+children default to `WheelFocus` inside a scrolling tab — one unlucky scroll
+would rewrite whatever was under the pointer), widths come from font metrics,
+and `keyboardTracking` is off so typing "12.5" is one edit rather than three.
+
+Cut and Machine keep plain spin boxes on purpose — a feed rate is a decision,
+not a shape — as do the footing pairs, which share a row and have no derived
+limit to show. The Model tab's content wants 394 px against 391 px before this
+work: the spin boxes shrank to font-metric width and the slider took the slack.
+
+`sliding` (live, during a drag) is kept separate from `valueChanged` (settled),
+and nothing connects `sliding` yet. That is the seam the live-continuous rebuild
+attaches to, which is the part of "live sliders" still open.
+
 *Three corrections from M-N3's measurements (2026-08-08). This milestone is
 larger than the paragraph above, and two of its steps change output rather than
 delete code.*

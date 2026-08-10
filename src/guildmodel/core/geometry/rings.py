@@ -15,17 +15,21 @@ whose answers must not drift between the two paths.
 `core/solid/features.py` re-exports them under their old private names, so the
 B-Rep path and its tests are untouched.
 
-**One exception, stated because it is a wart.** `offset_aperture` samples the
-*exact* parallel curve, and the only sampler we have is OCCT's. It imports that
-lazily, so this module still costs nothing to import — but a groove build on the
-mesh path does pull OCP in. Replacing that sampler is M-N1 work; until then the
-rim lip is the one place the mesh kernel is not yet independent.
-
 Moving it here surfaced the hazard immediately: `nurbs_edge` came along as an
 undefined name, `offset_aperture`'s bare `except Exception` swallowed the
 `NameError`, and every lip ring silently fell back to the Shapely buffer with no
 curve attached. Valid output, quietly worse — the same shape as the two
 swallowed-exception bugs in BUILDPLAN-NEW §3.2.
+
+**A second undefined name came with it and survived a whole milestone**
+*(found 2026-08-10)*. `lip_partition`'s own guard raised `BooleanError`, which
+lives in `solid/occ.py` and was never imported here — importing it would pull in
+the 264 MB this module exists to avoid. Nothing swallowed this one, so instead
+of the guard's sentence the maker got `NameError: name 'BooleanError' is not
+defined`, on the gabriel at a groove 1.55 mm deep and the aviator at 1.90 mm —
+both inside the 0.2–2.0 mm the panel offered. The class now lives here, where
+the shared geometry that raises it lives, and `occ` re-exports it so every
+`except BooleanError` in `core/solid` still catches exactly what it caught.
 """
 from __future__ import annotations
 
@@ -36,9 +40,22 @@ from shapely.prepared import prep
 from .curves import OffsetCurve
 from .regions import CastlePartition
 
-__all__ = ["carry_anchors", "crest_inside", "inward_normals", "lip_body",
-           "lip_partition", "offset_aperture", "ring_stations",
+__all__ = ["BooleanError", "carry_anchors", "crest_inside", "inward_normals",
+           "lip_body", "lip_partition", "offset_aperture", "ring_stations",
            "thickness_limit"]
+
+
+class BooleanError(RuntimeError):
+    """A geometry operation did not complete, or completed into an invalid shape.
+
+    Raised rather than returned because every caller treats a failed boolean as
+    fatal to the build: a silently-dropped feature would post G-code for
+    geometry the maker never asked for.
+
+    Here rather than in either kernel because both kernels and this shared
+    geometry raise it, and `core/solid/occ.py` — its home until 2026-08-10 —
+    cannot be imported from a mesh-kernel build.
+    """
 
 
 def ring_stations(ring: LineString, n: int):

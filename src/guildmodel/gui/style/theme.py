@@ -165,6 +165,8 @@ QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #8a6d2f; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
 QLabel#placeholderLabel { font-size: 13px; color: #d4a840; }
+/* A Model/Stock value outside the range its stock and neighbours allow. */
+QLabel#outOfRangeMark { color: #b3541e; font-weight: bold; background: transparent; }
 QTextEdit#logView {
     background-color: #1a1a1a;
     color: #ffd580;
@@ -320,6 +322,8 @@ QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #9a9382; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
 QLabel#placeholderLabel { font-size: 13px; color: #8a7a5a; }
+/* A Model/Stock value outside the range its stock and neighbours allow. */
+QLabel#outOfRangeMark { color: #e8a33d; font-weight: bold; background: transparent; }
 QTextEdit#logView {
     background-color: #1a1a1a;
     color: #ffd580;
