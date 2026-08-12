@@ -35,6 +35,23 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from guildmodel.gui.style import theme
 from guildmodel.gui import icons as icons_mod
 
+#: Turntable step rate, ms. 40 ms is 25 steps a second — smooth enough that the
+#: motion reads as rotation rather than stepping, and slow enough that a frame
+#: which takes 20 ms to draw still keeps up. The step *angle* is derived from
+#: this and the chosen speed, so a dropped frame slows the spin rather than
+#: skipping part of it.
+TURNTABLE_INTERVAL_MS = 40
+
+#: Turntable speed range and default, degrees per second.
+#:
+#: A record deck's 33 1/3 rpm is 200 deg/s, which is far too fast to inspect a
+#: surface by — the icon is the joke, not the specification. The default is one
+#: revolution every 12 seconds; the slow end is one a minute, for watching a
+#: single blend run past the light.
+TURNTABLE_MIN_DEG_S = 6
+TURNTABLE_MAX_DEG_S = 90
+TURNTABLE_DEFAULT_DEG_S = 30
+
 _MODEL_PLACEHOLDER = "Click 'Build 3D' to generate the preview mesh"
 _UNCUT_RGB = (0.85, 0.33, 0.31)      # red — material left proud of the target
 _GOUGE_RGB = (0.94, 0.68, 0.31)      # orange — cut below the target surface
@@ -152,6 +169,34 @@ class Viewer3D(QWidget):
             tb.addWidget(b)
             self._cam_buttons[icon_name] = (b, label)
         self._apply_camera_icons()
+
+        # Turntable (2026-08-12): spin the part about the view's own up axis so
+        # a maker can watch a surface run past the light instead of dragging back
+        # and forth over it. Lives beside the camera presets because it is a
+        # camera control and belongs to both viewer modes.
+        self._turn_btn = QPushButton()
+        self._turn_btn.setCheckable(True)
+        self._turn_btn.setFixedHeight(22); self._turn_btn.setFixedWidth(24)
+        self._turn_btn.setIconSize(QSize(18, 18))
+        self._turn_btn.toggled.connect(self.set_turntable)
+        tb.addSpacing(4)
+        tb.addWidget(self._turn_btn)
+
+        self._turn_speed = QSlider(Qt.Orientation.Horizontal)
+        self._turn_speed.setRange(TURNTABLE_MIN_DEG_S, TURNTABLE_MAX_DEG_S)
+        self._turn_speed.setValue(TURNTABLE_DEFAULT_DEG_S)
+        self._turn_speed.setFixedWidth(58)
+        self._turn_speed.setFixedHeight(18)
+        self._turn_speed.valueChanged.connect(self._on_turn_speed)
+        tb.addWidget(self._turn_speed)
+        self._apply_turntable_icon()
+        self._on_turn_speed(TURNTABLE_DEFAULT_DEG_S)
+
+        #: Fires the turntable's steps. Started only while the button is checked
+        #: *and* the viewer is on screen — see `hideEvent`.
+        self._turn_timer = QTimer(self)
+        self._turn_timer.setInterval(TURNTABLE_INTERVAL_MS)
+        self._turn_timer.timeout.connect(self._turn_step)
 
         self._strip_sep = _StripSep()
         tb.addSpacing(6); tb.addWidget(self._strip_sep); tb.addSpacing(6)
@@ -333,6 +378,7 @@ class Viewer3D(QWidget):
         self._dark = dark
         self._apply_camera_icons()
         self._apply_stage_icons()
+        self._apply_turntable_icon()
         # Match the main toolbar's ToolSep tints (_style_toolbar_separators).
         self._strip_sep.set_color("#8d7030" if dark else "#383838")
         self.refresh_appearance()
@@ -482,15 +528,22 @@ class Viewer3D(QWidget):
         """Re-render when this page becomes current — the QtInteractor loses its GL
         context while hidden (the first frame after a view switch is otherwise blank)."""
         super().showEvent(event)
+        if self.turntable_active() and not self._turn_timer.isActive():
+            self._turn_timer.start()
         self._safe_render()
 
     def hideEvent(self, event) -> None:
         """Pause playback when the viewer leaves the screen (a view switch / minimise
         / close): animating an invisible viewport renders into a zero-size buffer
-        (incomplete-framebuffer noise) and wastes cycles."""
+        (incomplete-framebuffer noise) and wastes cycles.
+
+        The turntable stops for the same reason and on the same terms — the button
+        stays checked, so it picks up again in `showEvent` rather than making the
+        maker re-arm it after every trip to the 2D view."""
         if self._play_timer.isActive():
             self._play_timer.stop()
             self._play_btn.setText("▶")
+        self._turn_timer.stop()
         super().hideEvent(event)
 
     # ------------------------------------------------------------------ mode
@@ -1214,3 +1267,103 @@ class Viewer3D(QWidget):
 
     def _cam_reset(self):
         if self._plotter: self._plotter.reset_camera()
+
+    # -------------------------------------------------------------- turntable
+
+    def _apply_turntable_icon(self) -> None:
+        icon = icons_mod.themed_icon("view-turntable", self._dark)
+        if icon is not None:
+            self._turn_btn.setIcon(icon)
+            self._turn_btn.setText("")
+        else:
+            self._turn_btn.setText("LP")
+
+    def _on_turn_speed(self, value: int) -> None:
+        secs = 360.0 / max(int(value), 1)
+        self._turn_speed.setToolTip(
+            f"Turntable speed — {int(value)}°/s, one turn every {secs:.0f} s")
+        self._turn_btn.setToolTip(
+            "Turntable — spin the view about its own up axis  (Alt+T)\n"
+            f"{int(value)}°/s, one turn every {secs:.0f} s")
+
+    def turntable_speed(self) -> int:
+        """Degrees per second, as the slider currently reads."""
+        return int(self._turn_speed.value())
+
+    def set_turntable_speed(self, value: int) -> None:
+        self._turn_speed.setValue(
+            max(TURNTABLE_MIN_DEG_S, min(TURNTABLE_MAX_DEG_S, int(value))))
+
+    def turntable_active(self) -> bool:
+        """Whether the turntable is *engaged* — not whether it is stepping.
+
+        The two differ while the viewer is off screen: the timer stops so nothing
+        renders into a hidden buffer, but the maker's choice is still on and
+        resumes when the page comes back.
+        """
+        return self._turn_btn.isChecked()
+
+    def set_turntable(self, on: bool) -> None:
+        """Engage or release the turntable.
+
+        Idempotent, and safe before the plotter exists — the timer simply finds
+        nothing to turn and `_turn_step` returns.
+        """
+        on = bool(on)
+        if self._turn_btn.isChecked() != on:
+            self._turn_btn.setChecked(on)     # re-enters through the toggle
+            return
+        if on and self.isVisible():
+            self._turn_timer.start()
+        elif not on:
+            self._turn_timer.stop()
+
+    def toggle_turntable(self) -> None:
+        self.set_turntable(not self.turntable_active())
+
+    def _turn_step(self) -> None:
+        """One step of the spin.
+
+        `Azimuth` rotates the camera about its **view-up vector through the focal
+        point**, which is what makes this a turntable in the maker's current view
+        rather than a spin about world Z: the up vector is whatever the view has,
+        so tipping the part first turns it about the axis it looks like it
+        should.
+
+        **VTK's `Azimuth`, not PyVista's `azimuth`.** They are not two spellings
+        of one thing. `Camera.azimuth` is a *property* holding an absolute angle,
+        and its setter rewinds the previous value before applying the new one
+        (`self.Azimuth(-self._azimuth)`), so driving a continuous spin through it
+        would both accumulate forever and undo whatever the maker had just done
+        with the mouse. `Azimuth(delta)` is the relative rotation a turntable
+        wants, and it composes with a drag instead of fighting it.
+
+        **And no `OrthogonalizeViewUp`.** It reads like cheap insurance against
+        the up vector drifting, and it is the difference between a turntable and
+        a tumble. `Azimuth` preserves the angle between the view direction and
+        the up vector, so nothing drifts and there is nothing to guard; squaring
+        the up vector to the view direction *first* re-aims the axis every step,
+        and the camera walks off its own elevation. Measured from an iso-ish pose
+        (0, -120, 90) over a 90-degree sweep: with it, the camera ends at height
+        4.8 mm having swept 90.2 degrees; without it, height holds at 90.0 and
+        the sweep is 90.000. The distance to the focal point is exact either way,
+        which is why this needs a tipped camera to see at all.
+        """
+        if self._plotter is None:
+            return
+        try:
+            cam = self._plotter.camera
+            cam.Azimuth(self.turntable_speed() * TURNTABLE_INTERVAL_MS / 1000.0)
+            self._safe_render()
+        except Exception as exc:                                 # noqa: BLE001
+            # A spinning camera must never be able to take the app down: the
+            # plotter can be torn down between the timer firing and this running.
+            #
+            # **Stopping quietly is how the first version of this shipped broken.**
+            # `cam.azimuth(...)` raised `TypeError: 'float' object is not callable`
+            # on every tick, this swallowed it, and the symptom was a button that
+            # toggled and a part that did not move. So the guard stays and the
+            # silence does not.
+            self._turn_timer.stop()
+            self._turn_btn.setChecked(False)
+            print(f"[viewer] turntable stopped: {type(exc).__name__}: {exc}")

@@ -258,7 +258,7 @@ def test_splay_crest_tables_are_smooth_on_narrow_rims():
                        crest_deviation_end_mm=2.0)
     tables = _splay_crest_tables(body, z_pre, inside, xs[0], ys[0], res, p)
     assert tables is not None
-    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab, rim_tab = tables
     step = u_tab[1] - u_tab[0]
     # crest offsets: no per-sample teeth (the rim clamp varies along the run)
     assert (c_tab > 0.5).any()                 # the clamp actually engaged
@@ -287,7 +287,7 @@ def test_splay_crest_tables_smooth_on_demo_steep_toric(demo, base_relief):
     tables = _splay_crest_tables(part.body, f.z, base_relief.inside,
                                  f.origin[0], f.origin[1], f.resolution, p)
     assert tables is not None
-    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab, rim_tab = tables
     step = u_tab[1] - u_tab[0]
     assert np.abs(np.diff(c_tab)).max() <= _CREST_MAX_SLOPE * step + 1e-9
     assert np.abs(np.diff(h_tab)).max() <= 0.35   # no crater teeth in the anchors

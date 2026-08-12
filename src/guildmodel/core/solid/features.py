@@ -60,7 +60,8 @@ __all__ = ["anterior_bezel_features", "apply_edge_features",
            "apply_posterior_features", "apply_surface_features",
            "bezel_cutter", "bezel_cutters", "edge_feature_cutters",
            "groove_cutters", "hinge_pocket_cutters", "independent_cutters",
-           "resolved_edge_cutters", "scoop_cutter", "splay_cutter"]
+           "resolved_edge_cutters", "scoop_cutter", "splay_cutter",
+           "splay_cutters"]
 
 #: Sections lofted around an aperture ring for a bezel. The demo's lens rings
 #: are ~132 mm round, so this is one section per ~0.73 mm.
@@ -311,10 +312,15 @@ def apply_surface_features(solid: TopoDS_Shape, partition: CastlePartition,
     """
     splay = castle.pad_splay
     if splay.enabled:
-        try:
-            solid = cut(solid, splay_cutter(solid, partition.body, splay))
-        except BooleanError:
-            pass
+        # One cutter per span: a non-contiguous splay is two. Both are built
+        # against the same solid and then cut in turn, which is safe here and
+        # would not be for the splay/scoop pair below — those two read the
+        # surface each other leaves, these two do not overlap at all.
+        for tool in splay_cutters(solid, partition.body, splay):
+            try:
+                solid = cut(solid, tool)
+            except BooleanError:
+                pass
 
     scoop = castle.bridge_relief
     if scoop.enabled:
@@ -545,9 +551,34 @@ def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
 
 # ---------------------------------------------------------------- pad splay
 
-def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
-                 ) -> TopoDS_Shape:
+def splay_cutters(solid: TopoDS_Shape, body: Polygon, p,
+                  res_hint: float = 0.15) -> list[TopoDS_Shape]:
+    """One splay cutter per span — two when the splay is non-contiguous.
+
+    The mesh path's `model.features.splay_cutters` and this are the same
+    decision: a keyhole bridge needs *no tool over the gap*, and a single loft
+    with a flat middle still has sections standing there.
+    """
+    from ..relief.features import _bottom_center_station, splay_spans
+
+    _ring, L, _s0 = _bottom_center_station(body)
+    run = min(float(p.run_mm), 0.45 * L)
+    out = []
+    for span in splay_spans(p, run):
+        try:
+            out.append(splay_cutter(solid, body, p, res_hint, span=span))
+        except BooleanError:
+            continue
+    return out
+
+
+def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
+                 span: tuple[float, float] | None = None) -> TopoDS_Shape:
     """The pad splay as a swept chamfer along the outline's bottom-center run.
+
+    `span` is the signed station interval to loft, defaulting to the whole run;
+    `splay_cutters` builds one per span. The toric angle blend still measures
+    from bottom-centre either way.
 
     **Most of the raster's implementation does not survive, and should not.**
     `_splay_crest_tables` is an inventory of fixes for sampling artifacts — a
@@ -573,15 +604,19 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     from shapely import distance as _distance, points as _points
     from shapely.ops import unary_union
 
-    from ..relief.features import _bottom_center_station, _splay_angles_deg
+    from ..relief.features import (_bottom_center_station, _splay_angles_deg,
+                                   splay_weight)
 
     ring, L, s0 = _bottom_center_station(body)
     run = min(float(p.run_mm), 0.45 * L)
     if run <= res_hint or p.crest_deviation_center_mm <= 0.0:
         raise BooleanError("degenerate pad splay")
+    lo, hi = (-run, run) if span is None else span
+    if hi - lo <= res_hint:
+        raise BooleanError("degenerate pad splay span")
 
-    n = max(9, int(run * 2.0 * EDGE_SECTIONS_PER_MM))
-    u = np.linspace(-run, run, n)
+    n = max(9, int((hi - lo) * EDGE_SECTIONS_PER_MM))
+    u = np.linspace(lo, hi, n)
     au = np.abs(u)
     stations = np.mod(s0 + u, L)
 
@@ -611,14 +646,9 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     c = _crest_inside(body, pts, inward, c)
 
     tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
-    feather = min(max(float(p.feather_mm), 0.0), run)
-    if feather > 0.0:
-        w = np.where(au <= run - feather, 1.0,
-                     0.5 * (1.0 + np.cos(np.pi * (au - (run - feather)) / feather)))
-    else:
-        w = np.ones_like(au)
+    w = splay_weight(u, [(lo, hi)], p.feather_mm)
 
-    drops = np.maximum(c * tan_t * w, MIN_TAPER_DROP_MM)
+    drops = np.maximum(c * tan_t, MIN_TAPER_DROP_MM)
     widths = np.maximum(c, MIN_TAPER_DROP_MM)
     # Anchored at the CREST, not at the outline edge — the splay is defined as
     # falling *from* the crest toward the edge, and the crest sits up to
@@ -632,6 +662,19 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15
     # at the local surface height. Each is anchored where its own definition
     # pins it.
     anchors = surface_z_at(solid, pts + inward * np.maximum(c, _RIM_PROBE_MM)[:, None])
+    # The feather LIFTS the section instead of shrinking it — see `splay_weight`.
+    # Full width, full angle, raised clear of the surface as the weight falls, so
+    # the cut runs out because the plane has left the material rather than
+    # because the tool has run out of size.
+    #
+    # `c * tan_t` clears the plane's crest end; `rim - anchors` clears its low
+    # one, where the frame's surface has climbed back up under it. Both are
+    # needed — see the mesh path's note for what leaving the second one out
+    # measured.
+    rim = _carry_anchors(
+        surface_z_at(solid, pts + inward * _RIM_PROBE_MM),
+        float(p.anterior_clamp_mm))
+    anchors = anchors + (1.0 - w) * (c * tan_t + np.maximum(0.0, rim - anchors))
     floor = float(p.anterior_clamp_mm)
     # A crest ray that finds nothing means no material to splay at that station,
     # not material sitting at z=0 — see `_carry_anchors`. `_crest_inside` keeps
@@ -681,19 +724,21 @@ SCOOP_SECTION_POINTS = 28
 
 
 def _scoop_section(y: float, half_w: float, depth: float, anchor: float,
-                   top: float, n: int = SCOOP_SECTION_POINTS):
+                   top: float, r_ext: float = 0.0, r_int: float = 0.0,
+                   n: int = SCOOP_SECTION_POINTS):
     """One cross-section of the conic scoop, in the plane of constant y.
 
-    A half-ellipse of half-width `half_w` and depth `depth`, closed upward.
-    That is the cone the raster was imitating: the raster substitutes a cosine
-    bell — `0.5 + 0.5 cos(pi x / r)` — which the report lists among the
-    compensating blurs, chosen because it is tangent to the surface at its edges
-    and so hides the facets a sampled cone showed. A real cone meets the surface
-    at an angle, and that meeting is an edge, which is the point.
+    The footing-style U `geometry.blends.scoop_drop` builds — an exterior
+    round-over at the rim, an interior fillet at the trough, a straight ramp
+    between — of half-width `half_w` and depth `depth`, closed upward. All three
+    kernels call that one function, so the section they loft, sweep and raster
+    is the same section.
     """
-    xs = np.linspace(-half_w, half_w, n)
-    zs = anchor - depth * np.sqrt(
-        np.maximum(1.0 - (xs / max(half_w, 1e-9)) ** 2, 0.0))
+    from ..geometry.blends import scoop_drop, scoop_section_x
+
+    xs = scoop_section_x(half_w, n)
+    zs = anchor - scoop_drop(xs, max(half_w, 1e-9), max(depth, 1e-9),
+                             r_ext, r_int)
 
     mp = BRepBuilderAPI_MakePolygon()
     for x, z in zip(xs, zs):
@@ -753,7 +798,9 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     ds = np.maximum(ds, MIN_TAPER_DROP_MM)
     top = float(anchors.max()) + CUT_MARGIN_MM
 
-    sections = [_scoop_section(float(y), float(r), float(d), float(a), top)
+    r_ext, r_int = float(p.exterior_radius_mm), float(p.interior_radius_mm)
+    sections = [_scoop_section(float(y), float(r), float(d), float(a), top,
+                               r_ext, r_int)
                 for y, r, d, a in zip(ys, rs, ds, anchors)]
 
     # One prismatic station past the base, because `y_base` is *on* the body's
@@ -768,7 +815,8 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     # y_base is the highest body point on the centreline, so the extension runs
     # through empty space.
     sections.append(_scoop_section(float(ys[-1]) + CUT_MARGIN_MM, float(rs[-1]),
-                                   float(ds[-1]), float(anchors[-1]), top))
+                                   float(ds[-1]), float(anchors[-1]), top,
+                                   r_ext, r_int))
 
     ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
     for wire in sections:

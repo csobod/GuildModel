@@ -214,6 +214,47 @@ def _footing_spans(
     return max(0.0, -a), max(0.0, b)
 
 
+#: Below this a blend is the terrace it lands on, mm.
+#:
+#: `_footing_spans` answers where the blend *touches down*, and it touches down
+#: tangentially — so its last stretch runs flat to within microns of the terrace
+#: and whether a tool covers it or not is the same part. Anything that needs to
+#: know how far the blend genuinely reaches wants `_footing_reach` and this
+#: number instead.
+#:
+#: 0.02 mm: under a seventh of the finest CAM cell (0.15 mm), under the
+#: mesh-against-raster agreement the parity gates now measure (0.03 mm), and two
+#: orders under the 2.4 mm fin that made anyone ask the question.
+FOOTING_FLAT_TOL_MM = 0.02
+
+
+def _footing_reach(
+    delta_h: float, r_ext: float, r_int: float, first: str = "interior",
+    tol: float = FOOTING_FLAT_TOL_MM, n: int = 512,
+) -> tuple[float, float]:
+    """(reach_high, reach_low): how far each half departs from its own terrace.
+
+    Sampled rather than solved. The closed form is one line per arc —
+    `span - sqrt(2*r*tol - tol**2)` — and it is right only while the tangency
+    it assumes exists, which `_footing_centers` gives up on in exactly the cases
+    worth being careful about (a step shorter than its radii, a radius that
+    cannot reach the corner, a degenerate edge). 512 samples of the profile the
+    part is actually built from cannot be wrong about any of them, and this runs
+    once per seam per build.
+    """
+    span_hi, span_lo = _footing_spans(delta_h, r_ext, r_int, first)
+    out = []
+    for span, sign, terrace in ((span_hi, -1.0, delta_h), (span_lo, 1.0, 0.0)):
+        if span <= 0.0:
+            out.append(0.0)
+            continue
+        s = sign * np.linspace(0.0, span, n)
+        z = _footing_z(s, delta_h, 0.0, r_ext, r_int, first)
+        off = np.abs(s)[np.abs(z - terrace) > tol]
+        out.append(float(off.max()) if off.size else 0.0)
+    return out[0], out[1]
+
+
 def _footing_z(
     s: np.ndarray,
     h_high: float,

@@ -380,11 +380,28 @@ def _finishing_limits(castle: CastleParams) -> dict[str, Limit]:
     splay = min(z.bridge_mm, z.nosepad_mm)
     rim = min(z.eyewire_superior_mm, z.eyewire_inferior_mm)
     nothing = "the feature carves nothing at or above the height it cuts into"
+    scoop = castle.bridge_relief
+    # Past this on the SUM of the two radii the U has no straight ramp left and
+    # `geometry.blends._fit_radii` shrinks both to fit — the shape stops
+    # responding to the slider. Reported per-radius against the other one, so the
+    # number a maker sees is the headroom the one they are turning actually has.
+    half_w = max(scoop.width_mm / 2.0, 1e-9)
+    depth = max(scoop.depth_mm, 1e-9)
+    r_sum = (half_w * half_w + depth * depth) / (2.0 * depth)
+    r_full = (f"a wider or shallower scoop is needed for more than this: at "
+              f"{scoop.width_mm:g} x {scoop.depth_mm:g} mm the two radii can "
+              f"total {r_sum:.1f} mm before the U loses its straight wall")
+    gap = "the gap would swallow the whole run, leaving nothing to cut"
     return {
         "pad_splay.anterior_clamp_mm": Limit(0.0, splay, nothing),
+        "pad_splay.gap_mm": Limit(0.0, 2.0 * castle.pad_splay.run_mm, gap),
         "eyewire_bezel.anterior_clamp_mm": Limit(0.0, rim, nothing),
         "bridge_relief.anterior_clamp_mm": Limit(0.0, float(z.bridge_mm), nothing),
         "bridge_relief.depth_mm": Limit(
             0.0, float(z.bridge_mm),
             f"the scoop cannot be deeper than the {z.bridge_mm:g} mm bridge"),
+        "bridge_relief.exterior_radius_mm": Limit(
+            0.0, max(r_sum - scoop.interior_radius_mm, 0.0), r_full),
+        "bridge_relief.interior_radius_mm": Limit(
+            0.0, max(r_sum - scoop.exterior_radius_mm, 0.0), r_full),
     }

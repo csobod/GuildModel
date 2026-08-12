@@ -46,7 +46,8 @@ from .kernel import (ManifoldError, surface_z_at, sweep_sections,
 
 __all__ = ["bezel_cutter", "bezel_cutters", "edge_feature_cutters",
            "groove_cutters", "resolved_edge_cutters", "scoop_cutter",
-           "splay_cutter", "surface_feature_cutters", "v_groove_cutter"]
+           "splay_cutter", "splay_cutters", "surface_feature_cutters",
+           "v_groove_cutter"]
 
 #: Stations around an aperture for a bezel band. Same as the B-Rep path's
 #: `BEZEL_STATIONS`, and pinned by the same argument: what matters is chord
@@ -380,7 +381,30 @@ SCOOP_SECTIONS_PER_MM = 2.0
 SCOOP_SECTION_POINTS = 28
 
 
-def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
+def splay_cutters(mesh, body: Polygon, p, res_hint: float = 0.15) -> list[Manifold]:
+    """One splay cutter per span — two when the splay is non-contiguous.
+
+    **Two bodies, not one strip with a flat middle.** A single sweep across the
+    keyhole would still have a section standing over it, and the section's drop
+    is floored at `MIN_TAPER_DROP_MM` so it would skim the very shape the gap
+    exists to protect. Sweeping each span separately means there is no tool over
+    the gap at all.
+    """
+    from ..relief.features import _bottom_center_station, splay_spans
+
+    _ring, total, _s0 = _bottom_center_station(body)
+    run = min(float(p.run_mm), 0.45 * total)
+    out = []
+    for span in splay_spans(p, run):
+        try:
+            out.append(splay_cutter(mesh, body, p, res_hint, span=span))
+        except ManifoldError:
+            continue
+    return out
+
+
+def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
+                 span: tuple[float, float] | None = None) -> Manifold:
     """The pad splay as a swept chamfer along the outline's bottom-centre run.
 
     Falls from a crest — an inward offset of the outline — toward the outline
@@ -389,6 +413,11 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
     the outline is not into the material at the bottom centre, where the frame
     has the nose notch, and a crest out in that notch reads as no material at
     all.
+
+    `span` is the signed station interval to sweep, defaulting to the whole run.
+    A non-contiguous splay has two of them and `splay_cutters` builds both; the
+    toric angle blend still measures from bottom-centre either way, so a half
+    cut on its own is the same surface it would have been as part of the whole.
     """
     import math
 
@@ -396,15 +425,19 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
     from shapely.ops import unary_union
 
     from ..geometry.rings import crest_inside
-    from ..relief.features import _bottom_center_station, _splay_angles_deg
+    from ..relief.features import (_bottom_center_station, _splay_angles_deg,
+                                   splay_weight)
 
     ring, total, s0 = _bottom_center_station(body)
     run = min(float(p.run_mm), 0.45 * total)
     if run <= res_hint or p.crest_deviation_center_mm <= 0.0:
         raise ManifoldError("degenerate pad splay")
+    lo, hi = (-run, run) if span is None else span
+    if hi - lo <= res_hint:
+        raise ManifoldError("degenerate pad splay span")
 
-    n = max(9, int(run * 2.0 * EDGE_SECTIONS_PER_MM))
-    u = np.linspace(-run, run, n)
+    n = max(9, int((hi - lo) * EDGE_SECTIONS_PER_MM))
+    u = np.linspace(lo, hi, n)
     au = np.abs(u)
     stations = np.mod(s0 + u, total)
 
@@ -431,19 +464,37 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
     crest = crest_inside(body, pts, into, np.maximum(crest, 0.0))
 
     tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
-    feather = min(max(float(p.feather_mm), 0.0), run)
-    if feather > 0.0:
-        weight = np.where(
-            au <= run - feather, 1.0,
-            0.5 * (1.0 + np.cos(np.pi * (au - (run - feather)) / feather)))
-    else:
-        weight = np.ones_like(au)
 
-    drops = np.maximum(crest * tan_t * weight, MIN_TAPER_DROP_MM)
+    drops = np.maximum(crest * tan_t, MIN_TAPER_DROP_MM)
     widths = np.maximum(crest, MIN_TAPER_DROP_MM)
 
     anchors = surface_z_at(mesh, pts + into * np.maximum(crest,
                                                          _RIM_PROBE_MM)[:, None])
+    # The feather LIFTS the section instead of shrinking it — see `splay_weight`.
+    # Full width, full angle, raised clear of the surface by its own depth as the
+    # weight falls, so the cut runs out because the plane has left the material
+    # rather than because the tool has run out of size.
+    #
+    # `crest * tan_t`, not `drops`: the lift is this station's *own* depth, and
+    # `drops` has already been floored at `MIN_TAPER_DROP_MM`. Where the crest
+    # has gone to zero on its own — the outer run end with
+    # `crest_deviation_end_mm = 0` — the floored value would lift a section that
+    # has no depth to lift, off a surface it was sitting flush on, and hand the
+    # sweep a degenerate end cap: measured as a zero-length edge at u = run
+    # exactly, on the outline, at the eyewire terrace height.
+    #
+    # **Plus however far the surface climbs back up under the plane.** Its own
+    # depth clears the plane's *crest* end and nothing else: the plane falls
+    # `crest * tan_t` on its way out to the rim, and the frame's surface does not
+    # oblige by falling with it. Where the surface rises toward the outline the
+    # fully-"lifted" plane still cuts the rim, which measured 1.07 mm of cut at
+    # a station whose weight was 0.038 — the run-out looked, from the outside,
+    # exactly like the shelf it replaced. So the lift is what it takes to clear
+    # the *low* end of the plane too, and `RIM_PROBE_MM` is where that is read.
+    rim = carry_anchors(surface_z_at(mesh, pts + into * _RIM_PROBE_MM),
+                        float(p.anterior_clamp_mm))
+    anchors = anchors + ((1.0 - splay_weight(u, [(lo, hi)], p.feather_mm))
+                        * (crest * tan_t + np.maximum(0.0, rim - anchors)))
     floor = float(p.anterior_clamp_mm)
     # No material at a station means nothing to splay. Anchoring at the clamp
     # collapses the section there; 0.0 would have cut the whole thickness away,
@@ -462,15 +513,17 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15) -> Manifold:
 
 
 def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
-    """The bridge relief as a lofted elliptical cone running on Y.
+    """The bridge relief as a lofted cone running on Y.
 
     Base widest and deepest at the top edge of the bridge on the centreline,
-    tapering to a tip down the lower bridge. Sections are half-ellipses closed
-    upward. Ordered around the section boundary — left to right along the
-    ellipse, then the two corners at `top` — which is what `sweep_sections`
-    needs to build the strip.
+    tapering to a tip down the lower bridge. Sections are the footing-style U
+    `geometry.blends.scoop_drop` builds, closed upward. Ordered around the
+    section boundary — left to right along the U, then the two corners at
+    `top` — which is what `sweep_sections` needs to build the strip.
     """
     import math
+
+    from ..geometry.blends import scoop_drop, scoop_section_x
 
     half_w = float(p.width_mm) / 2.0
     depth = float(p.depth_mm)
@@ -501,11 +554,13 @@ def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
     ds = np.maximum(ds, MIN_TAPER_DROP_MM)
     top = float(anchors.max()) + CUT_MARGIN_MM
 
-    xs = np.linspace(-1.0, 1.0, SCOOP_SECTION_POINTS)
+    re_mm, ri_mm = float(p.exterior_radius_mm), float(p.interior_radius_mm)
+
+    xs = scoop_section_x(1.0, SCOOP_SECTION_POINTS)
 
     def section(y, r, d, a):
         px = xs * r
-        pz = a - d * np.sqrt(np.maximum(1.0 - xs ** 2, 0.0))
+        pz = a - scoop_drop(px, r, d, re_mm, ri_mm)
         lower = np.column_stack([px, np.full_like(px, y), pz])
         return np.vstack([lower,
                           [[r, y, top], [-r, y, top]]])

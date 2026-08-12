@@ -87,6 +87,11 @@ DEFAULTS: dict = {
     # Keeping all three alive is not indecision — building the same part three
     # ways is what has caught every silent defect this season.
     "model_kernel":          "mesh",
+    # 3D viewer turntable speed, degrees per second. Persisted because it is a
+    # working preference rather than part of a design — a maker who likes a slow
+    # turn should not re-set it every session. The *engaged* state is not saved:
+    # opening a project into a spinning viewport would be a surprise.
+    "turntable_speed":       30,
     # Superseded by `model_kernel`; read once on load to carry a maker's
     # existing choice over, then dropped. See `_migrate`.
     "use_solid_model":       False,

@@ -57,6 +57,11 @@ _CANON = [
     ("hinge", "Hinge Pockets"),
     ("rough", "Rough Relief"),
     ("fine", "Fine Relief"),
+    # The posterior features became their own op in 2026-08-11. Without an entry
+    # here its moves are attributed to whatever section preceded them — Fine
+    # Relief — and the per-op breakdown silently mis-bills the one op most likely
+    # to be carrying a different (slower) tool.
+    ("features", "Features"),
     ("eyewire", "Eyewires"),
     ("perimeter", "Perimeter"),
 ]

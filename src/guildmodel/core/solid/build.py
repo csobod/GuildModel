@@ -32,7 +32,8 @@ from shapely.geometry import Point
 from ..geometry.heights import SWEEP_MARGIN_MM, zone_heights
 from ..geometry.regions import CastlePartition, ZoneEdge
 from ..project.schema import CastleParams, FootingFillet
-from ..relief.castle import _footing_spans, _footing_z
+from ..relief.castle import (_footing_reach, _footing_spans,
+                             _footing_z)
 from .occ import (
     BooleanError,
     common,
@@ -140,6 +141,7 @@ def body_prism(partition: CastlePartition, height: float) -> TopoDS_Shape:
 # their old private names: same functions, and duplicating them is how two
 # kernels start blending the same seam two different ways.
 from ..geometry.footings import (                                # noqa: E402
+    cap_leads as _cap_leads,
     cut_stations as _stations,
     orient_high_side as _orient_high_side,
 )
@@ -237,8 +239,8 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
     if h_high - h_low < 1e-9:
         raise BooleanError("no step across this edge")
 
-    pts, perps = _stations(zone_edge.cut, stations)
-    perps = _orient_high_side(partition, pts, perps, names, heights)
+    reach_hi, reach_lo = _footing_reach(h_high - h_low, fillet.exterior_mm,
+                                        fillet.interior_mm, fillet.first)
 
     if zone_prisms is None:
         zone_prisms = {}
@@ -251,7 +253,14 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
         return zone_prisms[name]
 
     out: list[TopoDS_Shape | None] = []
-    for side, zone_name in (("high", hi_name), ("low", lo_name)):
+    for side, zone_name, reach in (("high", hi_name, reach_hi),
+                                   ("low", lo_name, reach_lo)):
+        # Own stations per band: own zone to clear, own reach to clear it over.
+        # See `model.build.footing_tools` for why sharing one lead is wrong.
+        leads = _cap_leads(zone_edge.cut,
+                           [(partition.zone(zone_name).polygon, reach)])
+        pts, perps = _stations(zone_edge.cut, stations, leads)
+        perps = _orient_high_side(partition, pts, perps, names, heights)
         try:
             body = _sweep(pts, [_blend_section(p, pn, h_high, h_low, fillet,
                                                side, top)

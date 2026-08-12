@@ -223,8 +223,17 @@ def footing_tools(partition: CastlePartition, castle: CastleParams,
     the stations are the polyline. At 30 stations along a gentle SCULPT cut the
     two inscribe the same curve well inside the chord tolerance, and the parity
     gate measures that rather than trusting it.
+
+    **Each band gets its own stations**, because each has its own zone to clear
+    and its own reach to clear it over: the carve acts on the high terrace over
+    `reach_high`, the raise on the low one over `reach_low`, and the two differ
+    by a factor of four on a nosepad seam. One shared lead is the longer of the
+    two, which drags each band out over ground that is not its business — and on
+    the aviator that was 2.6 mm of raise-side reach spent on a carve band that
+    needed 1.0.
     """
-    from ..geometry.footings import cut_stations, orient_high_side
+    from ..geometry.footings import cap_leads, cut_stations, orient_high_side
+    from ..relief.castle import _footing_reach
 
     carve: dict[str, list[Manifold]] = {}
     raise_: dict[str, list[Manifold]] = {}
@@ -243,14 +252,20 @@ def footing_tools(partition: CastlePartition, castle: CastleParams,
         if heights[hi] - heights[lo] < 1e-9:
             continue
 
-        pts, perps = cut_stations(edge.cut, stations)
-        perps = orient_high_side(partition, pts, perps, names, heights)
-        for side, zone, far, into in (("high", hi, top, carve),
-                                      ("low", lo, -CUT_MARGIN_MM, raise_)):
+        reach_hi, reach_lo = _footing_reach(heights[hi] - heights[lo],
+                                            fillet.exterior_mm,
+                                            fillet.interior_mm, fillet.first)
+        for side, zone, far, into, reach in (
+                ("high", hi, top, carve, reach_hi),
+                ("low", lo, -CUT_MARGIN_MM, raise_, reach_lo)):
             try:
                 profile = _blend_profile(heights[hi], heights[lo], fillet, side)
             except ManifoldError:
                 continue
+            leads = cap_leads(edge.cut,
+                              [(partition.zone(zone).polygon, reach)])
+            pts, perps = cut_stations(edge.cut, stations, leads)
+            perps = orient_high_side(partition, pts, perps, names, heights)
             into.setdefault(zone, []).append(
                 swept_profile(pts, perps, [profile] * len(pts), far,
                               closed=False))
@@ -382,7 +397,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     from ..geometry.heights import SWEEP_MARGIN_MM, zone_heights
     from .features import (bezel_cutters, groove_cutters,
                            resolved_edge_cutters, scoop_cutter,
-                           splay_cutter, surface_feature_cutters)
+                           splay_cutters, surface_feature_cutters)
 
     # With the groove on, the visible aperture is the rim *lip* — cut
     # `depth_mm` smaller — and the terraces have to reach it, so the zones grow
@@ -406,12 +421,17 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     # this point sees the same target either way and goes in one pass.
     _report(progress, "Surface features", 0.40)
     for kind, params in surface_feature_cutters(None, partition.body, castle):
-        build = splay_cutter if kind == "splay" else scoop_cutter
+        # The splay may be two bodies (non-contiguous, for a keyhole bridge), so
+        # both features answer with a list and the gap simply produces one fewer.
         try:
-            tool = build(to_trimesh(solid), partition.body, params)
+            if kind == "splay":
+                tools = splay_cutters(to_trimesh(solid), partition.body, params)
+            else:
+                tools = [scoop_cutter(to_trimesh(solid), partition.body, params)]
         except ManifoldError:
             continue
-        solid = subtract_all(solid, [tool])
+        if tools:
+            solid = subtract_all(solid, tools)
 
     _report(progress, "Lens groove", 0.55)
     tools = groove_cutters(partition, castle)

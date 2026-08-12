@@ -79,7 +79,14 @@ def _band_excess(relief, ops, profiles_by_name, default_profile, erode_mm=0.0):
 
 # ------------------------------------------------------------------ band rings
 
-def test_fine_op_gains_feature_band_rings(demo, tools):
+def test_feature_band_rings_are_their_own_op(demo, tools):
+    """The band rings are a **Features** op, not extra Fine Relief passes.
+
+    They were Fine Relief's until 2026-08-11, which meant they were cut with
+    whatever tool finished the terraces. The maker's everyday intent is the
+    opposite — a ball for the chamfers and scoops, an end mill for the hinges,
+    the footing and the sculpting — and that needs its own op to hang a tool on.
+    """
     from guildmodel.core.cam.castle_ops import generate_castle_program
 
     part, hinges = demo
@@ -88,11 +95,72 @@ def test_fine_op_gains_feature_band_rings(demo, tools):
     on = generate_castle_program(_build(demo, _castle(splay=True, bezel=True)),
                                  _castle(splay=True, bezel=True),
                                  hinges, tools["flat_3175"])
-    fine_off = next(op for op in off if op.name == "Fine Relief")
-    fine_on = next(op for op in on if op.name == "Fine Relief")
-    assert len(fine_on.paths) > len(fine_off.paths)
-    # no new ops — the five-op program shape is unchanged
-    assert [op.name for op in on] == [op.name for op in off]
+    assert "Features" not in [op.name for op in off]
+    features = next(op for op in on if op.name == "Features")
+    assert features.paths
+    # The op sits between the fine pass it measures from and the eyewires that
+    # open the apertures — where these rings ran inside Fine Relief.
+    names = [op.name for op in on]
+    assert names.index("Fine Relief") < names.index("Features") < names.index("Eyewires")
+    # Everything else is the program it always was.
+    assert [n for n in names if n != "Features"] == [op.name for op in off]
+
+
+def test_a_zone_at_stock_height_is_reported_as_an_uncut_cap(demo):
+    """The nosepad protrusion a maker sees, explained before the cut.
+
+    The relief passes skip every cell already at stock height — cutting them
+    removes nothing and makes the rings weave in and out of the cap — so such a
+    zone comes off as raw blank standing proud of everything machined around it.
+    **The shipped defaults coincide exactly**: nosepad 10.0 mm on a 6.0 mm blank
+    plus a 4.0 mm pad block, which is 87 uncut cells per nosepad on the demo
+    frame. Not a modelling error — every kernel agrees the tower is that tall —
+    but the maker has no way to know it before the part is in their hand.
+    """
+    from guildmodel.core.cam.castle_ops import unmachined_top_warnings
+    from guildmodel.core.project.schema import CastleParams
+
+    part, hinges = demo
+    default = CastleParams()
+    assert default.zones.nosepad_mm == default.stock.total_pad_height_mm
+
+    warned = unmachined_top_warnings(_build(demo, default), default)
+    assert {w.zone for w in warned} == {"nosepad_od", "nosepad_os"}
+    assert all(w.cells > 0 for w in warned)
+    assert "stand proud" in warned[0].message()
+
+    # Dropping the tower a few tenths gives the tool something to face.
+    lowered = CastleParams()
+    lowered.zones.nosepad_mm = 9.7
+    assert unmachined_top_warnings(_build(demo, lowered), lowered) == []
+
+
+def test_features_op_takes_its_own_tool(demo, tools):
+    """Pinning a ball to Features re-cuts the band on the ball's own
+    cutter-location surface — not the flat's, which would put it through the
+    chamfer — and makes the job read as multi-tool so the post emits the
+    change."""
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.project.schema import CastleCamParams
+
+    part, hinges = demo
+    castle = _castle(splay=True, bezel=True)
+    relief = _build(demo, castle)
+
+    plain = CastleCamParams()
+    pinned = CastleCamParams(op_tools={"Features": "ball_2mm"})
+    assert "ball_2mm" not in plain.tools_in_use()
+    assert "ball_2mm" in pinned.tools_in_use()
+
+    a = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                params=plain, tools_cfg=tools)
+    b = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                params=pinned, tools_cfg=tools)
+    fa = next(op for op in a if op.name == "Features")
+    fb = next(op for op in b if op.name == "Features")
+    assert fa.tool_name == "flat_3175"          # unassigned: follows Fine Relief
+    assert fb.tool_name == "ball_2mm"
+    assert fa.paths != fb.paths
 
 
 def test_band_rings_shrink_chamfer_facets(demo, tools):

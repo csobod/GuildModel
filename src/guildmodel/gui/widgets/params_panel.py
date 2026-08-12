@@ -856,10 +856,24 @@ class ParamsPanel(QTabWidget):
         self.splay_clamp.setToolTip(
             "Cut floor above the anterior face — the edge never gets thinner than this.")
         self.splay_feather = _slider(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
-        self.splay_feather.setToolTip("Blend-out length at each end of the run.")
+        self.splay_feather.setToolTip(
+            "Run the cut out to nothing over this distance at EVERY end of the "
+            "run — including the two inner ends facing the keyhole when the "
+            "splay is non-contiguous.\n"
+            "The chamfer keeps its angle and lifts out of the surface, so the "
+            "cut narrows away instead of flattening into a shelf and stopping.")
         self.splay_blend = _slider(d.crest_blend_mm, 0.0, 6.0, step=0.5, decimals=1)
         self.splay_blend.setToolTip(
             "Round-over radius where the chamfer meets the surface (0 = sharp crest).")
+        self.splay_noncontig = QCheckBox("Non-contiguous (keyhole bridge)")
+        self.splay_noncontig.setChecked(d.non_contiguous)
+        self.splay_noncontig.setToolTip(
+            "Start the cut away from bottom-center, leaving the middle uncut — "
+            "so a keyhole bridge keeps its shape instead of being planed off.")
+        self.splay_gap = _slider(d.gap_mm, 1.0, 40.0, step=0.5, decimals=1)
+        self.splay_gap.setToolTip(
+            "Total uncut width at bottom-center, split evenly either side. "
+            "Each half then runs from here out to the run length.")
         splay.addRow("Run per side:", self.splay_run)
         splay.addRow("Crest at center:", self.splay_dev_center)
         splay.addRow("Crest at ends:", self.splay_dev_end)
@@ -870,12 +884,16 @@ class ParamsPanel(QTabWidget):
         splay.addRow("Crest blend:", self.splay_blend)
         splay.addRow("Min edge thickness:", self.splay_clamp)
         splay.addRow("End feather:", self.splay_feather)
+        splay.addRow("", self.splay_noncontig)
+        splay.addRow("Center gap:", self.splay_gap)
         glay.addLayout(splay)
 
         self.splay_enable.toggled.connect(self._on_splay_toggled)
         self.splay_enable.toggled.connect(self.castle_changed)
         self.splay_toric.toggled.connect(self._on_splay_toric_toggled)
         self.splay_toric.toggled.connect(self.castle_changed)
+        self.splay_noncontig.toggled.connect(self._on_splay_noncontig_toggled)
+        self.splay_noncontig.toggled.connect(self.castle_changed)
         for sb in self._splay_spinboxes():
             sb.valueChanged.connect(self.castle_changed)
         self._on_splay_toggled(d.enabled)
@@ -947,17 +965,35 @@ class ParamsPanel(QTabWidget):
             "Side taper of the cone — steeper reaches the tip sooner.")
         self.bridge_relief_clamp = _slider(g.anterior_clamp_mm, 0.2, 5.0,
                                            step=0.1, decimals=1)
+        self.bridge_relief_rext = _slider(g.exterior_radius_mm, 0.0, 20.0,
+                                          step=0.5, decimals=1)
+        self.bridge_relief_rext.setToolTip(
+            "Convex round-over where the scoop leaves the bridge face — the "
+            "footing's exterior radius, applied to the rim of the depression.")
+        self.bridge_relief_rint = _slider(g.interior_radius_mm, 0.0, 20.0,
+                                          step=0.5, decimals=1)
+        self.bridge_relief_rint.setToolTip(
+            "Concave fillet at the bottom of the U — the footing's interior "
+            "radius. 0 is a sharp V, which no ball tool can finish.")
         groove.addRow("Width:", self.bridge_relief_width)
         groove.addRow("Depth:", self.bridge_relief_depth)
         groove.addRow("Taper angle:", self.bridge_relief_taper)
+        groove.addRow("Exterior radius:", self.bridge_relief_rext)
+        groove.addRow("Interior radius:", self.bridge_relief_rint)
         groove.addRow("Min edge thickness:", self.bridge_relief_clamp)
+        self._bridge_relief_shape = QLabel("")
+        self._bridge_relief_shape.setObjectName("mutedSmallLabel")
+        self._bridge_relief_shape.setWordWrap(True)
+        groove.addRow("", self._bridge_relief_shape)
         glay.addLayout(groove)
 
         self.bridge_relief_enable.toggled.connect(self._on_bridge_relief_toggled)
         self.bridge_relief_enable.toggled.connect(self.castle_changed)
         for sb in self._bridge_relief_spinboxes():
             sb.valueChanged.connect(self.castle_changed)
+            sb.valueChanged.connect(self._refresh_bridge_relief_shape)
         self._on_bridge_relief_toggled(g.enabled)
+        self._refresh_bridge_relief_shape()
 
         lay.addWidget(grp)
 
@@ -1034,7 +1070,32 @@ class ParamsPanel(QTabWidget):
 
     def _bridge_relief_spinboxes(self) -> list[Numeric]:
         return [self.bridge_relief_width, self.bridge_relief_depth,
-                self.bridge_relief_taper, self.bridge_relief_clamp]
+                self.bridge_relief_taper, self.bridge_relief_clamp,
+                self.bridge_relief_rext, self.bridge_relief_rint]
+
+    def _refresh_bridge_relief_shape(self, *_a) -> None:
+        """Say what the U the numbers describe actually comes out as.
+
+        The two radii do not act independently of the width and depth: past
+        `(a**2 + d**2) / 2d` on their sum the section has no straight ramp left
+        and `blends._fit_radii` shrinks both to fit. A maker turning the radius
+        up and seeing the shape stop changing deserves to be told why, and the
+        ramp angle is the number that decides the finishing stepover anyway."""
+        if not hasattr(self, "_bridge_relief_shape"):
+            return
+        from guildmodel.core.geometry.blends import scoop_ramp_angle
+        import math
+        w = self.bridge_relief_width.value()
+        d = self.bridge_relief_depth.value()
+        asked_e = self.bridge_relief_rext.value()
+        asked_i = self.bridge_relief_rint.value()
+        theta, re, ri = scoop_ramp_angle(max(w / 2.0, 1e-9), max(d, 1e-9),
+                                          asked_e, asked_i)
+        txt = f"U wall {math.degrees(float(theta)):.1f}°"
+        if abs(float(re) - asked_e) > 0.05 or abs(float(ri) - asked_i) > 0.05:
+            txt += (f" · radii capped to {float(re):.2f} / {float(ri):.2f} mm "
+                    f"by this width and depth")
+        self._bridge_relief_shape.setText(txt)
 
     def _on_bridge_relief_toggled(self, on: bool) -> None:
         """Grey out the bridge-relief controls when the groove is off."""
@@ -1057,20 +1118,26 @@ class ParamsPanel(QTabWidget):
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
                 self.splay_angle_center, self.splay_angle_middle,
                 self.splay_angle_end, self.splay_blend, self.splay_clamp,
-                self.splay_feather]
+                self.splay_feather, self.splay_gap]
 
     def _on_splay_toggled(self, on: bool) -> None:
         """Grey out the pad-splay controls when the chamfer is off."""
         for sb in self._splay_spinboxes():
             sb.setEnabled(on)
         self.splay_toric.setEnabled(on)
+        self.splay_noncontig.setEnabled(on)
         self._on_splay_toric_toggled(self.splay_toric.isChecked())
+        self._on_splay_noncontig_toggled(self.splay_noncontig.isChecked())
 
     def _on_splay_toric_toggled(self, toric: bool) -> None:
         """Middle/end angles only apply in toric mode."""
         on = self.splay_enable.isChecked() and toric
         self.splay_angle_middle.setEnabled(on)
         self.splay_angle_end.setEnabled(on)
+
+    def _on_splay_noncontig_toggled(self, split: bool) -> None:
+        """The center gap only means anything once the cut is non-contiguous."""
+        self.splay_gap.setEnabled(self.splay_enable.isChecked() and split)
 
     def seed_pad_splay_angle(self, deg: float) -> None:
         """Seed the splay angle from the drawing's forming bridge angle — only
@@ -1134,9 +1201,12 @@ class ParamsPanel(QTabWidget):
             "zones.eyewire_inferior_mm": self.zone_eyewire_inferior,
             "hinge_pocket_depth_mm": self.hinge_pocket_depth,
             "pad_splay.anterior_clamp_mm": self.splay_clamp,
+            "pad_splay.gap_mm": self.splay_gap,
             "eyewire_bezel.anterior_clamp_mm": self.bezel_clamp,
             "bridge_relief.anterior_clamp_mm": self.bridge_relief_clamp,
             "bridge_relief.depth_mm": self.bridge_relief_depth,
+            "bridge_relief.exterior_radius_mm": self.bridge_relief_rext,
+            "bridge_relief.interior_radius_mm": self.bridge_relief_rint,
             "lens_groove.anterior_offset_mm": self.groove_offset,
             "lens_groove.depth_mm": self.groove_depth,
             "lens_groove.width_mm": self.groove_width,
@@ -1702,7 +1772,12 @@ class ParamsPanel(QTabWidget):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         names = _tool_names()
         self.op_tool_combos: dict[str, QComboBox] = {}
-        for op in POSTERIOR_OPS:
+        # "Features" is not in POSTERIOR_OPS (it only exists when a posterior
+        # feature is on, and listing it there would make every job read as
+        # multi-tool — the same reasoning that keeps "Lens Groove" out). It gets
+        # a selector regardless, because picking a ball for the features and an
+        # end mill for everything else is the everyday multi-tool job.
+        for op in (*POSTERIOR_OPS, "Features"):
             cb = QComboBox()
             cb.addItem(_SAME_AS_GLOBAL)
             cb.addItems(names)
@@ -1712,6 +1787,11 @@ class ParamsPanel(QTabWidget):
             cb.currentIndexChanged.connect(self.cam_changed)
             self.op_tool_combos[op] = cb
             form.addRow(f"{op}:", cb)
+        self.op_tool_combos["Features"].setToolTip(
+            "Tool for the posterior features (pad splay, eyewire bezel, bridge "
+            "relief, edge features). '(same as Tool)' follows Fine Relief — the "
+            "tool these were cut with before they became their own operation. "
+            "A ball is what finishes a chamfer toe or a scoop trough.")
         lay.addWidget(grp)
 
     def refresh_tool_lists(self) -> None:
@@ -2027,7 +2107,8 @@ class ParamsPanel(QTabWidget):
     # never appears in the program, and its checkbox is harmless.
     _KIND_OPS: dict = {
         "frame_front": ("Hinge Pockets", "Rough Relief", "Fine Relief",
-                        "Eyewires", "Holes", "Lens Groove", "Perimeter"),
+                        "Features", "Eyewires", "Holes", "Lens Groove",
+                        "Perimeter"),
         "temple": ("Hinge Pockets", "Engraving", "Holes", "Temple Profile"),
         "block": ("Drill Holes", "Block Profile"),
     }
@@ -2331,6 +2412,8 @@ class ParamsPanel(QTabWidget):
                 anterior_clamp_mm=self.splay_clamp.value(),
                 feather_mm=self.splay_feather.value(),
                 crest_blend_mm=self.splay_blend.value(),
+                non_contiguous=self.splay_noncontig.isChecked(),
+                gap_mm=self.splay_gap.value(),
             ),
             eyewire_bezel=EyewireBezelParams(
                 enabled=self.bezel_enable.isChecked(),
@@ -2347,6 +2430,8 @@ class ParamsPanel(QTabWidget):
                 width_mm=self.bridge_relief_width.value(),
                 depth_mm=self.bridge_relief_depth.value(),
                 taper_angle_deg=self.bridge_relief_taper.value(),
+                exterior_radius_mm=self.bridge_relief_rext.value(),
+                interior_radius_mm=self.bridge_relief_rint.value(),
                 anterior_clamp_mm=self.bridge_relief_clamp.value(),
             ),
             lens_groove=LensGrooveParams(
@@ -2390,6 +2475,7 @@ class ParamsPanel(QTabWidget):
             (self.splay_clamp, c.pad_splay.anterior_clamp_mm),
             (self.splay_feather, c.pad_splay.feather_mm),
             (self.splay_blend, c.pad_splay.crest_blend_mm),
+            (self.splay_gap, c.pad_splay.gap_mm),
             (self.bezel_width, c.eyewire_bezel.width_mm),
             (self.bezel_angle, c.eyewire_bezel.angle_deg),
             (self.bezel_clamp, c.eyewire_bezel.anterior_clamp_mm),
@@ -2398,6 +2484,8 @@ class ParamsPanel(QTabWidget):
             (self.bridge_relief_width, c.bridge_relief.width_mm),
             (self.bridge_relief_depth, c.bridge_relief.depth_mm),
             (self.bridge_relief_taper, c.bridge_relief.taper_angle_deg),
+            (self.bridge_relief_rext, c.bridge_relief.exterior_radius_mm),
+            (self.bridge_relief_rint, c.bridge_relief.interior_radius_mm),
             (self.bridge_relief_clamp, c.bridge_relief.anterior_clamp_mm),
             (self.groove_offset, c.lens_groove.anterior_offset_mm),
             (self.groove_depth, c.lens_groove.depth_mm),
@@ -2410,6 +2498,7 @@ class ParamsPanel(QTabWidget):
         for cb, val in ((self.use_pad_block, c.stock.use_pad_block),
                         (self.splay_enable, c.pad_splay.enabled),
                         (self.splay_toric, c.pad_splay.toric),
+                        (self.splay_noncontig, c.pad_splay.non_contiguous),
                         (self.bezel_enable, c.eyewire_bezel.enabled),
                         (self.bridge_relief_enable, c.bridge_relief.enabled),
                         (self.groove_enable, c.lens_groove.enabled)):
@@ -2425,6 +2514,7 @@ class ParamsPanel(QTabWidget):
         self._on_splay_toggled(c.pad_splay.enabled)
         self._on_bezel_toggled(c.eyewire_bezel.enabled)
         self._on_bridge_relief_toggled(c.bridge_relief.enabled)
+        self._refresh_bridge_relief_shape()
         self._on_groove_toggled(c.lens_groove.enabled)
         self._refresh_zone_list()      # show the restored per-zone overrides
         self._update_groove_angle()

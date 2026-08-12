@@ -518,12 +518,20 @@ class GCodeWorker(_ProgressWorker):
         from guildmodel.core.cam.castle_ops import (
             analyze_program_reach, build_tool_settings, count_tool_changes,
             depth_reach_warnings, feature_reach_warnings,
+            unmachined_top_warnings,
         )
         reach = analyze_program_reach(ops, self.hinge_polys, tools_cfg)
         reach = list(reach) + depth_reach_warnings(ops, self.castle.stock.total_pad_height_mm)
         reach += feature_reach_warnings(self.castle, ops, tools_cfg)
         for r in reach:
             self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
+
+        # A zone standing at the stock top keeps an uncut cap — raw blank
+        # standing proud of everything machined around it. The shipped defaults
+        # coincide exactly (nosepad 10.0 on 6.0 + 4.0), so say so before the cut
+        # rather than let it be discovered on the part.
+        for w in unmachined_top_warnings(relief, self.castle):
+            self.progress.emit(f"[gcode] ⚠ uncut cap: {w.message()}")
 
         with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
             fixture = yaml.safe_load(fh)
@@ -3199,6 +3207,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.canvas = DxfCanvas()
         self.view3d = Viewer3D()
+        self._wire_turntable()
         self.stack.addWidget(self.canvas)        # 0 — 2D outline
         self.stack.addWidget(self.view3d)        # 1 — 3D model + cut sim (one VTK window)
         # 2 — the interactive worktable bed (BUILDPLAN M7.4)
@@ -4574,6 +4583,21 @@ class MainWindow(QMainWindow):
         self._act_fit.setToolTip("Fit to view  (Ctrl+0)")
         self._act_fit.triggered.connect(self._on_fit)
 
+        # The turntable's button lives on the 3D viewer's own strip, next to the
+        # camera presets it belongs with. This action exists so it has a hotkey
+        # and so it appears in Preferences ▸ Hotkeys like every other binding —
+        # it is checkable and mirrors the button rather than owning the state.
+        self._act_turntable = QAction("Turntable", self, checkable=True)
+        self._act_turntable.setShortcut("Alt+T")
+        self._act_turntable.setToolTip(
+            "Turntable — spin the 3D view about its own up axis  (Alt+T)")
+        self._act_turntable.setEnabled(False)
+        # Resolved at call time on purpose: the toolbar is built before the
+        # central stack, so `self.view3d` does not exist yet. The reverse
+        # direction is wired in `_wire_turntable`, right after it does.
+        self._act_turntable.toggled.connect(
+            lambda on: self.view3d.set_turntable(on))
+
         self._act_sidebar = QAction("Parameters", self, checkable=True)
         self._act_sidebar.setChecked(True)
         self._act_sidebar.setToolTip("Show/hide the parameters panel")
@@ -4749,6 +4773,7 @@ class MainWindow(QMainWindow):
             ("view3d", self._act_view3d, "3D View", "view", True),
             ("simulate", self._act_simulate, "Simulation", "view", True),
             ("measure", self._act_measure, "Measure", "view", True),
+            ("turntable", self._act_turntable, "Turntable", "view", False),
             ("show_worktable", self._act_show_worktable, "Worktable", "view", False),
             ("fit", self._act_fit, "Fit to View", "view", True),
             ("log", self._act_log, "Log Panel", "panels", True),
@@ -4761,6 +4786,19 @@ class MainWindow(QMainWindow):
             ActionSpec(key, label, act.shortcut().toString(), group, tb_default)
             for key, act, label, group, tb_default in rows
         ]
+        # A QAction's shortcut only fires while the action belongs to a widget in
+        # the active window — parenting it to the window is not enough, and
+        # neither is registering it here. Every other action got that for free by
+        # sitting in a menu; `turntable` lives only on the viewer's own strip, so
+        # it had no widget at all and Alt+T did nothing (rebinding it in
+        # Preferences did nothing either, for the same reason). Claiming them all
+        # on the window makes "registered for rebinding" and "the binding
+        # actually fires" one fact instead of two that can drift apart. Adding an
+        # action to a second widget is safe: Qt keeps one shortcut entry per
+        # action and only widens the set of contexts it will match in.
+        for act in self._actions_by_key.values():
+            if act not in self.actions():
+                self.addAction(act)
 
     def _apply_hotkeys(self) -> None:
         """Bind every registered action's shortcut from prefs (override or default)."""
@@ -4858,6 +4896,7 @@ class MainWindow(QMainWindow):
         self._prefs["main_window_state"] = bytes(
             self.saveState(_DOCK_STATE_VERSION).toBase64()
         ).decode()
+        self._prefs["turntable_speed"] = self.view3d.turntable_speed()
         prefs_mod.save(self._prefs)
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -5501,6 +5540,11 @@ class MainWindow(QMainWindow):
         self._act_measure.setEnabled(measure_ok)
         if not measure_ok and self._act_measure.isChecked():
             self._act_measure.setChecked(False)
+        # Turntable: a 3D-viewer control, so it is live on either 3D page and
+        # inert on the 2D outline and the bed. It is *not* stopped on the way
+        # out — the viewer's own `hideEvent` parks it and `showEvent` picks it
+        # up, so a trip to the 2D view and back does not cost the maker a click.
+        self._act_turntable.setEnabled(self._current_view in (1, 2))
 
     def _show_component_sim(self, run: bool) -> bool:
         """Show the active component's cut-sim — the cached result, or start it when
@@ -6626,6 +6670,32 @@ class MainWindow(QMainWindow):
             self.canvas.fit_to_view()
         else:                                  # the unified 3D viewer (model or sim)
             self.view3d._cam_reset()
+
+    def _wire_turntable(self) -> None:
+        """Point the viewer's own button back at the Alt+T action.
+
+        The forward direction is bound when the action is created; this is the
+        half that needs the viewer to exist, so it runs the moment it does — and
+        so does restoring the saved speed, which `_restore_window_state` runs too
+        early to do (the toolbar and window state are both built before the
+        central stack).
+        """
+        self.view3d._turn_btn.toggled.connect(self._on_turntable_toggled)
+        try:
+            self.view3d.set_turntable_speed(
+                int(self._prefs.get("turntable_speed",
+                                    prefs_mod.DEFAULTS["turntable_speed"])))
+        except (TypeError, ValueError):
+            pass                      # a hand-edited prefs file keeps the default
+
+    def _on_turntable_toggled(self, on: bool) -> None:
+        """Keep the menu action in step when the viewer's own button is clicked.
+
+        One state, two ways in. `QAction.setChecked` does not re-emit when the
+        value is unchanged, so this cannot loop back through `set_turntable`.
+        """
+        if self._act_turntable.isChecked() != bool(on):
+            self._act_turntable.setChecked(bool(on))
 
     def _on_zoom_changed(self, scale: float) -> None:
         self.zoom_label.setText(f"Zoom: {scale:.1f} px/mm")

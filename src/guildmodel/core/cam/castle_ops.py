@@ -401,14 +401,27 @@ def relief_ops(
     fine_tool: dict,
     params: CastleCamParams,
     rough_tool: dict | None = None,
-) -> tuple[CamOp, CamOp]:
-    """Rough (surface + axial stock, stock-aware) and fine (final surface).
+    feature_tool: dict | None = None,
+) -> tuple[CamOp, CamOp, CamOp]:
+    """Rough (surface + axial stock, stock-aware), fine (final surface), and the
+    posterior-feature finish.
 
     `fine_tool` finishes the surface; `rough_tool` (defaults to `fine_tool`)
     bulk-removes above it. The machining region and rim-reach band are defined by
     the **finishing** tool (it has to reach every rim); each pass rides its own
     tool's drop-cutter surface — when the two tools are identical the surface is
     computed once (BUILDPLAN M6.1: drop-cutter CLS keys off the op's tool).
+
+    **The feature band is its own op** *(2026-08-11, maker request)*. Its rings
+    used to be emitted into Fine Relief, which meant they were cut with whatever
+    tool finished the terraces — and the everyday intent is the opposite of
+    that: a ball-nose for the chamfers and scoops, an end mill for the hinges,
+    the footing and the posterior sculpting. `feature_tool` (defaults to
+    `fine_tool`, so an unassigned job cuts exactly what it cut before) rides its
+    own drop-cutter surface, which is the point — a ball's CLS is not a flat's,
+    and emitting ball paths off a flat's surface would gouge.
+
+    The op comes back empty when nothing is featured; the caller drops it.
 
     Both passes are **contour-parallel**: the toolpath is a set of boundary-
     offset rings that follow the outline and the eyewires, riding the drop-cutter
@@ -426,6 +439,7 @@ def relief_ops(
     """
     from scipy.ndimage import distance_transform_edt
     rough_tool = rough_tool or fine_tool
+    feature_tool = feature_tool or fine_tool
     fine_type, fine_r = fine_tool["type"], fine_tool["radius_mm"]
     rough_type, rough_r = rough_tool["type"], rough_tool["radius_mm"]
     f = relief.field
@@ -463,6 +477,7 @@ def relief_ops(
     eps = params.skim_epsilon_mm
     fine = CamOp("Fine Relief")
     rough = CamOp("Rough Relief")
+    features = CamOp("Features")
 
     rows, cols = cls_fine.z.shape
     z_fine = cls_fine.z
@@ -524,16 +539,25 @@ def relief_ops(
     # Add fine rings CONFINED to the posterior-feature bands at a cusp-derived
     # stepover (the rim-band pattern): cost stays proportional to feature area.
     fb = relief.feature_band
+    z_feat = z_fine
     if fb is not None and fb.any() and relief.feature_max_slope_deg > 0.0:
         from scipy.ndimage import binary_dilation
         slope = math.radians(min(85.0, max(5.0, relief.feature_max_slope_deg)))
         f_step = min(params.relief_stepover_mm,
                      max(0.12, FEATURE_CUSP_MM / math.tan(slope)))
+        # The feature op rides its OWN tool's drop-cutter surface. A ball and a
+        # flat of the same radius have different cutter-location surfaces on
+        # every sloped cell, which is the whole of the maker's reason for
+        # wanting a separate tool here; emitting one tool's paths off the
+        # other's surface would put the ball through the chamfer.
+        if not _same_tool(feature_tool, fine_tool):
+            z_feat = cutter_location_surface(
+                cam_hf, feature_tool["type"], feature_tool["radius_mm"]).z
         fb_wide = binary_dilation(fb, iterations=2)   # cover band-edge rounding
         dist_in = distance_transform_edt(inside, sampling=res)
         d_max = float(dist_in[fb_wide & inside].max()) + band_mm + f_step
         f_rings = contour_parallel_rings(machining, f_step, max_depth_mm=d_max)
-        _emit(fine, z_fine, fb_wide & band & (z_fine < stock_cls.z - eps),
+        _emit(features, z_feat, fb_wide & band & (z_feat < stock_cls.z - eps),
               rings=f_rings)
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
     # tool works the part in nearest-neighbour order instead of hopping across it (M12.1),
@@ -544,7 +568,9 @@ def relief_ops(
                                      z_fine, ox, oy, res, link)
     rough.paths = _stitch_close_paths(order_paths_for_travel(rough.paths),
                                       z_rough, ox, oy, res, link)
-    return rough, fine
+    features.paths = _stitch_close_paths(order_paths_for_travel(features.paths),
+                                         z_feat, ox, oy, res, link)
+    return rough, fine, features
 
 
 # ------------------------------------------------------------------ ops 4+5: contours
@@ -973,9 +999,73 @@ def depth_reach_warnings(
 
 
 @dataclass
+class UnmachinedTopWarning:
+    """A zone standing at (or above) the stock top, so its cap is never cut.
+
+    The relief passes deliberately skip every cell already at stock height:
+    cutting them removes nothing and makes the concentric rings weave in and out
+    of the cap, bouncing Z and pecking. The consequence is that such a zone comes
+    off the machine as **raw blank**, standing proud of the machined surface
+    around it with a hard edge where the cut begins — which is what a maker sees
+    and reports as a protrusion.
+
+    It is not a modelling error: the tower really is that tall, and every kernel
+    agrees. It is a machining outcome of the heights and the stock coinciding,
+    and the shipped defaults coincide **exactly** — nosepad 10.0 mm on a 6.0 mm
+    blank plus a 4.0 mm pad block. So this fires on a default project, which is
+    the point: it explains the surface before the part is cut instead of after.
+
+    The fix is the maker's to choose — drop the zone a few tenths, or thicken the
+    stock — so this says which numbers are equal rather than picking for them.
+    """
+    zone: str
+    height_mm: float
+    stock_top_mm: float
+    cells: int = 0
+
+    def message(self) -> str:
+        return (f"{self.zone} stands at {self.height_mm:g} mm and the stock top "
+                f"is {self.stock_top_mm:g} mm, so its cap is left as uncut blank "
+                f"and will stand proud of the machined surface around it. Lower "
+                f"the zone (0.3 mm is enough) or use thicker stock to have the "
+                f"tool face it.")
+
+
+def unmachined_top_warnings(
+    relief: CastleRelief,
+    castle: CastleParams,
+) -> list[UnmachinedTopWarning]:
+    """Which zones come off the machine with an uncut cap — see the dataclass.
+
+    Measured against the relief the program is actually posted from rather than
+    from the parameters alone, because the stock top is not one number: the pad
+    block only covers part of the blank, so whether a zone reaches it depends on
+    where the zone sits.
+    """
+    f = relief.field
+    stock = stock_top_heightfield(castle.stock, resolution=f.resolution,
+                                  origin=f.origin, shape=f.z.shape)
+    at_top = relief.inside & (f.z >= stock.z - 1e-9)
+    if not at_top.any():
+        return []
+
+    out: list[UnmachinedTopWarning] = []
+    zone_index = relief.zone_index
+    for i, zone in enumerate(relief.partition.zones):
+        sel = at_top & (zone_index == i)
+        n = int(sel.sum())
+        if n == 0:
+            continue
+        out.append(UnmachinedTopWarning(
+            zone.name, float(castle.zones.for_kind(zone.kind)),
+            float(np.max(stock.z[sel])), n))
+    return out
+
+
+@dataclass
 class FeatureReachWarning:
-    """An M13 posterior feature the Fine Relief tool can't fully finish
-    (BUILDPLAN M13.3): the groove's U root needs a ball no larger than the
+    """An M13 posterior feature the feature-finishing tool can't fully finish
+    (BUILDPLAN M13.3): the scoop's U root needs a ball no larger than the
     root radius, and a chamfer falling INTO a rim (splay toe at the outline,
     bezel toe at a lens opening) needs a ball — a flat's trailing edge rides
     the slope behind it and leaves ~radius*tan(angle) proud at the rim edge."""
@@ -983,10 +1073,11 @@ class FeatureReachWarning:
     tool_name: str
     tool_type: str
     suggested: str | None = None
+    op_name: str = "Features"
 
     def message(self) -> str:
         hint = f" (try {self.suggested})" if self.suggested else ""
-        return (f"Fine Relief: {self.detail} — {self.tool_name} "
+        return (f"{self.op_name}: {self.detail} — {self.tool_name} "
                 f"({self.tool_type}) leaves it proud{hint}")
 
 
@@ -995,33 +1086,47 @@ def feature_reach_warnings(
     ops: list[CamOp],
     tools_cfg: dict | None = None,
 ) -> list[FeatureReachWarning]:
-    """M13 posterior-feature reach for the Fine Relief tool: the bridge-relief
-    root wants a ball <= the root radius; the splay/bezel chamfer toes at the
-    rims want a ball of any size (the feature-finish band handles their
-    mid-band facets, but no flat tool can finish a downhill slope to an edge)."""
-    fine = next((op for op in ops if op.name == "Fine Relief"), None)
-    tool = fine.tool if fine is not None and fine.tool else None
+    """M13 posterior-feature reach for the tool that finishes them: the
+    bridge-relief root wants a ball <= the root radius; the splay/bezel chamfer
+    toes at the rims want a ball of any size (the feature-finish band handles
+    their mid-band facets, but no flat tool can finish a downhill slope to an
+    edge).
+
+    Reads the **Features** op where there is one and falls back to Fine Relief,
+    which is where these rings were cut before they became an op of their own —
+    so a program posted either way is judged against the tool that actually
+    touches the feature."""
+    op = next((o for o in ops if o.name == "Features"), None)
+    if op is None or not op.tool:
+        op = next((o for o in ops if o.name == "Fine Relief"), None)
+    tool = op.tool if op is not None and op.tool else None
     if tool is None:
         return []
+    op_name = op.name
     name = tool.get("name", "tool")
     ttype = str(tool.get("type", "?"))
     radius = float(tool["radius_mm"])
     is_ball = tool.get("type") == "ball"
     out: list[FeatureReachWarning] = []
     if castle.bridge_relief.enabled:
-        # Tightest curvature of the cone-scaled cosine bell sits at the base
-        # trough: R_c = width^2 / (2 pi^2 depth). A bigger tool bridges the
-        # hollow and leaves the scoop centre proud.
-        g = castle.bridge_relief
-        r_c = g.width_mm**2 / (2.0 * math.pi**2 * max(g.depth_mm, 1e-6))
+        # The trough is now a named radius rather than the cosine bell's
+        # curvature, so the tool that fits it is the one the maker set: a ball
+        # no larger than `interior_radius_mm`. A sharp V (radius 0) has no such
+        # tool at all, and saying so is more use than naming an impossible one.
+        r_c = castle.bridge_relief.trough_radius_mm()
         if not (is_ball and radius <= r_c + 1e-6):
             balls = ({n: t for n, t in tools_cfg.items()
                       if t.get("type") == "ball"} if tools_cfg else None)
-            suggested = _suggest_fitting_tool(r_c, balls, "ball") if balls else None
-            out.append(FeatureReachWarning(
-                f"the bridge-relief hollow (tightest ~R{r_c:.1f} at its base) "
-                f"needs a ball tool with radius <= {r_c:.1f} mm",
-                name, ttype, suggested))
+            suggested = (_suggest_fitting_tool(r_c, balls, "ball")
+                         if balls and r_c > 0 else None)
+            detail = (
+                "the bridge-relief trough is a sharp V, which no ball tool can "
+                "finish — give it an interior radius to machine it clean"
+                if r_c <= 1e-6 else
+                f"the bridge-relief trough (R{r_c:.2f}) needs a ball tool "
+                f"with radius <= {r_c:.2f} mm")
+            out.append(FeatureReachWarning(detail, name, ttype, suggested,
+                                           op_name))
     if (castle.pad_splay.enabled or castle.eyewire_bezel.enabled) and not is_ball:
         which = " / ".join(w for w, on in (
             ("pad-splay", castle.pad_splay.enabled),
@@ -1040,7 +1145,7 @@ def feature_reach_warnings(
         out.append(FeatureReachWarning(
             f"the {which} chamfer toe at the rim needs a ball tool "
             f"(a flat leaves ~{lip:.1f} mm at the rim edge)",
-            name, ttype, suggested))
+            name, ttype, suggested, op_name))
     return out
 
 
@@ -1096,13 +1201,27 @@ def generate_castle_program(
     op1.tool = hinge_tool
     ops.append(op1)
 
-    # 2 + 3 — rough then fine relief
+    # 2 + 3 — rough then fine relief, then the posterior features
     _p("Rough + fine relief", 3)
     rough_tool = _tool_for("Rough Relief")
     fine_tool = _tool_for("Fine Relief")
-    rough, fine = relief_ops(relief, stock, fine_tool, params, rough_tool=rough_tool)
-    rough.tool, fine.tool = rough_tool, fine_tool
+    # Features default to the FINE tool, not the global one: unassigned, the op
+    # cuts exactly what it cut when it was part of Fine Relief. `_tool_for`
+    # would fall back to the global tool instead, which on a multi-tool job is a
+    # different tool and a silent change of program.
+    feature_tool = (resolve_tool(params.op_tools["Features"], tools_cfg or {},
+                                 default=fine_tool)
+                    if params.op_tools.get("Features") else fine_tool)
+    rough, fine, features = relief_ops(relief, stock, fine_tool, params,
+                                       rough_tool=rough_tool,
+                                       feature_tool=feature_tool)
+    rough.tool, fine.tool, features.tool = rough_tool, fine_tool, feature_tool
     ops += [rough, fine]
+    # Cut after the fine pass finishes the surface the features are measured
+    # from, and before the eyewires open the apertures — the same place in the
+    # order these rings occupied inside Fine Relief.
+    if features.paths:
+        ops.append(features)
 
     # 4 — eyewires (lens holes are the body's interior rings; with the groove
     # on these are the UNDERSIZED apertures — the rim lip)
@@ -1195,6 +1314,7 @@ _OP_STRATEGIES = {
     "Hinge Pockets": "Pocket 2D · ramped lap entry",
     "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
     "Fine Relief": "Raster drop-cutter",
+    "Features": "Drop-cutter · feature band, cusp stepover",
     "Eyewires": "Contour 2D (inside) · onion skin",
     "Holes": "Contour 2D (inside) · onion skin",
     "Lens Groove": "Groove side-cut · radial entry (drageoir)",

@@ -145,6 +145,35 @@ class PadSplayParams(BaseModel):
     # Convex round-over at the crest (tangent both sides, footing-style) — the
     # hard chamfer/surface corner shaded as a jagged ridge. 0 = sharp crest.
     crest_blend_mm: float = 2.0
+    # Start the cut away from bottom-centre, leaving the middle uncut (2026-08-11).
+    # A **keyhole** bridge carries its own shape across the centreline and a splay
+    # run through it planes that shape off; the maker wants the two halves of the
+    # splay and nothing between them. `gap_mm` is the total uncut width, measured
+    # as arc length along the outline and split evenly either side of bottom-centre,
+    # so each side now runs from `gap_mm / 2` out to `run_mm`.
+    #
+    # Not a separate feature: it is the same crest, the same angles and the same
+    # feather, with the middle of the station table taken out. That keeps the two
+    # halves guaranteed symmetric and keeps one set of controls to learn — and it
+    # is why `feather_mm` applies at the inner ends too, so the cut runs out to
+    # nothing at the keyhole instead of stopping in a wall.
+    non_contiguous: bool = False
+    gap_mm: float = Field(8.0, gt=0)
+
+    def spans(self) -> list[tuple[float, float]]:
+        """The signed station intervals the splay covers, in mm from bottom-centre.
+
+        One interval `(-run, run)` normally; two, mirror-image, when the cut is
+        non-contiguous. Empty when the gap has swallowed the whole run, which is a
+        splay the maker has switched off by the back door rather than an error.
+        """
+        run = float(self.run_mm)
+        if not self.non_contiguous:
+            return [(-run, run)]
+        half = float(self.gap_mm) / 2.0
+        if half >= run:
+            return []
+        return [(-run, -half), (half, run)]
 
 
 class EyewireBezelParams(BaseModel):
@@ -299,15 +328,52 @@ class BridgeReliefParams(BaseModel):
     the posterior bridge, running on Y — the base (widest, deepest cut of the
     cone section) opens through the top edge of the frame over the bridge, and
     the sides taper at `taper_angle_deg` per side to a rounded tip down the
-    lower bridge. The cross-section is a tangent cosine bell and the depth
-    scales with the local width (a true cone imprint feathering to nothing at
-    the tip), so the cut is crease-free and flows with the smooth footing.
+    lower bridge. The depth scales with the local width (a true cone imprint
+    feathering to nothing at the tip), so the cut flows with the smooth footing.
+
+    **The cross-section is a footing-style U** *(2026-08-11, field report)*. It
+    was a tangent cosine bell, which is smooth but has no numbers in it: a maker
+    who wanted the trough tighter, or the rim to blend further out into the
+    bridge, had nothing to turn. `exterior_radius_mm` and `interior_radius_mm`
+    are the same pair `FootingFillet` already uses and mean the same things — a
+    convex round-over where the cut leaves the surrounding face, a concave
+    fillet where it lands on the floor — with a straight ramp between them.
+    `geometry.blends.scoop_drop` builds it and all three kernels call that one
+    function.
+
+    Both radii at 0 is a straight V, which is a legitimate thing to ask for. The
+    defaults are the pair that most nearly reproduces the cosine bell this
+    replaced (23.6 degrees of ramp against its 25.2), so an existing project
+    opens looking like itself.
     """
     enabled: bool = False
     width_mm: float = 8.0                    # scoop width at its base (the top edge)
     depth_mm: float = 1.2                    # cut depth at the base centerline
     taper_angle_deg: float = 30.0            # per-side taper of the cone toward the tip
+    # Convex round-over at the rim, where the scoop leaves the bridge surface.
+    exterior_radius_mm: float = Field(3.0, ge=0)
+    # Concave fillet at the trough, where the scoop lands on its floor.
+    interior_radius_mm: float = Field(3.0, ge=0)
     anterior_clamp_mm: float = 1.5
+
+    def max_slope_deg(self) -> float:
+        """The steepest slope on the scoop — the ramp between the two arcs."""
+        from ..geometry.blends import scoop_max_slope_deg
+        return scoop_max_slope_deg(self.width_mm, self.depth_mm,
+                                   self.exterior_radius_mm,
+                                   self.interior_radius_mm)
+
+    def trough_radius_mm(self) -> float:
+        """Concave radius at the bottom of the U at its widest station — the
+        largest ball that can reach the root, and 0 for a sharp V, which no ball
+        can finish. The radii shrink toward the tip along with the section, so
+        this is the base figure; the CAM warns against it because that is where
+        the maker's tool choice is decided."""
+        from ..geometry.blends import scoop_ramp_angle
+        _theta, _re, ri = scoop_ramp_angle(
+            max(self.width_mm / 2.0, 1e-9), max(self.depth_mm, 1e-9),
+            self.exterior_radius_mm, self.interior_radius_mm)
+        return float(ri)
 
 
 class HoldingParams(BaseModel):
@@ -425,10 +491,9 @@ class CastleParams(BaseModel):
             slope = max(slope, self.eyewire_bezel.angle_deg)
         scoop = self.bridge_relief
         if scoop.enabled:
-            # Steepest cross-slope of the cone-scaled cosine bell is constant
-            # along the scoop: max |dz/dx| = pi * depth / width.
-            slope = max(slope, math.degrees(math.atan(
-                math.pi * scoop.depth_mm / max(scoop.width_mm, 1e-6))))
+            # The U's straight ramp: both arcs are tangent to it at one end and
+            # to a horizontal at the other, so nothing on the scoop is steeper.
+            slope = max(slope, scoop.max_slope_deg())
         for f in self.resolved_edge_features():
             if f.face != "posterior":
                 continue
@@ -440,11 +505,15 @@ class CastleParams(BaseModel):
 
 # Canonical posterior op names, in machining order. These are the keys for the
 # per-operation tool assignment (BUILDPLAN M6.1) and the labels the post / sim /
-# cut-time model already canonicalize on. The optional "Lens Groove" op (V1) is
-# deliberately NOT listed: `tools_in_use()` iterates this tuple, and a groove
-# entry would make every job read as multi-tool even with the groove off. Its
-# tool comes from `LensGrooveParams.tool` (an explicit `op_tools["Lens Groove"]`
-# still overrides).
+# cut-time model already canonicalize on.
+#
+# The **optional** ops — "Features" (only present when a posterior feature is
+# on), "Holes" (only when the drawing has decorative openings) and "Lens Groove"
+# (V1) — are deliberately NOT listed. Each of them has a sensible per-op default
+# that is another op's tool rather than the global one, and listing them here
+# would make every job read as multi-tool even with the feature off. They are
+# still first-class where it counts: `tools_in_use` scans pinned `op_tools`
+# alongside this tuple, and the GUI offers a selector for each.
 POSTERIOR_OPS: tuple[str, ...] = (
     "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
 )
@@ -544,9 +613,23 @@ class CastleCamParams(BaseModel):
                 or self.tool_name)
 
     def tools_in_use(self) -> list[str]:
-        """Distinct tool names across all five ops, in machining order."""
+        """Distinct tool names across the program's ops, in machining order.
+
+        The canonical five, **plus every op the maker has explicitly pinned**.
+        The optional ops — "Features", "Holes", "Lens Groove" — are deliberately
+        not in `POSTERIOR_OPS` (see the note there), and scanning only that tuple
+        meant a pinned tool on one of them was invisible to `is_multi_tool`,
+        which is what decides whether the post emits tool-change blocks and
+        per-tool feeds at all. A ball pinned to "Features" would then have been
+        run at the end mill's feeds with no change block: the lens groove's
+        `or relief.groove is not None` at each call site is a workaround for the
+        same gap, and this closes it for every optional op at once.
+
+        An op pinned to the tool it would have used anyway does not count — the
+        comparison is on resolved names, not on whether an entry exists.
+        """
         seen: list[str] = []
-        for op in POSTERIOR_OPS:
+        for op in (*POSTERIOR_OPS, *self.op_tools):
             name = self.tool_for_op(op)
             if name not in seen:
                 seen.append(name)

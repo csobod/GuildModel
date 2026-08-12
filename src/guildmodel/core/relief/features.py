@@ -147,6 +147,79 @@ def _slope_limit(vals: np.ndarray, du: float, max_slope: float) -> np.ndarray:
 _CREST_MAX_SLOPE = 0.5   # mm of crest offset per mm of run — teeth get flattened
 
 
+def splay_spans(p: PadSplayParams, run: float) -> list[tuple[float, float]]:
+    """The station intervals the splay covers, clipped to the achievable `run`.
+
+    `PadSplayParams.spans` works from the *requested* run; the carvers clip that
+    to a fraction of the outline's length first, so the gap has to be re-applied
+    against the run actually in use or a non-contiguous splay on a small frame
+    would come out with its halves in the wrong place.
+    """
+    if not p.non_contiguous:
+        return [(-run, run)]
+    half = float(p.gap_mm) / 2.0
+    if half >= run:
+        return []
+    return [(-run, -half), (half, run)]
+
+
+def splay_weight(u: np.ndarray, spans: list[tuple[float, float]],
+                 feather: float) -> np.ndarray:
+    """Section weight at each signed station: 1 inside a span, raised-cosine down
+    to 0 over `feather` mm at **every** end of every span, 0 outside them all.
+
+    The ends of a non-contiguous splay's inner edges are ends like any other, and
+    they are the ones that face the maker across the keyhole. Feathering them
+    identically is what stops the cut terminating in a wall there.
+
+    **It LIFTS the chamfer, it does not flatten it.** Every caller adds
+    `(1 - w) * full_depth` to the anchor and then cuts at full width and full
+    angle, so the plane rises out of the material and the cut runs out because
+    there is nothing left under it.
+
+    Scaling the *drop* was the 2026-08-12 report ("a very abrupt end leaving
+    sharp material no matter what I do"). It took the chamfer's angle to zero
+    while its width stayed at the full crest, so the last millimetres of the run
+    were a flat shelf planed at the crest's own anchor height — and then stopped
+    dead at the station the sweep ended on. Nobody saw it in the contiguous case
+    because `crest_deviation_end_mm` already tapers the crest toward each *outer*
+    run end, so the width was running out there for an unrelated reason. A
+    non-contiguous splay's inner ends sit at full crest: 7.5 mm of shelf on the
+    reported frame.
+
+    **Scaling the crest instead was the obvious repair, and it is worse.** It
+    does give the right surface — the section shrinks self-similarly, the angle
+    is kept, the cut narrows to a point — but it drives the tool through the
+    boolean sideways. The crest edge sweeps inward by its whole width over a few
+    millimetres of run while the section collapses toward zero size, and Manifold
+    starts shedding collinear sliver triangles where the cut crosses the nosepad
+    footing: **14 of 27** gap/feather settings around the maker's came back
+    non-watertight, always one triangle a twentieth of a millimetre across, and
+    always in the same place. A width floor, a crest lead, four station densities
+    and `Manifold.simplify` each moved which settings failed without fixing any
+    of them — `simplify` severed the part into three pieces at 0.01 mm.
+
+    Lifting asks for none of that. Every section stays full size and the cutter
+    only translates in Z, so the run-out is a plane sliding out of a surface —
+    the best-conditioned thing a boolean can be handed — and the cut boundary it
+    leaves is the intersection curve of the two, which is exactly the shape a
+    hand-cut run-out has.
+    """
+    w = np.zeros_like(np.asarray(u, dtype=float))
+    for lo, hi in spans:
+        within = (u >= lo) & (u <= hi)
+        if not within.any():
+            continue
+        # Clipped to half the span so the two feathers meet at the middle at
+        # full depth instead of overlapping into a run that never reaches it.
+        f = min(max(float(feather), 0.0), (hi - lo) / 2.0)
+        edge = np.minimum(u - lo, hi - u)
+        ramp = (0.5 * (1.0 - np.cos(np.pi * np.clip(edge / f, 0.0, 1.0)))
+                if f > 0.0 else np.ones_like(w))
+        w = np.maximum(w, np.where(within, ramp, 0.0))
+    return w
+
+
 def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
     """The pad splay's 1-D crest tables over the signed station u in
     [-run, run]. Returns None when the splay is degenerate.
@@ -165,6 +238,9 @@ def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
     run = min(p.run_mm, 0.45 * L)
     if run <= res or p.crest_deviation_center_mm <= 0.0:
         return None
+    spans = splay_spans(p, run)
+    if not spans:
+        return None                 # the gap has swallowed the whole run
 
     n = max(9, int(np.ceil(2.0 * run / res)) + 1)
     step = 2.0 * run / (n - 1)
@@ -208,6 +284,8 @@ def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
         c_tab = _slope_limit(c_tab, step, _CREST_MAX_SLOPE)
         crest = p0 + normal * c_tab[:, None]
 
+    w_tab = splay_weight(u_tab, spans, p.feather_mm)
+
     # Anchor heights from the nearest-INSIDE surface (outside cells hold 0 at
     # carve time — bilinear next to the rim would crater the crest), smoothed.
     _, (iy, ix) = distance_transform_edt(~inside, return_indices=True)
@@ -216,15 +294,15 @@ def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
     h_tab = uniform_filter1d(h_tab, size=max(3, int(round(2.0 / step))),
                              mode="nearest")
 
+    # Surface height just inside the OUTLINE, sampled and smoothed exactly as the
+    # crest's is. The feather needs it: see `_carve_pad_splay`.
+    rim_tab = _sample_bilinear(z_fill, p0[:, 0] + normal[:, 0] * res,
+                               p0[:, 1] + normal[:, 1] * res, ox, oy, res)
+    rim_tab = uniform_filter1d(rim_tab, size=max(3, int(round(2.0 / step))),
+                               mode="nearest")
+
     tan_tab = np.tan(np.radians(_splay_angles_deg(p, au_tab, run)))
-    feather = min(max(p.feather_mm, 0.0), run)
-    if feather > 0.0:
-        w_tab = np.where(
-            au_tab <= run - feather, 1.0,
-            0.5 * (1.0 + np.cos(np.pi * (au_tab - (run - feather)) / feather)))
-    else:
-        w_tab = np.ones_like(au_tab)
-    return run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab
+    return run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab, rim_tab
 
 
 def _carve_pad_splay(
@@ -239,7 +317,17 @@ def _carve_pad_splay(
     tables = _splay_crest_tables(body, z_pre, inside, ox, oy, res, p)
     if tables is None:
         return np.zeros_like(inside)
-    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab = tables
+    run, u_tab, p0, crest, c_tab, h_tab, tan_tab, w_tab, rim_tab = tables
+    # The feather LIFTS the chamfer plane out of the surface instead of
+    # flattening it — see `splay_weight`. Two terms, both needed: `c_tab *
+    # tan_tab` is how far the plane falls between the crest and the rim, so it
+    # clears the crest end; `rim_tab - h_tab` is how far the surface has climbed
+    # back up under the low one. Without the second, a frame whose bridge rises
+    # toward the outline is still cut a millimetre deep at a station whose weight
+    # has all but run out, and the run-out reads from outside as the shelf it
+    # replaced.
+    h_tab = h_tab + (1.0 - w_tab) * (c_tab * tan_tab
+                                     + np.maximum(0.0, rim_tab - h_tab))
 
     # ---- Raster: distance + station against the WINDOWED bottom-edge
     # polyline (not the whole ring — on a thin bridge strip the nearest whole-
@@ -265,13 +353,21 @@ def _carve_pad_splay(
 
     cu = np.interp(u, u_tab, c_tab)
     g = cu - d                                  # distance inside the crest
+    weight = np.interp(u, u_tab, w_tab)
     # The round-over begins a little beyond the crest (g slightly negative), so
     # the selection reaches past it; drop() is zero there and min() is a no-op.
-    sel = (np.abs(u) <= run) & (g > -blend_r)
+    # A zero weight is a station outside every span — the run ends, and the
+    # keyhole gap of a non-contiguous splay — where the anchor height must not
+    # be applied as a target at all.
+    sel = (weight > 0.0) & (g > -blend_r)
     if not sel.any():
         return np.zeros_like(inside)
     drop = _rounded_chamfer_drop(g, np.interp(u, u_tab, tan_tab), blend_r)
-    target = np.interp(u, u_tab, h_tab) - drop * np.interp(u, u_tab, w_tab)
+    # `h_tab` already carries the feather as a lift, so the plane rises out of
+    # the material on its own; multiplying the drop by the weight as well would
+    # flatten the chamfer at the same time and is what left the shelf.
+    # `weight` survives only in `sel`, as the span mask.
+    target = np.interp(u, u_tab, h_tab) - drop
     target = np.maximum(target, p.anterior_clamp_mm)
 
     zsub = z[r0:r1, c0:c1].ravel().copy()
@@ -343,10 +439,13 @@ def _carve_bridge_relief(
     """Conic scoop on the posterior bridge, running on Y: the base (width
     `width_mm`, depth `depth_mm`) opens through the top edge of the frame at
     the centerline; the sides taper at `taper_angle_deg` per side down to a
-    rounded tip on the lower bridge. At each station y the cut is a cosine
-    bell across x — tangent to the surface at its edges — and the center depth
-    scales with the local half-width (a true cone imprint), so the whole scoop
-    is C1 against the footed surface: no creases, no polygon facets."""
+    rounded tip on the lower bridge. At each station y the cut is the U section
+    `geometry.blends.scoop_drop` builds — an exterior round-over at the rim, an
+    interior fillet at the trough, a straight ramp between — and the center
+    depth scales with the local half-width (a true cone imprint), so the whole
+    scoop stays C1 against the footed surface: no creases, no polygon facets."""
+    from ..geometry.blends import scoop_drop
+
     rows, cols = z.shape
     band = np.zeros_like(inside)
     half_w = p.width_mm / 2.0
@@ -373,9 +472,9 @@ def _carve_bridge_relief(
         return band
 
     d_col = p.depth_mm * (r_col / half_w)                # cone: depth ~ width
-    with np.errstate(invalid="ignore", divide="ignore"):
-        bell = 0.5 + 0.5 * np.cos(np.pi * X / np.maximum(R, 1e-9))
-    target = np.maximum(z_pre - d_col[:, None] * bell, p.anterior_clamp_mm)
+    drop = scoop_drop(X, np.maximum(R, 1e-9), np.maximum(d_col[:, None], 1e-9),
+                      p.exterior_radius_mm, p.interior_radius_mm)
+    target = np.maximum(z_pre - drop, p.anterior_clamp_mm)
     lowered = mask & (target < z - 1e-12)
     z[lowered] = target[lowered]
     band[lowered] = True
@@ -432,10 +531,7 @@ def apply_posterior_features(
         gb = _carve_bridge_relief(z, z_pre, inside, ox, oy, resolution, groove)
         band |= gb
         if gb.any():
-            # Steepest cross-slope of the cone-scaled cosine bell is constant
-            # along the scoop: max |dz/dx| = pi * depth / width.
-            scoop = np.degrees(np.arctan(
-                np.pi * groove.depth_mm / max(groove.width_mm, 1e-6)))
-            max_slope = max(max_slope, float(scoop))
+            # The U's straight ramp — see `BridgeReliefParams.max_slope_deg`.
+            max_slope = max(max_slope, groove.max_slope_deg())
     band[~inside] = False
     return (band if band.any() else None), max_slope

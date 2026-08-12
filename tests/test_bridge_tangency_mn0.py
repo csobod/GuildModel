@@ -119,10 +119,29 @@ def test_the_extension_removes_no_extra_material(scooped):
     stopped diving through the keyhole and 4.98 mm3 of bridge stayed on the
     frame — that is the fix in the test above, measured from the other end.
 
-    Now 8213.546, 0.674 mm3 lighter, and none of it is the scoop:
+    Then 8213.546, 0.674 mm3 lighter, and none of that was the scoop either:
     `footings.CUT_LEAD_MM` runs each footing band past the ends of its seam, so
     the corner just off a seam end is carved instead of left standing. On this
     drawing that is 0.008% of the part and invisible; on the gabriel the same
     corner was a 9 mm wedge off the inferior nosepad.
+
+    **Now 8218.82, and this one IS the scoop — 5.27 mm3 less of it, because the
+    two solid kernels had been cutting a different scoop from the raster all
+    along** *(2026-08-11)*. Both lofted a half-ellipse, `sqrt(1 - (x/a)**2)`;
+    the raster carved a cosine bell, `0.5 + 0.5*cos(pi*x/a)`. Same width, same
+    depth at the centreline, and both were documented — the B-Rep's own
+    docstring said in as many words that the raster "substitutes a cosine bell"
+    — so every gate that compared a depth or a width passed and nothing ever
+    compared the areas. They differ by exactly `pi/2`: 7.5398 against 4.8000 mm2
+    at the default 8 x 1.2 mm section, a ratio of 1.5708 against the 1.5758
+    measured here across the whole part. **The solid kernels were removing 57%
+    more material than the heightfield the CAM posts from and the feature-reach
+    warnings are computed against.**
+
+    All three kernels now call `geometry.blends.scoop_drop`, so the number moved
+    once and cannot drift again. It is insensitive to the new radii — 9.172 mm3
+    removed at the default 3/3, 9.130 at a sharp V, 9.171 at 6/6 — because the
+    radii move material between the rim and the trough rather than changing how
+    much of it there is, which is what a shape control should do.
     """
-    assert scooped.volume == pytest.approx(8213.55, abs=0.5)
+    assert scooped.volume == pytest.approx(8218.82, abs=0.5)

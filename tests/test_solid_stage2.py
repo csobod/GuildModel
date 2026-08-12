@@ -589,18 +589,23 @@ def test_pad_splay_is_anchored_at_the_crest(demo_partition, demo_hinges):
     assert abs(d.mean()) < 0.01, "systematic depth bias — wrong anchor datum?"
 
 
-def test_bridge_relief_is_a_cone_not_a_bell(demo_partition, demo_hinges):
-    """The scoop as the cone its own docstring claims, not the cosine bell.
+def test_bridge_relief_matches_the_raster(demo_partition, demo_hinges):
+    """The scoop is now the **same section in both kernels**, and this used to
+    assert the opposite.
 
-    The raster's cross-section is `0.5 + 0.5 cos(pi x / r)` — on the report's
-    list of compensating blurs, chosen because it meets the surface tangentially
-    and so hides the facets a sampled cone showed. A real cone meets the surface
-    at an angle, and that meeting is an edge.
+    Until 2026-08-11 this test pinned the disagreement as intended: the B-Rep
+    lofted a half-ellipse, `sqrt(1 - (x/a)**2)`, the raster carved a cosine bell,
+    `0.5 + 0.5*cos(pi*x/a)`, and the test asserted the solid cut *deeper* across
+    the middle of the band because at half the scoop radius an ellipse is at
+    0.866 of full depth where the bell is at 0.500. Both were documented; neither
+    was chosen over the other; nothing compared their areas, which differ by
+    exactly `pi/2`. **The solid kernels were removing 57% more material than the
+    heightfield the CAM posts from.**
 
-    The two differ in a predictable direction: at half the scoop radius an
-    ellipse is at 0.866 of full depth where the bell is at 0.500, so the solid
-    cuts *deeper* across the middle of the band. The assertion is on that
-    direction, since a sign flip would mean the section was built inverted.
+    Both now call `geometry.blends.scoop_drop`, so the assertion is agreement.
+    Measured on the demo frame: 9 cells in the bridge zone differ by more than
+    0.05 mm, against the 100+ the old test required, and the residual is no
+    longer signed — a systematic sign would mean one kernel had drifted again.
     """
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
@@ -626,12 +631,33 @@ def test_bridge_relief_is_a_cone_not_a_bell(demo_partition, demo_hinges):
     diff = derived.field.z - raster.field.z            # full grid, not masked
     assert (np.abs(diff[m]) <= 0.005).mean() > 0.97
 
-    # Inside the scoop the cone must sit below the bell.
+    # The scoop really is on the bridge...
+    plain_raster = build_castle_relief(demo_partition, CastleParams(),
+                                       demo_hinges, resolution=CUT_RES_MM)
     names = [z.name for z in demo_partition.zones]
     bridge = np.array([n == "bridge" for n in names])[raster.zone_index]
-    deep = m & bridge & (np.abs(diff) > 0.05)
-    assert deep.sum() > 100, "the scoop barely touched the bridge"
-    assert (diff[deep] < 0).mean() > 0.9, "cone should cut deeper than the bell"
+    cut = plain_raster.field.z - raster.field.z
+    assert (m & bridge & (cut > 0.05)).sum() > 100, "the scoop barely touched the bridge"
+
+    # ...and the two kernels agree about it. A handful of cells on the zone's
+    # own silhouette differ by a wall height, which is the pre-existing boundary
+    # artifact this whole comparison carries and not the scoop.
+    apart = m & bridge & (np.abs(diff) > 0.05)
+    assert apart.sum() < 25, f"{int(apart.sum())} cells apart — a section has drifted"
+
+    # The mean bias across the bridge is what the mismatch would move, and it is
+    # the same bar the pad-splay anchor test above uses. Measured +0.0006 mm;
+    # the ellipse put it two orders of magnitude out.
+    assert abs(diff[m & bridge].mean()) < 0.01, "systematic depth bias in the scoop"
+
+    # What residual there is, is the loft's own inscription and is *expected* to
+    # be one-signed: `ThruSections` interpolates between sampled sections, and an
+    # inscribed polygon lies inside the curve it samples, so the solid removes a
+    # hair less. ~0.02 mm on the cells that differ at all, against the ~0.5 mm
+    # the ellipse-against-bell mismatch put across the middle of the band.
+    near = m & bridge & (np.abs(diff) > 0.005)
+    assert np.abs(diff[near]).max() < 0.05 or apart.any()
+    assert diff[near].mean() > 0, "the solid should sit a hair inside, not outside"
 
 
 def test_scoop_respects_the_anterior_clamp(demo_partition):

@@ -24,6 +24,33 @@ not about the demo.
 These compare against the **raster**, deliberately. The two solid kernels agreeing
 with each other is exactly the condition that hid this, so a mesh-vs-B-Rep gate
 would not have caught it and will not catch the next one.
+
+----
+
+**2026-08-12 — the same fin, and why this file did not catch it either.** A maker
+reported "protrusion of material at the nosepad, across many frames" with two
+drawings attached; the Calasanz stands a **2.4 mm** fin at the nose notch, and
+since M-N3 the mesh kernel is not just the preview but the surface the CAM posts
+from, so it was going to be cut.
+
+Nothing above is wrong. What was wrong is that all of it was read on one meter —
+`_tongue`, the lowest full-height cell in a nosepad *zone*, on three fixtures —
+and `CUT_LEAD_MM` was then set to the value that meter stopped moving at. A
+constant lead cannot be right: how far a square cap has to travel to leave the
+zone is a property of the drawing. Where the outline flares away from the end of
+a seam, the zone reaches back under a cap that has already passed it.
+
+`footings.cap_leads` measures it per end instead, and it measures **every fixture
+in this repo short** — demo 1.14 mm, gabriel 0.85, aviator 1.76 against the 0.5
+they were given. So the gate this file was missing is not another fixture and not
+a wider tolerance: it is
+`test_every_band_end_clears_the_zone_it_acts_on`, which asks the question
+directly and fails on all three fixtures against the old constant.
+
+Whole-surface mesh-vs-raster would *not* have caught it, and that is worth
+recording: on the three fixtures the old code's worst disagreement anywhere was
+0.10 mm (gabriel), inside any tolerance anyone would have written. The Calasanz's
+was 2.05.
 """
 import zipfile
 from pathlib import Path
@@ -140,6 +167,146 @@ def test_no_uncarved_wedge_survives_at_the_nosepad_corner(fixture, request):
                 "uncarved wedge off the end of a footing band")
 
 
+@pytest.mark.parametrize("fixture",
+                         ["gabriel_front", "aviator_front", "demo_front"])
+def test_every_band_end_clears_the_zone_it_acts_on(fixture, request):
+    """The gate the constant needed: ask each cap whether it left the zone.
+
+    Rebuilds exactly what `footing_tools` builds — the same per-band reach, the
+    same `cap_leads`, the same `cut_stations` — then checks the thing a ribbon
+    can never do for itself: that no material of the acting zone, within the
+    reach of *that* band, lies beyond its final station's cap plane.
+
+    Fails on all three fixtures against the old fixed 0.5 mm (needing 1.14 /
+    0.85 / 1.76 mm), which is what makes it a gate rather than a restatement.
+    """
+    from guildmodel.core.geometry.footings import cap_leads, cut_stations
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import _footing_reach
+
+    front = request.getfixturevalue(fixture)
+    part = front.partition
+    castle = CastleParams()
+    heights = {z.name: castle.zones.for_kind(z.kind) for z in part.zones}
+
+    checked = 0
+    for edge in part.edges:
+        if not edge.canonical:
+            continue
+        try:
+            fillet = castle.footing.for_edge(edge.canonical)
+        except AttributeError:
+            continue
+        names = edge.zone_names
+        if len(names) != 2 or not all(n in heights for n in names):
+            continue
+        hi, lo = ((names[0], names[1]) if heights[names[0]] > heights[names[1]]
+                  else (names[1], names[0]))
+        if heights[hi] - heights[lo] < 1e-9:
+            continue
+        reach_hi, reach_lo = _footing_reach(heights[hi] - heights[lo],
+                                            fillet.exterior_mm,
+                                            fillet.interior_mm, fillet.first)
+
+        for zone, reach in ((hi, reach_hi), (lo, reach_lo)):
+            poly = part.zone(zone).polygon
+            band = [(poly, reach)]
+            pts, _ = cut_stations(edge.cut, 30, cap_leads(edge.cut, band))
+            near = poly.intersection(edge.cut.buffer(float(reach)))
+            if near.is_empty:
+                continue
+            for tip, inner in ((pts[0], pts[1]), (pts[-1], pts[-2])):
+                t = np.asarray(tip) - np.asarray(inner)
+                t /= np.linalg.norm(t)
+                for geom in getattr(near, "geoms", (near,)):
+                    ring = getattr(geom, "exterior", None)
+                    if ring is None or ring.is_empty:
+                        continue
+                    q = np.asarray(ring.coords)[:, :2]
+                    beyond = ((q - tip) @ t).max()
+                    assert beyond <= 0.0, (
+                        f"{edge.canonical}/{zone}: the band's cap stops "
+                        f"{beyond:.3f} mm short of the last material its own "
+                        "profile would have moved — an uncarved fin off the "
+                        "end of a footing band")
+            checked += 1
+
+    assert checked >= 10, "no seams carried a footing; the test proves nothing"
+
+
+def test_the_reach_stops_where_the_blend_stops_mattering():
+    """`_footing_reach` against `_footing_spans`, and why the difference is not
+    a shortcut.
+
+    A blend touches down tangentially, so the span's last stretch is flat: on
+    the `endpiece_superior` schedule (32 / 48 mm radii over a 0.7 mm step) the
+    low half spans 8.17 mm and the outermost 1.4 mm of that is within 0.02 mm of
+    the terrace. Covering it costs a millimetre of lead and moves nothing.
+    """
+    from guildmodel.core.relief.castle import (FOOTING_FLAT_TOL_MM,
+                                               _footing_reach, _footing_spans,
+                                               _footing_z)
+
+    delta, r_ext, r_int = 0.7, 32.0, 48.0
+    span_hi, span_lo = _footing_spans(delta, r_ext, r_int, "interior")
+    reach_hi, reach_lo = _footing_reach(delta, r_ext, r_int, "interior")
+
+    assert 0.0 < reach_hi < span_hi and 0.0 < reach_lo < span_lo
+    assert span_lo == pytest.approx(8.17, abs=0.05)
+    assert reach_lo == pytest.approx(6.78, abs=0.05)
+
+    # The claim, checked rather than asserted: the reach brackets the crossing.
+    # It is the last *sample* still outside the tolerance, so the true crossing
+    # sits within one sample spacing beyond it — the reach is conservative by
+    # under a hundredth of a millimetre of run, on the flattest part of the
+    # curve there is.
+    for span, reach, terrace, sign in ((span_hi, reach_hi, delta, -1.0),
+                                       (span_lo, reach_lo, 0.0, 1.0)):
+        step = span / 511.0
+        inside = _footing_z(np.array([sign * reach]), delta, 0.0,
+                            r_ext, r_int, "interior")[0]
+        outside = _footing_z(np.array([sign * (reach + 2 * step)]), delta, 0.0,
+                             r_ext, r_int, "interior")[0]
+        assert abs(inside - terrace) > FOOTING_FLAT_TOL_MM
+        assert abs(outside - terrace) <= FOOTING_FLAT_TOL_MM
+        assert step < 0.02, "the sampling is the accuracy of the bracket"
+
+    # A degenerate edge reaches nowhere, and says so rather than raising.
+    assert _footing_reach(0.0, 4.0, 4.0) == (0.0, 0.0)
+
+
+def test_cap_leads_asks_for_the_floor_on_a_seam_that_needs_nothing():
+    """A straight seam across a straight strip: the cap is clear at once.
+
+    Two flanking cases in one, because the whole risk of an adaptive rule is
+    that it quietly becomes a constant again (always the floor) or quietly runs
+    away (unbounded). A rectangle strip crossed square asks for the floor; the
+    same strip with the outline flared past the seam's end asks for more, and
+    never for more than the blend's own reach.
+    """
+    from shapely.geometry import LineString, Polygon
+
+    from guildmodel.core.geometry.footings import (CAP_CROSS_MM, CUT_LEAD_MM,
+                                                   cap_leads)
+
+    seam = LineString([(0.0, -1.0), (0.0, 11.0)])       # crosses y in [0, 10]
+    strip = Polygon([(0, 0), (6, 0), (6, 10), (0, 10)])
+    assert cap_leads(seam, [(strip, 4.0)]) == (CUT_LEAD_MM, CUT_LEAD_MM)
+
+    # Flared: the zone reaches 2 mm past the seam's low end (y = -2), so the
+    # cap must travel that far plus its crossing margin.
+    flared = Polygon([(0, -2), (6, -2), (6, 10), (0, 10)])
+    head, tail = cap_leads(seam, [(flared, 4.0)])
+    assert head == pytest.approx(1.0 + CAP_CROSS_MM)    # tip is at y = -1
+    assert tail == CUT_LEAD_MM
+
+    # Self-bounding: nothing can be asked for beyond the profile's reach, since
+    # past that the blend has flattened to the terrace and carves nothing.
+    tall = Polygon([(0, -50), (6, -50), (6, 10), (0, 10)])
+    head, _ = cap_leads(seam, [(tall, 4.0)])
+    assert head <= 4.0 + CAP_CROSS_MM
+
+
 def test_the_stations_run_past_both_ends_of_the_cut():
     """The mechanism, checked directly rather than through a build.
 
@@ -157,8 +324,10 @@ def test_the_stations_run_past_both_ends_of_the_cut():
     assert pts[0][0] == pytest.approx(-CUT_LEAD_MM)
     assert pts[-1][0] == pytest.approx(10.0 + CUT_LEAD_MM)
     assert 0.0 < CUT_LEAD_MM <= 1.0, (
-        "past ~1 mm the lead buys nothing the tongue test can see and starts "
-        "costing OpenCASCADE its booleans — see the constant's own note")
+        "this is the FLOOR under `cap_leads`, not the lead itself. A floor "
+        "above ~1 mm would spend length on the ends that measured they do not "
+        "need it, which is the uniform 2 mm that cost OpenCASCADE its booleans "
+        "on the aviator — see the constant's own note")
     assert len(pts) == len(perps) == 12
     # Left-normals of a +x cut point at +y, and stay unit length.
     assert np.allclose(np.linalg.norm(perps, axis=1), 1.0)
@@ -169,6 +338,13 @@ def test_the_stations_run_past_both_ends_of_the_cut():
     plain, _ = cut_stations(line, 5, lead_mm=0.0)
     assert plain[0][0] == pytest.approx(0.0)
     assert plain[-1][0] == pytest.approx(10.0)
+
+    # The two ends are led independently: `cap_leads` routinely returns a pair
+    # differing by more than a millimetre, and one shared number is what the
+    # 2026-08-12 fin was.
+    pair, _ = cut_stations(line, 9, lead_mm=(2.0, 0.0))
+    assert pair[0][0] == pytest.approx(-2.0)
+    assert pair[-1][0] == pytest.approx(10.0)
 
 
 def test_a_curved_cut_is_extrapolated_along_its_end_tangents():
