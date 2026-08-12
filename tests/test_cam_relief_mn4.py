@@ -196,3 +196,68 @@ def test_the_two_solid_kernels_agree_where_they_both_leave_the_raster(demo_front
         f"where the raster and the mesh disagree, the two solid kernels are "
         f"{solids_apart:.4f} mm apart and the raster is {raster_apart:.4f} mm "
         "from the B-Rep — not the margin this milestone was justified on")
+
+
+# ------------------------------------------------- the program a maker gets
+
+def test_the_demo_frame_posts_deterministically_through_the_shipped_path(
+        demo_front):
+    """Stage 2's last exit criterion, in the form the architecture left it.
+
+    It was written as "the posted G-code for the demo frame is equivalent to
+    today's within the agreed tolerance", against a Stage 2 that would have
+    swapped a polygonal kernel for a curved one under an unchanged CAM. M-N3
+    settled that half — byte-equal, and structurally so, because the CAM could
+    not reach a kernel at all — and then **M-N4 deliberately changed what a
+    machine cuts**, posting from the model kernel instead of the raster because
+    the two solid kernels agree with each other where they both leave the
+    raster. Equivalence to the old program is no longer the property to want.
+
+    What is still worth gating is what replaced it: the demo frame posts, and
+    posts the same way twice, through `zmap.castle_relief` — the one entry point
+    every G-code path goes through — at the shipped default kernel.
+    `test_kernel_flip_mn3`'s determinism gate predates that routing and still
+    calls `build_castle_relief` directly, so it pins the raster's program and
+    nobody's program pins this one.
+    """
+    import yaml
+
+    from guildmodel.core.cam.castle_ops import (generate_castle_program,
+                                                write_castle_program)
+    from guildmodel.core.post.grbl import GRBLPost
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM
+    from guildmodel.core.zmap import castle_relief
+
+    config = Path(__file__).parents[1] / "src" / "guildmodel" / "config"
+    tools_cfg = yaml.safe_load((config / "tools.yaml").read_text(encoding="utf-8"))
+    tools = tools_cfg.get("tools", tools_cfg)
+    tool = tools.get("flat_3175", next(iter(tools.values())))
+
+    part, hinges = demo_front.partition, demo_front.hinge_polys
+    castle = _featured()
+
+    def posted(kernel):
+        relief = castle_relief(part, castle, hinges, kernel=kernel,
+                               resolution=CUT_RES_MM)
+        ops = generate_castle_program(relief, castle, hinges, tool,
+                                      tools_cfg=tools)
+        post = GRBLPost(job_name="mn4", material="acetate",
+                        tool_diameter_mm=3.175, spindle_rpm=10000,
+                        feed_rate_mmpm=750, plunge_rate_mmpm=333,
+                        safe_z_mm=castle.stock.total_pad_height_mm + 5.0)
+        write_castle_program(ops, post)
+        return post.to_string()
+
+    first, second = posted("mesh"), posted("mesh")
+    assert first == second, "the posted program is not deterministic"
+    assert "M30" in first and "nan" not in first.lower()
+
+    # And it is genuinely the mesh's surface being cut. A silent fall back to
+    # the raster is the exact failure M-N4 exists to prevent, and it would leave
+    # every assertion above true — the raster posts a clean, deterministic
+    # program too. The reliefs differ on ~60% of cells, so the programs must
+    # differ; identical output here means the routing stopped working.
+    assert posted("raster") != first, (
+        "the mesh and raster kernels posted the same program — the model "
+        "kernel is not reaching the CAM")
