@@ -35,6 +35,10 @@ behave like a control rather than a toy:
   and unreachable. `_build_action_registry` now claims every registered action on
   the window, so being rebindable and being reachable are one fact.
 
+Nothing here `show()`s a main window, and that is a constraint rather than an
+oversight — see `test_every_rebindable_action_can_actually_be_reached`, which
+records what showing one costs this suite.
+
 No VTK render window is created anywhere here, so it all runs headless.
 """
 import numpy as np
@@ -336,41 +340,33 @@ def test_alt_t_and_the_button_are_one_state(tmp_path, monkeypatch):
     assert any(s.key == "turntable" for s in win._action_specs)
 
 
-def test_pressing_alt_t_actually_starts_it(tmp_path, monkeypatch):
-    """The gate the assertion above cannot be: *press the key*.
-
-    `shortcut().toString() == "Alt+T"` was true the whole time the feature was
-    broken. What was missing is the other half — that the keystroke has an
-    action to find — and the only way to see it is to send one.
-    """
-    from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
-
-    win = _window(tmp_path, monkeypatch)
-    win.show()
-    win.activateWindow()
-    QApplication.processEvents()
-    if QApplication.activeWindow() is not win:            # pragma: no cover
-        pytest.skip("this Qt platform will not activate a window")
-
-    win._act_turntable.setEnabled(True)                   # 3D view, normally
-    QTest.keyClick(win, Qt.Key_T, Qt.KeyboardModifier.AltModifier)
-    QApplication.processEvents()
-    assert win.view3d.turntable_active() is True, "Alt+T did not reach the action"
-
-    QTest.keyClick(win, Qt.Key_T, Qt.KeyboardModifier.AltModifier)
-    QApplication.processEvents()
-    assert win.view3d.turntable_active() is False, "Alt+T does not toggle back"
-
-
 def test_every_rebindable_action_can_actually_be_reached(tmp_path, monkeypatch):
-    """The general form, so the next action added does not repeat this.
+    """The gate `test_alt_t_and_the_button_are_one_state` could not be.
+
+    `shortcut().toString() == "Alt+T"` was true for the entire life of the bug.
+    The missing half is whether the keystroke has an action to *find*: a QAction
+    fires its shortcut only while it belongs to a widget in the active window,
+    and being parented to the window is not that. So a registered action with a
+    shortcut and no widget is a silently dead binding — which is exactly what
+    shipped, and what makes rebinding it in Preferences equally useless.
 
     An action offered in Preferences ▸ Hotkeys promises the maker that binding a
-    key to it does something. That promise is only kept while the action belongs
-    to a widget — so a registered action with a shortcut and no widget is a
-    silently dead binding, which is exactly what shipped.
+    key to it does something. This asserts the app can keep that promise, for
+    every action at once, so the next one added cannot repeat it.
+
+    **Why this is not `QTest.keyClick`.** It was, and the keypress version is
+    deleted rather than skipped. A WindowShortcut only matches while its window
+    is *active*, so pressing the key needs a `show()`n main window — and showing
+    one puts a live VTK render window behind the viewer that nothing in this
+    suite can put back. With that test in, the full run hung at test 1043 of
+    1086, main thread inside `QTimerInfoList::activateTimers`, after 132 minutes
+    of CPU; the same eleven files pass in 4m23s without it, and 8m00s with only
+    this test. Stopping the turntable timer and calling `win.close()` in a
+    `finally` did not release it.
+
+    The delivery it was testing is Qt's, not ours. Ours is the association, and
+    that is what is asserted here. The keystroke itself was checked by hand
+    against a real window, before and after the fix.
     """
     win = _window(tmp_path, monkeypatch)
     dead = [key for key, act in win._actions_by_key.items()

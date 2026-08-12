@@ -5283,10 +5283,38 @@ shortcut entry per action and only widens the set of contexts it matches in.
 **The testing mistake, again, and it is the same shape as last time.**
 `test_alt_t_and_the_button_are_one_state` asserted
 `shortcut().toString() == "Alt+T"`, which was true for the entire life of the
-bug. Asserting the binding is not asserting that anything can reach it. The two
-tests added *press the key* — `QTest.keyClick`, which does activate a window under
-the offscreen platform — and assert the general invariant that no registered
-action with a shortcut is in zero widgets.
+bug. Asserting the binding is not asserting that anything can reach it.
+`test_every_rebindable_action_can_actually_be_reached` asserts the general
+invariant instead: no registered action with a shortcut may be in zero widgets.
+
+#### The obvious test for it cannot live in this suite
+
+The first version pressed the key — `QTest.keyClick`, which does activate a
+window under the offscreen platform, and which fails against the shipped code
+and passes against the fix. It is deleted rather than skipped, and the reason is
+worth keeping.
+
+A `WindowShortcut` only matches while its window is **active**, so pressing the
+key requires a `show()`n main window — and showing one puts a live VTK render
+window behind the viewer that nothing in this suite can put back. With that test
+in, the full run **hung at test 1043 of 1086**, main thread inside
+`QTimerInfoList::activateTimers`, having burned 132 minutes of CPU across 77
+threads with the process then idling at 0.5%. Stopping the turntable timer and
+calling `win.close()` in a `finally` did not release it. Measured on the eleven
+files that build a `MainWindow`: **4m23s** with both new tests deselected,
+**8m00s** with only the invariant test, and no completion at all with the
+keypress test.
+
+What it was testing is Qt's shortcut *delivery*, which is Qt's to get right. The
+association is ours, and that is what the surviving test pins. The keystroke
+itself was checked by hand against a real window, before and after the fix —
+dead beforehand, starting and stopping the turntable afterwards.
+
+This is also the first hard evidence for something the previous session only
+noted in passing: this suite has a standing Qt/VTK teardown problem under
+`offscreen`, which until now had only ever shown up as a process lingering
+*after* the summary printed. It is the same defect, and a `show()` moves it from
+cosmetic to fatal.
 
 #### That test had also been passing for the wrong reason
 
