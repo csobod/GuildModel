@@ -448,10 +448,17 @@ class ParamsPanel(QTabWidget):
         self.ef_radius = _slider(d.radius_mm, 0.1, 12.0, step=0.1, decimals=2)
         form.addRow("Fillet radius:", self.ef_radius)
 
+        _TRIM_TIP = (
+            "Pull the {which} of the run in (+) or out (−) along the edge.\n\n"
+            "With no zones selected the run goes all the way round, and "
+            "trimming is how you give it two real ends — each one then gets a "
+            "cap and the taper set by Blend. Pushing out (−) past the whole "
+            "ring just leaves it closed.")
         self.ef_trim_start = _slider(0.0, -50.0, 50.0, step=0.5, decimals=1)
-        self.ef_trim_start.setToolTip("Pull the start of the run in (+) or out (−) along the edge.")
+        self.ef_trim_start.setToolTip(_TRIM_TIP.format(which="start"))
         form.addRow("Trim start:", self.ef_trim_start)
         self.ef_trim_end = _slider(0.0, -50.0, 50.0, step=0.5, decimals=1)
+        self.ef_trim_end.setToolTip(_TRIM_TIP.format(which="end"))
         form.addRow("Trim end:", self.ef_trim_end)
         self.ef_blend = _slider(d.blend_mm, 0.0, 30.0, step=0.5, decimals=1)
         self.ef_blend.setToolTip(

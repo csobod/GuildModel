@@ -121,6 +121,75 @@ def test_trim_pulls_the_span_ends_in(demo):
         sum(b - a for a, b in plain) - 5.0 * len(plain))
 
 
+def test_trim_reaches_a_whole_ring_run_too(demo):
+    """The gate for a slider that was dead on the path most makers use.
+
+    `span_intervals` had two shortcuts that returned the whole ring *before*
+    applying the trims — one for an empty `zones`, one for zones that happen to
+    cover everything. So Trim start / Trim end did nothing at all on a feature
+    with no zone filter, which is the common case: a maker reported moving them
+    and seeing no change, and they were right.
+
+    Trimming is also the only way to turn a round-over that goes all the way
+    round into one with two real ends, so the run must come back *open* — see
+    `spans_whole_ring`, which is what everything downstream branches on.
+    """
+    part, _ = demo
+    ring = ring_for(part, "outline")
+    total = ring.length
+
+    assert span_intervals(ring, part, [], 5.0, 3.0) == [(5.0, total - 3.0)]
+    assert not spans_whole_ring(span_intervals(ring, part, [], 5.0, 3.0)[0], total)
+
+    # and asymmetrically — each end moves on its own
+    assert span_intervals(ring, part, [], 0.0, 7.0) == [(0.0, total - 7.0)]
+    assert span_intervals(ring, part, [], 7.0, 0.0) == [(7.0, total)]
+
+    # trimmed away entirely is no run, not an inverted one
+    assert span_intervals(ring, part, [], total, 0.0) == []
+
+
+def test_a_whole_ring_cannot_be_trimmed_longer_than_itself(demo):
+    """A negative trim pushes an end *out*, which is meaningful on a zone run and
+    impossible on one already covering the ring. Asking for more than all of it
+    gives all of it, still closed — a run swept back over itself is exactly the
+    stacked end caps `spans_whole_ring` exists to prevent.
+    """
+    part, _ = demo
+    ring = ring_for(part, "outline")
+    total = ring.length
+
+    assert span_intervals(ring, part, [], -8.0, -8.0) == [(0.0, total)]
+    assert spans_whole_ring(span_intervals(ring, part, [], -8.0, -8.0)[0], total)
+    # untrimmed is unchanged: still the whole ring, still closed
+    assert span_intervals(ring, part, []) == [(0.0, total)]
+
+
+def test_trimming_a_whole_ring_run_actually_shortens_the_cut(demo):
+    """The unit above is where the bug was, but it is not what the maker sees.
+
+    Measured on the demo: 7662.828 mm3 untrimmed, and every millimetre of trim
+    hands material back, monotonically. Before the fix all three builds returned
+    the identical mesh.
+    """
+    from guildmodel.core.model.build import build_castle_model
+    from guildmodel.core.project.schema import CastleParams
+
+    part, hinges = demo
+
+    def volume(trim):
+        feature = EdgeFeature(
+            id="ring", label="Back round-over", face="posterior", edge="outline",
+            zones=[], profile="fillet", radius_mm=1.5, blend_mm=4.0,
+            trim_start_mm=trim, trim_end_mm=trim, mirror=False)
+        return build_castle_model(
+            part, CastleParams(edge_features=[feature]), hinges).volume()
+
+    none, some, more = volume(0.0), volume(10.0), volume(30.0)
+    assert none < some < more, (none, some, more)
+    assert more - none > 10.0        # ~31 mm3 of round-over handed back
+
+
 def test_taper_weight_ramps_in_and_out():
     total = 100.0
     w = taper_weight(np.array([0.0, 10.0, 12.0, 30.0, 48.0, 50.0, 60.0]),

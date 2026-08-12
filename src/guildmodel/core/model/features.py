@@ -132,6 +132,36 @@ EDGE_SECTIONS_PER_MM = 1.2
 #: The shallowest cut a taper is allowed to reach before it is simply zero.
 MIN_TAPER_DROP_MM = 0.02
 
+#: How far past the face it exits an open run's **end** section is pushed, mm.
+#:
+#: `MIN_TAPER_DROP_MM` keeps the terminal section from collapsing to zero area,
+#: which the sweep cannot take — but a section 0.02 mm deep is a cutter stopping
+#: flush *in* the face it should be leaving, and that is the graze this codebase
+#: keeps paying for (`EDGE_CROSS_MM` is the same defect in the lateral
+#: direction, `FOOTING_CROSS_MM` and `CAP_CROSS_MM` the same again). Signing the
+#: terminal drop puts the whole end section on the far side of the surface, so
+#: the swept solid's cap opens into air and the boolean has a clean crossing
+#: instead of two nearly-coplanar faces.
+#:
+#: Found by making Trim start / Trim end live (they had been dead on whole-ring
+#: runs, so this had gone unseen there), but it was never specific to trimming:
+#: a 288-build sweep over the three fixtures, both faces, both profiles, whole
+#: and zone runs, was **13 non-watertight at 0 and 7 at this value** — and two
+#: of the six it fixes are plain zone runs with no whole-ring involvement.
+#: The cut itself does not move: the demo's volume shifts 0.07 mm3, 0.001%.
+#:
+#: The **7 it does not fix are a different defect** and are not a reason to
+#: raise this: their bad edges sit 55-69 mm from the nearest run end, and
+#: 0.1 / 0.2 / 0.4 give an identical list. That is the sweep folding where the
+#: path turns tighter than the section is deep — the aviator's endpiece cusp
+#: turns 58 degrees in 0.25 mm of arc. `tests/test_mesh_selftouch.py`
+#: (`_FOLDS_MID_RUN`) holds the list.
+#:
+#: Both figures are through `kernel.to_trimesh`. Measured first through
+#: `Manifold.to_mesh()` — float32 — they came out 9 and 0, and the test list
+#: written from that would have failed on four cases the moment it ran.
+TAPER_CROSS_MM = 0.05
+
 #: How far outside the edge the section's first sample is moved, mm.
 #:
 #: `u = 0` is the ring the sweep runs along, and for the pad splay and the edge
@@ -146,6 +176,7 @@ MIN_TAPER_DROP_MM = 0.02
 #: and the ramp keeps its slope; `-CUT_MARGIN_MM` already stands well outside
 #: the body, and this only has to clear the wall.
 EDGE_CROSS_MM = 0.05
+
 
 
 def _edge_profile(width: float, drop: float, radius: float, profile: str,
@@ -238,6 +269,8 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
         else:
             base = widths * tan_a
         drops = np.maximum(base * weight, MIN_TAPER_DROP_MM)
+        if not whole and TAPER_CROSS_MM > 0.0:
+            drops[0] = drops[-1] = -TAPER_CROSS_MM      # see the constant
         if feature.depth_limit_mm is not None:
             drops = np.minimum(drops, float(feature.depth_limit_mm))
 

@@ -261,11 +261,23 @@ def test_no_blend_sample_lands_on_the_seam():
 #: stations re-triangulates that surface and the count of faces the graze lands
 #: on jitters with it, non-monotonically: 2 at the old 2%..98% trim, 4 at 0.0
 #: and 0.5, 2 again at 2.0. A budget, held where the measurement is.
+#: The bridge relief's 2 on demo and aviator are **bought deliberately**
+#: (2026-08-11). Its section is sampled at an odd number of points so that the
+#: trough is always one of them; an even count straddles the centreline and
+#: replaces the trough with a chord, which on a sharp V — whose flanks are
+#: straight lines a polyline reproduces exactly — is the *only* error there is,
+#: and it left the section 3.7% shallow and its shrinking chords degenerate as
+#: the cone tapers: **gaps along 14 edges** on the demo frame. The apex sample
+#: puts a vertex on the centreline, and two of the stitches there weld to
+#: nothing. Open edges are asserted at zero and still are; these are the
+#: category this module's docstring calls a gap rather than a defect, and 2 of
+#: them is the right price for 14 open ones. Gabriel's scoop is short enough not
+#: to produce either.
 _KNOWN_DEGENERATE = {
     "demo_front":    {"eyewire_bezel": 2, "lens_groove": 8,
-                      "pad_splay": 6, "bridge_relief": 0},
+                      "pad_splay": 6, "bridge_relief": 2},
     "aviator_front": {"eyewire_bezel": 12, "lens_groove": 0,
-                      "pad_splay": 4, "bridge_relief": 0},
+                      "pad_splay": 4, "bridge_relief": 2},
     "gabriel_front": {"eyewire_bezel": 12, "lens_groove": 8,
                       "pad_splay": 4, "bridge_relief": 0},
 }
@@ -342,6 +354,92 @@ def test_a_run_all_the_way_round_does_not_stack_its_end_caps(fixture, request):
     found = self_touching_edges(mesh)
     assert found["touching"] == 0, found
     assert found["open"] == 0, found
+    assert mesh.body_count == 1
+
+
+#: Configurations that were not watertight before `TAPER_CROSS_MM` and are
+#: watertight after — each confirmed twice at each value, because a one-shot
+#: sweep is how the wrong list got written the first time.
+#:
+#: From 288 builds: three fixtures x {anterior chamfer, posterior fillet} x
+#: {whole ring, one zone} x trims 0.5..12.0 in 0.5 mm steps, **13** bad at 0 and
+#: **7** after. The seven are a different defect and are listed in
+#: `_FOLDS_MID_RUN` below rather than quietly dropped.
+#:
+#: Two of these six are plain **zone** runs, which is the point of keeping them:
+#: this was never about trimming or about whole-ring runs.
+#:
+#: `(fixture, zones, face, profile, trim)`
+_GRAZING_ENDS = [
+    ("demo_front",    [],                        "anterior",  "chamfer",  6.0),
+    ("demo_front",    [],                        "anterior",  "chamfer",  6.5),
+    ("demo_front",    [],                        "anterior",  "chamfer",  8.0),
+    ("demo_front",    [],                        "anterior",  "chamfer", 10.5),
+    ("aviator_front", ["endpiece_od"],           "anterior",  "chamfer",  6.5),
+    ("gabriel_front", ["eyewire_superior_od"],   "posterior", "fillet",   5.5),
+]
+
+#: The seven that `TAPER_CROSS_MM` does **not** fix, recorded rather than
+#: forgotten. They are a different defect: the bad edges sit **55-69 mm from the
+#: nearest run end**, in the middle of the run, and they do not move for any
+#: crossing depth tried (0.05 / 0.1 / 0.2 / 0.4 give an identical list). The
+#: aviator's cluster is at its endpiece cusp — a **58 degree turn in 0.25 mm** of
+#: arc — which is the sweep folding where the path turns tighter than the section
+#: is deep, the case `sweep_sections` keeps `hull_chain` for.
+#:
+#: Six of the seven are whole-ring runs, so they became reachable when the trims
+#: started working; one is a zone run and was reachable all along. `mesh_check`
+#: reports every one of them to the maker, so the failure is loud rather than a
+#: silently bad STL. Not fixed here — it is a fold in the sweep, not an end cap.
+_FOLDS_MID_RUN = [
+    ("demo_front",    [],                "posterior", "fillet",   6.0),
+    ("demo_front",    [],                "posterior", "fillet",   9.0),
+    ("aviator_front", [],                "anterior",  "chamfer",  2.0),
+    ("aviator_front", [],                "anterior",  "chamfer",  3.0),
+    ("aviator_front", [],                "posterior", "fillet",   9.5),
+    ("aviator_front", [],                "posterior", "fillet",  10.0),
+    ("aviator_front", ["endpiece_od"],   "posterior", "fillet",   4.0),
+]
+
+
+@pytest.mark.parametrize("fixture,zones,face,profile,trim", _GRAZING_ENDS)
+def test_an_open_runs_end_crosses_the_face_it_leaves(fixture, zones, face,
+                                                     profile, trim, request):
+    """Sixth instance of the one rule, and the first found in *depth*.
+
+    `MIN_TAPER_DROP_MM` floors the terminal section at 0.02 mm so it does not
+    collapse to zero area — but 0.02 mm is a cutter stopping flush in the very
+    face it is leaving, and the boolean then has two nearly-coplanar faces to
+    reconcile. It shows up as `mesh_check`'s "overlaps itself along 3 edges",
+    always three, always at one end cap: a vertex on the surface at z, another
+    0.018 mm off it, and the sliver between them.
+
+    `features.TAPER_CROSS_MM` signs the terminal drop so the end section sits
+    wholly on the far side of the surface and the cap opens into air.
+
+    **Two of these six are plain zone runs**, which is the point of listing
+    them: this was never about trimming or about whole-ring runs. Making Trim
+    start / Trim end live is only what walked the ends onto ground bad enough to
+    expose it — the aviator's endpiece chamfer had been one 6.5 mm nudge away
+    from an unexportable model all along.
+    """
+    from guildmodel.core.model import build_castle_model, to_trimesh
+    from guildmodel.core.project.schema import CastleParams, EdgeFeature
+
+    front = request.getfixturevalue(fixture)
+    shape = ({"radius_mm": 1.5} if profile == "fillet"
+             else {"width_mm": 2.5, "angle_deg": 45.0})
+    castle = CastleParams(edge_features=[EdgeFeature(
+        id="run", label="Trimmed run", face=face, edge="outline", zones=zones,
+        profile=profile, blend_mm=4.0, trim_start_mm=trim, trim_end_mm=trim,
+        mirror=False, **shape)])
+    mesh = to_trimesh(build_castle_model(front.partition, castle,
+                                         front.hinge_polys))
+
+    found = self_touching_edges(mesh)
+    assert found["touching"] == 0, found
+    assert found["open"] == 0, found
+    assert mesh.is_watertight
     assert mesh.body_count == 1
 
 

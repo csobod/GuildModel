@@ -89,6 +89,39 @@ def _zone_owner_at(partition: CastlePartition, pt: Point) -> str:
     return best
 
 
+def _trimmed(
+    runs: list[tuple[float, float]],
+    trim_start_mm: float,
+    trim_end_mm: float,
+    total: float,
+) -> list[tuple[float, float]]:
+    """Pull each run's ends in by the trims, dropping any that close up.
+
+    A positive trim pulls the end in, a negative one pushes it out past where the
+    zone stopped — that sign convention is the maker's, from `EdgeFeature`.
+
+    Two things are clamped, both for the same reason: no run may come out longer
+    than the ring it lies on. A run pushed out that far would be swept back over
+    itself, and the duplicated end caps buried inside the solid are precisely the
+    self-touch that `spans_whole_ring` exists to avoid. Asking for more than all
+    of a ring gives all of it, closed — not a fraction more, opened.
+
+    Starts may come out negative and ends past `total`; that is the same wrapped
+    form the seam merge already produces, and every consumer reduces `s % total`.
+    """
+    out: list[tuple[float, float]] = []
+    for s0, s1 in runs:
+        a = float(s0) + float(trim_start_mm)
+        b = float(s1) - float(trim_end_mm)
+        if b - a <= 1e-9:
+            continue
+        if b - a >= total - 1e-9:
+            out.append((0.0, total))                   # the whole ring, closed
+            continue
+        out.append((a, b))
+    return out
+
+
 def span_intervals(
     ring: LineString,
     partition: CastlePartition,
@@ -103,12 +136,19 @@ def span_intervals(
     Runs that meet across the ring's seam are merged, so a span that happens to
     straddle the arbitrary start of the coordinate list is still one run and gets
     one taper at each real end rather than two in the middle.
+
+    **Every** exit trims (2026-08-12). The two whole-ring shortcuts used to return
+    `(0, total)` before the trim was applied, so Trim start / Trim end did nothing
+    at all on a feature with no zone filter — which is the common case, and which
+    reads to the maker as a dead slider rather than a special case. Trimming a
+    whole ring is exactly how you turn a round-over that goes all the way round
+    into one with two real ends, so it is worth having.
     """
     total = ring.length
     if total <= 0:
         return []
     if not zones:
-        return [(0.0, total)]
+        return _trimmed([(0.0, total)], trim_start_mm, trim_end_mm, total)
 
     wanted = set(zones)
     n = max(4, int(np.ceil(total / max(station_mm, 1e-6))))
@@ -120,7 +160,7 @@ def span_intervals(
     if not owned.any():
         return []
     if owned.all():
-        return [(0.0, total)]
+        return _trimmed([(0.0, total)], trim_start_mm, trim_end_mm, total)
 
     # Contiguous runs of owned stations, then merge across the seam.
     runs: list[list[float]] = []
@@ -139,13 +179,7 @@ def span_intervals(
         first, last = runs[0], runs[-1]
         runs = runs[1:-1] + [[last[0] - total, first[1]]]   # wrapped, may start < 0
 
-    out: list[tuple[float, float]] = []
-    for s0, s1 in runs:
-        s0 += trim_start_mm
-        s1 -= trim_end_mm
-        if s1 - s0 > 1e-9:
-            out.append((s0, s1))
-    return out
+    return _trimmed([(a, b) for a, b in runs], trim_start_mm, trim_end_mm, total)
 
 
 def spans_whole_ring(interval: tuple[float, float], total: float) -> bool:
