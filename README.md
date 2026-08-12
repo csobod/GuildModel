@@ -17,6 +17,53 @@ per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
 
+> **New — the posterior features answer to the maker.** The bridge relief's
+> cross-section is now a **U with both corners named** — an exterior radius where
+> it leaves the bridge face, an interior radius at the trough — in the same
+> language the footing already uses; it had neither before, so there was nothing
+> to turn. The pad splay can be cut **non-contiguous**, starting each half clear
+> of a settable centre gap, so a **keyhole bridge** keeps its shape instead of
+> being planed off. And the features are cut by their own **Features** operation
+> with its own tool: a ball nose for the chamfers and scoops, an end mill for the
+> hinges, footing and sculpting. *Fixed with them: the two solid kernels had been
+> cutting a half-ellipse where the heightfield the CAM posts from carved a cosine
+> bell — 57% more material removed than the program believed. All three kernels
+> now build the same section.*
+
+> **Fixed — the spike of material at the nosepad.** A footing blend is swept
+> along its seam, so it stops flat at its last station and leaves standing
+> whatever the frame's outline flares back underneath it: a fin of raw blank
+> where the nosepad meets the bridge, **2.4 mm** proud on a maker's frame. Since
+> v1.4.0 the model kernel is also what the CAM posts from, so it was going to be
+> cut, not just seen. How far that end has to travel to clear the zone is a
+> property of the drawing rather than a constant, and it is now measured per seam
+> end — **every frame we have was short, this repo's own three fixtures
+> included.** Nothing to set; reopen a drawing and rebuild.
+
+> **Also fixed — the pad splay's run-out, and a turntable to see it with.** The
+> end feather scaled the cut's *depth* but not its *width*, so a run ended as a
+> flat shelf at full width and then stopped dead — invisible on a normal splay,
+> because the crest is already tapering there, and 7.5 mm of sharp shelf on the
+> inner ends of a **non-contiguous** one. It now lifts the chamfer out of the
+> surface at full width and angle, so the cut narrows away to nothing at every
+> end. Same slider, no new control. And the 3D viewer has a **turntable** —
+> the LP button beside the camera presets, or `Alt+T`, with a speed slider; it
+> spins about the view you set up, so tip the part first and it turns on that
+> axis.
+
+> **Fixed — Trim start / Trim end, and the turntable's hotkey.** The trim
+> sliders on an edge feature did nothing at all on any feature without a zone
+> filter, which is most of them: the span was handed back before the trims were
+> applied. They work now, whole-ring runs included — trimming is how you turn a
+> round-over that goes all the way round into one with two real ends. Making
+> them live also turned up a cutter that stopped flush *in* the face it was
+> leaving rather than crossing it, which could leave a run's end unexportable;
+> that is fixed for every edge feature, trimmed or not. And `Alt+T` never
+> reached the turntable — the binding was correct, but the action sat in no menu
+> and on no toolbar, so nothing could fire it; rebinding it in Preferences
+> didn't help for the same reason. Every rebindable action is now reachable by
+> its key.
+
 > **New in v1.4.0 — the frame has a front (first V2 instalment).** The model now
 > carries an **anterior surface** as well as the posterior castle, and a new
 > **Edge Features** list on the Model tab cuts partial-span chamfers and fillets

@@ -4258,8 +4258,9 @@ commit itself (`82f4f4c`). Verified present.
 
 ### Still open
 
-Stage 2's remaining exit criteria: **posted G-code equivalence on the demo
-frame**, and **`BRepCheck_Analyzer` in the readiness dot**. Then the long-running
+~~Stage 2's remaining exit criteria: **posted G-code equivalence on the demo
+frame**, and **`BRepCheck_Analyzer` in the readiness dot**.~~ **Both closed
+2026-08-12 — see "Stage 2's last two criteria" below.** Then the long-running
 items, unchanged: PyInstaller packaging on Windows/macOS (report §9.5),
 determinism across OCC versions (§5.4), the `flat.py` duck-type (§5.3), and
 refitting smooth edge chains to splines at extraction time for Stage 4.
@@ -4834,6 +4835,623 @@ polygon.
 3. **Only splines and circles come across exactly.** Arcs return None because an
    open arc is never a whole ring; if a drawing ever assembles an outline from
    arc segments, that assumption needs revisiting.
+
+## Bug report 2026-08-10 — the maker's six *(2026-08-11)*
+
+Six items, plainly stated, from `Bug Report 8-10-26.txt`. Four are landed (1, 2,
+3, 5); one was already true in `main` and needs to be re-checked against whatever
+build the maker is running (4); one did not reproduce (6).
+
+**Item 3 took two passes.** The first found no modelling defect on any fixture in
+the repo and shipped a warning for a second, machining-side cause; the maker then
+supplied two of their own drawings, and the Calasanz reproduced a 2.43 mm fin
+immediately. It was the square end cap of a footing band — a defect this repo has
+a whole test file and a forty-line constant note about, closed once already, and
+closed with a constant where the quantity is a property of the drawing. Written
+up under item 3, including why three fixtures agreeing was not evidence.
+
+Three more defects were found on the way that nobody had reported: the solid
+kernels had been cutting a **57% deeper bridge-relief section than the heightfield
+the CAM posts from** with a pinned test asserting that disagreement as intended
+behaviour (item 1), and `tools_in_use` was hiding a pinned Features tool from
+`is_multi_tool` (item 5).
+
+### 1 · Bridge relief had no radii — landed
+
+The scoop's cross-section was a tangent cosine bell: smooth, and with no numbers
+in it. A maker who wanted a tighter trough or the rim blended further out into
+the bridge had nothing to turn. It is now the footing's own vocabulary —
+`exterior_radius_mm` rolling off the surface, `interior_radius_mm` landing on the
+floor, a straight ramp between — in `core/geometry/blends.py`, which **all three
+kernels call**. The angle solve collapses to `a*sin(t) + (S - d)*cos(t) = S`,
+one closed-form root; past `(a**2 + d**2) / 2d` on the sum of the radii there is
+no ramp left and both shrink in proportion, continuously, so the swept surface
+stays smooth where the cap begins to bite as the cone tapers.
+
+**And it turned up a defect that had been shipping since the port.** The two
+solid kernels lofted a half-**ellipse** while the raster carved the bell. Same
+width, same centreline depth, both documented — the B-Rep's docstring says in as
+many words that the raster "substitutes a cosine bell" — so every gate that
+compared a depth or a width passed and **nothing ever compared the areas**. They
+differ by exactly `pi/2`: the solid kernels were removing **57% more material
+than the heightfield the CAM posts from and the feature-reach warnings are
+computed against**. Measured on the aviator: 14.45 mm3 against 9.17.
+`test_bridge_tangency_mn0` carries the numbers.
+
+`test_solid_stage2::test_bridge_relief_is_a_cone_not_a_bell` had **pinned the
+disagreement as intended behaviour** — it asserted the solid cut deeper than the
+raster — and is now `test_bridge_relief_matches_the_raster`. What residual is
+left is 0.02 mm and one-signed *by construction*: `ThruSections` interpolates
+between sampled sections and an inscribed polygon lies inside the curve it
+samples, so the loft removes a hair less. Mean bias across the bridge zone is
++0.0006 mm against the 0.01 mm bar the pad-splay anchor test uses.
+
+Two smaller findings came with it, both pinned:
+
+* an even section-point count never samples the trough, so a sharp V lofted
+  **3.7% shallow** and its shrinking chords degenerated as the cone tapered —
+  gaps along 14 edges on the demo frame. `scoop_section_x` is odd;
+* an exterior radius of exactly 0 leaves gaps along 15 edges regardless of the
+  interior one (0 fails, 0.01 mm and up is clean, all three fixtures). Floored at
+  `MIN_RIM_RADIUS_MM = 0.05` — the rim only; a sharp V *trough* builds clean and
+  still means what it says.
+
+The odd section count is **bought**, not free: sampling the apex puts a vertex on
+the centreline and two of the stitches there weld to nothing, so the scoop's
+`_KNOWN_DEGENERATE` budget in `test_mesh_selftouch` goes 0 → 2 on demo and
+aviator. Open edges stay at zero, which is the assertion that matters; 2 faces
+that `mesh_check` does not report and slicers discard is the right price for 14
+open ones.
+
+### 2 · Non-contiguous pad splay — landed
+
+For keyhole bridges: `non_contiguous` + `gap_mm`, the gap measured as arc length
+along the outline and split evenly either side of bottom-centre. The same crest,
+angles and feather with the middle of the station table removed, so the two
+halves are guaranteed each other's mirror and there is one set of controls.
+
+**Two bodies, not one strip with a flat middle.** A single sweep across the gap
+still has sections standing over it and their drop is floored at
+`MIN_TAPER_DROP_MM`, so it would skim the very shape the gap exists to protect;
+`splay_cutters` (both solid kernels) returns one cutter per span. The inner ends
+feather like the outer ones — they are the ends the maker looks at across the
+keyhole.
+
+One more "jagged point where the cut terminates" fell out of the rewrite. The old
+carve selected every station with `|u| <= run`, **including the two where the
+feather has already reached zero**, and at those the target was the crest anchor
+height with no drop subtracted — so wherever the surface stood above it, the cut
+ended in a step. Three cells in 191,694 on the aviator, up to 0.077 mm, always in
+the direction of cutting material that should have been left. The selection is
+now `weight > 0`.
+
+Noted in passing, **not** introduced here and not fixed: the raster splay is
+already ~3.9% left/right uneven on the aviator, on a body that is 0.13% uneven.
+Arc-length stations on a flattened outline plus a per-sample crest bisection.
+`test_keyhole_splay` measures the split against the contiguous run rather than
+against zero, and says why.
+
+#### 2b · The inner ends still ended in a wall *(2026-08-12)*
+
+Reported straight back: "a very abrupt end leaving sharp material no matter what
+I do", with a slider for a crest blend offered as one possible answer. No new
+slider was needed — `feather_mm` was the right control doing the wrong thing.
+
+**It scaled the drop.** That takes the chamfer's *angle* to zero at the end while
+its *width* stays at the full crest, so the last millimetres of the run come out
+as a flat shelf planed at the crest's own anchor height — and then stop dead at
+the station the sweep ends on. Nobody had seen it because
+`crest_deviation_end_mm` already tapers the crest toward each *outer* run end, so
+the width was running out there for an unrelated reason. A non-contiguous splay's
+inner ends sit at full crest: **7.5 mm of shelf** on the reported frame.
+
+**Scaling the crest instead is the obvious repair, and it is worse.** It gives
+the right surface — the section shrinks self-similarly, the angle is kept, the
+cut narrows to a point — and it drives the tool through the boolean sideways. The
+crest edge sweeps inward by its whole width over a few millimetres of run while
+the section collapses toward zero size, and Manifold starts shedding collinear
+sliver triangles where the cut crosses the nosepad footing: **14 of 27**
+gap/feather settings around the maker's came back non-watertight, always one
+triangle a twentieth of a millimetre across, always at the same point. Four
+mitigations were measured and none was a cure — a minimum section width, a
+crest-crossing lead (the `EDGE_CROSS_MM` rule applied to the other end of the
+same profile), four station densities, and `Manifold.simplify`, which severed the
+part into three pieces at 0.01 mm.
+
+**So the feather LIFTS the chamfer instead.** Full width, full angle, and the
+plane raised out of the material as the weight falls: the cut runs out because
+there is nothing left under it. Every section stays full size and the cutter only
+translates in Z, which is the best-conditioned thing a boolean can be handed, and
+the boundary it leaves is the intersection curve of a plane with the surface —
+the shape a hand-cut run-out actually has.
+
+Two terms in the lift, and the second was learnt the hard way:
+
+* `crest * tan(angle)` — how far the plane falls between the crest and the rim.
+  Clears the plane's crest end;
+* `max(0, rim_z - anchor)` — how far the surface has climbed back up under its
+  *low* end. Leave it out and a frame whose bridge rises toward the outline is
+  still cut **1.07 mm** deep at a station whose weight is 0.038. From outside
+  that is the shelf again, and the first version of this fix shipped it as far as
+  the test bench.
+
+And the lift is the station's own **unfloored** depth: `drops` is floored at
+`MIN_TAPER_DROP_MM` first, so using it lifts a section that has no depth to lift
+off a surface it was sitting flush on. That handed the sweep a degenerate end cap
+— a zero-length edge at `u = run` exactly, on the outline, at the eyewire terrace
+height.
+
+Measured after: the maker's own settings across 27 gap/feather combinations on
+their own frame, clean; their (extreme) settings across 90 combinations on four
+frames, clean; **224** combinations of shipped defaults across four frames, one
+failure — at `feather = 0`, where `splay_weight` is all ones, the lift is exactly
+zero and the code path is bit-identical to what shipped before. A cut with the
+run-out turned off ends in a wall by the maker's own instruction.
+
+### 3 · Nosepad protrusion — FOUND AND FIXED *(2026-08-12)*
+
+The maker sent two drawings — **Calasanz 49□20-140** and **Aquinas 54□17-150** —
+with the note that both render correctly in GuildDraw and break here when
+extruded. The Calasanz reproduces on the first build: two blade-shaped fins of
+raw material, one either side of the bridge, standing **2.43 mm** proud of the
+blend around them.
+
+**It is the square end cap of a footing band, and `CUT_LEAD_MM` was the wrong
+shape of answer rather than the wrong number.** Everything in the constant's own
+note (M-N?, `geometry/footings.py`) is accurate: a band is a ribbon swept along a
+seam, so it stops flat at its last station, and the raster carves by Euclidean
+distance to the seam, which rounds that corner for free. The lead was set to 0.5
+mm because a convergence table said the fin stopped moving there.
+
+What the table could not see is the meter it was read on — `_tongue`, the lowest
+full-height cell in a nosepad *zone*, on three fixtures. It converges at 0.5 mm
+because past that the cap has left **the part of the zone that meter looks at**,
+not because the cap has left the zone. How far a square cap must travel to clear
+a zone is a property of the drawing: where the outline flares away from a seam's
+end — a nose notch, a keyhole bridge — the zone reaches back underneath a cap
+that has already gone by. On the Calasanz the fin sits **0.52 mm** past a cap led
+0.50, and the cluster is 3.9 mm out along the perpendicular where the blend is
+still 1.2 mm deep.
+
+So the lead is now measured per end instead of assumed. `footings.cap_leads`
+answers, for a band's tip,
+
+    max over q in (zone ∩ within-reach-of-the-cut) of (q - tip) · t
+
+with `t` the outward end tangent, plus `CAP_CROSS_MM` so the cap lands past that
+material rather than on it. `cut_stations` takes a `(head, tail)` pair, because
+the two ends of one seam routinely differ by more than a millimetre. Both solid
+kernels call it; the raster needs nothing, since distance-to-a-segment was always
+round.
+
+**The measurement is self-bounding, and that is why there is no ceiling on it.**
+`within-reach` is a shapely buffer of the cut line, whose round ends make the
+region measured over exactly the region the raster's distance would carve —
+`hypot(perpendicular, beyond-the-end) <= reach`. No end can ask for more lead
+than the band's own reach, because past that the profile is the terrace and there
+is nothing left to carve. An arbitrary ceiling would be a silent return of the
+fin on some frame nobody has drawn yet — which is exactly how the constant came
+to be wrong, and re-imposing it here would be repeating the mistake one level up.
+
+So the guarantee is exact, and worth stating in the form it actually holds: **no
+band leaves standing anything its own profile would have taken by more than
+`FOOTING_FLAT_TOL_MM`** (0.02 mm — under a seventh of the finest CAM cell, under
+the parity the gates now measure, two orders under the 2.4 mm fin).
+
+#### Two readings of "needed" that were too generous, and OpenCASCADE found both
+
+The first version measured `max(carve, raise)` per *seam*, against
+`_footing_spans`. It killed the fin on every drawing and the mesh kernel built
+every combination clean — and it broke the B-Rep in two places
+(`test_kernel_flip_mn3[aviator/bezel+groove]`, `test_gabriel_fixture`), which is
+the demoted kernel earning its keep as the third opinion. Both readings were
+wrong on their own merits, independent of OCCT:
+
+* **one lead per seam.** The carve acts on the high zone over the high span; the
+  raise acts on the low zone over the low span, and on a nosepad seam those
+  differ by a factor of four. Taking the longer dragged each band out over ground
+  that was not its business — on the aviator, 2.6 mm of raise-side reach spent on
+  a carve band that needed 1.0. Each band now gets its own stations.
+* **measured to the span.** A blend touches down *tangentially*, so its last
+  stretch is flat to within microns and covering it or not is the same part.
+  `relief.castle._footing_reach` asks instead how far the blend is genuinely not
+  the terrace: on the `endpiece_superior` schedule the low half spans 8.17 mm and
+  the outermost 1.39 mm of it is within 0.02 mm of flat.
+
+Together the worst lead on any fixture falls from 2.60 mm to 1.47, every parity
+combination closes on both kernels, and the mesh-vs-raster figures below are
+unchanged to the last digit — which is the point: the length removed was length
+that moved nothing.
+
+The gabriel failure is worth one more line, because it says what kind of margin
+this is. It was a **tangency**, not a magnitude: with the old rule it broke for
+`CAP_CROSS_MM` in 0.15–0.25 and built cleanly at 0.05, 0.10 and everything from
+0.30 up. With the corrected rule both kernels build every case for every
+crossing margin from 0.05 to 0.75 mm, and only a 1.00 mm margin — which pushes
+the aviator's leads back past where OCCT closes — fails. A rule with a
+fifteen-fold valid band is a rule; one that works at 0.5 and not 0.9 was a
+tuning.
+
+**Every fixture in this repo was short.** Required lead at the worst end,
+measured against the old fixed 0.5 mm:
+
+| drawing | worst end needs | mesh − raster, worst cell |
+|---|---|---|
+| demo | 1.14 mm | +0.037 → **+0.004** |
+| gabriel | 0.85 mm | +0.102 → **+0.010** |
+| aviator | 1.76 mm | +0.058 → **+0.016** |
+| aquinas | 0.95 mm | +0.235 → **+0.006** |
+| calasanz | 2.00 mm | +2.054 → **+0.031** |
+
+The residual runs slightly *negative* now (−0.14 mm worst, on the Calasanz): a
+straight ribbon extension is still not a round cap and carries a little more than
+the rounding would over the last `CAP_CROSS_MM` of run, onto material the rim
+wall is about to take anyway. That is the trade the fin bought.
+
+**This was going to be cut, not just seen.** Since M-N3 `zmap.castle_relief`
+routes the CAM through the `model_kernel` preference, whose default is `mesh` —
+so the Calasanz's G-code would have left both fins standing.
+
+**Why the earlier pass missed it.** The three bullets below were all true and all
+measured, and two of them are still the right checks; the third was the mistake:
+
+* **against Fusion.** Registered `tests/fixtures/demo/Model.stl` to our build
+  (a pure 4.196 mm Y translation, 100% footprint overlap) and diffed the
+  top-down height maps: **0.059 mm rms**, no residual near the nosepad;
+* **the mesh oracle** over 21 feature combinations across the three fixtures:
+  all watertight, one body, verified;
+* **mesh against raster**, max +0.10 mm — from which "there is no square-cap fin
+  left for `CUT_LEAD_MM` to be blamed for" was concluded. It does not follow. A
+  whole-surface parity gate would *not* have caught this on any fixture in the
+  repo: the worst disagreement the old code produced on the three of them was
+  gabriel's 0.10 mm, inside any tolerance anyone would write. The maker's frame
+  was 2.05. Three fixtures agreeing is evidence about three fixtures.
+
+The gate that does catch it asks the question directly rather than sampling for
+its consequences: `test_every_band_end_clears_the_zone_it_acts_on` rebuilds what
+`footing_tools` builds and asserts no zone material within reach lies beyond the
+final cap plane. Against the old constant it fails on **all three** fixtures.
+
+#### The second cause, which stands on its own
+
+Separate from the fin, default-driven, and it fits "across many frames".
+The relief passes deliberately skip every cell already at stock height — cutting
+them removes nothing and makes the concentric rings weave in and out of the cap,
+bouncing Z and pecking — so a zone that *reaches* the stock top comes off the
+machine as **raw blank, standing proud of everything machined around it, with a
+hard edge where the cut begins.** The shipped defaults coincide **exactly**:
+nosepad 10.0 mm on a 6.0 mm blank plus a 4.0 mm pad block. 87 uncut cells per
+nosepad on the demo frame at 0.25 mm, 174 on the aviator; dropping the tower to
+9.7 mm takes both to zero. That is "a persistent issue with protrusion of
+material at nosepad, across many frames", and it is a protrusion **on the part**
+rather than in the render, which is consistent with the report saying "renders"
+of one frame and "persistent … across many frames" of the condition.
+
+The behaviour itself is right and the comment in `relief_ops` already says what
+to do about it ("lower the nosepad height a hair rather than skim at stock
+height") — what was missing is that the maker is never told. `unmachined_top_warnings`
+now names each zone, both heights, and the remedy, on every generate. Changing
+the default nosepad height instead would mean moving a Demo Project reference
+dimension that the whole project is validated against, which is the maker's call
+and not a bug fix.
+
+Both causes were live at once, which is why the report reads the way it does: one
+is a fin in the render *and* in the program, the other is a flat cap that only
+appears on the part.
+
+### 4 · All toolpath operations checked by default — ALREADY TRUE
+
+Verified in `main`, not taken on trust: a freshly built `ParamsPanel` has all
+twelve operation checkboxes checked, `cam_params().op_enabled` is `{}`, and
+`generate_temple_program` on factory defaults posts Hinge Pockets + Temple
+Profile for all four temples across both `.gdraw` fixtures. This may be a build
+older than `a967a5d` (M16, which added the checkboxes), or a persisted
+`~/.guildmodel/prefs.json` — though the one on this machine has no `op_enabled`.
+**Needs: which build, and what the Operations group looks like there.**
+
+### 5 · Features as their own operation — landed
+
+The feature-band rings were emitted into Fine Relief, so they were cut with
+whatever tool finished the terraces. Now a **Features** op between Fine Relief
+and Eyewires, with its own selector, defaulting to the *fine* tool (not the
+global one — that would silently change a multi-tool program). It rides **its
+own** drop-cutter surface: a ball's CLS is not a flat's, which is the whole of
+the maker's reason for wanting a separate tool, and emitting one tool's paths off
+the other's surface would put the ball through the chamfer.
+
+`feature_reach_warnings` now reads the Features tool, and its bridge-relief
+suggestion is the trough radius the maker set rather than the bell's curvature.
+
+**A latent safety bug came out of this.** `tools_in_use` scanned only
+`POSTERIOR_OPS`, and it is what `is_multi_tool` — and therefore whether the post
+emits tool-change blocks and per-tool feeds at all — is decided from. A ball
+pinned to Features would have run at the end mill's feeds with no change block.
+It now scans pinned `op_tools` too, which closes the same gap for "Holes" and
+"Lens Groove" (whose call sites each carry an `or relief.groove is not None`
+workaround for exactly this).
+
+### 6 · Surface errors with features — NOT REPRODUCED, needs specifics
+
+Swept rather than spot-checked, because "some" suggests it is parameter-dependent
+rather than always:
+
+* every feature singly, and all five together, on all three fixtures — 21 builds;
+* **1,782 builds** over the sliders' own ranges — the scoop's width x depth x
+  both radii, the splay's run x angle x crest x crest-blend x gap x contiguity,
+  the bezel's width x angle x face, each crossed with all three fixtures
+  (`scripts`-shaped probe, not kept).
+
+Every one verifies: closed, one body, positive volume. The two genuine surface
+defects found this round were both in the scoop and are fixed above — and note
+that neither was reachable before this round, since the radii that trigger them
+did not exist.
+
+Beyond that, the standing issue is the one already diagnosed under **"Feature
+crispness"**: the raster has no representation of an edge, so features read as
+blended and pitted, and M18 #1/#3/#4 are deferred. **Needs: which feature, which
+frame, and a screenshot.** If it is the pitting, it is that entry rather than a
+new bug; if it is a hole or an overlap the app itself reports ("the model
+overlaps itself along N edges"), the exact parameter values would pin it, since
+1,782 combinations of the shipped ones do not.
+
+### 7 · Turntable in the 3D viewer — landed *(2026-08-12)*
+
+Asked for as a feature rather than a bug: a button beside the camera presets, an
+LP-record icon, `Alt+T`, and a small speed slider next to it.
+
+`Viewer3D` gains a checkable button and a `QSlider`, a 40 ms timer, and
+`turntable_active` / `set_turntable` / `toggle_turntable` / `turntable_speed`.
+Four decisions worth recording:
+
+* **VTK's `Azimuth`, not a spin about world Z.** It turns the camera about its
+  own view-up vector through the focal point, which is what makes it a turntable
+  *in the maker's current view* — tip the part first and the axis tips with it,
+  which is what "around its center point as the axis of motion" asks for.
+* **The step angle is derived from the rate and the interval**, so a dropped
+  frame slows the spin rather than skipping part of it.
+* **Hidden means stopped, not cancelled.** The same reason the playback timer
+  stops in `hideEvent` — an animating hidden viewport renders into a zero-size
+  buffer — but the button stays checked and `showEvent` picks it up, so a look at
+  the 2D outline and back does not cost a click.
+* **6–90 deg/s, default 30** (one turn per 12 s), persisted as
+  `turntable_speed`. A record deck's 33⅓ rpm is 200 deg/s: the icon is the joke,
+  not the specification. The *engaged* state is deliberately not persisted —
+  opening a project into a spinning viewport would be a surprise.
+
+The action is registered in the M7.15 hotkey registry (`turntable`, off the
+default toolbar since its button lives on the viewer's own strip), so `Alt+T` is
+rebindable like every other binding.
+
+#### It shipped not working, twice over, and the tests said nothing
+
+Reported straight back: the icon and slider are there, the button toggles,
+nothing moves. Two defects, and one testing mistake that hid both.
+
+* **`pyvista.Camera.azimuth` is a `property`, not a method.** `cam.azimuth(1.2)`
+  raised `TypeError: 'float' object is not callable` on the very first tick;
+  `_turn_step`'s `except Exception` caught it and stopped the timer. Symptom:
+  exactly what was reported. It is `Azimuth(delta)` — VTK's, and *relative*,
+  which is also the right semantics: the property's setter rewinds its own
+  previous value (`self.Azimuth(-self._azimuth)`) before applying the new one, so
+  a continuous spin driven through it would undo whatever the maker had just done
+  with the mouse.
+* **`OrthogonalizeViewUp` per step turned the turntable into a tumble.** It was
+  put there against a drifting up vector, but `Azimuth` preserves the angle
+  between the view direction and the up vector, so nothing drifts; squaring the
+  up vector to the view direction first re-aims the axis every step and the
+  camera walks off its own elevation. From (0, −120, 90) over a 90-degree sweep:
+  with it, the camera ends at height **4.8** having swept 90.2 degrees; without
+  it, height holds at **90.0** and the sweep is 90.000.
+
+**The testing mistake is the part worth keeping.** Eight tests covered the timer,
+the button/action sync, the off-screen parking, the slider bounds, the icon — and
+every one of them passed while the step raised on every tick, because none of
+them ever reached the camera: `_plotter` was `None` in a headless test and
+`_turn_step` returns at its first line. The fix is a stub plotter carrying a
+**real `pyvista.Camera`**, which needs no render window, plus a *tipped* camera
+in the pose assertions — the tumble is invisible from a square-on view, since the
+distance to the focal point is exact either way. Both new tests were checked
+against the broken code before being kept.
+
+And `_turn_step` no longer fails silently: it stops the timer, releases the
+button so a dead turntable does not look armed, and prints what went wrong.
+
+#### And a third time — the hotkey was never reachable *(2026-08-12)*
+
+Reported once more: the button works, `Alt+T` does nothing, and rebinding it in
+Preferences does nothing either. That last clause is the whole diagnosis. A
+rebinding that changes nothing means the keystroke never reaches the action, not
+that the binding is wrong.
+
+**A `QAction` fires its shortcut only while it belongs to a widget in the active
+window, and passing the window as its `parent` is not that** — `QAction(…, self)`
+sets ownership, and only `QWidget::addAction` puts it in the shortcut context.
+Every other action in the app got that for free by sitting in a menu or on the
+default toolbar. The turntable is the one action deliberately in neither, because
+its button lives on the viewer's own strip — so it was in **no widget at all**.
+Enumerating `associatedObjects()` over the registry says it in one line: every
+other action reads `['QToolBar', 'QToolButton', 'QMenu']` or `['QMenu']`, and
+`turntable` reads `[]`.
+
+The fix is in `_build_action_registry`, not in the action: every registered
+action is claimed on the window. Being offered in Preferences ▸ Hotkeys is a
+promise that binding a key to it does something, and that promise should be kept
+by the thing that makes the offer rather than by each action remembering to also
+appear in a menu. Adding an action to a second widget is safe — Qt keeps one
+shortcut entry per action and only widens the set of contexts it matches in.
+
+**The testing mistake, again, and it is the same shape as last time.**
+`test_alt_t_and_the_button_are_one_state` asserted
+`shortcut().toString() == "Alt+T"`, which was true for the entire life of the
+bug. Asserting the binding is not asserting that anything can reach it. The two
+tests added *press the key* — `QTest.keyClick`, which does activate a window under
+the offscreen platform — and assert the general invariant that no registered
+action with a shortcut is in zero widgets.
+
+#### That test had also been passing for the wrong reason
+
+Running it after the fix failed with `'Ctrl+Shift+T' != 'Alt+T'` — because it was
+reading the **maker's own** `~/.guildmodel/prefs.json`, where they had rebound the
+action while reporting the bug. `prefs._DIR` is `Path.home() / ".guildmodel"`
+evaluated at *import* time, so a test that sets `HOME` in a `monkeypatch` is
+already too late: some earlier test in the process imported the module and fixed
+the path to the real home.
+
+Reading is the harmless half. `_save_window_state` calls `prefs.save()`, which
+writes **every** key — so a headless test that opens a window stamps its own
+geometry, panel layout, and whatever value it was exercising over the real file.
+`test_the_saved_speed_is_restored_and_written_back` sets the turntable speed to
+17 and saves it.
+
+`tests/conftest.py` (new) redirects `prefs`, `tool_store`, `material_store` and
+`style_store` at a session tmp dir for every test, autouse. Several tests already
+patched `_DIR` / `_FILE` by hand and were right to; this makes it the default
+instead of something each new test has to remember.
+
+### 8 · Trim start / end did nothing — FOUND AND FIXED *(2026-08-12)*
+
+Reported alongside the hotkey: "instead of nudging it in a given direction, it
+doesn't seem to quite do anything."
+
+It did nothing, exactly. `relief.edges.span_intervals` applied the trims in its
+final loop, and returned through **two shortcuts that never reach it** — one for
+an empty `zones`, one for zones that happen to cover the whole ring:
+
+```python
+if not zones:
+    return [(0.0, total)]        # trims never applied
+...
+if owned.all():
+    return [(0.0, total)]        # nor here
+```
+
+An empty `zones` is the common case — it is what every unfiltered edge feature
+has — so for most features both sliders were inert. `_trimmed` is now the single
+exit and every path goes through it.
+
+Trimming a whole ring is worth having rather than a case to reject: it is the
+only way to turn a round-over that goes all the way round into one with two real
+ends. So a trimmed whole-ring run comes back **open**, and `spans_whole_ring`
+then reports False, which is what everything downstream branches on. Untrimmed,
+it is unchanged — still one closed interval, still swept closed. A *negative*
+trim on a whole ring is clamped back to the closed ring: asking for more than all
+of a ring gives all of it, and a run swept back over itself is precisely the
+stacked end caps that exception exists to prevent.
+
+Measured on the demo, posterior 1.5 mm round-over, whole ring: 7662.828 mm3
+untrimmed, 7674.769 at 10 mm of trim, 7694.144 at 30. Before, all three were the
+same mesh.
+
+#### What making it live walked into: the end cap grazes
+
+Sweeping trims on the demo, 4 of 25 came out non-watertight — "the model overlaps
+itself along 3 edges", always three, always at one end cap. The cause is the
+sixth instance of this project's one rule, and the first found in **depth** rather
+than laterally:
+
+`MIN_TAPER_DROP_MM` floors the terminal section at 0.02 mm so it cannot collapse
+to zero area, which the sweep will not take. But a section 0.02 mm deep is a
+cutter stopping flush *in* the face it is leaving. The bad edges say it plainly:
+a vertex on the surface at z, another 0.018 mm off it, and the sliver between.
+
+`features.TAPER_CROSS_MM = 0.05` signs the terminal drop, so the end section sits
+wholly on the far side of the surface and the swept cap opens into air. The cut
+itself does not move — the demo's volume shifts 0.07 mm3, 0.001%.
+
+**It was never about trimming.** A 288-build sweep — three fixtures × {anterior
+chamfer, posterior fillet} × {whole ring, one zone} × trims 0.5–12.0 — goes from
+**13 non-watertight to 7**, and two of the six it fixes are plain **zone** runs
+with no whole-ring involvement at all. The aviator's endpiece chamfer had been
+one 6.5 mm nudge from an unexportable model the whole time. Making the sliders
+live is only what walked the run ends onto ground bad enough to expose it.
+
+#### Still open: the sweep folds mid-run at a cusp — 7 of 288
+
+The 7 that remain are **not** the same defect and are not a reason to raise the
+constant. Their bad edges sit **55–69 mm from the nearest run end** — in the
+middle of the run, nowhere near a cap — and the list is byte-identical at 0.05,
+0.1, 0.2 and 0.4. The aviator's cluster is at its endpiece cusp, which turns
+**58° in 0.25 mm** of arc: this is the sweep folding where the path turns tighter
+than the section is deep, the case `sweep_sections` deliberately keeps
+`hull_chain` for.
+
+Six of the seven are whole-ring runs, so they became *reachable* when the trims
+started working; the seventh is a zone run and was reachable all along.
+`mesh_check` reports every one to the maker in the log and the Inspector, so it
+is a loud failure rather than a silently bad STL. Listed in
+`tests/test_mesh_selftouch.py::_FOLDS_MID_RUN`. Not fixed here — a fold in the
+sweep is a different piece of work from an end cap.
+
+#### Measure through `to_trimesh`, or measure nothing
+
+The first version of that sweep read the model through `Manifold.to_mesh()` and
+built a `Trimesh` by hand — **float32**, and `kernel.to_trimesh`'s docstring says
+in as many words that this distorts these counts in both directions. It produced
+a clean 9 → 0 that was worth nothing, and the tests written from its list would
+have failed on four aviator cases the moment they ran. Redone through
+`to_trimesh`, the one path the whole app reads a model through, it is 13 → 7.
+
+A second harness bug in the same sweep is worth the same warning. It picked the
+zone to test as `"eyewire_superior_od" if present else zones[0]` — and the
+aviator's superior brow is one continuous `eyewire_superior_ou` across both eyes,
+so every aviator "zone" run in that sweep was silently an **endpiece** run. It
+read as non-determinism (a case failing in the sweep and passing standalone)
+until the fallback was found. Every case in the kept list is now confirmed twice
+at each value.
+
+## Stage 2's last two criteria, closed *(2026-08-12)*
+
+Both were written against a Stage 2 that would swap a polygonal kernel for a
+curved one under an unchanged CAM. The architecture moved underneath them, so
+each is recorded here as what it became rather than ticked as written.
+
+### `BRepCheck_Analyzer` in the readiness dot — **already done, deliberately not
+with `BRepCheck_Analyzer`**
+
+The dot has gated on model validity since UI-0: `_refresh_readiness` reads
+`built = self._mesh_built and (verdict is None or verdict.ok)`, and the verdict
+is `mesh_check.verify_mesh` on every build. Implementing the criterion literally
+would make the app *worse* on two counts, both already written down:
+
+* `mesh_check`'s own docstring is the argument against it. The screenshot that
+  opened UI-0 showed a corrupt model under "3D model ready" and "Nothing
+  flagged", because every gate asked the kernel whether the kernel was happy —
+  and `BRepCheck_Analyzer` returns True for zero-volume shapes, for booleans that
+  left the topology in pieces, and for the order-dependent corruption in
+  BUILDPLAN-NEW §3.1. It reported valid throughout the spline-tessellation
+  failure too (§"1e-5 mm" table). **Validity is necessary, not sufficient.**
+* Since M-N4, `cadquery-ocp` is an **optional extra**. Gating the one indicator a
+  maker glances at before cutting metal on a 264 MB dependency most installs will
+  not have is the opposite of what the dot is for.
+
+The report filed it under **Stage 5** ("Collect the winnings") anyway; only
+BUILDPLAN's summary line moved it to Stage 2. It stays a Stage 5 nice-to-have for
+the B-Rep path, not a gate.
+
+### Posted G-code equivalence on the demo frame — **superseded, and the gate that
+replaced it was missing**
+
+M-N3 settled the original question and got a better answer than a tolerance: the
+program was **byte-equal** across kernels, and structurally so, because the CAM
+cannot reach a kernel at all (`test_the_cam_cannot_reach_either_model_kernel`
+checks it by AST). Then **M-N4 deliberately changed what a machine cuts** —
+posting from the model kernel rather than the raster, because the two solid
+kernels agree with each other where they both leave the raster. Equivalence to
+the old program stopped being the property to want, on purpose and with
+measurements.
+
+What went unnoticed is that the *determinism* half never followed.
+`test_posting_the_same_inputs_twice_is_byte_identical` predates the routing and
+still calls `build_castle_relief` directly — so it pins the **raster's** program,
+and nothing pinned the one a maker actually gets.
+`test_the_demo_frame_posts_deterministically_through_the_shipped_path` now posts
+the fully featured demo frame through `zmap.castle_relief` at the shipped default
+kernel, twice, and asserts the two are identical.
+
+It also asserts the mesh and raster programs **differ**. A silent fall back to
+the raster is exactly the failure M-N4 exists to prevent, and it would leave
+every other assertion true — the raster posts a clean deterministic program too.
+The reliefs disagree on ~60% of cells, so the programs must.
 
 # Reference
 

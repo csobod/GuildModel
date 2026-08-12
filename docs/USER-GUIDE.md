@@ -48,6 +48,25 @@ The sidebar shows what the active component needs: for a frame front —
 - **Model** — per-zone tower heights, footing radius, hinge-pocket depth, and
   the optional posterior finishing features: pad-splay chamfer, bezeled
   eyewire, and bridge projection relief (all off by default).
+  - **Pad splay ▸ Non-contiguous** — for a **keyhole bridge**. A splay run
+    through bottom-centre planes the keyhole's shape straight off; tick this
+    and set the **centre gap** (total uncut width, split evenly either side)
+    to start each half of the cut clear of it. Both halves keep the same
+    crest, angles and feathering, and stay mirror images of each other.
+  - **Pad splay ▸ End feather** — how far the cut runs out to nothing at
+    **every** end of the run, the two inner ends facing the keyhole included.
+    The chamfer keeps its angle and lifts out of the surface over this
+    distance, so the cut narrows away instead of flattening into a shelf and
+    stopping. Set it to 0 and the cut ends in a wall, which is occasionally
+    what you want and never an accident.
+  - **Bridge relief ▸ Exterior / Interior radius** — the shape of the U, in
+    the same language as the footing: the exterior radius is the convex
+    round-over where the scoop leaves the bridge face, the interior is the
+    concave fillet at the bottom of the trough, and a straight wall joins
+    them. A note under the sliders gives the resulting wall angle, and says
+    so when the width and depth you have set cannot carry the radii you have
+    asked for (both are then reduced in proportion). An interior radius of 0
+    is a sharp V — legitimate, but no ball tool can finish it.
 - **Lens Bevel Groove** (off by default) — the drageoir V-groove in each
   eyewire wall that seats the lens bevel. You set the apex height from the
   anterior face and the groove's depth and width (the included angle shows
@@ -91,6 +110,15 @@ Shapeoko, generic GRBL), **program zero** (default center/center/bottom — the
 datum crosshair shows on the 2D canvas), per-operation tool assignments for
 multi-tool jobs, cut strategy, and the no-SCULPT profile fallback.
 
+The posterior finishing features are cut by their own **Features** operation,
+so they can take their own tool: the everyday job is a **ball nose** for the
+chamfers and scoops and an end mill for everything else — the hinges, the
+footing, the posterior sculpting. Left at *(same as Tool)* it follows Fine
+Relief, which is what cut these before they became a separate operation.
+GuildModel warns when the assigned tool cannot finish a feature — a flat leaves
+a lip at every chamfer toe, and a ball larger than the bridge relief's interior
+radius bridges its trough — and names one from your library that fits.
+
 **Tools** live in Preferences ▸ Tools — an editable library (add, duplicate,
 edit, import/export) with a live cross-section preview. Every tool selector in
 the app draws from it. GuildModel warns when a cut is deeper than a tool's
@@ -116,6 +144,14 @@ warning if the tool would foul a hold-down.
 
 **File ▸ Export G-code (Ctrl+Shift+G)** writes a loose `.nc` when you want a
 bare file; the program also always lives inside the saved project.
+
+**Turntable (Alt+T)** — the record button on the 3D viewer's strip, beside the
+camera presets, with a speed slider next to it. It spins the part about the
+**view you have set up**, not about a fixed world axis: tip the frame the way
+you want to look at it, then start the turntable and it turns on that axis, so
+a surface runs past the light instead of you dragging back and forth over it.
+It works in the cut simulation too, and it parks itself while you are on
+another view rather than making you re-arm it when you come back.
 
 ## 6. The worktable — cutting the whole model in one setup
 
@@ -187,6 +223,7 @@ beside it.
 | Ctrl+S | Save Project |
 | Ctrl+Shift+G | Export G-code (.nc) |
 | Ctrl+Shift+S | Simulate the cut |
+| Alt+T | Turntable (3D views) |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
 
