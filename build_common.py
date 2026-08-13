@@ -8,7 +8,7 @@ VTK binaries + QtOpenGL(Widgets) must be COLLECTED, not excluded. The package
 lives under ``src/`` (src-layout), so data is bundled to the ``guildmodel/...``
 dest the frozen ``__file__`` resolution expects.
 """
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 # App icons, relative to the spec directory (repo root). The .ico is embedded
 # in the Windows EXE; the .icns is embedded in the macOS .app BUNDLE. Both are
@@ -88,6 +88,28 @@ _GUILDMODEL_DATAS = [
 ]
 
 
+#: The B-Rep kernel's package, kept out of the freeze along with OCCT itself.
+#:
+#: `cadquery-ocp` has been an optional extra since M-N4 — not a dependency, not
+#: the default kernel, and hidden from Preferences unless `GUILDMODEL_BREP` is
+#: set — but none of that reached the installer. `collect_submodules` enumerates
+#: **every** `guildmodel` submodule, which named all six `core.solid` modules as
+#: hidden imports; each imports OCP at module level, unguarded; and the release
+#: venv installs `.[dev,packaging]`, where `dev` pulls `guildmodel[brep]` in for
+#: the parity gates. So the freeze bundled **264 MB** of OpenCASCADE (163 MB of
+#: `OCP` plus 101 MB of `cadquery_ocp.libs`) into an app that cannot reach it.
+#:
+#: Dropping it is safe rather than merely smaller: `kernels.resolve_kernel` asks
+#: `find_spec("OCP")` and answers "mesh" when it is absent, and both the GUI
+#: (`_model_kernel`) and `zmap.castle_relief` route through it — so a project
+#: saved with the B-Rep selected opens on the mesh here instead of failing.
+#: `core.solid` stays in the repo: it is the third opinion the parity gates
+#: measure the mesh against, and a developer install still gets it.
+_BREP_PKG = "guildmodel.core.solid"
+_EXCLUDED_BREP = ["OCP", "cadquery_ocp", "cadquery_ocp_proxy",
+                  _BREP_PKG]
+
+
 def analysis_inputs():
     """Return the kwargs shared by the spec's ``Analysis(...)`` call."""
     datas, binaries, hiddenimports = [], [], []
@@ -100,10 +122,8 @@ def analysis_inputs():
     # scipy / pydantic reach some submodules dynamically.
     hiddenimports += collect_submodules("scipy")
     hiddenimports += collect_submodules("pydantic")
-    hiddenimports += collect_submodules("guildmodel")
-    # pyclipper / svgelements are small pure/binary extensions — make sure their
-    # data (if any) rides along.
-    datas += collect_data_files("svgelements")
+    hiddenimports += [m for m in collect_submodules("guildmodel")
+                      if not m.startswith(_BREP_PKG)]
 
     datas += _GUILDMODEL_DATAS
 
@@ -111,5 +131,5 @@ def analysis_inputs():
         "binaries": binaries,
         "datas": datas,
         "hiddenimports": hiddenimports,
-        "excludes": _EXCLUDED_QT,
+        "excludes": _EXCLUDED_QT + _EXCLUDED_BREP,
     }

@@ -52,3 +52,31 @@ src/guildmodel/assets/_iconcache/
 /frame_illustration.dxf
 /frame_illustration.svg
 /hinge_th-23_front.dxf
+
+# Maker correspondence and the frames that came with it. The designs are the
+# maker's own work, not ours to publish; the report is the working copy the
+# 2026-08-10 round was answered from.
+/Bug Report *.txt
+/Aquinas *.gdraw
+/Calasanz *.gdraw
+
+# Sample drawings kept for hand-testing. Nothing in the app or the suite loads
+# them — the tests vendor their own under tests/fixtures/ — so they are working
+# material rather than part of the project.
+/*.gdraw
+/*.gmodel
+
+# The engineering record: milestone history, the B-Rep evaluation, and the
+# planning notes they were written against. Kept local from v1.5.0 — they are
+# working documents rather than published ones, and source docstrings still
+# cite them by name for anyone who has the tree.
+/BUILDPLAN.md
+/BUILDPLAN-NEW.md
+/BREP-REWRITE-REPORT.md
+
+# One-shot investigations: each was written to answer a single question, all of
+# them already answered and recorded. Not build tooling — scripts/ keeps
+# build_release*, make_icon and dxf_to_stl, which are.
+/scripts/probe_*.py
+/scripts/spike_*.py
+/scripts/bench_*.py

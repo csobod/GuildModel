@@ -9,15 +9,17 @@ the five-operation single-tool GRBL program (hinge pockets → rough relief →
 fine relief → eyewires → perimeter, released by a hand-finished onion skin)
 for the Guild CNC fixture.
 
+![The GuildModel window: a frame front shaded with its feature edges in the 3D view, the pad-splay parameters on the Model tab, and the cut-simulation and build log below](docs/GuildModel150Screenshot.png)
+
 ## Status
 
-**v1.4.0.** GuildModel builds the posterior castle relief and the
+**v1.5.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
 
-> **New — the posterior features answer to the maker.** The bridge relief's
+> **New in v1.5.0 — the posterior features answer to the maker.** The bridge relief's
 > cross-section is now a **U with both corners named** — an exterior radius where
 > it leaves the bridge face, an interior radius at the trough — in the same
 > language the footing already uses; it had neither before, so there was nothing
@@ -113,7 +115,21 @@ off by default, not yet cut on real stock) — treat its first real cuts as you
 would any new program (air-cut, then a test piece). The two-sided (cut-and-flip)
 workflow is planned for a later release.
 
-See `BUILDPLAN.md` for the full milestone history and roadmap.
+**Known issue — an edge feature can fold where an outline turns very sharply.**
+Where a run passes a near-cusp — a corner turning tighter than the feature is
+deep, such as the aviator fixture's endpiece at 58° in a quarter-millimetre —
+the swept cut can cross itself and leave a model that will not export. The app
+says so plainly in the log and the Inspector ("the model overlaps itself along
+N edges") and does not count the model as built — though note that a program
+you have already stored keeps the readiness dot green on its own merits, so
+read the log rather than the dot after a rebuild. Nudging the run's
+**Trim start** / **Trim end** past the corner, or
+easing the corner in the drawing, clears it. Measured at **7 of 288** builds
+across the three fixtures, both faces, both profiles and trims from 0.5 to
+12 mm.
+
+The milestone history and the reasoning behind each decision live in the commit
+messages, which are written to be read.
 
 ## Requirements
 

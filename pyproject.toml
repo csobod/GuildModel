@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "guildmodel"
-version = "1.4.0"
+version = "1.5.0"
 description = "Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -18,9 +18,7 @@ dependencies = [
     "shapely>=2.0",
     "pyclipper>=1.3",
     "ezdxf>=1.3",
-    "svgelements>=1.9",
     "trimesh>=4.4",
-    "rtree>=1.2",       # trimesh's bounds-tree backend (the STL-gate test needs it)
     "pydantic>=2.7",
     "pyyaml>=6.0",
     # Mesh-domain CSG (BUILDPLAN-NEW M-N1), and since M-N4 the only geometry
@@ -56,6 +54,11 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "guildmodel[brep]",           # the parity gates need the third opinion
+    # trimesh's spatial-index backend. It was a *runtime* dependency carrying a
+    # comment saying a test needed it — and nothing in `src/` imports it, or
+    # ever did. The one consumer is `test_castle_m2`'s STL ray cast, which is
+    # trimesh reaching for it implicitly, so it belongs here.
+    "rtree>=1.2",
 ]
 packaging = [
     "pyinstaller>=6.6",
