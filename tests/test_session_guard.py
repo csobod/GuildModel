@@ -79,6 +79,7 @@ def _window(tmp_path, monkeypatch):
 # ------------------------------------------------------------------ dirty flag
 
 
+@pytest.mark.gui
 def test_fresh_load_is_clean_and_edit_marks_dirty(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -90,6 +91,7 @@ def test_fresh_load_is_clean_and_edit_marks_dirty(qapp, tmp_path, monkeypatch):
     assert win.windowTitle().endswith("*")
 
 
+@pytest.mark.gui
 def test_tab_switch_is_not_an_edit(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -98,6 +100,7 @@ def test_tab_switch_is_not_an_edit(qapp, tmp_path, monkeypatch):
     assert win._dirty is False
 
 
+@pytest.mark.gui
 def test_save_clears_dirty_and_reopen_is_clean(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -115,6 +118,7 @@ def test_save_clears_dirty_and_reopen_is_clean(qapp, tmp_path, monkeypatch):
     assert win.windowTitle() == "GuildModel  —  job.gmodel"
 
 
+@pytest.mark.gui
 def test_open_project_does_not_pollute_recents(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -135,6 +139,7 @@ def _btn(name):
     return getattr(QMessageBox.StandardButton, name)
 
 
+@pytest.mark.gui
 def test_confirm_discard_clean_never_asks(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     from PySide6.QtWidgets import QMessageBox
@@ -145,6 +150,7 @@ def test_confirm_discard_clean_never_asks(qapp, tmp_path, monkeypatch):
     assert win._confirm_discard() is True
 
 
+@pytest.mark.gui
 def test_confirm_discard_cancel_and_discard(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -159,6 +165,7 @@ def test_confirm_discard_cancel_and_discard(qapp, tmp_path, monkeypatch):
     assert win._confirm_discard() is True
 
 
+@pytest.mark.gui
 def test_confirm_discard_save_path(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -171,6 +178,7 @@ def test_confirm_discard_save_path(qapp, tmp_path, monkeypatch):
     assert win._dirty is False
 
 
+@pytest.mark.gui
 def test_close_event_cancel_keeps_window(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -192,6 +200,7 @@ def test_close_event_cancel_keeps_window(qapp, tmp_path, monkeypatch):
 # ------------------------------------------------------------------ autosave + recovery
 
 
+@pytest.mark.gui
 def test_autosave_snapshot_and_clear(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -210,6 +219,7 @@ def test_autosave_snapshot_and_clear(qapp, tmp_path, monkeypatch):
     assert not rec.exists() and not meta.exists()
 
 
+@pytest.mark.gui
 def test_recovery_offer_restores_dirty_unsaved(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
@@ -229,6 +239,7 @@ def test_recovery_offer_restores_dirty_unsaved(qapp, tmp_path, monkeypatch):
     assert win._recent_files == recents_before    # recovery slot never in recents
 
 
+@pytest.mark.gui
 def test_recovery_declined_clears_slot(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))

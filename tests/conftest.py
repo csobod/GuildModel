@@ -63,3 +63,47 @@ def _isolate_user_config(monkeypatch, guildmodel_home):
     # enough for those two — unlike the import-time constants above.
     monkeypatch.setenv("HOME", str(guildmodel_home))
     monkeypatch.setenv("USERPROFILE", str(guildmodel_home))
+
+
+@pytest.fixture(autouse=True)
+def _destroy_windows():
+    """Free every top-level window a test built, before the next test runs.
+
+    Nothing did, and the cost is quadratic rather than merely untidy. Each
+    `MainWindow` leaves **1118 widgets** alive, and `_apply_dark_mode` calls
+    `QApplication.setStyleSheet`, which re-polishes every live widget in the
+    process — so building the *n*-th window walks the widgets of all *n-1*
+    before it. Measured on this machine, one window at a time, none released:
+
+        n:  1     2     3     4     5     6     7     8
+        s:  0.43  1.22  1.63  2.02  2.43  2.60  3.12  3.33
+
+    That is what killed v1.5.0's first Windows and macOS-Intel builds. Late in
+    the run a construction crossed pytest's 300 s per-test timeout, and
+    `--timeout-method=thread` kills the process, so the gate died and no
+    artifact was produced — 80 minutes of runner each, twice. It reproduced on
+    neither Linux nor macos-14, which are simply fast enough to stay under the
+    limit; the stack looked like a hang because both dumps landed inside
+    `_apply_dark_mode`, which is where nearly all of the time goes.
+
+    `deleteLater`, never `close`: `closeEvent` calls `_confirm_discard`, which
+    can raise a modal dialog, and a modal dialog in an offscreen test is a hang
+    with no timeout at all. Destroying a widget sends no close event.
+    """
+    yield
+
+    import sys
+
+    if "PySide6.QtWidgets" not in sys.modules:      # a non-GUI test; nothing to do
+        return
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    # Run the deferred deletes now rather than whenever an event loop next
+    # turns — several of these tests never start one.
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)

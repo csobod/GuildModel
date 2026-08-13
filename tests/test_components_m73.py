@@ -133,6 +133,7 @@ def test_build_workspaces_geometry_and_enabled(tmp_path):
 
 # ------------------------------------------------------------------ MainWindow smoke (guarded)
 
+@pytest.mark.gui
 def test_open_model_populates_tabs(tmp_path, monkeypatch):
     """File ▸ Open Model builds the tab bar and activation swaps the active
     component. Skipped where no Qt platform / VTK is available."""
@@ -167,6 +168,7 @@ def test_open_model_populates_tabs(tmp_path, monkeypatch):
     assert win._is_temple is False and win._partition is not None
 
 
+@pytest.mark.gui
 def test_kind_aware_param_dock_and_persistence(tmp_path, monkeypatch):
     """Each tab shows its kind's params, and per-component edits persist across
     tab switches. Skipped where no Qt platform / VTK is available."""

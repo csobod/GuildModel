@@ -165,6 +165,7 @@ def _make_model_gdraw(path):
     return path
 
 
+@pytest.mark.gui
 def test_build_3d_dispatch_wired_for_temple_and_block(tmp_path, monkeypatch):
     """A temple tab → flat 'temple' build; a base-curve tab → 'block' build; Build
     3D is enabled for both. Skipped without a Qt platform (no VTK render here)."""
@@ -200,6 +201,7 @@ def test_build_3d_dispatch_wired_for_temple_and_block(tmp_path, monkeypatch):
     assert win._flat_build_mode() is None                        # castle path
 
 
+@pytest.mark.gui
 def test_open_drawing_rename_and_view_persistence(tmp_path, monkeypatch):
     """The menu says 'Open Drawing…'; Build 3D targets every buildable component;
     the active view follows tab switches and the 3D reflects the active tab."""
@@ -298,6 +300,7 @@ def test_multi_mesh_worker_builds_all_in_one_pass(tmp_path, monkeypatch):
     assert built[1][3] is None                                 # block does not
 
 
+@pytest.mark.gui
 def test_startup_with_saved_cam_params_does_not_raise(tmp_path, monkeypatch):
     """Persisted CAM params are restored at startup, firing cam_changed → the
     program-zero/stock markers, which read the geometry state. Regression: that

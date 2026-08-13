@@ -194,6 +194,7 @@ def demo_parts():
     ]
 
 
+@pytest.mark.gui
 def test_nest_worker_and_gui_render_and_nudge(tmp_path, monkeypatch):
     """The GUI NestWorker generates a component program and nests it; the bed canvas
     renders the footprint and a drag nudges the placement (BUILDPLAN M7.6)."""
@@ -297,6 +298,7 @@ def test_left_temple_nests_flipped_to_face_the_right():
     assert rot["temple_right"] == pytest.approx(0.0)
 
 
+@pytest.mark.gui
 def test_gui_select_and_rotate_placement(tmp_path, monkeypatch):
     """Clicking a footprint selects it (enabling the rotate controls); rotating spins
     the placed ops and re-checks clearance without regenerating any program (M-UX)."""

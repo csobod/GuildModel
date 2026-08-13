@@ -51,6 +51,7 @@ def test_op_overlay_from_ops_drops_z(qapp):
     assert ov[0]["paths"] == [[(0.0, 0.0), (5.0, 0.0)]]   # (x, y) only, z dropped
 
 
+@pytest.mark.gui
 def test_inspector_populates_toggles_and_highlights(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

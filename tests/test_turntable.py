@@ -321,6 +321,7 @@ def _window(tmp_path, monkeypatch):
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
 
 
+@pytest.mark.gui
 def test_alt_t_and_the_button_are_one_state(tmp_path, monkeypatch):
     """The action is created with the toolbar, which is built *before* the
     central stack — so the wiring cannot simply reference `self.view3d` at
@@ -340,6 +341,7 @@ def test_alt_t_and_the_button_are_one_state(tmp_path, monkeypatch):
     assert any(s.key == "turntable" for s in win._action_specs)
 
 
+@pytest.mark.gui
 def test_every_rebindable_action_can_actually_be_reached(tmp_path, monkeypatch):
     """The gate `test_alt_t_and_the_button_are_one_state` could not be.
 
@@ -374,6 +376,7 @@ def test_every_rebindable_action_can_actually_be_reached(tmp_path, monkeypatch):
     assert dead == [], f"registered but in no widget, so the hotkey cannot fire: {dead}"
 
 
+@pytest.mark.gui
 def test_the_saved_speed_is_restored_and_written_back(tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win.view3d.set_turntable_speed(17)

@@ -59,6 +59,7 @@ def _make_gdraw(path):
     return path
 
 
+@pytest.mark.gui
 def test_gdraw_session_saves_and_reopens(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

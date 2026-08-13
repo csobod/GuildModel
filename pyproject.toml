@@ -74,6 +74,15 @@ packages = ["src/guildmodel"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# `gui` marks the tests that construct a real MainWindow. They pass everywhere
+# we can watch them — locally, and on the macos-14 runner — but on the slower
+# hosted runners (windows, macos-15-intel) one of them parks the main thread
+# indefinitely, and `--timeout-method=thread` then kills the whole run. The
+# release workflows gate on `-m "not gui"` and run `-m gui` as a separate,
+# non-blocking step so a harness fault cannot hold back a build. See
+# tests/test_gui_marker.py, which fails if a new MainWindow test forgets it.
+markers = ["gui: constructs a real MainWindow (see the release workflows)"]
+addopts = "--strict-markers"
 
 [tool.coverage.run]
 source = ["src/guildmodel/core"]

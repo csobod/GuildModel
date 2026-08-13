@@ -293,6 +293,7 @@ def test_a_control_added_to_the_model_tab_later_is_live_too():
     assert live == total > 0
 
 
+@pytest.mark.gui
 def test_the_real_window_is_actually_listening(tmp_path, monkeypatch):
     """Everything above tests the two ends. This tests the wire.
 

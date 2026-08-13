@@ -312,6 +312,7 @@ def test_nest_worker_runs_frame_front_castle_branch(tmp_path, monkeypatch):
     assert len(out["nest"].placements) == 1   # the front placed on its zone
 
 
+@pytest.mark.gui
 def test_worktable_undo_redo_and_default_prompt(tmp_path, monkeypatch):
     """The Worktable tab: combined DXF/BED load, undo/redo a Remove Region, and the
     Set-as-Default button. Skipped without a Qt/VTK platform."""
@@ -356,6 +357,7 @@ def test_worktable_undo_redo_and_default_prompt(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ GUI smoke (guarded)
 
+@pytest.mark.gui
 def test_worktable_tab_loads_bed_and_tags_a_region(tmp_path, monkeypatch):
     """The Worktable tab loads the Guild bed, the canvas + list show its regions,
     and re-tagging a region updates the model. Skipped without a Qt/VTK platform."""
@@ -391,6 +393,7 @@ def test_worktable_tab_loads_bed_and_tags_a_region(tmp_path, monkeypatch):
     assert win._worktable.zone("front") in win._worktable.keep_outs()
 
 
+@pytest.mark.gui
 def test_worktable_tab_load_bed_size_and_remove(tmp_path, monkeypatch):
     """The Worktable tab loads a saved .bed, edits the work envelope, selects the
     perimeter, and removes a region. Skipped without a Qt/VTK platform."""

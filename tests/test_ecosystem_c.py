@@ -24,6 +24,7 @@ def _window(tmp_path, monkeypatch):
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
 
 
+@pytest.mark.gui
 def test_preferences_shortcut_is_ctrl_comma(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     from PySide6.QtGui import QKeySequence
@@ -31,6 +32,7 @@ def test_preferences_shortcut_is_ctrl_comma(qapp, tmp_path, monkeypatch):
     assert win._act_prefs.shortcut() == QKeySequence("Ctrl+,")
 
 
+@pytest.mark.gui
 def test_send_action_mirrors_export_enable(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     assert win._act_send.isEnabled() is False      # no program yet

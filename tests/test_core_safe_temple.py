@@ -219,6 +219,7 @@ def test_workspaces_seed_their_own_program_zero(tmp_path):
     assert len({id(z) for z in zeros}) == len(zeros)      # independent objects
 
 
+@pytest.mark.gui
 def test_gui_program_zero_never_leaks_between_tabs(tmp_path, monkeypatch):
     """Set a zero on the frame, visit the temple: the temple shows its OWN datum
     (the default), not the frame's — and each survives the round trip (2026-07-09;

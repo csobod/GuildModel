@@ -161,6 +161,7 @@ def test_demo_worktable_program_posts_lints_and_clears(demo_nest):
 
 # ------------------------------------------------------------------ GUI post (offscreen)
 
+@pytest.mark.gui
 def test_gui_generate_worktable_program(tmp_path, monkeypatch):
     """The Worktable tab's Generate Worktable Program posts the nest into
     `_last_programs['worktable.nc']` + a worktable setup sheet (BUILDPLAN M7.7)."""
