@@ -30,7 +30,9 @@ jobs:
             required: false
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ !matrix.required }}
-    timeout-minutes: 50             # VTK freeze + dmg is heavy; never burn hours
+    # Raised from 50 for v1.5.0 — see the Windows workflow for the measurement;
+    # the test gate below is now most of the budget.
+    timeout-minutes: 140            # VTK freeze + dmg is heavy; never burn hours
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +50,9 @@ jobs:
       # Full suite as the gate. offscreen keeps Qt off the window server; the
       # thread timeout method turns any native-event-loop hang into a stack
       # dump naming the test (the default signal method cannot interrupt one).
+      # 90, not 25 — see the Windows workflow's note.
       - name: Test gate
-        timeout-minutes: 25
+        timeout-minutes: 90
         env:
           QT_QPA_PLATFORM: offscreen
         run: .venv/bin/python -m pytest tests -q --timeout=300 --timeout-method=thread

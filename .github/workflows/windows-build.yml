@@ -28,7 +28,13 @@ jobs:
     # VTK freeze + Inno is heavy, and Compress-Archive over a ~500 MB one-folder
     # build is single-threaded and slow — a wider budget than macOS. Caps a
     # runaway job; a healthy run finishes well inside it.
-    timeout-minutes: 60
+    #
+    # Raised from 60 for v1.5.0: the gate below is most of this budget now. The
+    # suite was ~576 tests when these numbers were written and is 1085, with the
+    # B-Rep parity work — which `dev` pulls in via `guildmodel[brep]` — the slow
+    # part. It runs 60 minutes on a 20-core desktop, so 60 for the whole job
+    # could not have produced an artifact.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -47,8 +53,11 @@ jobs:
       # Full suite as the gate. offscreen keeps Qt off the window station; the
       # thread timeout method turns any native-event-loop hang into a stack
       # dump naming the test (the default signal method cannot interrupt one).
+      # 90, not 25: measured at 1085 tests / 60 minutes on a 20-core desktop
+      # (v1.5.0). A runner is slower, and a gate that trips is indistinguishable
+      # from a red suite at the point it matters most — cutting a release.
       - name: Test gate
-        timeout-minutes: 25
+        timeout-minutes: 90
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
