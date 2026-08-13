@@ -119,7 +119,7 @@ def _decide(screen, prefs: dict | None = None) -> tuple[float, str]:
        choice not to scale: this machine's maker runs a 141.6 DPI panel at
        scale 1 deliberately, and the 2026-08-07 "measure the panel" version of
        this function overrode that, making GuildModel the one window on the
-       desktop 1.475x bigger than its neighbours. That is the bug this
+       desktop 1.475x bigger than its neighbors. That is the bug this
        docstring exists to prevent re-introducing. (The app looking cramped
        *at* the desktop size was real, but it was the stylesheet's 11px
        baseline — fixed in `theme.py` — not a DPI problem.)

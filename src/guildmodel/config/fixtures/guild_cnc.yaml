@@ -7,7 +7,7 @@
 #   Z = 0:   top surface of the stock blank for the current side
 #   Z < 0:   into the material
 #
-# All dimensions in millimetres.
+# All dimensions in millimeters.
 
 display_name: "Guild CNC (standard fixture)"
 
@@ -27,7 +27,7 @@ max_z_mm:  80.0
 # flip_axis_x_mm and re-registered (mirror in X about that line).
 #
 # The nosepad sub-zone sits on top of the front blank — the bed carries a
-# 6 mm acetate sheet with a 4 mm nosepad block bonded in the centre area,
+# 6 mm acetate sheet with a 4 mm nosepad block bonded in the center area,
 # giving 10 mm total thickness there.
 
 blank_zones:
@@ -39,7 +39,7 @@ blank_zones:
     y_mm: 101.772
     width_mm:  170.0
     height_mm:  85.0
-    flip_axis_x_mm: 201.146  # vertical centre-line; flip = mirror X about this
+    flip_axis_x_mm: 201.146  # vertical center-line; flip = mirror X about this
     nosepad_sub_zone:
       stock_thickness_mm: 10.0   # 6 mm sheet + 4 mm block = 10 mm total
       x_mm: 178.646
@@ -84,7 +84,7 @@ blank_zones:
 # Circles are placed in the wasteboard gaps between blank zones and also
 # within the interior of larger blanks (front, bc templates) where the
 # frame geometry does not reach.
-# Coordinates are tool-centre avoid positions (centre of screw head).
+# Coordinates are tool-center avoid positions (center of screw head).
 
 hold_down_screw_radius_mm: 5.0   # 10 mm head diameter
 
@@ -92,8 +92,8 @@ hold_down_screws:
   # ── Frame front (6 perimeter + 2 interior) ──
   - {x: 126.146, y: 180.273}   # front, top-left
   - {x: 276.146, y: 180.273}   # front, top-right
-  - {x: 169.148, y: 144.274}   # front, centre-left  (at flip-axis Y level)
-  - {x: 233.148, y: 144.274}   # front, centre-right (at flip-axis Y level)
+  - {x: 169.148, y: 144.274}   # front, center-left  (at flip-axis Y level)
+  - {x: 233.148, y: 144.274}   # front, center-right (at flip-axis Y level)
   - {x: 126.146, y: 108.274}   # front, bottom-left
   - {x: 276.146, y: 108.274}   # front, bottom-right
 

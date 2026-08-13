@@ -37,7 +37,7 @@ def test_feed_from_chip_load_is_the_inverse():
 
 
 def test_surface_speed():
-    # π · D · n, D in metres: 3.175 mm @ 10000 rpm ≈ 99.7 m/min
+    # π · D · n, D in meters: 3.175 mm @ 10000 rpm ≈ 99.7 m/min
     vc = feeds.surface_speed_m_per_min(3.175, 10000)
     assert vc == pytest.approx(math.pi * 0.003175 * 10000)
     assert vc == pytest.approx(99.7, abs=0.5)

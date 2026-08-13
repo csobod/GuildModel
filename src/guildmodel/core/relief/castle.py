@@ -7,7 +7,7 @@ blended with a rolling-ball footing fillet pair — a convex (exterior) arc
 tangent to the high terrace meeting a concave (interior) arc tangent to the
 low terrace.
 
-The footing is computed analytically per edge instead of by grey morphology:
+The footing is computed analytically per edge instead of by gray morphology:
 for the demo's straight SCULPT cuts the cross-section profile depends only on
 the signed distance to the cut line, so each edge band is an exact two-arc
 S-blend (with a residual wall when the step is taller than the radii allow).
@@ -15,7 +15,7 @@ The arcs meet at the cut line. Composite rule at band overlaps: low-side
 fills apply first, high-side carves win (a later fillet cuts).
 
 Also here: the two-level stock heightfield (blank + pad block), the
-heightfield analogue of the complex Fusion stock model.
+heightfield analog of the complex Fusion stock model.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field as dc_field
@@ -46,7 +46,7 @@ GRID_MARGIN_MM = 2.0
 
 #: The grid **anything that becomes G-code** must be rasterized on.
 #:
-#: The relief is terraces joined by footing blends a millimetre or so wide. A
+#: The relief is terraces joined by footing blends a millimeter or so wide. A
 #: coarse grid aliases those blends into a staircase; the CAM's bilinear sample
 #: (`castle_ops._bilinear_sample`) then rides the staircase, and every tread
 #: becomes a Z direction reversal on a move whose XY step is one cell. Below
@@ -92,7 +92,7 @@ class CastleRelief:
     # `field.z - anterior`. None = nothing cuts the front, which is every project
     # before M17 and the fast path the mesher and CAM still take.
     #
-    # Machining this needs the flip setup (M9/V2). It is modelled and previewed
+    # Machining this needs the flip setup (M9/V2). It is modeled and previewed
     # now so the shape can be designed and checked before the fixture work lands.
     anterior: "np.ndarray | None" = None
 
@@ -169,7 +169,7 @@ def stock_top_heightfield(
 #
 # Cross-section of a footing blend, as a function of signed distance s from
 # the cut line (s < 0 on the high terrace, s > 0 on the low one). Sequential
-# rolling-ball construction matching Fusion's fillet behaviour, verified
+# rolling-ball construction matching Fusion's fillet behavior, verified
 # against the Demo Project STL to < 0.01 mm rms (_probe_profiles.py):
 #
 #   * step taller than both radii combined: two independent quarter rounds
@@ -309,7 +309,7 @@ def build_castle_relief(
     if heights is None:
         if not partition.classified:
             raise ValueError(
-                "the section cuts did not yield recognisable castle zones; "
+                "the section cuts did not yield recognizable castle zones; "
                 "pass explicit zone heights"
             )
         heights = {z.name: castle.zones.for_kind(z.kind) for z in partition.zones}
@@ -323,7 +323,7 @@ def build_castle_relief(
     # everywhere at once — the raster mask, the conformed mesh wall, and the
     # eyewire contour all key off relief.mask_body. The annulus of lip cells
     # this exposes has no zone; the orphan nearest-zone fill below adopts the
-    # neighbouring eyewire-wall height for it.
+    # neighboring eyewire-wall height for it.
     groove = getattr(castle, "lens_groove", None)
     groove_on = bool(groove is not None and getattr(groove, "enabled", False)
                      and groove.depth_mm > 0)
@@ -536,7 +536,7 @@ def build_castle_stage(
     if stage not in CASTLE_STAGES:
         raise ValueError(f"stage must be one of {CASTLE_STAGES}, got {stage!r}")
     if not partition.classified:
-        raise ValueError("castle stages require recognisable castle zones")
+        raise ValueError("castle stages require recognizable castle zones")
     level = CASTLE_STAGES.index(stage)
 
     heights = None
@@ -604,7 +604,7 @@ def _snap_to_rings(xy: np.ndarray, rings: list, max_dist: float) -> np.ndarray:
 def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray) -> list[tuple[np.ndarray, object]]:
     """Vertex ids flanking each hinge-pocket wall, paired with the true ring.
 
-    A wall pixel pair is an inside-pocket / outside-pocket 4-neighbour pair
+    A wall pixel pair is an inside-pocket / outside-pocket 4-neighbor pair
     with a real z jump between them (pockets shallower than the local relief
     carve nothing and get no snap).
     """
@@ -631,7 +631,7 @@ def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray) -> list[tuple[np.nda
         ins = inside[sub]
         zs = z[sub]
         wall = np.zeros(in_p.shape, dtype=bool)
-        # 8-neighbourhood: diagonal-only contacts at staircase corners still
+        # 8-neighborhood: diagonal-only contacts at staircase corners still
         # share a top-surface face, so their vertices must snap too.
         pairs = [
             ((slice(1, None), slice(None)), (slice(None, -1), slice(None))),

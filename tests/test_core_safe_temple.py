@@ -6,8 +6,8 @@ so:
 
   * the **Temple Profile never crosses the snapped blank end** — a closed lap would
     drag the cutter through the core and dull it (`clip_op_at_blank_end`);
-  * nesting places a snapped temple **by its blank frame** (blank centre → zone
-    centre), so the core end stays registered against the zone end exactly how the
+  * nesting places a snapped temple **by its blank frame** (blank center → zone
+    center), so the core end stays registered against the zone end exactly how the
     blank slides into its slot (`BedPart.place_by_origin`);
   * `temple_snap_transform` exposes the design→blank rigid transform so the 2D view
     back-projects the blank box / datum / toolpath onto the drawing;
@@ -73,7 +73,7 @@ def test_clip_opens_ring_at_blank_end():
     out = clip_op_at_blank_end(op, 170.0, "right")
     assert len(out.paths) == 1                       # seam re-joined: ONE open cut
     path = out.paths[0]
-    assert all(x <= 85.0 + 1e-6 for x, _y, _z in path)   # tool centre never past the end
+    assert all(x <= 85.0 + 1e-6 for x, _y, _z in path)   # tool center never past the end
     # open: starts and ends ON the blank-end plane, on either side of the butt
     assert path[0][0] == pytest.approx(85.0)
     assert path[-1][0] == pytest.approx(85.0)
@@ -134,7 +134,7 @@ def _rect_zone(zid, role, x0, y0, x1, y1):
 
 
 def test_snapped_temple_nests_by_blank_frame():
-    """place_by_origin maps the blank centre onto the zone centre, so the butt/core
+    """place_by_origin maps the blank center onto the zone center, so the butt/core
     end (at +L/2 in the blank frame) lands registered against the zone's end."""
     from guildmodel.core.cam.layout import BedPart, nest_components_on_worktable
 
@@ -156,7 +156,7 @@ def test_snapped_temple_nests_by_blank_frame():
     assert max_x == pytest.approx(zone_cx + t.blank_length_mm / 2.0, abs=2.0)
 
 
-def test_bbox_centred_nesting_unchanged_for_frames():
+def test_bbox_centerd_nesting_unchanged_for_frames():
     from guildmodel.core.cam.layout import BedPart, nest_components_on_worktable
 
     bed = Worktable(zones=[_rect_zone("zf", BedRole.FRAME_FRONT, 0, 0, 100, 60)])

@@ -3,7 +3,7 @@
 Aggregate every check the engine already produces — tool reach (width + depth),
 bed / worktable clearance, machine lint, and cut completeness / gouge — into one
 uniform, severity-tagged list the inspector panel renders and the readiness dot
-summarises. Pure: the GUI hands in the already-computed warnings, this maps them to
+summarizes. Pure: the GUI hands in the already-computed warnings, this maps them to
 `Issue`s, so the collection is unit-testable apart from any rendering.
 """
 from __future__ import annotations

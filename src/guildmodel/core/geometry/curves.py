@@ -359,7 +359,7 @@ def _mirrored(curve, axis: int):
 
 
 #: Below this, a Bézier segment's four control points are one point and the
-#: segment contributes no geometry. A picometre: far under any real drawing
+#: segment contributes no geometry. A picometer: far under any real drawing
 #: coordinate, so this only ever catches true duplicates.
 _DEGENERATE_MM = 1e-9
 

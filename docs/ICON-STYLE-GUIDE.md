@@ -55,12 +55,12 @@ do not produce state or dark variants.**
   cartoon. GuildDraw references: `tool-select.svg` (arrow), `op-fit.svg`
   (corner brackets + rect), `view-sidebar.svg` (panel + chevron).
 - One idea per icon. Silhouettes must be distinguishable from their toolbar
-  neighbours at a glance (the list in § 4 is the final neighbour order).
+  neighbors at a glance (the list in § 4 is the final neighbor order).
 - Frame-making motifs are encouraged where they help: the spectacles front
   (two rounded rects + bridge), the castle tower (the teaching metaphor for
   the posterior build — see BUILDPLAN § 2). Do not letterform (no "G",
   "3D", "STL" as text).
-- Perspective: flat/orthographic by default; the 3D-flavoured icons
+- Perspective: flat/orthographic by default; the 3D-flavored icons
   (`view-3d`, `view-iso`…) use a simple isometric cube vocabulary —
   hexagon outline + three inner edges meeting at the center.
 
@@ -108,7 +108,7 @@ muscle memory:
 - [ ] Legible and unambiguous at 20 px on `#ffd580` (light) and `#1a1a1a`
       (dark) — test both by recoloring `currentColor` to `#1f1f1f` /
       `#d4cfc0`
-- [ ] Silhouette distinct from its toolbar neighbours (§ 4 order)
+- [ ] Silhouette distinct from its toolbar neighbors (§ 4 order)
 - [ ] ≤ 1 filled accent; no hardcoded colors; no text; geometry inside the
       safe area
 - [ ] Visually consistent next to `tool-select.svg` / `op-fit.svg` from

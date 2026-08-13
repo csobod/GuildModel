@@ -87,7 +87,7 @@ def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
 #: SCULPT cuts that severed them; ~94% of every zone's vertices lie on an
 #: authored curve, and `occ.curved_ring_wire` rebuilds those runs as trimmed
 #: arcs. On the demo frame: 9,942 -> 8,237 edges, 4,971 -> 3,952 display edges,
-#: watertight, valid, and a mesh volume within half a cubic millimetre of the
+#: watertight, valid, and a mesh volume within half a cubic millimeter of the
 #: polygon build — the difference being the chord deficit the true curve
 #: recovers.
 #:
@@ -231,7 +231,7 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
     """
     names = zone_edge.zone_names
     if len(names) != 2 or not all(n in heights for n in names):
-        raise BooleanError(f"edge {zone_edge.name!r} has no two known neighbours")
+        raise BooleanError(f"edge {zone_edge.name!r} has no two known neighbors")
     hi_name, lo_name = ((names[0], names[1])
                         if heights[names[0]] > heights[names[1]]
                         else (names[1], names[0]))

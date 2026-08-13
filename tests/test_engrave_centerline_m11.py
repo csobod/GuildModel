@@ -1,7 +1,7 @@
 """Centerline (medial-axis) engraving — BUILDPLAN M11 #7.
 
 Engraving text is exported as closed glyph outlines; we engrave a single fixed-depth
-line down the centre of each stroke (the medial axis) instead of tracing the outline.
+line down the center of each stroke (the medial axis) instead of tracing the outline.
 """
 from pathlib import Path
 

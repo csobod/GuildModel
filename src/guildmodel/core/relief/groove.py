@@ -101,14 +101,14 @@ def bevel_flank(
     lens_poly      : Shapely Polygon of the lens opening (CCW, Shapely standard).
     tool_dia_mm    : cutter diameter (OLGA default 3.0 mm).
     n              : resample point count per ring (OLGA default 500).
-    side           : "inner" → offset toward lens centre; "outer" → outward.
+    side           : "inner" → offset toward lens center; "outer" → outward.
     z_a            : Z of ring_a (tool_dia/2 offset from rim).  0 = stock top.
     z_b            : Z of ring_b (further offset ring).  Negative = into material.
     flank_offset_mm: distance between the two flanks (OLGA default 3.0 mm).
 
     Returns
     -------
-    Flat list of (x, y, z) tool-centre positions forming the ruled zig-zag.
+    Flat list of (x, y, z) tool-center positions forming the ruled zig-zag.
     Pass directly to GRBLPost.emit_polyline().
     """
     sign = -1.0 if side == "inner" else 1.0

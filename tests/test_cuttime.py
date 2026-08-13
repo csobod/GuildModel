@@ -67,7 +67,7 @@ def test_reference_program_is_sane():
     rep = estimate_program(text)
     assert 9.0 < rep.cutting_only_seconds / 60 < 12.0
     assert 9.5 < rep.cycle_seconds / 60 < 13.0
-    # all five ops recognised
+    # all five ops recognized
     names = {o.name for o in rep.ops}
     assert {"Hinge Pockets", "Rough Relief", "Fine Relief",
             "Eyewires", "Perimeter"} <= names

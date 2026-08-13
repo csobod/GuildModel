@@ -81,7 +81,7 @@ def _ro_field(value: str = "—") -> QLineEdit:
     return f
 
 
-#: Anything the panel reads a millimetre out of. `ParamSlider` is a drop-in for
+#: Anything the panel reads a millimeter out of. `ParamSlider` is a drop-in for
 #: the spin box everywhere the panel touches one, so the two are interchangeable
 #: at every call site and only the constructor picks between them.
 Numeric = QDoubleSpinBox | ParamSlider
@@ -414,7 +414,7 @@ class ParamsPanel(QTabWidget):
         self.ef_face = QComboBox()
         self.ef_face.addItems(["Anterior (front)", "Posterior (back)"])
         self.ef_face.setToolTip(
-            "Anterior features are modelled and shown in 3D now; machining them "
+            "Anterior features are modeled and shown in 3D now; machining them "
             "needs the flip setup.")
         form.addRow("Face:", self.ef_face)
 
@@ -929,7 +929,7 @@ class ParamsPanel(QTabWidget):
         self.bezel_face.addItems(["Posterior", "Anterior", "Both faces"])
         self.bezel_face.setToolTip(
             "Which side of the frame the bezel is cut into.\nAn anterior band is "
-            "modelled and shown in 3D now; machining it needs the flip setup.")
+            "modeled and shown in 3D now; machining it needs the flip setup.")
         self.bezel_ant_width = _slider(b.anterior_width_mm, 0.2, 8.0, step=0.1, decimals=1)
         self.bezel_ant_angle = _slider(b.anterior_angle_deg, 5.0, 80.0, step=1.0,
                                        decimals=1, suffix="°")
@@ -1061,7 +1061,7 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _on_groove_toggled(self, on: bool) -> None:
-        """Grey out the groove controls when the groove is off."""
+        """Gray out the groove controls when the groove is off."""
         for w in (self.groove_offset, self.groove_depth, self.groove_width,
                   self.groove_tool):
             w.setEnabled(on)
@@ -1105,12 +1105,12 @@ class ParamsPanel(QTabWidget):
         self._bridge_relief_shape.setText(txt)
 
     def _on_bridge_relief_toggled(self, on: bool) -> None:
-        """Grey out the bridge-relief controls when the groove is off."""
+        """Gray out the bridge-relief controls when the groove is off."""
         for sb in self._bridge_relief_spinboxes():
             sb.setEnabled(on)
 
     def _on_bezel_toggled(self, *_a) -> None:
-        """Grey out the bezel controls when it is off, and each face's own numbers
+        """Gray out the bezel controls when it is off, and each face's own numbers
         when that face is not being cut — so the enabled fields are exactly the
         ones that reach the model."""
         on = self.bezel_enable.isChecked()
@@ -1128,7 +1128,7 @@ class ParamsPanel(QTabWidget):
                 self.splay_feather, self.splay_gap]
 
     def _on_splay_toggled(self, on: bool) -> None:
-        """Grey out the pad-splay controls when the chamfer is off."""
+        """Gray out the pad-splay controls when the chamfer is off."""
         for sb in self._splay_spinboxes():
             sb.setEnabled(on)
         self.splay_toric.setEnabled(on)
@@ -1345,7 +1345,7 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _on_pad_block_toggled(self, on: bool) -> None:
-        """Grey out the pad-block dimensions when the pad block is off."""
+        """Gray out the pad-block dimensions when the pad block is off."""
         for sb in (self.pad_length, self.pad_width, self.pad_thickness):
             sb.setEnabled(on)
 
@@ -1371,7 +1371,7 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank = QCheckBox("Snap to blank end")
         self.temple_snap_blank.setChecked(d.snap_to_blank_end)
         self.temple_snap_blank.setToolTip(
-            "Re-centre the temple on its blank for cutting (hinge butted to one end).")
+            "Re-center the temple on its blank for cutting (hinge butted to one end).")
         self.temple_snap_blank.toggled.connect(self._on_temple_snap_toggled)
         form.addRow("", self.temple_snap_blank)
         self.temple_stock_side = QComboBox()
@@ -1401,7 +1401,7 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_centerline = QCheckBox("Engrave stroke centerlines")
         self.temple_engrave_centerline.setChecked(d.engrave_centerline)
         self.temple_engrave_centerline.setToolTip(
-            "Engrave one centre line per stroke instead of tracing the outlines.")
+            "Engrave one center line per stroke instead of tracing the outlines.")
         self.temple_engrave_centerline.toggled.connect(self.cam_changed)
         form.addRow("", self.temple_engrave_centerline)
         self.temple_hinge_tool = QComboBox()
@@ -1686,7 +1686,7 @@ class ParamsPanel(QTabWidget):
         d = ProgramZero()
         grp = QGroupBox("Program Zero  (G54 work datum)")
         grp.setToolTip(
-            "Where you touch off work zero — a stock-box corner/centre, or fixture.")
+            "Where you touch off work zero — a stock-box corner/center, or fixture.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2085,7 +2085,7 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _on_hold_strategy_changed(self, *_a) -> None:
-        """Grey the tab fields out on the skin strategy — they cut nothing there."""
+        """Gray the tab fields out on the skin strategy — they cut nothing there."""
         tabs = self.hold_strategy.currentIndex() == 1
         for w in getattr(self, "_tab_rows", ()):
             w.setEnabled(tabs)
@@ -2325,7 +2325,7 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _on_lead_in_changed(self, *_a) -> None:
-        """The ramp angle means nothing on a plunge entry — grey it out."""
+        """The ramp angle means nothing on a plunge entry — gray it out."""
         self.contour_ramp_angle.setEnabled(self.contour_lead_in.currentIndex() == 0)
         self.cam_changed.emit()
 

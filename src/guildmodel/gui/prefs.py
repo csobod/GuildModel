@@ -2,7 +2,7 @@
 Persistent user preferences — stored in ~/.guildmodel/prefs.json.
 
 Modeled line-for-line on GuildDraw's framedraft/prefs.py (the reference
-behaviour): all keys are listed in DEFAULTS, load() merges saved data over
+behavior): all keys are listed in DEFAULTS, load() merges saved data over
 defaults so future versions that add new keys always have a valid value,
 and save() is silent on write errors.
 """

@@ -208,7 +208,7 @@ def test_m65_layout_machinery_re_passes_through_the_worktable():
     assert bed_der.placements[0].y_mm == pytest.approx(bed_fix.placements[0].y_mm)
 
     # a cutting point parked on a screw is flagged through the derived bed too
-    near = CamOp("Cut", paths=[[(126.146, 180.273, 0.0)]],   # a front screw centre
+    near = CamOp("Cut", paths=[[(126.146, 180.273, 0.0)]],   # a front screw center
                  tool={**TOOLS["flat_3175"], "name": "flat_3175"})
     assert bed_clearance_violations([near], derived) != []
     assert bed_clearance_violations([near], FIXTURE) != []

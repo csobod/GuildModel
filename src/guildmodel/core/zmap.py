@@ -13,9 +13,9 @@ takes vertices and faces. Living there meant the Manifold kernel had no way to
 reach the CAM without importing the kernel it replaces, which is how the
 `model_kernel` preference came to drive the 3D viewer and nothing else: every
 G-code path calls `relief.castle.build_castle_relief` regardless. Splitting the
-rasteriser out is what lets a mesh post.
+rasterizer out is what lets a mesh post.
 
-**Why rasterisation rather than ray casting.** BREP-REWRITE-REPORT §4.2
+**Why rasterization rather than ray casting.** BREP-REWRITE-REPORT §4.2
 suggested a grid of vertical rays against the tessellation. Taking the max Z of
 every triangle covering a cell computes the same answer — the posterior surface
 is the upper envelope of a closed solid — but does it in one vectorised pass per
@@ -320,7 +320,7 @@ def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
 
 #: A cell counts as feature-carved when the featured surface sits this far
 #: below the unfeatured one, mm. Not a tolerance on the features — they cut
-#: tenths of a millimetre at least — but a floor under the difference between
+#: tenths of a millimeter at least — but a floor under the difference between
 #: two tessellations of the same terraces, which have different boolean
 #: histories and so triangulate curved ground differently.
 FEATURE_BAND_MM = 0.005
@@ -421,7 +421,7 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
 
     The fallback is `resolve_kernel`'s and not a second opinion of our own.
     Deciding it here is how the viewer and the CAM would come to disagree about
-    the same unrecognised name, which is the failure `_model_kernel` was
+    the same unrecognized name, which is the failure `_model_kernel` was
     written to prevent from the other end.
 
     **This is the line the `model_kernel` preference did not used to cross.**

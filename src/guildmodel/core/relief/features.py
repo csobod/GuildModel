@@ -179,7 +179,7 @@ def splay_weight(u: np.ndarray, spans: list[tuple[float, float]],
 
     Scaling the *drop* was the 2026-08-12 report ("a very abrupt end leaving
     sharp material no matter what I do"). It took the chamfer's angle to zero
-    while its width stayed at the full crest, so the last millimetres of the run
+    while its width stayed at the full crest, so the last millimeters of the run
     were a flat shelf planed at the crest's own anchor height — and then stopped
     dead at the station the sweep ended on. Nobody saw it in the contiguous case
     because `crest_deviation_end_mm` already tapers the crest toward each *outer*
@@ -191,10 +191,10 @@ def splay_weight(u: np.ndarray, spans: list[tuple[float, float]],
     does give the right surface — the section shrinks self-similarly, the angle
     is kept, the cut narrows to a point — but it drives the tool through the
     boolean sideways. The crest edge sweeps inward by its whole width over a few
-    millimetres of run while the section collapses toward zero size, and Manifold
+    millimeters of run while the section collapses toward zero size, and Manifold
     starts shedding collinear sliver triangles where the cut crosses the nosepad
     footing: **14 of 27** gap/feather settings around the maker's came back
-    non-watertight, always one triangle a twentieth of a millimetre across, and
+    non-watertight, always one triangle a twentieth of a millimeter across, and
     always in the same place. A width floor, a crest lead, four station densities
     and `Manifold.simplify` each moved which settings failed without fixing any
     of them — `simplify` severed the part into three pieces at 0.01 mm.
@@ -323,7 +323,7 @@ def _carve_pad_splay(
     # tan_tab` is how far the plane falls between the crest and the rim, so it
     # clears the crest end; `rim_tab - h_tab` is how far the surface has climbed
     # back up under the low one. Without the second, a frame whose bridge rises
-    # toward the outline is still cut a millimetre deep at a station whose weight
+    # toward the outline is still cut a millimeter deep at a station whose weight
     # has all but run out, and the run-out reads from outside as the shelf it
     # replaced.
     h_tab = h_tab + (1.0 - w_tab) * (c_tab * tan_tab

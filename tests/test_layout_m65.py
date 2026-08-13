@@ -2,7 +2,7 @@
 
 Cut several components in one program on the bed (the fixture): each part is
 generated in its own design frame, placed on its bed zone, and the whole set is
-scheduled to minimise tool changes across the bed while respecting each part's
+scheduled to minimize tool changes across the bed while respecting each part's
 internal op order. These tests cover the transform, the scheduler, clearance over
 the layout, the combined post, cut-time over the bed, and the `.gmodel` round-trip.
 """
@@ -63,16 +63,16 @@ def test_zone_center_matches_fixture():
 
 
 def test_place_centers_bbox_on_zone():
-    op = _op("P", "flat_3175", [(0, 0), (20, 10)])           # bbox centre (10, 5)
+    op = _op("P", "flat_3175", [(0, 0), (20, 10)])           # bbox center (10, 5)
     placed, (dx, dy) = place_ops_at_zone([op], FIXTURE, "bc_template_right")
     cx, cy = zone_center(FIXTURE, "bc_template_right")
     bx, by = ops_bbox_center(placed)
-    assert (bx, by) == pytest.approx((cx, cy))               # part centred in zone
+    assert (bx, by) == pytest.approx((cx, cy))               # part centerd in zone
 
 
 # ------------------------------------------------------------------ scheduler
 
-def test_schedule_minimises_tool_changes_respecting_order():
+def test_schedule_minimizes_tool_changes_respecting_order():
     # frame-like (all bulk) + block-like (drill, bulk, bulk)
     A = [_op("A relief", "flat_3175", [(0, 0)]),
          _op("A perim", "flat_3175", [(1, 1)])]
@@ -106,7 +106,7 @@ def _op_len(name, tool, length_mm):
 
 
 def test_schedule_front_loads_by_time_not_op_count():
-    # Operator-time optimisation: a brief tool with MANY ops must run BEFORE a bulk tool
+    # Operator-time optimization: a brief tool with MANY ops must run BEFORE a bulk tool
     # with ONE long op, so the operator's manual changes cluster up front and the bulk
     # tool finishes unattended. Op-count ordering would wrongly run the single bulk op
     # first (fewest ops); length/time ordering runs it last.
@@ -179,10 +179,10 @@ def test_bed_op_names_are_prefixed_and_classified(demo_bed):
     assert any(n.endswith("Drill Holes") for n in demo_bed.drill_op_names)
 
 
-def test_bed_minimises_changes_minimal_for_three_tools(demo_bed):
+def test_bed_minimizes_changes_minimal_for_three_tools(demo_bed):
     # M11: the frame's hinge pockets now default to a fine tool (flat_2mm), so the bed
     # carries 3 tools — flat_2mm, the bulk flat_3175, and the block's drill — and the
-    # scheduler minimises the changes between them to exactly 2.
+    # scheduler minimizes the changes between them to exactly 2.
     assert demo_bed.n_tool_changes == 2
 
 

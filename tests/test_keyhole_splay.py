@@ -1,7 +1,7 @@
 """The non-contiguous pad splay — the keyhole bridge's splay (2026-08-11).
 
-**The report.** A keyhole bridge carries its own shape across the centreline,
-and a pad splay run through bottom-centre planes that shape straight off. What
+**The report.** A keyhole bridge carries its own shape across the centerline,
+and a pad splay run through bottom-center planes that shape straight off. What
 the maker wants is the two halves of the splay with the middle left alone, so
 the splay gained a `non_contiguous` flag and a `gap_mm` spacing adjuster.
 
@@ -13,7 +13,7 @@ the splay gained a `non_contiguous` flag and a `gap_mm` spacing adjuster.
   standing over the gap, and their drop is floored at `MIN_TAPER_DROP_MM`);
 * the two halves are still there, still symmetric, and still the same surface
   they were as part of one run — the toric angle blend measures from
-  bottom-centre either way;
+  bottom-center either way;
 * the inner ends feather like the outer ones. They are the ends the maker looks
   at across the keyhole, and a cut that stops dead there is a wall;
 * the contiguous case still cuts the splay everyone already has. `splay_weight`
@@ -68,12 +68,12 @@ def _relief(front, castle, res=0.2):
 
 # ------------------------------------------------------------------ the spans
 
-def test_spans_split_evenly_about_bottom_centre():
+def test_spans_split_evenly_about_bottom_center():
     from guildmodel.core.project.schema import PadSplayParams
 
     p = PadSplayParams(run_mm=18.0, non_contiguous=True, gap_mm=8.0)
     assert p.spans() == [(-18.0, -4.0), (4.0, 18.0)]
-    # Contiguous is one interval through the centre, as it always was.
+    # Contiguous is one interval through the center, as it always was.
     assert PadSplayParams(run_mm=18.0).spans() == [(-18.0, 18.0)]
 
 
@@ -109,7 +109,7 @@ def test_every_span_end_feathers_including_the_inner_ones():
     for end in (-18.0, -4.0, 4.0, 18.0):                # all four run out to 0
         assert w[np.argmin(np.abs(u - end))] == pytest.approx(0.0, abs=1e-9)
     assert w.max() == pytest.approx(1.0)                # and reach full depth
-    # Mirror-symmetric about bottom-centre.
+    # Mirror-symmetric about bottom-center.
     assert np.allclose(w, w[::-1], atol=1e-12)
 
 
@@ -140,16 +140,16 @@ def test_the_gap_is_uncut_and_the_halves_are_not(aviator):
     cut_whole = bare.field.z - whole.field.z
     cut_split = bare.field.z - split.field.z
 
-    # The contiguous splay cuts across the centreline; the split one does not.
+    # The contiguous splay cuts across the centerline; the split one does not.
     res, (ox, _oy) = whole.field.resolution, whole.field.origin
     cols = np.arange(whole.field.z.shape[1])
-    centre = np.abs(ox + cols * res) < 2.0
-    assert cut_whole[:, centre].max() > 0.2
-    assert cut_split[:, centre].max() == pytest.approx(0.0, abs=1e-9)
+    center = np.abs(ox + cols * res) < 2.0
+    assert cut_whole[:, center].max() > 0.2
+    assert cut_split[:, center].max() == pytest.approx(0.0, abs=1e-9)
 
     # Both halves still cut, and by a substantial fraction of the whole run —
     # but well under the third of the *length* the gap takes, because the length
-    # it takes is the deepest third: the crest offset peaks at bottom-centre.
+    # it takes is the deepest third: the crest offset peaks at bottom-center.
     # Measured 0.38 on this frame at a 12 mm gap in a 36 mm run.
     assert 0.25 < cut_split.sum() / cut_whole.sum() < 0.55
 
@@ -163,7 +163,7 @@ def test_the_gap_is_uncut_and_the_halves_are_not(aviator):
     assert np.abs(cut_split[both] - cut_whole[both]).max() < 0.05
 
     # The whole run is deeper overall, and necessarily so: its deepest station
-    # is bottom-centre, where the crest offset is largest — which is precisely
+    # is bottom-center, where the crest offset is largest — which is precisely
     # the material the gap is there to leave alone.
     assert cut_split.max() < cut_whole.max()
 
@@ -235,7 +235,7 @@ def test_the_feather_runs_the_cut_out_instead_of_flattening_it(aviator):
     what I do", with the inner ends of a non-contiguous splay in the picture.
 
     The feather scaled the *drop*, which took the chamfer's angle to zero while
-    its width stayed at the full crest — the last millimetres of the run came out
+    its width stayed at the full crest — the last millimeters of the run came out
     as a flat shelf planed at the crest's anchor height and then stopped dead.
     Now it lifts the chamfer plane out of the surface instead, so the cut narrows
     away and the *depth profile along the run has no step at the span end*.
@@ -283,7 +283,7 @@ def test_the_feather_runs_the_cut_out_instead_of_flattening_it(aviator):
     assert depth[0] < 0.05, (
         f"the cut still starts {depth[0]:.3f} mm deep at the keyhole edge — "
         "a wall, not a run-out")
-    # Monotonic outward through the feather, to a millimetre of grid slack.
+    # Monotonic outward through the feather, to a millimeter of grid slack.
     assert np.all(np.diff(depth[:9]) > -0.05), (
         f"the run-out is not monotonic: {np.round(depth[:9], 3).tolist()}")
 
@@ -300,7 +300,7 @@ def test_the_lift_is_the_stations_own_depth_not_the_floored_one(aviator):
 
     So: with the crest tapering to nothing on its own, the feather must change
     nothing at that end. Checked as bit-equality against the same build with the
-    feather off, over the last millimetre of the run.
+    feather off, over the last millimeter of the run.
     """
     from guildmodel.core.model.features import splay_cutter
     from guildmodel.core.model.build import build_castle_model

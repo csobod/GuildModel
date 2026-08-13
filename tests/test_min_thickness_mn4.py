@@ -60,11 +60,11 @@ def _castle(width_mm, min_thickness_mm):
 
 
 def _sampled(relief):
-    """Cells whose neighbourhood the kernel's surface actually covers.
+    """Cells whose neighborhood the kernel's surface actually covers.
 
     A cell touching a hole in the sampled surface is not a thickness reading.
     The B-Rep leaves isolated pits near the body edge — its tessellation misses
-    a cell centre and the rasteriser fills the background — and a cell beside
+    a cell center and the rasterizer fills the background — and a cell beside
     one comes back part-height. That is the 0.3%-of-cells disagreement M-N4
     measured between the two solid kernels, and it has nothing to do with the
     feature: all four cells this excludes on the demo read 4.8 mm with no
@@ -105,7 +105,7 @@ def bare(demo_front):
 
     Needed because a kernel cannot be asked to *preserve* material it never
     had. The B-Rep reads 0.000 mm on five cells inside the band with no feature
-    enabled at all: its tessellation does not cover those cell centres, which
+    enabled at all: its tessellation does not cover those cell centers, which
     is the same 0.3%-of-cells disagreement M-N4 measured between it and the
     mesh. Taking a plain `min()` over the band scores that artifact as a
     breach, which is what the first version of this test did.

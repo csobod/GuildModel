@@ -52,7 +52,7 @@ class HingeSpec:
 class HingePlacement:
     """Where a hinge sits on the frame, in frame local coordinates (mm, deg).
 
-    x, y     — pocket centre in frame XY plane
+    x, y     — pocket center in frame XY plane
     rotation — RotationCharniere: yaw of the hinge box about Z (deg, CCW positive)
     face     — which side of the frame (front face vs back)
     """
@@ -67,7 +67,7 @@ class HingePlacement:
 def hinge_pocket_polygon(placement: HingePlacement, spec: HingeSpec) -> Polygon:
     """Return the rotated, translated rectangular pocket footprint as a Shapely Polygon.
 
-    The rectangle is centred on (placement.x, placement.y) and rotated by
+    The rectangle is centerd on (placement.x, placement.y) and rotated by
     placement.rotation_deg.  Pass the result directly to pocket.hinge_pocket().
 
     Note: pocket.hinge_pocket() traces the boundary at full depth without inward
@@ -105,7 +105,7 @@ def ramp_entry_points(
     dx = math.cos(dir_rad)
     dy = math.sin(dir_rad)
 
-    # Start: pocket centre at z=0 surface; end: ramp_depth below, horizontal_run away
+    # Start: pocket center at z=0 surface; end: ramp_depth below, horizontal_run away
     x0, y0 = placement.x, placement.y
     x1 = x0 + dx * horizontal_run
     y1 = y0 + dy * horizontal_run

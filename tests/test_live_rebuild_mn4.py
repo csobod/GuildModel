@@ -118,7 +118,7 @@ def test_nothing_is_rebuilt_for_a_view_the_maker_is_not_looking_at():
     assert w._rebuild_pending is False
 
 
-def test_a_cancelled_build_drops_what_was_owed():
+def test_a_canceled_build_drops_what_was_owed():
     """Cancel is the one case where the maker has said they do not want this.
     Draining there would start the next build immediately and make the button
     look broken."""
@@ -133,7 +133,7 @@ def test_a_cancelled_build_drops_what_was_owed():
     w.status_lbl = type("L", (), {"setText": lambda self, t: None})()
     w._act_build = type("A", (), {"setEnabled": lambda self, on: None})()
 
-    MainWindow._on_mesh_cancelled(w)
+    MainWindow._on_mesh_canceled(w)
 
     assert started == []
     assert w._rebuild_pending is False

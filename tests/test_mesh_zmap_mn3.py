@@ -77,7 +77,7 @@ def test_the_mesh_zmap_agrees_with_the_brep_one(demo_front):
     99.95% of in-body cells within 5 um on a bare frame. Not 100% because the
     two arrive at the surface differently — OCCT meshes trimmed surfaces at a
     5 um chord, Manifold *is* the triangles — so they differ where a facet edge
-    falls relative to a cell centre.
+    falls relative to a cell center.
     """
     pytest.importorskip("OCP", reason="cadquery-ocp not installed")
     from guildmodel.core.project.schema import CastleParams
@@ -148,7 +148,7 @@ def test_the_groove_lip_reaches_the_mask_on_the_mesh_path(demo_front):
     np.testing.assert_array_equal(mesh.inside, raster.inside)
 
 
-def test_the_rasteriser_is_kernel_neutral():
+def test_the_rasterizer_is_kernel_neutral():
     """It takes vertices and faces. Pinned because it lived inside `core/solid`
     for a milestone, and that is the whole reason the mesh kernel could not
     reach the CAM: importing the bridge meant importing the kernel it replaces.

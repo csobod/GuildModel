@@ -8,7 +8,7 @@ the pad splay on, **the frame came out in two halves**.
     piece 1  vol 3647.306  x[  1.38, 67.65]
 
 Watertight. Zero holes. Zero non-manifold edges. `BRepCheck_Analyzer` valid. A
-clean cut straight down the centreline, and the only check that noticed was the
+clean cut straight down the centerline, and the only check that noticed was the
 body count — which the app did not have until UI-0.
 
 **Two independent causes, both real:**
@@ -19,7 +19,7 @@ body count — which the app did not have until UI-0.
    face with 19 of 41 stations over less material than that.
 
 2. The deeper one. Inward from the outline is not into the body: at the bottom
-   centre the frame has the nose notch, and the default 6 mm crest offset steps
+   center the frame has the nose notch, and the default 6 mm crest offset steps
    out through it. `surface_z_at` reports its `missing` value for a ray that
    hits nothing — 0.0, indistinguishable from "the surface is at the anterior
    face" — and the chamfer spans from the cut surface *up* to `top`, so the

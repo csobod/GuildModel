@@ -8,7 +8,7 @@
 #
 # No Windows machine? .github/workflows/windows-build.yml runs exactly this
 # script on a GitHub Windows runner and uploads both artifacts — the Windows
-# counterpart of the macOS workflow. Environment hooks it honours (all optional,
+# counterpart of the macOS workflow. Environment hooks it honors (all optional,
 # set by that workflow):
 #   GUILDMODEL_SKIP_TESTS=1         the caller already ran the suite
 #   GUILDMODEL_REQUIRE_INSTALLER=1  a missing ISCC.exe is an error, not a warning

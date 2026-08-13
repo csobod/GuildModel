@@ -85,7 +85,7 @@ def test_clicking_the_button_and_calling_the_api_are_the_same_state():
 
 
 def test_it_parks_off_screen_and_picks_itself_up_again():
-    """Hidden means stopped, not cancelled."""
+    """Hidden means stopped, not canceled."""
     v = _viewer()
     v.show()
     v.set_turntable(True)
@@ -184,7 +184,7 @@ def test_a_tipped_camera_orbits_instead_of_tumbling():
     pos = np.asarray(stub.camera.position)
     focal = np.asarray(stub.camera.focal_point)
 
-    assert np.allclose(focal, (0.0, 0.0, 3.0)), "the turntable moved its own centre"
+    assert np.allclose(focal, (0.0, 0.0, 3.0)), "the turntable moved its own center"
     assert pos[2] == pytest.approx(90.0, abs=1e-6), "the camera left its elevation"
     assert np.linalg.norm(pos - focal) == pytest.approx(
         np.linalg.norm(np.array([0.0, -120.0, 90.0]) - focal), abs=1e-6)
@@ -193,7 +193,7 @@ def test_a_tipped_camera_orbits_instead_of_tumbling():
 
 
 def test_it_turns_about_the_view_up_axis_not_world_z():
-    """The behavioural claim: "around its center point as the axis of motion",
+    """The behavioral claim: "around its center point as the axis of motion",
     in the view the maker set up. Tip the camera and the axis tips with it."""
     v = _viewer()
     v.show()
@@ -292,7 +292,7 @@ def test_the_icon_is_present_and_conforms_to_the_style_guide():
     assert svg.exists(), "the LP icon is missing"
     src = svg.read_text(encoding="utf-8")
     assert 'viewBox="0 0 20 20"' in src
-    assert 'stroke="currentColor"' in src        # recoloured per theme at runtime
+    assert 'stroke="currentColor"' in src        # recolored per theme at runtime
     assert 'stroke-width="1.6"' in src
     assert icons_mod.themed_icon("view-turntable", False) is not None
     assert icons_mod.themed_icon("view-turntable", True) is not None

@@ -46,7 +46,7 @@ vertex of it may lie in a face of its target.*
 * `kernel.sweep_sections` — a swept tube built as an explicit strip rather than
   a union of abutting convex hulls, whose shared sections the union did not
   reliably cancel. The lens groove was 76 / 94 / 82.
-* `ZONE_WELD_MM` — the odd one out: grow each zone so neighbours overlap, rather
+* `ZONE_WELD_MM` — the odd one out: grow each zone so neighbors overlap, rather
   than asking two independently computed copies of a wall to cancel.
 
 A fifth arrived later, from sweeping feature *combinations* across both kernels
@@ -263,12 +263,12 @@ def test_no_blend_sample_lands_on_the_seam():
 #: and 0.5, 2 again at 2.0. A budget, held where the measurement is.
 #: The bridge relief's 2 on demo and aviator are **bought deliberately**
 #: (2026-08-11). Its section is sampled at an odd number of points so that the
-#: trough is always one of them; an even count straddles the centreline and
+#: trough is always one of them; an even count straddles the centerline and
 #: replaces the trough with a chord, which on a sharp V — whose flanks are
 #: straight lines a polyline reproduces exactly — is the *only* error there is,
 #: and it left the section 3.7% shallow and its shrinking chords degenerate as
 #: the cone tapers: **gaps along 14 edges** on the demo frame. The apex sample
-#: puts a vertex on the centreline, and two of the stitches there weld to
+#: puts a vertex on the centerline, and two of the stitches there weld to
 #: nothing. Open edges are asserted at zero and still are; these are the
 #: category this module's docstring calls a gap rather than a defect, and 2 of
 #: them is the right price for 14 open ones. Gabriel's scoop is short enough not

@@ -106,7 +106,7 @@ __all__ = ["CAP_CROSS_MM", "CUT_LEAD_MM", "cap_leads", "cut_stations",
 #:   and reaches differ by a factor of four on a nosepad, so each band was being
 #:   dragged out over the other's ground;
 #: * measured to `_footing_spans`, which is where the blend touches down
-#:   *tangentially* — its last millimetres are flat to within microns, and
+#:   *tangentially* — its last millimeters are flat to within microns, and
 #:   chasing them cost the aviator 2.6 mm to cover nothing. `_footing_reach` and
 #:   `FOOTING_FLAT_TOL_MM` ask how far the blend is genuinely not the terrace.
 #:
@@ -122,7 +122,7 @@ CUT_LEAD_MM = 0.5
 #: cap that lands exactly on the last of the zone is a face lying in a face.
 #: Same reason as `CUT_MARGIN_MM`, `EDGE_CROSS_MM` and `FOOTING_CROSS_MM`.
 #:
-#: A quarter of a millimetre because a cap only ever has to clear a boundary the
+#: A quarter of a millimeter because a cap only ever has to clear a boundary the
 #: `intersection` below already found for it, not an unknown — and because the
 #: middle of a wide valid band is the honest place to sit. Both kernels build
 #: every parity combination on every fixture for **0.05 through 0.75 mm**; only
@@ -222,7 +222,7 @@ def cut_stations(cut_line, n: int,
     always sever it, and this used to sample 2%..98% of that on the grounds that
     "sampling the very ends would fit the spine through points beyond anything
     that matters". It mattered: on a short seam that trim is a tenth of a
-    millimetre, and a tenth of a millimetre of missing seam under a 9 mm blend
+    millimeter, and a tenth of a millimeter of missing seam under a 9 mm blend
     is a 9 mm wedge of uncarved material. See `CUT_LEAD_MM`.
 
     So the stations cover the whole cut and `lead_mm` beyond each end,
@@ -232,14 +232,14 @@ def cut_stations(cut_line, n: int,
 
     `lead_mm` may be a single number or a `(head, tail)` pair; `cap_leads`
     returns the pair each end actually needs, and the two ends of one cut
-    routinely differ by more than a millimetre.
+    routinely differ by more than a millimeter.
 
     **`n` is the station count, not a density**, so a long lead thins the
     sampling of the cut itself. Left that way on purpose: every caller zips a
     per-station list against these points, `len(pts) == n` is the contract they
     are written to, and the worst case in hand is 30 stations over a 6.0 mm cut
     with 2.25 mm of lead — 0.28 mm chords against a 0.15 mm CAM cell, on a
-    curve whose radius is measured in tens of millimetres.
+    curve whose radius is measured in tens of millimeters.
     """
     coords = list(cut_line.coords)
     lead_head, lead_tail = ((float(lead_mm), float(lead_mm))
@@ -279,7 +279,7 @@ def orient_high_side(partition: CastlePartition, pts: np.ndarray,
 
     **Voted across every station, not probed once at the midpoint.** A single
     probe is wrong wherever that one point happens to land outside both
-    neighbours — near a zone corner, or where the extended cut runs past the
+    neighbors — near a zone corner, or where the extended cut runs past the
     body — and getting it backwards is silent: the carve section is then built
     on the low side, clipping it to the high zone leaves nothing, and the step
     simply never gets blended. That showed up as 1,179 cells adrift in

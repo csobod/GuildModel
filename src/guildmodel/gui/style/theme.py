@@ -5,7 +5,7 @@ The two stylesheets are ported verbatim from GuildDraw (``framedraft/app.py``
 styling; GuildDraw is the design reference and must not change), then extended
 for widgets GuildModel has and GuildDraw lacks (QListWidget, QTableWidget /
 QHeaderView, QTextEdit, QScrollArea, QDialogButtonBox) plus object-name
-selectors for GuildModel's labelled chrome (#toolbarStrip, #appTitle,
+selectors for GuildModel's labeled chrome (#toolbarStrip, #appTitle,
 #hintLabel, …).
 
 Painter-drawn surfaces (the 2D canvas, the 3D viewport) cannot be styled by
@@ -165,7 +165,7 @@ QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #8a6d2f; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
 QLabel#placeholderLabel { font-size: 13px; color: #d4a840; }
-/* A Model/Stock value outside the range its stock and neighbours allow. */
+/* A Model/Stock value outside the range its stock and neighbors allow. */
 QLabel#outOfRangeMark { color: #b3541e; font-weight: bold; background: transparent; }
 QTextEdit#logView {
     background-color: #1a1a1a;
@@ -322,7 +322,7 @@ QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #9a9382; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
 QLabel#placeholderLabel { font-size: 13px; color: #8a7a5a; }
-/* A Model/Stock value outside the range its stock and neighbours allow. */
+/* A Model/Stock value outside the range its stock and neighbors allow. */
 QLabel#outOfRangeMark { color: #e8a33d; font-weight: bold; background: transparent; }
 QTextEdit#logView {
     background-color: #1a1a1a;
@@ -371,7 +371,7 @@ def stylesheet(dark: bool, scale: float = 1.0) -> str:
     """The full application stylesheet for the requested theme.
 
     `scale` is the UI scale factor — see `gui.hidpi.ui_scale`. 1.0 is the
-    authored size and the historical behaviour.
+    authored size and the historical behavior.
     """
     return scale_qss(QSS_DARK if dark else QSS, scale)
 
@@ -581,7 +581,7 @@ _toolpath_palette: str = "vivid"
 
 
 def _rgb(hex_color: str) -> tuple[int, int, int]:
-    """(r, g, b) from #rrggbb / #AARRGGBB; mid-grey on a malformed value so a
+    """(r, g, b) from #rrggbb / #AARRGGBB; mid-gray on a malformed value so a
     hand-corrupted prefs color can't crash startup (GuildDraw parity)."""
     try:
         h = hex_color.lstrip("#")

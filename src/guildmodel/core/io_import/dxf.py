@@ -1,6 +1,6 @@
 """DXF importer.
 
-Reads recognised layers from a DXF file (see core.layers.ALL_LAYERS).
+Reads recognized layers from a DXF file (see core.layers.ALL_LAYERS).
 Flattens arcs, splines, and polylines to point lists at chord_tol precision.
 GuildDraw exports with Y negated (DXF Y-up convention); ezdxf reads this correctly.
 

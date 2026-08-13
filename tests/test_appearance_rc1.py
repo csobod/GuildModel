@@ -73,7 +73,7 @@ def test_custom_viewport_derives_ink_from_luminance():
 
 def test_malformed_custom_bg_cannot_crash():
     theme.apply_viewport("custom", "not-a-color")
-    pal = theme.palette(False)          # falls back to mid-grey internally
+    pal = theme.palette(False)          # falls back to mid-gray internally
     assert pal.canvas_bg == "not-a-color" or pal.canvas_bg.startswith("#")
 
 

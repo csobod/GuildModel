@@ -31,12 +31,12 @@ def test_default_is_stock_box_center_bottom():
     pz = ProgramZero()
     assert pz.mode == "stock_box"
     assert (pz.x_ref, pz.y_ref, pz.z_ref) == ("center", "center", "bottom")
-    # center/center/bottom == the blank centre, anterior face -> zero offset
+    # center/center/bottom == the blank center, anterior face -> zero offset
     assert pz.work_offset(StockDefinition()) == (0.0, 0.0, 0.0)
 
 
 def test_work_offset_for_each_datum():
-    s = StockDefinition()        # 170 x 85 x 6, blank centred on the origin
+    s = StockDefinition()        # 170 x 85 x 6, blank centerd on the origin
     hl, hw, t = 85.0, 42.5, 6.0
     cases = {
         ("left", "bottom", "top"): (hl, hw, -t),       # default
@@ -106,7 +106,7 @@ def test_post_offset_leaves_arc_ij_unchanged():
     d = {m[0]: float(m[1]) for m in _COORD.findall(
         [ln for ln in p.to_string().splitlines() if ln.startswith("G3")][0])}
     assert (d["X"], d["Y"]) == pytest.approx((95.0, 42.5))   # endpoint shifted
-    assert (d["I"], d["J"]) == pytest.approx((-10.0, 0.0))   # centre offset NOT
+    assert (d["I"], d["J"]) == pytest.approx((-10.0, 0.0))   # center offset NOT
 
 
 def test_safe_z_is_offset():

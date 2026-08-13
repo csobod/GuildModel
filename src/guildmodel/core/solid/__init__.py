@@ -1,4 +1,4 @@
-"""B-Rep solid modelling (BUILDPLAN Stage 2).
+"""B-Rep solid modeling (BUILDPLAN Stage 2).
 
 The master representation of the frame. `core/relief` becomes a *derived* view
 of this, produced by ray-casting for the CAM alone — see BREP-REWRITE-REPORT.md

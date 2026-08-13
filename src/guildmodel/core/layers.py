@@ -15,7 +15,7 @@ Layer contract (GuildDraw → GuildModel):
 """
 from __future__ import annotations
 
-# Every layer name GuildModel will import (others are logged as unrecognised)
+# Every layer name GuildModel will import (others are logged as unrecognized)
 ALL_LAYERS: frozenset[str] = frozenset({
     "OUTLINE",
     "LENS",

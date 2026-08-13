@@ -9,7 +9,7 @@ from shapely.geometry import Polygon
 class BoxingDimensions:
     """Parametric drivers in Guild Design Brief vocabulary.
 
-    All measurements in millimetres. These are the only values the maker
+    All measurements in millimeters. These are the only values the maker
     must consciously set; everything else is derived from the imported outline
     or defaulted.
     """
@@ -55,8 +55,8 @@ def measure_from_polygon(lens_od: Polygon, lens_os: Polygon) -> BoxingDimensions
       B   = lens height (vertical  bounding-box extent of each lens)
       DBL = distance between lenses: gap between the inner nasal edges of the
             two bounding boxes
-      ED  = effective diameter: diameter of the smallest circle centred at the
-            MRP (bounding-box centre) that fully circumscribes the lens outline
+      ED  = effective diameter: diameter of the smallest circle centerd at the
+            MRP (bounding-box center) that fully circumscribes the lens outline
 
     The two polygons are sorted left→right by centroid X so OD (right in wearer
     terms, smaller display-X for standard left-to-right layouts) is handled

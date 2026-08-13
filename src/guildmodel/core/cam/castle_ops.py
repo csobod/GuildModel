@@ -55,7 +55,7 @@ class CamOp:
     name: str
     paths: list[list[Point3]] = field(default_factory=list)
     # The tool this op is cut with (a tools.yaml entry dict, with a "name" key).
-    # None = the program's single global tool (BUILDPLAN M1–M5 behaviour). Per-op
+    # None = the program's single global tool (BUILDPLAN M1–M5 behavior). Per-op
     # tools are assigned in generate_castle_program from CastleCamParams.op_tools
     # (multi-tool jobs, BUILDPLAN M6.1) — the post, sim, cut-time model and
     # fixture-clearance check all read it.
@@ -156,12 +156,12 @@ def work_holding_keepouts(
     *, screw_head_diameter_mm: float = 7.0, margin_mm: float = 2.0,
     is_hole=lambda ring: False,
 ) -> list[tuple[float, float, float]]:
-    """Keep-out circles ``(cx, cy, radius)`` the tool CENTRE must stay outside when
+    """Keep-out circles ``(cx, cy, radius)`` the tool CENTER must stay outside when
     a pass-link retract is lowered below safe Z (BUILDPLAN M8). They mark the
     work-holding screws standing proud of the stock — the standard Guild fixture:
-    one at each stock-blank corner and one at each lens centre (the body's interior
+    one at each stock-blank corner and one at each lens center (the body's interior
     holes). ``radius`` = screw radius + tool radius + margin, so the tool *edge*
-    keeps ``margin`` clear of the head. Design coordinates (blank centred on origin).
+    keeps ``margin`` clear of the head. Design coordinates (blank centerd on origin).
 
     ``is_hole`` marks interior rings that are decorative OUTLINE openings rather
     than lens apertures — nothing is screwed through those, so they seed no
@@ -169,7 +169,7 @@ def work_holding_keepouts(
     keep_r = screw_head_diameter_mm / 2.0 + tool_radius_mm + margin_mm
     hl, hw = stock.blank_length_mm / 2.0, stock.blank_width_mm / 2.0
     centers = [(hl, hw), (-hl, hw), (hl, -hw), (-hl, -hw)]      # blank corners
-    for ring in body.interiors:                                 # lens centres
+    for ring in body.interiors:                                 # lens centers
         if is_hole(ring):
             continue
         c = Polygon(ring).centroid
@@ -433,7 +433,7 @@ def relief_ops(
     uncut (badly so in the 10 mm pad-block zone, where the cut simulator measured
     ~14 % of the body left proud vs Fusion's ~4 %). The fix mirrors Fusion's
     rough: clear a tool-radius band of the to-be-removed material down to the
-    neighbouring rim level so the finish pass can reach the rim. Beyond the band
+    neighboring rim level so the finish pass can reach the rim. Beyond the band
     the openings stay at stock height — the eyewire / perimeter contours cut them
     through later — so the extra clearing (and cut time) stays bounded.
     """
@@ -560,7 +560,7 @@ def relief_ops(
         _emit(features, z_feat, fb_wide & band & (z_feat < stock_cls.z - eps),
               rings=f_rings)
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
-    # tool works the part in nearest-neighbour order instead of hopping across it (M12.1),
+    # tool works the part in nearest-neighbor order instead of hopping across it (M12.1),
     # then stitch the now-adjacent rings into continuous surface-riding sweeps so a region
     # takes one entry instead of one plunge per ring (M12.2).
     link = params.relief_link_gap_mm
@@ -1009,7 +1009,7 @@ class UnmachinedTopWarning:
     around it with a hard edge where the cut begins — which is what a maker sees
     and reports as a protrusion.
 
-    It is not a modelling error: the tower really is that tall, and every kernel
+    It is not a modeling error: the tower really is that tall, and every kernel
     agrees. It is a machining outcome of the heights and the stock coinciding,
     and the shipped defaults coincide **exactly** — nosepad 10.0 mm on a 6.0 mm
     blank plus a 4.0 mm pad block. So this fires on a default project, which is
@@ -1165,7 +1165,7 @@ def generate_castle_program(
     `tool` is the global/default tool. When `tools_cfg` is given, each op resolves
     its own tool from `params.op_tools` (BUILDPLAN M6.1 multi-tool jobs) and
     carries it on `CamOp.tool`; otherwise every op uses `tool` (single-tool, the
-    M1–M5 behaviour). progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
+    M1–M5 behavior). progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
     """
     params = params or CastleCamParams()
     stock = castle.stock

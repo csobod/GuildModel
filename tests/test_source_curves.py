@@ -398,7 +398,7 @@ def test_a_span_running_against_the_curve_spans_the_same_arc():
     """A ring winding opposite the curve arrives with `ua > ub`.
 
     `MakeEdge` matches the parameter pair against the vertex pair positionally,
-    so the descending order has to be passed through: normalise it and the edge
+    so the descending order has to be passed through: normalize it and the edge
     is refused, silently, because the caller falls back on any exception. What
     comes back is a FORWARD edge over the ascending range, which is correct —
     ring direction is settled on the finished wire by `polygon_to_face`.
@@ -519,7 +519,7 @@ def test_the_exact_offset_is_only_taken_when_it_agrees_with_the_buffer():
     """The guard, and why it is comparative rather than local.
 
     `Geom_OffsetCurve` does not trim. Offset a 5 mm aperture inward by 9 mm and
-    it sails through the centre and returns a 4 mm ring wound the other way —
+    it sails through the center and returns a 4 mm ring wound the other way —
     valid, simple, closed, *smaller* than the original. Every cheap local test
     passes it. Only "does this agree with the shrink Shapely computed?" does not.
     """
@@ -642,7 +642,7 @@ def test_the_swept_groove_is_the_same_v_as_the_lofted_one(grooved):
 def test_the_swept_groove_still_matches_the_cutter_spec(partition_with_curves):
     """The same 5 um gate `test_lens_groove_v_matches_the_cutter_spec` holds the
     lofted V to, applied to the swept one on a curved frame — half-width falling
-    linearly from `width_mm / 2` at the lip to zero at `depth_mm`, centred on the
+    linearly from `width_mm / 2` at the lip to zero at `depth_mm`, centerd on the
     apex height. That fixture builds from `import_dxf` and so exercises the
     fallback; nothing pinned the sweep until this.
     """
@@ -750,7 +750,7 @@ def test_every_verified_arc_becomes_an_arc(partition_with_curves):
     on any exception it re-emits the span's vertices as line edges instead. That
     fallback fired on the demo frame's two largest zones and nothing noticed:
     `eyewire_superior_od` came out a 48-edge face carrying one arc, where its
-    neighbours were 8-edge faces carrying two. The zone vertices still
+    neighbors were 8-edge faces carrying two. The zone vertices still
     *classified* at 94%, so every measure short of counting the edges said the
     model was curved.
     """

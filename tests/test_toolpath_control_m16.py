@@ -199,7 +199,7 @@ def test_plunge_lead_in_emits_no_ramp():
     _WORD = re.compile(r"([XYZ])(-?\d+\.?\d*)")
 
     def ramping_moves(nc):
-        """Feed moves that descend *while* travelling in XY — the signature of a
+        """Feed moves that descend *while* traveling in XY — the signature of a
         ramp. Every cutting move carries a Z word, so the discriminator has to be
         a Z that CHANGES across a move that also changes X or Y."""
         n, z = 0, None
@@ -358,7 +358,7 @@ def test_tab_boundary_on_a_vertex_does_not_swallow_later_tabs():
     skipped, and the cursor stalled on it, dropping every tab after it."""
     from guildmodel.core.cam.tabs import insert_tabs
 
-    # vertices every 10 mm on a 400 mm loop: tab centres land squarely on them
+    # vertices every 10 mm on a 400 mm loop: tab centers land squarely on them
     ring = [(float(d), 0.0) for d in range(0, 201, 10)] + \
            [(float(d), 10.0) for d in range(200, -1, -10)] + [(0.0, 0.0)]
     out = insert_tabs(ring, 4, 4.0, 1.0, 0.0)
@@ -438,7 +438,7 @@ def test_panel_round_trips_every_new_control(tmp_path, monkeypatch):
     assert p.cam_overrides().contour_stepdown_mm == 0.9
 
 
-def test_ramp_angle_greys_out_on_a_plunge_lead_in(tmp_path, monkeypatch):
+def test_ramp_angle_grays_out_on_a_plunge_lead_in(tmp_path, monkeypatch):
     p = _panel(tmp_path, monkeypatch)
     p.contour_lead_in.setCurrentIndex(1)               # Plunge
     assert not p.contour_ramp_angle.isEnabled()

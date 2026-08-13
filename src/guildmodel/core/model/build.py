@@ -86,7 +86,7 @@ FOOTING_CROSS_MM = 0.05
 #: How far each zone polygon is grown before it is extruded, mm, undone by
 #: clipping the union back to the frame outline. See `build_base`.
 #:
-#: Zone polygons tile the body exactly — neighbours share a seam with the same
+#: Zone polygons tile the body exactly — neighbors share a seam with the same
 #: endpoints, collinear, at distance 0.0 — so two plain prisms present the same
 #: wall twice and the union cancels it. That holds right up until a boolean
 #: touches one of them: subtracting a blend band re-nodes the wall it crosses
@@ -94,7 +94,7 @@ FOOTING_CROSS_MM = 0.05
 #: same wall do not cancel, and an exact kernel is right not to pretend
 #: otherwise; what is left is a zero-thickness membrane standing on the seam.
 #:
-#: 1e-3 mm makes the neighbours genuinely overlap instead: ~1300x the measured
+#: 1e-3 mm makes the neighbors genuinely overlap instead: ~1300x the measured
 #: displacement, so there is real geometry for the boolean to resolve rather
 #: than a coincidence to adjudicate; 10x below the finest step the machine can
 #: take; and 1e-8 of the part by volume, which is four orders below the parity
@@ -210,7 +210,7 @@ def footing_tools(partition: CastlePartition, castle: CastleParams,
 
     The bands come back **unclipped**, keyed by the zone each one acts on, and
     that is the whole trick — see `build_base`. A seam whose span is degenerate
-    or whose neighbours are level contributes nothing and stays a hard step,
+    or whose neighbors are level contributes nothing and stays a hard step,
     exactly as on the other two paths.
 
     Swept with `swept_profile` rather than `hull_chain`: **neither half of the
@@ -309,14 +309,14 @@ def build_base(partition: CastlePartition, castle: CastleParams,
     exactly as `build_terraces` does.
 
     **And every zone is grown by `ZONE_WELD_MM` before it is extruded, with the
-    frame outline clipping the union back.** Neighbouring zones share a seam
+    frame outline clipping the union back.** Neighboring zones share a seam
     exactly — same endpoints, collinear, distance 0.0 — so two plain prisms
     raise the same wall twice and the union cancels it, which is why
     `build_terraces` is clean. But a blend band re-nodes every wall it crosses,
     and the wall comes back displaced by up to 7.6e-7 mm. Two walls that are no
     longer the same wall do not cancel, and the union is left holding a
     zero-thickness membrane standing on the seam from the anterior face up to
-    the blend. Grown, the neighbours genuinely overlap and there is no
+    the blend. Grown, the neighbors genuinely overlap and there is no
     coincidence to adjudicate; the outline puts the silhouette and the apertures
     back, and it cuts the grown walls transversally because they now stand a
     micron proud of it.
@@ -415,7 +415,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     solid = build_base(partition, castle, h, top)
 
     # Splay then scoop, each subtracted before the next is built. The order is
-    # load-bearing: both anchor on the centreline, so with the splay enabled the
+    # load-bearing: both anchor on the centerline, so with the splay enabled the
     # scoop's rays land on material the splay has already taken away — measured
     # at up to 2.59 mm of anchor movement on the demo frame. Everything after
     # this point sees the same target either way and goes in one pass.

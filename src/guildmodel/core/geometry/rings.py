@@ -267,7 +267,7 @@ def crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
     """Shorten each crest offset until the crest point is inside the material.
 
     **Inward from the outline is not the same as into the body.** At the bottom
-    centre a frame has the nose notch, and the default 6 mm crest offset steps
+    center a frame has the nose notch, and the default 6 mm crest offset steps
     straight out through it. The anchor ray then finds nothing, `surface_z_at`
     reports its `missing` value — 0.0, indistinguishable from "the surface is
     at the anterior face" — and the chamfer, which spans from the cut surface
@@ -295,7 +295,7 @@ def crest_inside(body: Polygon, pts: np.ndarray, inward: np.ndarray,
 
 
 def carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
-    """Fill missed anchor rays from their neighbours along the run.
+    """Fill missed anchor rays from their neighbors along the run.
 
     Takes NaN for "this ray hit nothing" — which is why both `surface_z_at`
     implementations default `missing` to NaN rather than to a height. A miss is
@@ -313,7 +313,7 @@ def carry_anchors(anchors: np.ndarray, fallback: float) -> np.ndarray:
       came to disagree on the scoop in the first place.
 
     In all three the surface either continues on both sides or is simply absent,
-    so the honest reading is the neighbouring station's height: the feature rides
+    so the honest reading is the neighboring station's height: the feature rides
     over the gap instead of plunging into it. Where there is no material the
     cutter then hangs in air and removes nothing, which is correct by default.
 

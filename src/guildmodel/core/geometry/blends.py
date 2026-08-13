@@ -106,9 +106,9 @@ def scoop_ramp_angle(a, d, r_ext: float, r_int: float):
 def scoop_drop(x, half_width, depth, r_ext: float, r_int: float) -> np.ndarray:
     """How far the scoop cuts below the local surface, at signed offset `x`.
 
-    `x` is measured from the scoop's centreline; `half_width` and `depth` are the
+    `x` is measured from the scoop's centerline; `half_width` and `depth` are the
     section's own at this station and may vary with it (they do — the scoop is a
-    cone). Returns 0 outside the section and `depth` at the centreline.
+    cone). Returns 0 outside the section and `depth` at the centerline.
 
     The shape is a **U with both of its corners named**: `r_ext` rounds the rim
     where the cut leaves the surrounding face, `r_int` rounds the trough where it
@@ -132,14 +132,14 @@ def scoop_drop(x, half_width, depth, r_ext: float, r_int: float) -> np.ndarray:
     concave = d - ri + np.sqrt(np.maximum(ri * ri - (t - a) ** 2, 0.0))
 
     w = np.where(t <= t1, convex, np.where(t < t2, ramp, concave))
-    # Outside the section nothing is removed; past the centreline the section is
+    # Outside the section nothing is removed; past the centerline the section is
     # its own mirror, which `x = |x|` has already taken care of.
     return np.clip(np.where(t <= 0.0, 0.0, w), 0.0, d)
 
 
 def scoop_section_x(half_width: float, n: int) -> np.ndarray:
     """Where to sample one scoop section across x: `n` points, **odd**, so that
-    the centreline is one of them.
+    the centerline is one of them.
 
     An even count puts the two innermost samples either side of the trough and
     replaces it with a chord. On a rounded section that is a rounding error; on

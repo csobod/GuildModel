@@ -66,12 +66,12 @@ def test_temple_mesh_is_watertight_solid():
     assert (zlo, zhi) == pytest.approx((0.0, t.blank_thickness_mm))
 
 
-def test_temple_snap_offset_butts_hinge_end_and_centres_width():
+def test_temple_snap_offset_butts_hinge_end_and_centers_width():
     t = TempleParams()
     outline = _temple_outline()                                 # x 10..130, y 5..29
     hinge = [box(115.0, 11.0, 127.0, 23.0)]                     # hinge on the +x end
     dx, dy = temple_snap_offset(outline, hinge, t.blank_length_mm)
-    # width centred on the blank
+    # width centerd on the blank
     assert dy == pytest.approx(-(5.0 + 29.0) / 2.0)
     # hinge (+x) extreme lands on +blank_length/2
     assert 130.0 + dx == pytest.approx(t.blank_length_mm / 2.0)
@@ -109,12 +109,12 @@ def test_block_relief_is_the_lens_shape():
     z = relief.field.z[relief.inside]
     assert z.max() == pytest.approx(b.blank_thickness_mm)
     assert z.min() == pytest.approx(b.blank_thickness_mm)      # flat top, no scribe
-    # the body is the lens shape (centred), not a 70 × 70 box
+    # the body is the lens shape (centerd), not a 70 × 70 box
     lx0, ly0, lx1, ly1 = _lens().bounds
     x0, y0, x1, y1 = relief.partition.body.bounds
     assert (x1 - x0) == pytest.approx(lx1 - lx0, abs=0.01)
     assert (y1 - y0) == pytest.approx(ly1 - ly0, abs=0.01)
-    assert (x0 + x1) == pytest.approx(0.0, abs=1e-6)           # centred on origin
+    assert (x0 + x1) == pytest.approx(0.0, abs=1e-6)           # centerd on origin
 
 
 def test_block_mesh_has_three_through_holes():

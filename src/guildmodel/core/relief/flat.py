@@ -15,7 +15,7 @@ mask, exactly like the frame's lens openings).
     temple's length); the core itself is a 3D **visual reference**, not machined.
   * **Base-curve block** — a blank-size box extruded to the blank thickness; the
     lens-interior footprint scribed on the top as the forming reference; the M4
-    mounting holes as through-holes; centred on the origin.
+    mounting holes as through-holes; centerd on the origin.
 """
 from __future__ import annotations
 
@@ -102,12 +102,12 @@ def _build_flat_relief(
 def temple_snap_offset(
     outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
 ) -> tuple[float, float]:
-    """Translation (dx, dy) that centres the temple across the blank width and
+    """Translation (dx, dy) that centers the temple across the blank width and
     butts its HINGE/butt end against one short end of the 170 mm blank.
 
     The temple's long axis is x (as GuildDraw draws/exports it). The hinge end is
     the x-extreme nearer the HINGE centroid (falling back to the +x extreme); the
-    blank is centred on the origin, so the hinge extreme lands on ±blank_length/2.
+    blank is centerd on the origin, so the hinge extreme lands on ±blank_length/2.
     """
     minx, miny, maxx, maxy = outline.bounds
     dy = -(miny + maxy) / 2.0
@@ -181,7 +181,7 @@ def temple_core_guide(
 ) -> Polygon:
     """The injected-core visual reference (BUILDPLAN M7): a `core_guide_width` ×
     `core_guide_length` bar laid along the temple's long axis from the hinge end,
-    centred across the width. A 3D reference only — never machined."""
+    centerd across the width. A 3D reference only — never machined."""
     minx, miny, maxx, maxy = outline.bounds
     cy = (miny + maxy) / 2.0
     w = temple.core_guide_width_mm
@@ -238,7 +238,7 @@ def build_block_relief(
     progress: Optional[ProgressFn] = None,
 ) -> FlatRelief:
     """A base-curve block solid: the **lens shape** extruded to the blank thickness,
-    centred on the origin, with the M4 mounting holes as real through-holes. The
+    centerd on the origin, with the M4 mounting holes as real through-holes. The
     block *is* the lens shape (it holds the eyewire on the base-curve press) — there
     is no scribe and no surrounding box, matching the cutting program."""
     from ..cam.block_ops import center_on_origin

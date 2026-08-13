@@ -245,7 +245,7 @@ def test_the_opening_seeds_no_work_holding_keepout(aviator_front, aviator_progra
     keepouts = work_holding_keepouts(
         partition.body, CastleParams().stock, 1.5875, is_hole=partition.is_hole)
 
-    # Four blank corners + the two lens centres — nothing at the bridge opening.
+    # Four blank corners + the two lens centers — nothing at the bridge opening.
     assert len(keepouts) == 6
     assert not any(Point(cx, cy).distance(hole_center) < 1.0 for cx, cy, _r in keepouts)
 
@@ -396,11 +396,11 @@ def test_the_opening_is_a_real_through_hole_in_the_solid(aviator_front):
         resolution=0.6)
 
     field, inside = relief.field, relief.inside
-    centre = aviator_front.outline_holes[0].representative_point()
-    r = int(round((centre.y - field.origin[1]) / field.resolution))
-    c = int(round((centre.x - field.origin[0]) / field.resolution))
+    center = aviator_front.outline_holes[0].representative_point()
+    r = int(round((center.y - field.origin[1]) / field.resolution))
+    c = int(round((center.x - field.origin[0]) / field.resolution))
 
-    assert not inside[r, c]          # no material at the opening's centre
+    assert not inside[r, c]          # no material at the opening's center
 
 
 def test_a_generic_partition_still_refuses_to_build():
@@ -413,7 +413,7 @@ def test_a_generic_partition_still_refuses_to_build():
     partition = partition_zones(outline, [], [[(-50.0, 0.0), (50.0, 0.0)]])
 
     assert partition.classified is False
-    with pytest.raises(ValueError, match="recognisable castle zones"):
+    with pytest.raises(ValueError, match="recognizable castle zones"):
         build_castle_relief(partition, CastleParams(), [], resolution=2.0)
 
 
@@ -486,7 +486,7 @@ def test_a_unified_inferior_wire_classifies_as_eyewire_inferior_ou():
 
     outline = Polygon([(-60, -25), (60, -25), (60, 25), (-60, 25)])
     lenses = [Point(-30, 0).buffer(15), Point(30, 0).buffer(15)]
-    # One horizontal cut just below the lens centres: everything under it is a
+    # One horizontal cut just below the lens centers: everything under it is a
     # single band spanning both lenses.
     cuts = [[(-61.0, -8.0), (61.0, -8.0)]]
 

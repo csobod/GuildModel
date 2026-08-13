@@ -318,7 +318,7 @@ def test_the_two_kernels_still_catch_the_same_class():
 
 def test_deriving_a_limit_does_not_load_a_kernel():
     """`core.project.limits` is read by the GUI on every keystroke. It may not
-    drag in Manifold, OCCT, or the CAM to answer a question about millimetres."""
+    drag in Manifold, OCCT, or the CAM to answer a question about millimeters."""
     import subprocess
     import sys
 

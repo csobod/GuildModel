@@ -111,22 +111,22 @@ def test_the_offset_sign_matches_occt(distance):
 
 
 @pytest.mark.parametrize("tol", [0.01, 0.001, 0.0001])
-def test_the_sampler_honours_its_chord_tolerance(tol):
+def test_the_sampler_honors_its_chord_tolerance(tol):
     """Every chord must sit within `tol` of the curve, and the point count must
     fall as the tolerance loosens — an adaptive sampler that quietly always
     subdivides to `max_depth` would pass the first half alone."""
     from guildmodel.core.geometry.curves import circle_curve, sample_curve
 
-    centre, radius = np.array([2.0, -1.0]), 12.0
-    pts = sample_curve(circle_curve(tuple(centre), radius), tol)
+    center, radius = np.array([2.0, -1.0]), 12.0
+    pts = sample_curve(circle_curve(tuple(center), radius), tol)
     assert len(pts) > 8
 
     mids = 0.5 * (pts[:-1] + pts[1:])
-    sagitta = radius - np.linalg.norm(mids - centre, axis=1)
+    sagitta = radius - np.linalg.norm(mids - center, axis=1)
     assert sagitta.max() <= tol * 1.001, (
         f"worst sagitta {sagitta.max() * 1000:.4f} um against a {tol * 1000:.1f} um "
         "tolerance")
-    assert len(sample_curve(circle_curve(tuple(centre), radius), tol * 10)) < len(pts)
+    assert len(sample_curve(circle_curve(tuple(center), radius), tol * 10)) < len(pts)
 
 
 def test_a_closed_ring_is_not_collapsed_by_its_own_symmetry():

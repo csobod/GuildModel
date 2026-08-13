@@ -140,7 +140,7 @@ class ToolView(QWidget):
         p.setPen(QPen(QColor(pal.annotation), 1.4))
         p.drawPath(path)
 
-        # centreline (dashed)
+        # centerline (dashed)
         pen = QPen(QColor(pal.grid), 1.0, Qt.PenStyle.DashLine)
         p.setPen(pen)
         p.drawLine(pt(0.0, 0.0), pt(0.0, total_h))

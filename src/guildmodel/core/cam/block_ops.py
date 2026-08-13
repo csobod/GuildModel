@@ -11,7 +11,7 @@ nothing else (confirmed with the user 2026-06-19):
      freeing the block last — exactly the way a frame outline is cut.
 
 The drill uses its own tool, so the program carries one tool change (M6.1). The
-lens shape is centred on the blank; everything rides the shared GRBL post and
+lens shape is centerd on the blank; everything rides the shared GRBL post and
 program-zero offset (M6.2).
 """
 from __future__ import annotations
@@ -72,7 +72,7 @@ def generate_block_program(
     (drill while rigid, release last). Nothing else is cut: the block *is* the lens
     shape, holding the eyewire on the base-curve press.
 
-    `lens_outline` is a LENS interior from the frame DXF; it is centred on the
+    `lens_outline` is a LENS interior from the frame DXF; it is centerd on the
     blank. The drill / profile tools come from `block` (resolved from `tools_cfg`);
     the drill differs from the bulk tool, so the post emits one tool change.
     """

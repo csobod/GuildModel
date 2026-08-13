@@ -115,7 +115,7 @@ def test_circle_flatten_samples_the_ring():
                          "nodes": [_node(5, 0)], "radius": 10.0}]}
     ring = read_workspace_geometry(state)["LENS"][0]
     assert len(ring) >= 16
-    # posterior centre is (-5, 0); every sample is ~r from it
+    # posterior center is (-5, 0); every sample is ~r from it
     for x, y in ring:
         assert math.hypot(x - (-5), y - 0) == pytest.approx(10.0, abs=1e-6)
 

@@ -35,11 +35,11 @@ def test_flat_tool_stamps_cylinder():
 def test_ball_tool_rises_off_axis():
     tp = ToolProfile("ball", 2.0)
     floor = achieved_floor([[(0.0, 0.0, 0.0)]], tp, (-3, -3), (61, 61), 0.1, init_z=9.0)
-    centre = floor[30, 30]
+    center = floor[30, 30]
     off = floor[30, 40]                       # 1 mm off-axis
-    assert centre == pytest.approx(0.0, abs=1e-6)
+    assert center == pytest.approx(0.0, abs=1e-6)
     assert off == pytest.approx(2.0 - np.sqrt(4 - 1), abs=0.02)   # R - sqrt(R²-d²)
-    assert off > centre
+    assert off > center
 
 
 def test_densify_spacing():

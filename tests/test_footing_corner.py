@@ -241,7 +241,7 @@ def test_the_reach_stops_where_the_blend_stops_mattering():
     A blend touches down tangentially, so the span's last stretch is flat: on
     the `endpiece_superior` schedule (32 / 48 mm radii over a 0.7 mm step) the
     low half spans 8.17 mm and the outermost 1.4 mm of that is within 0.02 mm of
-    the terrace. Covering it costs a millimetre of lead and moves nothing.
+    the terrace. Covering it costs a millimeter of lead and moves nothing.
     """
     from guildmodel.core.relief.castle import (FOOTING_FLAT_TOL_MM,
                                                _footing_reach, _footing_spans,
@@ -258,7 +258,7 @@ def test_the_reach_stops_where_the_blend_stops_mattering():
     # The claim, checked rather than asserted: the reach brackets the crossing.
     # It is the last *sample* still outside the tolerance, so the true crossing
     # sits within one sample spacing beyond it — the reach is conservative by
-    # under a hundredth of a millimetre of run, on the flattest part of the
+    # under a hundredth of a millimeter of run, on the flattest part of the
     # curve there is.
     for span, reach, terrace, sign in ((span_hi, reach_hi, delta, -1.0),
                                        (span_lo, reach_lo, 0.0, 1.0)):
@@ -311,7 +311,7 @@ def test_the_stations_run_past_both_ends_of_the_cut():
     """The mechanism, checked directly rather than through a build.
 
     This used to sample 2%..98% of the cut, and on a short seam that trim is a
-    tenth of a millimetre — which under a 9 mm blend is a 9 mm wedge. The
+    tenth of a millimeter — which under a 9 mm blend is a 9 mm wedge. The
     stations now cover the whole cut and `CUT_LEAD_MM` past each end.
     """
     from shapely.geometry import LineString
@@ -333,14 +333,14 @@ def test_the_stations_run_past_both_ends_of_the_cut():
     assert np.allclose(np.linalg.norm(perps, axis=1), 1.0)
     assert perps[0][1] == pytest.approx(1.0)
 
-    # A lead of zero still spans the cut exactly — the old behaviour minus its
+    # A lead of zero still spans the cut exactly — the old behavior minus its
     # trim, which is what the parametrisation is for.
     plain, _ = cut_stations(line, 5, lead_mm=0.0)
     assert plain[0][0] == pytest.approx(0.0)
     assert plain[-1][0] == pytest.approx(10.0)
 
     # The two ends are led independently: `cap_leads` routinely returns a pair
-    # differing by more than a millimetre, and one shared number is what the
+    # differing by more than a millimeter, and one shared number is what the
     # 2026-08-12 fin was.
     pair, _ = cut_stations(line, 9, lead_mm=(2.0, 0.0))
     assert pair[0][0] == pytest.approx(-2.0)
@@ -350,7 +350,7 @@ def test_the_stations_run_past_both_ends_of_the_cut():
 def test_a_curved_cut_is_extrapolated_along_its_end_tangents():
     """The lead is a straight extension of the end segment, so a gently curved
     SCULPT line does not get a kink. Short by design: 2 mm on a spline whose
-    curvature is measured in tens of millimetres."""
+    curvature is measured in tens of millimeters."""
     from shapely.geometry import LineString
 
     from guildmodel.core.geometry.footings import CUT_LEAD_MM, cut_stations

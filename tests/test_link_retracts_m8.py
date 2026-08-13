@@ -64,9 +64,9 @@ def _seg_dist(px, py, ax, ay, bx, by):
     return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
-def test_keepouts_are_corners_plus_lens_centres(demo):
+def test_keepouts_are_corners_plus_lens_centers(demo):
     castle, _, _, keep = demo
-    assert len(keep) == 6                        # 4 blank corners + 2 lens centres
+    assert len(keep) == 6                        # 4 blank corners + 2 lens centers
     hl, hw = castle.stock.blank_length_mm / 2, castle.stock.blank_width_mm / 2
     corners = {(round(hl), round(hw)), (round(-hl), round(hw)),
                (round(hl), round(-hw)), (round(-hl), round(-hw))}
@@ -100,7 +100,7 @@ def test_linking_cuts_full_retracts_and_off_matches_legacy(demo):
     low = f"G0 Z{top + cam.link_clearance_mm:.4f}"
     off = _post(castle, cam, ops, keep, link=False)
     on = _post(castle, cam, ops, keep, link=True)
-    assert low not in off                        # linking off = the original behaviour
+    assert low not in off                        # linking off = the original behavior
     assert on.count(full) < off.count(full)      # linking replaces most full retracts
     assert on.count(low) > 0                      # …with low hops where it's clear
     # some full retracts remain — the screw-crossing hops kept the safe height

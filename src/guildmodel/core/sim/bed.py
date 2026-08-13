@@ -267,9 +267,9 @@ def build_bed_removal_plan(
 
 
 def _schedule_step_order(parts: list) -> list:
-    """Order every part's steps to minimise tool changes AND front-load the briefest
+    """Order every part's steps to minimize tool changes AND front-load the briefest
     tools — the sim mirror of `cam.layout.schedule_bed_ops` (BUILDPLAN M6.5 + operator-
-    time optimisation), keyed by the tool **profile**: stay on the current tool while any
+    time optimization), keyed by the tool **profile**: stay on the current tool while any
     ready step needs it, else switch to the ready tool with the least TOTAL cutting length
     (so the longest-running tool finishes last, unattended), keeping each part's internal
     order. So the bed SIM plays in the exact tool-grouped order the worktable.nc runs —

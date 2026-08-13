@@ -68,7 +68,7 @@ def test_hole_centers_inline_and_triangle():
 
 def test_center_on_origin():
     x0, y0, x1, y1 = center_on_origin(LENS).bounds
-    assert (x0 + x1) == pytest.approx(0.0, abs=1e-9)             # bbox centred
+    assert (x0 + x1) == pytest.approx(0.0, abs=1e-9)             # bbox centerd
     assert (y0 + y1) == pytest.approx(0.0, abs=1e-9)
 
 
@@ -84,7 +84,7 @@ def test_generate_block_two_ops_drill_then_lens_profile():
 
 def test_block_profile_cuts_the_lens_shape():
     """The block outline is the LENS shape (cut free like a frame outline), not a
-    surrounding box — one tool-offset beyond the lens, centred on the blank."""
+    surrounding box — one tool-offset beyond the lens, centerd on the blank."""
     b = BaseCurveBlockParams()
     prof = generate_block_program(LENS, b, TOOLS)[1]
     x0, y0, x1, y1 = prof.xy_bounds()
@@ -92,7 +92,7 @@ def test_block_profile_cuts_the_lens_shape():
     offset = TOOLS["flat_3175"]["radius_mm"] + b.hand_finishing_allowance_mm
     assert (x1 - x0) == pytest.approx((lx1 - lx0) + 2 * offset, abs=0.3)
     assert (y1 - y0) == pytest.approx((ly1 - ly0) + 2 * offset, abs=0.3)
-    assert (x0 + x1) == pytest.approx(0.0, abs=0.3)              # centred on the blank
+    assert (x0 + x1) == pytest.approx(0.0, abs=0.3)              # centerd on the blank
     # the profile reaches down to the onion skin (a through-cut, not a scribe)
     assert prof.z_range()[0] == pytest.approx(b.onion_skin_mm)
 

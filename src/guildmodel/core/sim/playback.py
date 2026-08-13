@@ -450,7 +450,7 @@ def plan_floor_to(plan: RemovalPlan, target: float) -> np.ndarray:
 def plan_collisions(plan: RemovalPlan, keep_outs: list,
                     hold_down_height_mm: float) -> np.ndarray:
     """Per-position hold-down collision flags for the plan (BUILDPLAN M7.12.3) —
-    the position analogue of :func:`bed.bed_collision_frames`, Z-aware and vectorised
+    the position analog of :func:`bed.bed_collision_frames`, Z-aware and vectorised
     per segment."""
     M = plan.n_positions
     flags = np.zeros(M, dtype=bool)

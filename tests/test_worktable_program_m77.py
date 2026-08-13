@@ -3,7 +3,7 @@
 The output half of the reorientation: a role-matched `BedNest` (M7.6) on the
 user-tagged `Worktable` (M7.4) is combined into ONE scheduled `worktable.nc`
 (`build_nest_program`) — op names prefixed per placement, the through-cut / drill
-name sets collected, and the M6.5 precedence-aware tool-change minimiser run over
+name sets collected, and the M6.5 precedence-aware tool-change minimizer run over
 the whole bed — then posted, linted, keep-out-cleared and cut-timed exactly like
 the M6.5 fixture bed. Per-component programs are unchanged (covered by M6.1–M6.4).
 These tests run headless (numpy + shapely); the GUI post is offscreen-smoked.
@@ -81,7 +81,7 @@ def test_nest_program_preserves_each_parts_internal_order():
     assert names.index("Block · Drill Holes") < names.index("Block · Block Profile")
 
 
-def test_nest_program_minimises_tool_changes():
+def test_nest_program_minimizes_tool_changes():
     # frame (flat) + block (drill + flat) -> 2 distinct tools -> exactly one change
     _bed, nest = _two_part_nest()
     prog = build_nest_program(nest)

@@ -1,6 +1,6 @@
 """Solid -> Heightfield, for the CAM (BUILDPLAN Stage 2).
 
-Two lines of OCCT on top of `core.zmap`, which is where the rasteriser and the
+Two lines of OCCT on top of `core.zmap`, which is where the rasterizer and the
 relief assembly actually live. They were written here, and only the tessellation
 was ever kernel-specific; keeping the rest here meant the Manifold path could
 not reach the CAM without importing the kernel it replaces. See `core.zmap`.

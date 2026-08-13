@@ -64,7 +64,7 @@ def test_polygon_to_face_with_holes_is_valid(demo_partition):
 
 
 def test_polygon_to_face_is_winding_agnostic(demo_partition):
-    """Either incoming winding must give the same solid — the builder normalises
+    """Either incoming winding must give the same solid — the builder normalizes
     rather than trusting Shapely's convention."""
     from shapely.geometry.polygon import orient
 
@@ -770,7 +770,7 @@ def test_lens_groove_v_matches_the_cutter_spec(demo_partition):
         half_w = (z[2] - z[1]) / 2.0
         expected = (g.width_mm / 2.0) * (1.0 - u / g.depth_mm)
         assert half_w == pytest.approx(expected, abs=0.005)
-        # Centred on the apex height above the anterior face.
+        # Centerd on the apex height above the anterior face.
         assert (z[1] + z[2]) / 2.0 == pytest.approx(g.anterior_offset_mm, abs=0.01)
 
 
@@ -922,11 +922,11 @@ def test_build_component_mesh_emits_edges_on_the_solid_path(demo_partition,
     raster_mesh, raster_edges, _ = build_component_mesh(spec, resolution=0.6)
     assert raster_edges is None, "the raster has no edges to give"
     assert len(raster_mesh.faces) > len(mesh.faces), (
-        "the raster mesh should be far heavier than a modelled one")
+        "the raster mesh should be far heavier than a modeled one")
 
 
 @pytest.mark.parametrize("kernel", ["brep", "mesh"])
-def test_build_3d_reaches_the_modelled_path(kernel, demo_partition,
+def test_build_3d_reaches_the_modeled_path(kernel, demo_partition,
                                             demo_hinges, monkeypatch):  # noqa: D401
     """Regression for the 2026-08-07 finding 2: the dead display-mode dropdown.
 

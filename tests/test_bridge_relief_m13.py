@@ -141,7 +141,7 @@ def test_scoop_radii_change_the_section_and_the_slope():
     sharp = scoop_drop(xs, 4.0, 1.2, 0.0, 0.0)
     round_ = scoop_drop(xs, 4.0, 1.2, 3.0, 3.0)
 
-    # Full depth at the centreline and nothing at the rim, whatever the radii.
+    # Full depth at the centerline and nothing at the rim, whatever the radii.
     for w in (sharp, round_):
         assert w[len(w) // 2] == pytest.approx(1.2, abs=1e-6)
         assert w[0] == pytest.approx(0.0, abs=1e-9)

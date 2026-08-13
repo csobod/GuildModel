@@ -4,7 +4,7 @@ A small painted circle docked in the status-bar corner that tells the maker at
 a glance how far the open job is from being transmittable to the machine. Dot
 only — the stage name lives in the tooltip:
 
-    grey/off  nothing loaded (no DXF)
+    gray/off  nothing loaded (no DXF)
     red       DXF imported, nothing built  — "DXF Loaded, Missing 3D Model + G-Code"
     yellow    3D model built               — "Model Built, Missing G-Code"
     green     G-code stored to the .gmodel   — "Ready for Transmission"
@@ -41,7 +41,7 @@ def state_for(dxf_loaded: bool, mesh_built: bool, program_stored: bool) -> str:
 
     green outranks yellow outranks red: a stored program implies the job is
     transmittable regardless of whether the (lazily rebuilt) preview mesh is
-    currently in hand. No DXF at all is grey/off.
+    currently in hand. No DXF at all is gray/off.
     """
     if not dxf_loaded:
         return OFF

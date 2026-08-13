@@ -1,9 +1,9 @@
 """M8 — arc endpoints must satisfy Carbide Motion's strict arc check.
 
 Carbide Motion rejects an arc whose start radius (|I,J|) and end radius differ by
-more than a tiny tolerance. The Kasa best-fit centre is not equidistant from the two
+more than a tiny tolerance. The Kasa best-fit center is not equidistant from the two
 endpoints, so the emitted I/J mismatched by ~0.01 mm on the long eyewire / perimeter
-arcs. The fix snaps the centre onto the chord's perpendicular bisector.
+arcs. The fix snaps the center onto the chord's perpendicular bisector.
 """
 import math
 
@@ -15,7 +15,7 @@ from guildmodel.core.post.machine import lint_program, load_machine_profile
 
 def test_equidistant_center_makes_radii_equal():
     start, end = (0.0, 0.0), (10.0, 0.0)
-    # a deliberately off-centre fit (equidistant would sit on x = 5)
+    # a deliberately off-center fit (equidistant would sit on x = 5)
     cx, cy, R = 5.3, 8.0, 9.5
     cx2, cy2 = _equidistant_center(start, end, cx, cy, R)
     sr = math.hypot(cx2 - start[0], cy2 - start[1])
@@ -25,13 +25,13 @@ def test_equidistant_center_makes_radii_equal():
 
 
 def test_equidistant_center_coincident_endpoints_is_safe():
-    # a closed loop (start == end) is left to the fitted centre, no crash
+    # a closed loop (start == end) is left to the fitted center, no crash
     assert _equidistant_center((1.0, 2.0), (1.0, 2.0), 3.0, 4.0, 5.0) == (3.0, 4.0)
 
 
 def _noisy_arc():
     # a ~48 mm arc like the failing eyewire pass, with a few microns of radial noise
-    # so the best-fit centre is genuinely not equidistant from the endpoints
+    # so the best-fit center is genuinely not equidistant from the endpoints
     rng = np.random.default_rng(7)
     R0, cx0, cy0 = 48.0, -28.9, -27.9
     out = []
@@ -41,7 +41,7 @@ def _noisy_arc():
     return out
 
 
-def test_unsnapped_kasa_centre_is_not_equidistant():
+def test_unsnapped_kasa_center_is_not_equidistant():
     """Proves the test input is non-trivial — the raw fit is what broke Carbide."""
     P = np.asarray(_noisy_arc())
     cx, cy, R, _dev = _fit_circle(P[:, :2])
@@ -85,6 +85,6 @@ def test_lint_flags_arc_endpoint_mismatch():
 
 def test_lint_passes_a_consistent_arc():
     prof = load_machine_profile("carbide_nomad3")
-    good = "G21\nG0 X0.0 Y0.0\nG2 X10.0 Y0.0 I5.0 J3.0 F500\n"  # equidistant centre
+    good = "G21\nG0 X0.0 Y0.0\nG2 X10.0 Y0.0 I5.0 J3.0 F500\n"  # equidistant center
     warns = lint_program(good, prof)
     assert not any("endpoint" in w.lower() for w in warns)

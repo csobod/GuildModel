@@ -98,7 +98,7 @@ def test_stepdown_actually_changes_the_temple_pass_count():
             > len(_depths(_profile_paths(coarse, "Temple Profile"))))
 
 
-def test_block_profile_honours_the_stepdown_too():
+def test_block_profile_honors_the_stepdown_too():
     b = BaseCurveBlockParams()
     lens = Polygon([(-20, -15), (20, -15), (20, 15), (-20, 15)])
     ops = generate_block_program(lens, b, TOOLS, CastleCamParams(contour_stepdown_mm=1.0))

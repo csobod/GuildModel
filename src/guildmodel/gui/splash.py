@@ -6,7 +6,7 @@ the program is launching. That feedback is the point: without it, a slow cold
 start looks like nothing happened and the user double-clicks again, ending up
 with two copies of the app fighting over the same autosave/recovery slot.
 
-The card is deliberately formal: the Guild seal, a serif face, and the licence
+The card is deliberately formal: the Guild seal, a serif face, and the license
 line, evoking a guild certificate rather than a typical software toast — the
 same card GuildDraw shows, so the family reads as one ecosystem.
 """
@@ -36,7 +36,7 @@ _INK       = QColor("#1f1f1f")
 _INK_SOFT  = QColor("#5a513c")
 
 _GUILD_NAME = "Guild of American Spectacle Makers"
-_LICENCE    = "Released under the GNU General Public License v3.0"
+_LICENSE    = "Released under the GNU General Public License v3.0"
 
 
 def _serif(size: int, *, bold: bool = False, italic: bool = False) -> QFont:
@@ -56,7 +56,7 @@ def _serif(size: int, *, bold: bool = False, italic: bool = False) -> QFont:
 
 def _draw_centered(p: QPainter, font: QFont, color: QColor,
                    text: str, y: int) -> int:
-    """Draw *text* horizontally centred at vertical position *y* (top of line).
+    """Draw *text* horizontally centerd at vertical position *y* (top of line).
     Returns the y just below the line for easy stacking."""
     p.setFont(font)
     p.setPen(QPen(color))
@@ -75,7 +75,7 @@ def _render_card(dpr: float, scale: float = 1.0) -> QPixmap:
     panel as a postage stamp while the app behind it is correctly sized.
 
     Rendered through a `QImage` in an explicitly alpha-capable format rather
-    than a bare `QPixmap`: `QPixmap(w, h)` starts uninitialised and its format
+    than a bare `QPixmap`: `QPixmap(w, h)` starts uninitialized and its format
     is the platform's choice, so `fill(transparent)` is only reliably
     transparent once the format is pinned.
     """
@@ -101,7 +101,7 @@ def _render_card(dpr: float, scale: float = 1.0) -> QPixmap:
     p.setPen(QPen(_INK, 1))
     p.drawRoundedRect(QRectF(14, 14, _W - 28, _H - 28), 9, 9)
 
-    # Guild seal, centred near the top.
+    # Guild seal, centerd near the top.
     seal_box = 232
     seal_x = (_W - seal_box) / 2
     seal_y = 40
@@ -127,8 +127,8 @@ def _render_card(dpr: float, scale: float = 1.0) -> QPixmap:
     y = _draw_centered(p, _serif(12), _INK_SOFT, "A production of the", y)
     y = _draw_centered(p, _serif(17, bold=True), _INK, _GUILD_NAME, y + 2)
 
-    # Licence + loading line pinned toward the bottom of the card.
-    _draw_centered(p, _serif(11), _INK_SOFT, _LICENCE, _H - 86)
+    # License + loading line pinned toward the bottom of the card.
+    _draw_centered(p, _serif(11), _INK_SOFT, _LICENSE, _H - 86)
     _draw_centered(p, _serif(12, italic=True), _INK, "Loading…", _H - 58)
 
     p.end()

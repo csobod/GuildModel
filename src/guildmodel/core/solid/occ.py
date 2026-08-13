@@ -503,7 +503,7 @@ def ring_wire(coords, z: float = 0.0, spline: bool = False, curve=None):
     hand over the drawing's own `NurbsCurve` — not a fit to these coords, the
     authored definition — this returns a single exact edge. That is a different
     proposition from `spline=True` above: there is no fitting step, so none of
-    the tolerance behaviour in that table applies. The polyline stays the
+    the tolerance behavior in that table applies. The polyline stays the
     fallback for geometry that genuinely has no source curve (SCULPT cuts,
     derived zone boundaries) and for any curve the kernel refuses.
     """
@@ -532,7 +532,7 @@ def ring_wire(coords, z: float = 0.0, spline: bool = False, curve=None):
 #: A trimmed arc is trusted only if it stays this close to the ring polyline it
 #: was derived from, in mm. A correct arc rides within the chord sagitta (<= the
 #: importer's 0.01 mm flattening tolerance); a wrong-branch arc — the trim
-#: sweeping the long way round a closed curve — misses by millimetres. There is
+#: sweeping the long way round a closed curve — misses by millimeters. There is
 #: no middle ground, so the threshold is not delicate.
 ARC_VERIFY_TOL_MM = 0.05
 
@@ -684,7 +684,7 @@ def _arc_edge(geom, v0, v1, ua: float, ub: float):
     parameters must still be handed over **in the run's order**: they are
     matched against `v0` and `v1` positionally, so passing the ascending pair
     with descending vertices makes `MakeEdge` refuse the edge outright. OCCT
-    then normalises internally and returns a FORWARD edge over the ascending
+    then normalizes internally and returns a FORWARD edge over the ascending
     range, which is fine — ring direction is settled once, on the finished wire,
     by `polygon_to_face`.
     """
@@ -728,7 +728,7 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
     micron. Left to match them by proximity, `BRepBuilderAPI_MakeWire` stitched
     the gap where it could and produced a disordered wire where it could not,
     while still reporting `IsDone()`. Building each `TopoDS_Vertex` once and
-    handing it to both neighbours took this from five of nine zones to seven.
+    handing it to both neighbors took this from five of nine zones to seven.
 
     The last two needed the tolerance as well. A junction vertex sits at a
     flattened point but is claimed to be at parameter `u` on the curve, and
@@ -737,7 +737,7 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
     largest zones, against a default of 1e-7 mm. The caller then dropped the
     whole span back to one line edge per vertex, which is why
     `eyewire_superior_od` was a 48-edge face with a single arc in it while its
-    neighbours were 8-edge faces with two.
+    neighbors were 8-edge faces with two.
 
     `JUNCTION_TOL_MM` states that uncertainty instead of pretending it away. It
     is the same 1 um `SourceCurves.classify` already uses to decide a point is
@@ -760,7 +760,7 @@ def curved_ring_wire(coords, z: float, source: "SourceCurves"):
     def ring_pnt(k):
         return gp_Pnt(tagged[k % n][0], tagged[k % n][1], float(z))
 
-    # Describe the ring as an ordered segment list, then realise it.
+    # Describe the ring as an ordered segment list, then realize it.
     segs, cursor = [], 0
     for (ia, ib, ci, ua, ub) in spans:
         if ia < cursor:
@@ -824,7 +824,7 @@ def polygon_to_face(poly: Polygon, z: float = 0.0, spline: bool = False,
     as they are — reversing them on top of that produces a face OCCT reports as
     invalid while still handing back a shape with a plausible-looking bounding
     box, so the mistake surfaces later as an empty boolean rather than as an
-    error. `orient(poly, 1.0)` normalises to exterior-CCW / holes-CW regardless
+    error. `orient(poly, 1.0)` normalizes to exterior-CCW / holes-CW regardless
     of how the caller's polygon was wound, so this does not depend on Shapely's
     incoming convention.
 
@@ -883,7 +883,7 @@ def closed_spline_wire(pts_xy: np.ndarray, z: float):
     """A closed periodic B-spline through the points, as a one-edge wire.
 
     For sweeping around an aperture ring. An *open* fit through the same points
-    fails here: the first and last stations are neighbours on the ring, so the
+    fails here: the first and last stations are neighbors on the ring, so the
     approximating fit has no room to resolve them and `MakePipeShell` comes back
     with `BRepAdaptor_Curve::No geometry`. Periodic interpolation closes the
     spine properly and leaves no seam for the sweep to trip on.

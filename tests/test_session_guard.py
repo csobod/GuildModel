@@ -309,7 +309,7 @@ def test_boot_module_is_light():
 # `sys.platform.startswith("linux")`, because the X11-only renderer it works
 # around is VTK's Linux one. So each of these pins the platform, the way the
 # `ui_scale` tests below already do. Left unpinned they do not describe the
-# same behaviour on every runner:
+# same behavior on every runner:
 #
 #   * the switching test **failed the macOS release build** (2026-08-13), which
 #     is how this was found — it asserts a Linux-only True;
@@ -488,7 +488,7 @@ def test_qts_generic_fallback_is_not_mistaken_for_a_desktop_choice(qapp, monkeyp
     qapp.setFont(font)
     assert hidpi._base_font_size(qapp) == pytest.approx(10.0)
 
-    # A real 9pt choice from a named family is honoured, not overridden.
+    # A real 9pt choice from a named family is honored, not overridden.
     qapp.setProperty("_guildmodel_base_font_size", None)
     font.setFamily("Segoe UI")
     qapp.setFont(font)

@@ -84,14 +84,14 @@ def test_incomplete_bed_nests_only_what_fits():
     assert unplaced == {"Temple L", "BC R"}     # no left-temple / base-curve zones
 
 
-def test_part_centres_on_its_zone():
+def test_part_centers_on_its_zone():
     bed = Worktable(zones=[_rect_zone("z", BedRole.FRAME_FRONT, 100, 50, 300, 150)])
-    op = _op("Perimeter", "flat_3175", [(-10, -5), (10, 5)])     # bbox centre (0, 0)
+    op = _op("Perimeter", "flat_3175", [(-10, -5), (10, 5)])     # bbox center (0, 0)
     nest = nest_components_on_worktable([_part("frame_front", "F", op)], bed)
     pl = nest.placements[0]
     assert pl.zone_id == "z"
     bx, by = ops_bbox_center(pl.ops)
-    assert (bx, by) == pytest.approx((200.0, 100.0))            # zone bbox centre
+    assert (bx, by) == pytest.approx((200.0, 100.0))            # zone bbox center
     assert (pl.dx, pl.dy) == pytest.approx((200.0, 100.0))
 
 
@@ -131,7 +131,7 @@ def test_polygon_keepout_catches_a_collision():
         _rect_zone("z", BedRole.FRAME_FRONT, 0, 0, 100, 100),
         _rect_zone("clamp", BedRole.KEEP_OUT, 40, 40, 60, 60),
     ])
-    # part bbox centre (0,0) → lands at the zone centre (50,50), inside the clamp
+    # part bbox center (0,0) → lands at the zone center (50,50), inside the clamp
     foul = _op("Perimeter", "flat_3175", [(0, 0)])
     nest = nest_components_on_worktable([_part("frame_front", "F", foul)], bed)
     viol = worktable_clearance_violations(nest.all_ops(), bed)
@@ -141,7 +141,7 @@ def test_polygon_keepout_catches_a_collision():
 def test_polygon_keepout_clears_when_outside():
     bed = Worktable(zones=[
         _rect_zone("z", BedRole.FRAME_FRONT, 0, 0, 100, 100),
-        _rect_zone("clamp", BedRole.KEEP_OUT, 0, 0, 10, 10),   # a corner, away from centre
+        _rect_zone("clamp", BedRole.KEEP_OUT, 0, 0, 10, 10),   # a corner, away from center
     ])
     op = _op("Perimeter", "flat_3175", [(0, 0)])               # lands at (50,50)
     nest = nest_components_on_worktable([_part("frame_front", "F", op)], bed)
@@ -149,16 +149,16 @@ def test_polygon_keepout_clears_when_outside():
 
 
 def test_circle_keepout_and_drill_exemption():
-    # a screw circle keep-out (radius_mm set, exact circle) centred in the zone
+    # a screw circle keep-out (radius_mm set, exact circle) centerd in the zone
     screw = WorktableZone(id="screw", role=BedRole.KEEP_OUT, radius_mm=5.0,
-                          polygon=[(45, 45), (55, 45), (55, 55), (45, 55)])  # centre (50,50)
+                          polygon=[(45, 45), (55, 45), (55, 55), (45, 55)])  # center (50,50)
     bed = Worktable(zones=[_rect_zone("z", BedRole.BASE_CURVE_RIGHT, 0, 0, 100, 100), screw])
-    drill = CamOp("Drill Holes", paths=[[(0.0, 0.0, 0.0)]],   # bbox → zone centre (50,50)
+    drill = CamOp("Drill Holes", paths=[[(0.0, 0.0, 0.0)]],   # bbox → zone center (50,50)
                   tool={**TOOLS["drill_m4_clear"], "name": "drill_m4_clear"})
     part = BedPart("base_curve_right", "BC", "", [drill], set(), {"Drill Holes"})
     nest = nest_components_on_worktable([part], bed)
     placed = nest.all_ops()
-    # the hole lands on the screw centre → without the exemption it's flagged, with it
+    # the hole lands on the screw center → without the exemption it's flagged, with it
     # exempt (the screw IS its mounting bolt)
     assert worktable_clearance_violations(placed, bed) != []
     assert worktable_clearance_violations(
@@ -255,16 +255,16 @@ def test_demo_nests_on_default_bed_clear(demo_parts):
 
 # ------------------------------------------------------------------ placement rotation
 
-def test_bed_placement_rotate_keeps_centre_and_accumulates():
-    """A placement spins about its own footprint centre; the centre is preserved so it
+def test_bed_placement_rotate_keeps_center_and_accumulates():
+    """A placement spins about its own footprint center; the center is preserved so it
     stays on its zone, and rotation_deg accumulates and wraps at 360 (M-UX)."""
     op = _op("Perimeter", "flat_3175",
-             [(90, 45), (110, 45), (110, 55), (90, 55), (90, 45)])   # 20x10, centre (100,50)
+             [(90, 45), (110, 45), (110, 55), (90, 55), (90, 45)])   # 20x10, center (100,50)
     pl = BedPlacement(kind="temple_left", label="Temple L", zone_id="z",
                       role="temple_left", dx=0.0, dy=0.0, rotation_deg=0.0, ops=[op])
     c0 = ops_bbox_center(pl.ops)
     pl.rotate(90)
-    assert ops_bbox_center(pl.ops) == pytest.approx(c0)              # centre preserved
+    assert ops_bbox_center(pl.ops) == pytest.approx(c0)              # center preserved
     assert pl.rotation_deg == pytest.approx(90.0)
     xs = [p[0] for path in pl.ops[0].paths for p in path]
     ys = [p[1] for path in pl.ops[0].paths for p in path]

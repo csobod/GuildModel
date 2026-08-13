@@ -166,7 +166,7 @@ def test_a_click_on_the_groove_jumps_there_on_every_platform(slider):
     for a continuous measurement, so `_JumpSlider` makes all three jump.
 
     Checked by clicking near the right-hand end: a jump lands close to the
-    maximum, a page-step moves one tenth of a millimetre and would fail.
+    maximum, a page-step moves one tenth of a millimeter and would fail.
     """
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtCore import QEvent

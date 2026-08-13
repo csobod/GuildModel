@@ -65,7 +65,7 @@ def compare_kernels(partition, castle, hinges) -> dict:
         out["brep"]["edges"] = len(tess.edges)
     except Exception as exc:                                 # noqa: BLE001
         # The B-Rep path failing is a *result*, not an error in this tool —
-        # BUILDPLAN-NEW §3 is a catalogue of it doing exactly that, and a
+        # BUILDPLAN-NEW §3 is a catalog of it doing exactly that, and a
         # diagnostic that dies alongside it reports nothing.
         out["brep"] = {"error": f"{type(exc).__name__}: {exc}",
                        "seconds": time.perf_counter() - start}

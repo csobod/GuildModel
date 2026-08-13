@@ -6,13 +6,13 @@ height wants to be dragged — the shape is the point, and the number is how you
 record the shape you found.
 
 **Why two ranges.** A parameter has a range because of what it *means* — an
-eyewire wall is between half a millimetre and twelve — and a narrower range
+eyewire wall is between half a millimeter and twelve — and a narrower range
 because of the job in front of you: a nosepad tower cannot be 12 mm tall when
 the stock is a 6 mm blank under a 4 mm pad block, and a hinge pocket cannot be
 deeper than the endpiece it is sunk into or it punches through the front of the
 frame. The first is the **hard** range and it belongs to the schema. The second
 is the **safe** range, `core.project.limits` derives it from the rest of the
-project, and it moves whenever the stock or a neighbouring parameter moves.
+project, and it moves whenever the stock or a neighboring parameter moves.
 
 The slider travels the safe range; the spin box keeps the hard one. So dragging
 can never build something impossible, and typing is never silently refused or
@@ -21,7 +21,7 @@ marker whose tooltip says which rule it broke, and the handle pins to that end
 of its travel. That split matters most on load: opening a project whose nosepad
 no longer fits its stock must tell the maker, not quietly shorten the tower.
 
-**Cross-platform behaviour is specified here rather than inherited**, because
+**Cross-platform behavior is specified here rather than inherited**, because
 Qt's defaults for a slider differ by style and this application ships on three
 desktops:
 
@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout,
                                QStyleOptionSlider, QWidget)
 
 #: Shown next to a value that sits outside its safe range. A character rather
-#: than a colour, so it survives both themes and a monochrome display.
+#: than a color, so it survives both themes and a monochrome display.
 OUT_OF_RANGE_MARK = "⚠"
 
 #: The slider never gets narrower than this many average character widths, so
@@ -230,7 +230,7 @@ class ParamSlider(QWidget):
         range and emits ``valueChanged`` doing it — which reached `_on_slider`
         and wrote the clamp straight back into the spin box. Tightening the
         nosepad's ceiling to 6 mm silently shortened a 10 mm tower to 6, the one
-        behaviour `set_safe_range` exists to prevent, and it took a stock change
+        behavior `set_safe_range` exists to prevent, and it took a stock change
         on a loaded frame to show it.
         """
         lo, hi = self._safe

@@ -81,7 +81,7 @@ class ZoneEdge:
     """A SCULPT section cut after partitioning: the seam between two zones.
 
     name is '<canonical>_<side>' (e.g. 'endpiece_superior_od') when both
-    neighbours are canonical, else 'edge_N'. The footing fillet schedule is
+    neighbors are canonical, else 'edge_N'. The footing fillet schedule is
     keyed by the canonical part (side pairs share one radius pair).
     """
     name: str
@@ -91,7 +91,7 @@ class ZoneEdge:
     zone_names: tuple[str, ...]   # adjacent zone names (normally 2)
 
 
-#: Rounding for `_ring_key`, decimal places on a millimetre. Well below any
+#: Rounding for `_ring_key`, decimal places on a millimeter. Well below any
 #: machining tolerance, and coarse enough to absorb float noise from GEOS.
 _RING_KEY_DP = 6
 
@@ -244,11 +244,11 @@ def _classify_zones(regions: list[Polygon], lenses: list[Polygon]) -> list[Zone]
                 break
 
     # 1 — unified (OU) walls: a region spanning from outboard of one lens
-    # centre to outboard of the other is one eyewire serving both eyes — an
+    # center to outboard of the other is one eyewire serving both eyes — an
     # aviator's fused brow, or a full-width lower wire. Extracted FIRST: such a
     # band can reach the frame's outer corners, and letting the endpiece pick
     # see it could mis-file it on designs with no endpiece cuts. Superior or
-    # inferior by its height against the lens centres.
+    # inferior by its height against the lens centers.
     for r in list(remaining):
         x0, _y0, x1, _y1 = r.bounds
         if x0 < os_cx and x1 > od_cx:
@@ -262,20 +262,20 @@ def _classify_zones(regions: list[Polygon], lenses: list[Polygon]) -> list[Zone]
         if candidates:
             take(max(candidates, key=lambda r: abs(r.centroid.x)), "endpiece", want)
 
-    # 3 — bridge: crosses the vertical centreline. A decorative opening can
+    # 3 — bridge: crosses the vertical centerline. A decorative opening can
     # split it into an over-bar and an under-bar; both are bridge.
     for r in list(remaining):
         if r.bounds[0] < 0.0 < r.bounds[2]:
             take(r, "bridge", "")
 
-    # 4 — nosepads: per side, the region closest to the centreline.
+    # 4 — nosepads: per side, the region closest to the centerline.
     for want in ("os", "od"):
         candidates = [r for r in remaining if side_of(r) == want]
         if candidates:
             take(min(candidates, key=lambda r: abs(r.centroid.x)), "nosepad", want)
 
     # 5 — eyewire walls: each remaining region is a wall over its side's lens;
-    # superior or inferior by its own height against the lens centres. (Not
+    # superior or inferior by its own height against the lens centers. (Not
     # "highest = superior, rest inferior" — extra section cuts can leave
     # several walls per side, and each deserves its true hemisphere.)
     for want in ("os", "od"):
@@ -319,7 +319,7 @@ def _name_edges(cuts: list[LineString], zones: list[Zone]) -> list[ZoneEdge]:
         canonical = CANONICAL_EDGES.get(kinds, "")
         if canonical and len(adjacent) == 2:
             # "ou" (a both-eyes wall) is side-neutral here: the edge inherits
-            # its side from the sided neighbour (endpiece_superior_od, etc.).
+            # its side from the sided neighbor (endpiece_superior_od, etc.).
             sides = {z.side for z in adjacent} - {"", "ou"}
             side = sides.pop() if len(sides) == 1 else ""
             name = f"{canonical}_{side}" if side else canonical

@@ -158,7 +158,7 @@ def test_measure_from_polygon():
     from shapely.geometry import Polygon
     from guildmodel.core.geometry.boxing import measure_from_polygon
 
-    # Two 25 × 30 mm lenses separated by 15 mm (DBL) centred symmetrically
+    # Two 25 × 30 mm lenses separated by 15 mm (DBL) centerd symmetrically
     # Left lens: x ∈ [0, 25],  y ∈ [0, 30]
     # Right lens: x ∈ [40, 65], y ∈ [0, 30]
     left  = Polygon([(0, 0), (25, 0), (25, 30), (0, 30)])
@@ -168,7 +168,7 @@ def test_measure_from_polygon():
     assert bd.a == pytest.approx(25.0, abs=0.1)
     assert bd.b == pytest.approx(30.0, abs=0.1)
     assert bd.dbl == pytest.approx(15.0, abs=0.1)
-    # ED of a 25×30 rectangle: 2 × distance from centre to corner = 2 × sqrt(12.5²+15²) ≈ 39.1
+    # ED of a 25×30 rectangle: 2 × distance from center to corner = 2 × sqrt(12.5²+15²) ≈ 39.1
     import math
     expected_ed = 2.0 * math.sqrt(12.5 ** 2 + 15.0 ** 2)
     assert bd.ed == pytest.approx(expected_ed, abs=0.5)

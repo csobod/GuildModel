@@ -6,7 +6,7 @@ reading "3D model ready" and an Inspector reading "Nothing flagged". Every gate
 the app had was green, because every gate it had asked the *kernel* whether the
 kernel was happy. OCCT's `BRepCheck_Analyzer` returns True for shapes with zero
 volume, for shapes whose booleans left the topology in pieces, and for the
-order-dependent corruption catalogued in BUILDPLAN-NEW §3.1.
+order-dependent corruption catalogd in BUILDPLAN-NEW §3.1.
 
 The tessellation is the only oracle that has ever caught any of it, so it is the
 one the interface reports from. A closed, consistently-wound mesh of positive

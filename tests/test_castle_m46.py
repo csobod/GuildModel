@@ -35,7 +35,7 @@ def demo():
 # ------------------------------------------------------------------ Part B — progress
 
 def test_relief_progress_is_monotonic_and_complete(demo):
-    """build_castle_relief reports labelled stages with non-decreasing
+    """build_castle_relief reports labeled stages with non-decreasing
     fractions in [0, 1], ending near completion."""
     from guildmodel.core.relief.castle import build_castle_relief
 

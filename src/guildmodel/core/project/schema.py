@@ -75,7 +75,7 @@ class FootingSchedule(BaseModel):
 class StockDefinition(BaseModel):
     """Two-level stock: blank sheet + pad block stacked centrally on top.
 
-    The heightfield analogue of the complex Fusion stock model — CAM and
+    The heightfield analog of the complex Fusion stock model — CAM and
     preview both read it so toolpaths never cut air at the wrong height.
     Defaults match the GuildDraw stock/pad guides and guild_cnc.yaml.
     """
@@ -145,11 +145,11 @@ class PadSplayParams(BaseModel):
     # Convex round-over at the crest (tangent both sides, footing-style) — the
     # hard chamfer/surface corner shaded as a jagged ridge. 0 = sharp crest.
     crest_blend_mm: float = 2.0
-    # Start the cut away from bottom-centre, leaving the middle uncut (2026-08-11).
-    # A **keyhole** bridge carries its own shape across the centreline and a splay
+    # Start the cut away from bottom-center, leaving the middle uncut (2026-08-11).
+    # A **keyhole** bridge carries its own shape across the centerline and a splay
     # run through it planes that shape off; the maker wants the two halves of the
     # splay and nothing between them. `gap_mm` is the total uncut width, measured
-    # as arc length along the outline and split evenly either side of bottom-centre,
+    # as arc length along the outline and split evenly either side of bottom-center,
     # so each side now runs from `gap_mm / 2` out to `run_mm`.
     #
     # Not a separate feature: it is the same crest, the same angles and the same
@@ -161,7 +161,7 @@ class PadSplayParams(BaseModel):
     gap_mm: float = Field(8.0, gt=0)
 
     def spans(self) -> list[tuple[float, float]]:
-        """The signed station intervals the splay covers, in mm from bottom-centre.
+        """The signed station intervals the splay covers, in mm from bottom-center.
 
         One interval `(-run, run)` normally; two, mirror-image, when the cut is
         non-contiguous. Empty when the gap has swallowed the whole run, which is a
@@ -185,7 +185,7 @@ class EyewireBezelParams(BaseModel):
     posterior band is the historical one and stays the default; `anterior` moves
     it to the front face and `both` cuts a matching band on each side — the
     "instead of or in addition to" the maker asked for. An anterior band is
-    modelled and previewed now; machining it needs the flip setup (M9/V2).
+    modeled and previewed now; machining it needs the flip setup (M9/V2).
     """
     enabled: bool = False
     width_mm: float = 2.5
@@ -256,7 +256,7 @@ class EdgeFeature(BaseModel):
     an arc-length fraction would silently point somewhere else — it reads as the
     maker already thinks ("over the brow, not the bridge"), and it mirrors by
     swapping `_od` for `_os`. `trim_start_mm` / `trim_end_mm` then nudge each end
-    along the ring for the last few millimetres of control, and `blend_mm` tapers
+    along the ring for the last few millimeters of control, and `blend_mm` tapers
     the cut to nothing at each end so it feathers out instead of stopping dead.
 
     `width_end_mm` makes the run **variable**: the chamfer widens or narrows
@@ -292,7 +292,7 @@ class EdgeFeature(BaseModel):
     mirror: bool = True
 
     def width_at(self, t: float) -> float:
-        """Chamfer width at normalised station `t` (0 at the run's start)."""
+        """Chamfer width at normalized station `t` (0 at the run's start)."""
         if self.width_end_mm is None:
             return self.width_mm
         return self.width_mm + (self.width_end_mm - self.width_mm) * min(max(t, 0.0), 1.0)
@@ -305,8 +305,8 @@ class EdgeFeature(BaseModel):
 
     def mirrored(self) -> "EdgeFeature":
         """The x-mirrored twin: OD zones become OS (and vice versa), and a lens
-        edge swaps sides. A centre zone (`bridge`) is its own mirror, so a run
-        that legitimately spans the centre mirrors onto itself."""
+        edge swaps sides. A center zone (`bridge`) is its own mirror, so a run
+        that legitimately spans the center mirrors onto itself."""
         def swap(name: str) -> str:
             if name.endswith("_od"):
                 return name[:-3] + "_os"
@@ -382,7 +382,7 @@ class HoldingParams(BaseModel):
     Two strategies, and they are **alternatives, not additions** — the reason the
     tab machinery in `cam/tabs.py` sat unused since it was written:
 
-    * ``skin`` (default, the historical behaviour) — the through-cut stops
+    * ``skin`` (default, the historical behavior) — the through-cut stops
       ``onion_skin_mm`` above the anterior face and the part is snapped/sanded off
       that wafer by hand. Nothing to program around; the whole part edge is cut at
       full depth.
@@ -528,7 +528,7 @@ DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm"}
 class ProgramZero(BaseModel):
     """Where the program's G54 work zero lands (BUILDPLAN M6.2).
 
-    `fixture` keeps the design frame (current behaviour — zero at the blank
+    `fixture` keeps the design frame (current behavior — zero at the blank
     center, anterior face; needed for the two-sided flip axis in M8). `stock_box`
     zeroes to a datum on the stock blank box — a corner or center in X/Y and the
     top or bottom (anterior) face in Z — what a maker touches off on the blank.
@@ -586,7 +586,7 @@ class CastleCamParams(BaseModel):
     machine_name: str = "guild_cnc"
 
     # Per-operation tool override (BUILDPLAN M6.1): op name -> tool name from
-    # tools.yaml. Empty = every op uses tool_name (single-tool, M1–M5 behaviour).
+    # tools.yaml. Empty = every op uses tool_name (single-tool, M1–M5 behavior).
     # The everyday multi-tool case: a small tool clears the hinge pockets, the
     # bulk tool does relief / eyewires / perimeter.
     op_tools: dict[str, str] = Field(default_factory=dict)
@@ -672,12 +672,12 @@ class CastleCamParams(BaseModel):
     # distance every pass. `plunge` drops straight to depth at the pass start and
     # cuts one clean lap: shorter and perfectly serviceable for a small tool in
     # acetate, and the only option that makes sense with a slow plunge rate and a
-    # centre-cutting endmill. NOTE this is not a duplicate of a zero ramp angle —
+    # center-cutting endmill. NOTE this is not a duplicate of a zero ramp angle —
     # `_emit_ramped_loop` treats a non-positive angle as "ramp the WHOLE lap", so
     # before this field there was no way to ask for a straight entry at all.
     contour_lead_in: Literal["ramp", "plunge"] = "ramp"
     # Milling direction for the through-cut contours (M16). `climb` (default, the
-    # M12.5 behaviour) runs the cutter so the chip thins to zero — the cleaner wall
+    # M12.5 behavior) runs the cutter so the chip thins to zero — the cleaner wall
     # on acetate, and what the Fusion reference program does. `conventional`
     # reverses every ring: the choice for a machine with backlash it cannot take
     # out, where climb milling pulls the cutter into the work.
@@ -705,7 +705,7 @@ class CastleCamParams(BaseModel):
     # Collision-aware pass linking (M8): between cutting passes, retract only to
     # `link_clearance_mm` above the stock instead of the full safe Z — except where
     # the hop would pass near a work-holding screw (the standard Guild fixture: one
-    # at each stock-blank corner + one at each lens centre, `screw_head_diameter_mm`
+    # at each stock-blank corner + one at each lens center, `screw_head_diameter_mm`
     # across), which keeps the full safe-Z retract. Cuts the many full retracts of
     # the small relief/rough passes. Set False to always retract to safe Z.
     link_retracts: bool = True
@@ -727,7 +727,7 @@ class TempleParams(BaseModel):
     that gets shallow ENGRAVING grooves on its top face and an OUTLINE through-cut
     (onion skin, like the perimeter). The engraving uses a small tool and the
     profile a larger one, so the program carries one tool change (M6.1). The blank
-    box (assumed centred on the design origin, like the frame blank) feeds the
+    box (assumed centerd on the design origin, like the frame blank) feeds the
     program-zero offset and the safe-Z; defaults match the `temple_right` fixture
     zone (170 × 30 × 4 mm).
     """
@@ -743,7 +743,7 @@ class TempleParams(BaseModel):
     engrave_stepdown_mm: float = Field(0.5, gt=0)
     engrave_tool: str = "engrave_vbit"     # small tool for the ENGRAVING passes
     hinge_tool: str = "flat_2mm"           # endmill that clears the HINGE pockets
-    # M11 #7: engrave a single fixed-depth line down each stroke's CENTRE (medial
+    # M11 #7: engrave a single fixed-depth line down each stroke's CENTER (medial
     # axis of the closed glyph outlines) instead of tracing the outlines — one pass
     # per stroke, no double-cut ridge. Off = trace the raw ENGRAVING outlines.
     engrave_centerline: bool = True
@@ -760,7 +760,7 @@ class TempleParams(BaseModel):
     # with their core ends against one stop, so the cut is always plotted from the
     # snapped position — the 2D view back-projects the blank/datum/toolpath so it
     # still matches the drawing. OFF leaves the part at its DESIGN alignment (legacy;
-    # the program-zero datum then assumes the drawing is centred on the blank).
+    # the program-zero datum then assumes the drawing is centerd on the blank).
     snap_to_blank_end: bool = True
     # Which short end of the blank the HINGE/butt end registers to (M11). Cores are
     # sometimes shot from the left of the stock instead of the right; flipping the
@@ -829,7 +829,7 @@ class BaseCurveBlockParams(BaseModel):
         )
 
     def hole_centers(self) -> list[tuple[float, float]]:
-        """Mounting-hole centers in the block frame (centred on the origin)."""
+        """Mounting-hole centers in the block frame (centerd on the origin)."""
         n = self.hole_count
         s = self.hole_spacing_mm
         if self.hole_arrangement == "triangle" and n == 3:
@@ -837,7 +837,7 @@ class BaseCurveBlockParams(BaseModel):
             h = s * (3 ** 0.5) / 2.0
             cy = h / 3.0
             return [(-s / 2.0, -cy), (s / 2.0, -cy), (0.0, h - cy)]
-        # in-line, centred: pitch = spacing along x
+        # in-line, centerd: pitch = spacing along x
         x0 = -(n - 1) * s / 2.0
         return [(x0 + i * s, 0.0) for i in range(n)]
 
@@ -891,7 +891,7 @@ class ComponentPlacement(BaseModel):
 
     `kind` selects the program (frame front / temple / base-curve block); the
     part is generated in its own design frame, then translated by (x_mm, y_mm)
-    (and optionally rotated) onto the bed — by default the centre of its
+    (and optionally rotated) onto the bed — by default the center of its
     `fixture_zone`. Positions are in machine/bed coordinates.
     """
     kind: Literal["frame_front", "temple", "base_curve_block"]
@@ -1122,7 +1122,7 @@ class WorktableZone(BaseModel):
         return y1 - y0
 
     def center(self) -> tuple[float, float]:
-        """Vertex mean — the exact centre of a regular ring (a screw) and a
+        """Vertex mean — the exact center of a regular ring (a screw) and a
         reasonable handle for any region."""
         pts = self.polygon
         if not pts:

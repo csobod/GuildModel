@@ -124,7 +124,7 @@ def v_groove_cutter(body: Polygon, ring, groove,
     return sweep_sections([profile(i) for i in range(stations)], closed=True)
 
 
-#: Sections per millimetre along an edge-feature span. Matches the B-Rep path's
+#: Sections per millimeter along an edge-feature span. Matches the B-Rep path's
 #: `EDGE_SECTIONS_PER_MM`, so both kernels sample the same run at the same
 #: places and a volume difference is about the sweep rather than the sampling.
 EDGE_SECTIONS_PER_MM = 1.2
@@ -397,7 +397,7 @@ def bezel_cutters(mesh, partition, castle: CastleParams,
         # Lens apertures only — a decorative OUTLINE opening seats no lens, so
         # it has no bevel to make room for. The B-Rep path used to bezel them;
         # the disagreement showed up as 2 cutters against 3 on the aviator, and
-        # the maker confirmed the filter is the correct behaviour. Both kernels
+        # the maker confirmed the filter is the correct behavior. Both kernels
         # now skip them.
         out.extend(bezel_cutter(mesh, partition.body, ring, bezel, top)
                    for ring in partition.body.interiors
@@ -407,7 +407,7 @@ def bezel_cutters(mesh, partition, castle: CastleParams,
     return out
 
 
-#: Sections lofted per millimetre along the bridge scoop's Y run.
+#: Sections lofted per millimeter along the bridge scoop's Y run.
 SCOOP_SECTIONS_PER_MM = 2.0
 
 #: Points across one scoop section.
@@ -438,18 +438,18 @@ def splay_cutters(mesh, body: Polygon, p, res_hint: float = 0.15) -> list[Manifo
 
 def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
                  span: tuple[float, float] | None = None) -> Manifold:
-    """The pad splay as a swept chamfer along the outline's bottom-centre run.
+    """The pad splay as a swept chamfer along the outline's bottom-center run.
 
     Falls from a crest — an inward offset of the outline — toward the outline
     edge at the splay angle. The crest is held off the lens rims and, because of
     what M-N0 found on the Gabriel drawing, held *inside the body*: inward from
-    the outline is not into the material at the bottom centre, where the frame
+    the outline is not into the material at the bottom center, where the frame
     has the nose notch, and a crest out in that notch reads as no material at
     all.
 
     `span` is the signed station interval to sweep, defaulting to the whole run.
     A non-contiguous splay has two of them and `splay_cutters` builds both; the
-    toric angle blend still measures from bottom-centre either way, so a half
+    toric angle blend still measures from bottom-center either way, so a half
     cut on its own is the same surface it would have been as part of the whole.
     """
     import math
@@ -548,7 +548,7 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
 def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
     """The bridge relief as a lofted cone running on Y.
 
-    Base widest and deepest at the top edge of the bridge on the centreline,
+    Base widest and deepest at the top edge of the bridge on the centerline,
     tapering to a tip down the lower bridge. Sections are the footing-style U
     `geometry.blends.scoop_drop` builds, closed upward. Ordered around the
     section boundary — left to right along the U, then the two corners at
@@ -565,10 +565,10 @@ def scoop_cutter(mesh, body: Polygon, p) -> Manifold:
     tan_b = math.tan(math.radians(min(max(float(p.taper_angle_deg), 1.0), 89.0)))
 
     minx, miny, maxx, maxy = body.bounds
-    centre = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
-    if centre.is_empty:
-        raise ManifoldError("no body on the centreline")
-    y_base = max(g.bounds[3] for g in getattr(centre, "geoms", [centre]))
+    center = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
+    if center.is_empty:
+        raise ManifoldError("no body on the centerline")
+    y_base = max(g.bounds[3] for g in getattr(center, "geoms", [center]))
     y_tip = y_base - half_w / tan_b
 
     n = max(8, int((y_base - y_tip) * SCOOP_SECTIONS_PER_MM))

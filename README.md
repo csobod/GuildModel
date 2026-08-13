@@ -24,7 +24,7 @@ maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 > it leaves the bridge face, an interior radius at the trough — in the same
 > language the footing already uses; it had neither before, so there was nothing
 > to turn. The pad splay can be cut **non-contiguous**, starting each half clear
-> of a settable centre gap, so a **keyhole bridge** keeps its shape instead of
+> of a settable center gap, so a **keyhole bridge** keeps its shape instead of
 > being planed off. And the features are cut by their own **Features** operation
 > with its own tool: a ball nose for the chamfers and scoops, an end mill for the
 > hinges, footing and sculpting. *Fixed with them: the two solid kernels had been
@@ -73,7 +73,7 @@ maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 > of the bridge, that thick modern frames want. A run's span is chosen by castle
 > zone, tapers to nothing at each end, can vary in width along its length, and
 > mirrors to the other side as one feature. The eyewire bezel can now be cut into
-> the front face instead of, or as well as, the back. **This is modelling and 3D
+> the front face instead of, or as well as, the back. **This is modeling and 3D
 > preview only** — machining the front needs the flip setup, which is the next
 > milestone. Posterior programs are unchanged.
 
@@ -93,7 +93,7 @@ maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 > control to change it. Depth per pass now lives on the **Cut** tab for every
 > component kind, with a read-out of the resulting pass count, and the shipped
 > acetate default drops from 4.0 mm to 1.5 mm. Blind pockets and deep engraving
-> step down too, and temple/base-curve programs finally honour the machine's and
+> step down too, and temple/base-curve programs finally honor the machine's and
 > material's depth-of-cut ceiling. **Re-post any program you still have**, and
 > treat the new pass structure as you would any new program — air-cut, then a test
 > piece.
@@ -117,7 +117,7 @@ workflow is planned for a later release.
 
 **Known issue — an edge feature can fold where an outline turns very sharply.**
 Where a run passes a near-cusp — a corner turning tighter than the feature is
-deep, such as the aviator fixture's endpiece at 58° in a quarter-millimetre —
+deep, such as the aviator fixture's endpiece at 58° in a quarter-millimeter —
 the swept cut can cross itself and leave a model that will not export. The app
 says so plainly in the log and the Inspector ("the model overlaps itself along
 N edges") and does not count the model as built — though note that a program

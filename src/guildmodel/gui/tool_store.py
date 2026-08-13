@@ -90,7 +90,7 @@ def spec(name: str) -> ToolSpec:
 
 
 def save_tool(name: str, spec_or_dict) -> None:
-    """Persist a tool as a user override/addition (the full normalised entry)."""
+    """Persist a tool as a user override/addition (the full normalized entry)."""
     s = spec_or_dict if isinstance(spec_or_dict, ToolSpec) else ToolSpec.from_dict(spec_or_dict)
     data = _user()
     data[name] = s.to_yaml()

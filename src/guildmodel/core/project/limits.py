@@ -1,7 +1,7 @@
 """What each parameter is *allowed* to be, given the rest of the project.
 
 A schema field has a range because of what it means — an eyewire wall is
-somewhere between half a millimetre and twelve. That range is fixed, and it is
+somewhere between half a millimeter and twelve. That range is fixed, and it is
 not the interesting one. The interesting range is the one that moves: a nosepad
 tower cannot be 12 mm tall out of a 6 mm blank under a 4 mm pad block, and a
 hinge pocket cannot be sunk deeper than the endpiece it is cut into without

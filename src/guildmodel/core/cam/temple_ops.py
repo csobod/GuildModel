@@ -63,7 +63,7 @@ def engrave_op(
         pts: list[Point3] = [(float(x), float(y), float(depth_z)) for x, y in curve]
         if len(pts) >= 2:
             op.paths.append(_rdp(pts, simplify_tol_mm))
-    # Strokes arrive in draw/file order; cut them nearest-neighbour instead —
+    # Strokes arrive in draw/file order; cut them nearest-neighbor instead —
     # multi-stroke text otherwise hops the length of the part between strokes
     # (measured 6× the necessary air on a 40-stroke engraving). A pure
     # permutation: every stroke's geometry and direction are unchanged (the
@@ -71,7 +71,7 @@ def engrave_op(
     op.paths = order_paths_for_travel(op.paths)
     # Expand each stroke into its depth stack only AFTER ordering, so the travel
     # order is still computed over strokes rather than over level copies that all
-    # share one footprint (nearest-neighbour on duplicates is meaningless).
+    # share one footprint (nearest-neighbor on duplicates is meaningless).
     if len(zs) > 1:
         op.paths = [[(x, y, z) for x, y, _ in path] for path in op.paths for z in zs]
     return op

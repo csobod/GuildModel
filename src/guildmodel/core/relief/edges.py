@@ -38,7 +38,7 @@ from ..project.schema import EdgeFeature
 ProgressFn = Callable[[str, float], None]
 
 #: Station spacing when walking a ring to decide which zone owns each part of it.
-#: Fine enough to place a span end within a fraction of a millimetre, coarse
+#: Fine enough to place a span end within a fraction of a millimeter, coarse
 #: enough that a 400 mm outline is a few thousand point-in-polygon tests.
 _STATION_MM = 0.25
 
@@ -257,7 +257,7 @@ def taper_weight(s: np.ndarray, intervals: list[tuple[float, float]],
 
 def station_fraction(s: np.ndarray, intervals: list[tuple[float, float]],
                      total: float) -> np.ndarray:
-    """Normalised position (0..1) within the owning run — drives a variable width."""
+    """Normalized position (0..1) within the owning run — drives a variable width."""
     s = np.asarray(s, dtype=float)
     t = np.zeros_like(s)
     for s0, s1 in intervals:
@@ -287,7 +287,7 @@ def chamfer_drop(d: np.ndarray, width: np.ndarray, angle_deg: float) -> np.ndarr
 def fillet_drop(d: np.ndarray, radius: float) -> np.ndarray:
     """Depth removed at distance `d` in from the edge, for a round-over.
 
-    The arc's centre sits `radius` in from the edge and `radius` below the face,
+    The arc's center sits `radius` in from the edge and `radius` below the face,
     so the surface is tangent to the face at ``d = radius`` (no crease where the
     fillet ends) and has dropped the full radius at the edge itself.
     """

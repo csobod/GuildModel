@@ -137,7 +137,7 @@ def test_an_unreadable_mesh_falls_back_instead_of_failing_the_build():
 def test_an_empty_result_is_caught_and_explained():
     """OCCT's signature failure — a boolean that ate the whole part and still
     reported IsValid. It reached the Z-map once; it must never reach the user
-    labelled 'ready'."""
+    labeled 'ready'."""
     empty = trimesh.Trimesh(vertices=np.zeros((0, 3)), faces=np.zeros((0, 3), int),
                             process=False)
     verdict = verify_mesh(empty)

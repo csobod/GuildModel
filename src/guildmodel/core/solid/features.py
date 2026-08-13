@@ -378,13 +378,13 @@ def apply_posterior_features(solid: TopoDS_Shape, partition: CastlePartition,
 
 # ------------------------------------------------- edge features (M17 / brow)
 
-#: Sections lofted per millimetre of run along an edge feature's span.
+#: Sections lofted per millimeter of run along an edge feature's span.
 EDGE_SECTIONS_PER_MM = 1.2
 
 #: Smallest depth a tapered section may carry, mm. The taper law goes to zero at
 #: each end of a run, and a section that collapses to a true point fails
 #: `MakeSolid()` / `ThruSections` outright — Stage 1's §5.1 finding. Two
-#: hundredths of a millimetre is a fiftieth of the finishing tool's radius and
+#: hundredths of a millimeter is a fiftieth of the finishing tool's radius and
 #: invisible in acetate, so the run still reads as feathering out to nothing.
 MIN_TAPER_DROP_MM = 0.02
 
@@ -578,7 +578,7 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
 
     `span` is the signed station interval to loft, defaulting to the whole run;
     `splay_cutters` builds one per span. The toric angle blend still measures
-    from bottom-centre either way.
+    from bottom-center either way.
 
     **Most of the raster's implementation does not survive, and should not.**
     `_splay_crest_tables` is an inventory of fixes for sampling artifacts — a
@@ -633,7 +633,7 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
     pts, tans = np.array(pts), np.array(tans)
     inward = _inward(body, pts, tans)
 
-    # Crest offset: centre -> end, held clear of the lens rims.
+    # Crest offset: center -> end, held clear of the lens rims.
     c = (p.crest_deviation_center_mm
          + (p.crest_deviation_end_mm - p.crest_deviation_center_mm) * (au / run))
     rims = (unary_union([LineString(r) for r in body.interiors])
@@ -716,7 +716,7 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
 
 # ------------------------------------------------------------- bridge relief
 
-#: Sections lofted per millimetre along the bridge scoop's Y run.
+#: Sections lofted per millimeter along the bridge scoop's Y run.
 SCOOP_SECTIONS_PER_MM = 2.0
 
 #: Points sampled across one scoop section.
@@ -752,7 +752,7 @@ def _scoop_section(y: float, half_w: float, depth: float, anchor: float,
 def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     """The bridge relief as a lofted elliptical cone running on Y.
 
-    Base (widest, deepest) at the top edge of the bridge on the centreline,
+    Base (widest, deepest) at the top edge of the bridge on the centerline,
     tapering at `taper_angle_deg` per side to a tip down the lower bridge. Depth
     scales with the local half-width, so it is a true cone imprint feathering to
     nothing — which is what the raster's own docstring claims it builds and what
@@ -764,13 +764,13 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
         raise BooleanError("degenerate bridge relief")
     tan_b = math.tan(math.radians(min(max(float(p.taper_angle_deg), 1.0), 89.0)))
 
-    # The base is the highest point of the body on the centreline — the top
+    # The base is the highest point of the body on the centerline — the top
     # edge of the bridge over the nose.
     minx, miny, maxx, maxy = body.bounds
-    centre = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
-    if centre.is_empty:
-        raise BooleanError("no body on the centreline")
-    y_base = max(g.bounds[3] for g in getattr(centre, "geoms", [centre]))
+    center = body.intersection(LineString([(0.0, miny - 1.0), (0.0, maxy + 1.0)]))
+    if center.is_empty:
+        raise BooleanError("no body on the centerline")
+    y_base = max(g.bounds[3] for g in getattr(center, "geoms", [center]))
     y_tip = y_base - half_w / tan_b
 
     n = max(8, int((y_base - y_tip) * SCOOP_SECTIONS_PER_MM))
@@ -785,7 +785,7 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     anchors = surface_z_at(solid, np.column_stack([np.zeros_like(ys), ys]))
     floor = float(p.anterior_clamp_mm)
     # The scoop is the feature this matters most to, because its stations march
-    # straight up the centreline and that is exactly where a frame is *not*
+    # straight up the centerline and that is exactly where a frame is *not*
     # solid. Seven of the aviator's thirteen sit inside its decorative keyhole
     # and two of Gabriel's run off the bottom of the bridge into the nose gap;
     # only the demo frame reads solid the whole way. Before `_carry_anchors`
@@ -812,7 +812,7 @@ def scoop_cutter(solid: TopoDS_Shape, body: Polygon, p) -> TopoDS_Shape:
     # fixture (BUILDPLAN-NEW M-N0); one edge of 33,683.
     #
     # A cutter has to *cross* every surface it exits. Nothing extra is removed:
-    # y_base is the highest body point on the centreline, so the extension runs
+    # y_base is the highest body point on the centerline, so the extension runs
     # through empty space.
     sections.append(_scoop_section(float(ys[-1]) + CUT_MARGIN_MM, float(rs[-1]),
                                    float(ds[-1]), float(anchors[-1]), top,

@@ -77,7 +77,7 @@ def resolve_kernel(name: str, default: str = _SOLID_FALLBACK) -> str:
     if name in ("raster", "mesh"):
         return name
     if name == "brep":
-        # Installed is enough to *honour* an explicit choice; the flag only
+        # Installed is enough to *honor* an explicit choice; the flag only
         # governs whether it is offered in the first place.
         return "brep" if brep_installed() else default
     return default

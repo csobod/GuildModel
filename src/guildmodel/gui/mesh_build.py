@@ -84,7 +84,7 @@ def _build_castle(spec, resolution, kernel, progress):
 
     stage = spec.get("stage", "pockets")
     if kernel != "raster" and stage == "pockets":
-        # The modelled paths only build the FULL posterior. The teaching
+        # The modeled paths only build the FULL posterior. The teaching
         # stepper's partial stages stay on the raster builder — they are a
         # pedagogical decomposition of the raster construction, not states a
         # solid passes through.

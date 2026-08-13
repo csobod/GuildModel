@@ -28,7 +28,7 @@ def zone_heights(partition: CastlePartition, castle: CastleParams,
         return dict(heights)
     if not partition.classified:
         raise ValueError(
-            "the section cuts did not yield recognisable castle zones; "
+            "the section cuts did not yield recognizable castle zones; "
             "pass explicit zone heights"
         )
     out = {z.name: castle.zones.for_kind(z.kind) for z in partition.zones}

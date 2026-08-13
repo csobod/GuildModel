@@ -114,7 +114,7 @@ def test_a_zone_at_stock_height_is_reported_as_an_uncut_cap(demo):
     zone comes off as raw blank standing proud of everything machined around it.
     **The shipped defaults coincide exactly**: nosepad 10.0 mm on a 6.0 mm blank
     plus a 4.0 mm pad block, which is 87 uncut cells per nosepad on the demo
-    frame. Not a modelling error — every kernel agrees the tower is that tall —
+    frame. Not a modeling error — every kernel agrees the tower is that tall —
     but the maker has no way to know it before the part is in their hand.
     """
     from guildmodel.core.cam.castle_ops import unmachined_top_warnings

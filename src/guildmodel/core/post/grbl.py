@@ -79,20 +79,20 @@ class GRBLPost:
     # down to this height — clear of all stock — then *feeds* the last bit into the
     # cut. Without it every plunge feeds the full distance from safe Z at the plunge
     # rate, which dominates the cycle when there are many short relief passes. None
-    # disables it (feed the whole plunge, original behaviour). Must be >= stock top.
+    # disables it (feed the whole plunge, original behavior). Must be >= stock top.
     feed_plane_mm: float | None = None
     units: str = "mm"           # "mm" or "inch"
     comment_char: str = ";"
     # Rigid work-zero offset added to every emitted coordinate (BUILDPLAN M6.2).
     # The toolpaths stay in the design frame; this shifts the posted output so the
     # chosen datum (e.g. the stock blank's lower-left/top) lands at G54 zero. Arc
-    # I/J are centre-relative and translation-invariant, so they are not offset.
+    # I/J are center-relative and translation-invariant, so they are not offset.
     work_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     # Collision-aware pass linking (BUILDPLAN M8): between cutting passes, retract
     # only to `link_clearance_z_mm` (just above the stock) instead of the full safe
     # Z — UNLESS the straight hop to the next pass would pass within a `link_keepouts`
     # circle (a work-holding screw standing proud of the stock), in which case it
-    # keeps the full safe Z. None disables it (always safe Z, the original behaviour).
+    # keeps the full safe Z. None disables it (always safe Z, the original behavior).
     link_clearance_z_mm: float | None = None
     link_keepouts: tuple = ()      # (cx, cy, radius) screw keep-outs, design coords
 
@@ -171,9 +171,9 @@ class GRBLPost:
         self, x: float, y: float, z: float | None,
         i: float, j: float, ccw: bool, feed: float | None = None,
     ) -> None:
-        """Circular arc to (x, y[, z]) about centre offset (i, j) from the
+        """Circular arc to (x, y[, z]) about center offset (i, j) from the
         current position. ccw -> G3, cw -> G2 (G17 plane; z makes it helical).
-        I/J are centre-relative, so the work offset (a translation) leaves them
+        I/J are center-relative, so the work offset (a translation) leaves them
         unchanged; only the absolute X/Y/Z endpoint shifts."""
         ox, oy, oz = self.work_offset
         parts = ["G3" if ccw else "G2", f"X{x + ox:.4f}", f"Y{y + oy:.4f}"]
@@ -253,7 +253,7 @@ class GRBLPost:
     def _rapid_to_feed_plane(self, z_target: float) -> None:
         """Rapid (G0) down to the feed plane before a plunge, so only the cut portion
         is fed (BUILDPLAN M8). No-op when no feed plane is set or it's already at/below
-        the target — the plunge then feeds the whole way (original behaviour). The feed
+        the target — the plunge then feeds the whole way (original behavior). The feed
         plane is above the stock, so this never rapids into material."""
         fp = self.feed_plane_mm
         if fp is not None and fp > z_target + 1e-6:
@@ -342,7 +342,7 @@ class GRBLPost:
         length while still leaving a clean full-depth wall (no slot-plunge).
 
         A non-positive ramp angle (or a loop shorter than the lead-in) degrades
-        to ramping the whole lap, i.e. the original two-lap behaviour.
+        to ramping the whole lap, i.e. the original two-lap behavior.
         """
         z_cut = pts[0][2]
         z_top = z_cut + ramp_height

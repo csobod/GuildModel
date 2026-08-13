@@ -1,7 +1,7 @@
 """Per-op path ordering for travel (BUILDPLAN M12.1).
 
 Relief paths emit in contour-ring order, interleaving the separate regions so the tool
-hops across the part; reordering them nearest-neighbour cuts the air without touching
+hops across the part; reordering them nearest-neighbor cuts the air without touching
 the cut geometry or the climb sense.
 """
 import math
@@ -66,10 +66,10 @@ def test_stitch_connector_rides_the_surface():
     assert mids and all(abs(q[2] - 5.0) < 1e-6 for q in mids)   # stays on the surface
 
 
-# ── engraving strokes cut nearest-neighbour (V1-prep toolpath re-audit) ────────
+# ── engraving strokes cut nearest-neighbor (V1-prep toolpath re-audit) ────────
 def test_engrave_strokes_ordered_for_travel():
     """Engraving strokes arrive in draw/file order; the op must cut them
-    nearest-neighbour — multi-stroke text otherwise hops the length of the
+    nearest-neighbor — multi-stroke text otherwise hops the length of the
     part between strokes (measured 6× the necessary air)."""
     from guildmodel.core.cam.temple_ops import engrave_op
     # two clusters, interleaved in "file order" like real draw order

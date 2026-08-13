@@ -5,8 +5,8 @@ On the last depth pass the cutter rises to (z_cut + tab_height_mm) at the tab
 entry, traverses the tab width at that height, then returns to z_cut at the exit.
 
 The resulting profile at each tab is trapezoidal, and its ramps have an explicit
-length set by `ramp_angle_deg` — **not** "whatever the gap to the neighbouring
-path point happens to be". Tab centres are distributed evenly along the path.
+length set by `ramp_angle_deg` — **not** "whatever the gap to the neighboring
+path point happens to be". Tab centers are distributed evenly along the path.
 
 The Z profile is defined as a function of distance along the path, and the path's
 own points are then re-emitted at whatever height that function gives them. That
@@ -118,7 +118,7 @@ def insert_tabs(
     regardless of the input's point spacing. An earlier version walked the points
     and injected boundary waypoints per segment; it merged any two tabs that fell
     on one segment into a single raised run — which on a buffered profile, whose
-    straight runs are over a hundred millimetres, turned four 3 mm tabs into two
+    straight runs are over a hundred millimeters, turned four 3 mm tabs into two
     80 mm uncut stretches.
     """
     if len(pts) < 2:

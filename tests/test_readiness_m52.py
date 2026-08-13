@@ -1,7 +1,7 @@
 """M5.2 tests: the readiness traffic-light (BUILDPLAN § M5.2).
 
 The state machine is a pure function (``readiness_dot.state_for``) so the
-grey → red → yellow → green walk and the stale-program revert are tested
+gray → red → yellow → green walk and the stale-program revert are tested
 without Qt; the dot widget itself (tooltips, theme recolor) is exercised by a
 construction check that skips when no Qt platform plugin is available.
 """
@@ -13,7 +13,7 @@ from guildmodel.gui.widgets import readiness_dot as rd
 # ------------------------------------------------------------ state machine
 
 def test_off_when_no_dxf():
-    # No DXF: grey regardless of the other flags (they cannot be true anyway).
+    # No DXF: gray regardless of the other flags (they cannot be true anyway).
     assert rd.state_for(False, False, False) == rd.OFF
     assert rd.state_for(False, True, True) == rd.OFF
 
@@ -40,7 +40,7 @@ def test_stale_program_reverts_to_yellow():
 
 
 def test_workflow_walk():
-    """grey → red → yellow → green across the real workflow order."""
+    """gray → red → yellow → green across the real workflow order."""
     walk = [
         rd.state_for(False, False, False),  # start
         rd.state_for(True, False, False),   # DXF imported

@@ -1,7 +1,7 @@
 """Toolpath overlay & per-op inspector (BUILDPLAN M7.11).
 
 After a per-component Generate, the program's cutting paths draw over the 2D design
-(colour-coded, per-op visibility + highlight) and a dockable inspector lists each op
+(color-coded, per-op visibility + highlight) and a dockable inspector lists each op
 (tool / Z-floor / length / time) with visibility checkboxes that drive the overlay.
 Offscreen Qt throughout.
 """

@@ -94,7 +94,7 @@ def test_installed_but_unasked_is_the_developer_case(monkeypatch):
     monkeypatch.setenv(kernels.BREP_ENV, "1")
     assert kernels.brep_offered() is True
     assert kernels.available_kernels() == ("raster", "brep", "mesh")
-    # An explicit choice is still honoured whether or not it is offered — the
+    # An explicit choice is still honored whether or not it is offered — the
     # flag is about the menu, not about what the app can build.
     assert kernels.resolve_kernel("brep") == "brep"
 

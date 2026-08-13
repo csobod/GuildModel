@@ -1,7 +1,7 @@
 """Worktable bed canvas (BUILDPLAN M7.4).
 
 A machine-coordinate sibling of :class:`DxfCanvas`: renders a :class:`Worktable`'s
-tagged regions on the bed (origin lower-left, Y up), colours each by its role, and
+tagged regions on the bed (origin lower-left, Y up), colors each by its role, and
 emits :sig:`region_clicked` when the maker clicks a region so the Worktable tab can
 tag it. Zoom/pan mirror the DXF canvas (wheel zoom, middle/right-drag pan).
 """
@@ -22,7 +22,7 @@ from guildmodel.gui.style import theme
 _PLACEHOLDER = ("Import a bed DXF, load a saved .bed, or load the Guild fixture "
                 "to set up the worktable")
 
-# Role → (fill RGBA, outline hex). Keep-out is a red hatch; untagged a neutral grey.
+# Role → (fill RGBA, outline hex). Keep-out is a red hatch; untagged a neutral gray.
 _ROLE_COLORS: dict[BedRole, tuple[tuple[int, int, int, int], str]] = {
     BedRole.UNASSIGNED:       ((150, 150, 150, 50),  "#8a8a8a"),
     BedRole.FRAME_FRONT:      ((40, 110, 200, 70),   "#2e6ec8"),
@@ -301,7 +301,7 @@ class BedCanvas(QWidget):
         font = QFont(self.font())
         font.setPointSize(9)
         # Zones hosting a nested footprint hand their caption to the part's
-        # label — both drew at the zone centre, one on top of the other.
+        # label — both drew at the zone center, one on top of the other.
         occupied = {pl["zone_id"] for pl in self._placements}
         for z in self._zones:
             if len(z.polygon) < 3:
@@ -381,7 +381,7 @@ class BedCanvas(QWidget):
                 for p in pts[1:]:
                     qpath.lineTo(p)
                 painter.drawPath(qpath)
-            # label at the footprint centre
+            # label at the footprint center
             x0, y0, x1, y1 = pl["bbox"]
             sc = self._world_to_screen((x0 + x1) / 2.0, (y0 + y1) / 2.0)
             painter.setFont(font)
@@ -390,8 +390,8 @@ class BedCanvas(QWidget):
             painter.drawText(QPointF(sc.x() - 20, sc.y()), pl["label"])
 
     def _draw_legend(self, painter: QPainter) -> None:
-        """A small top-left key mapping each role colour present on the bed, so the
-        tagging colours are self-explanatory."""
+        """A small top-left key mapping each role color present on the bed, so the
+        tagging colors are self-explanatory."""
         seen: list = []
         for z in self._zones:
             role = BedRole(z.role)

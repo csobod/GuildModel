@@ -9,7 +9,7 @@
 > root document.
 >
 > **Note on referenced files.** The internal reference material this archive
-> names — the Fusion 360 Demo Project teardown, the OLGA behavioural analysis,
+> names — the Fusion 360 Demo Project teardown, the OLGA behavioral analysis,
 > and the bed/hinge reference sketches — is kept in the maker's local working
 > tree and is not part of the published repository. The Demo Project ground
 > truth itself is vendored under `tests/fixtures/demo/`.
@@ -57,7 +57,7 @@ Reference: `frame_modeler_project.md` (the full spec). This document tracks the 
 ### Session 2 — OLGA teardown + fixture data + bevel algorithm
 
 **Inputs received:**
-- `OLGA_TEARDOWN_AND_PLAN.md` — behavioural reverse-engineering of OLGA olgaV5, CHA, BR, OLGA V1, SVGStAlone
+- `OLGA_TEARDOWN_AND_PLAN.md` — behavioral reverse-engineering of OLGA olgaV5, CHA, BR, OLGA V1, SVGStAlone
 - `cnc_bed.dxf` / `cnc_bed.svg` — Fusion 360 sketch of the Guild CNC bed in machine coordinates
 
 **Accomplished:**
@@ -65,7 +65,7 @@ Reference: `frame_modeler_project.md` (the full spec). This document tracks the 
   - Work area confirmed 300 × 200 mm (origin lower-left, Y+ up)
   - Six blank zones with exact positions, sizes, and stock thicknesses
   - 24 hold-down screw positions (machine must avoid these circles, r = 5 mm)
-  - Flip axis at x = 201.146 mm (centre-line of front blank, for two-sided machining)
+  - Flip axis at x = 201.146 mm (center-line of front blank, for two-sided machining)
   - Nosepad sub-zone: 6 mm sheet + 4 mm block = 10 mm total in 45 × 45 mm area
 - [x] Upgraded `core/relief/groove.py`: replaced single-ring stub with `bevel_flank()`,
   a full port of OLGA's ruled two-flank bevel algorithm (olgaV5 decal1/decal2).
@@ -127,7 +127,7 @@ Reference: `frame_modeler_project.md` (the full spec). This document tracks the 
 **Accomplished:**
 - [x] Built `gui/widgets/dxf_canvas.py`: custom QPainter 2D DXF viewer.
   - Zoom (mouse wheel), pan (middle/right-drag), per-layer visibility toggles.
-  - 10 mm grid, scale bar, fit-to-view, layer colour coding.
+  - 10 mm grid, scale bar, fit-to-view, layer color coding.
 - [x] Built `gui/widgets/params_panel.py`: scrollable left sidebar.
   - Import group (Open DXF button + layer visibility checkboxes).
   - Boxing group (A/B/DBL/ED read-only fields, auto-populated on import).
@@ -167,7 +167,7 @@ Reference: `frame_modeler_project.md` (the full spec). This document tracks the 
   not watertight. Acceptable for preview; fix before STL export (M3).
 - `preview_3d.py`: PyVista `add_light()` API changed in recent versions; may need
   `pv.Light` constructor args adjusted if lighting looks wrong.
-- Hinge pocket visualisation not yet wired (hinge panel is UI-only, params captured
+- Hinge pocket visualization not yet wired (hinge panel is UI-only, params captured
   but not passed to builder). Deferred.
 
 ---
@@ -256,7 +256,7 @@ Statuses: ✅ solid · ⚠️ works with known issue · 🐛 bug (do not rely on
 | File | Status | Notes |
 |---|---|---|
 | `dxf.py` | ✅ | LWPOLYLINE, LINE, ARC, CIRCLE, SPLINE. Imports from `core.layers`; recognizes SCULPT + ENGRAVING. GuildDraw exports Y-negated (DXF Y-up convention); ezdxf handles correctly. |
-| `svg.py` | ⚠️ | `npoint()` float arg bug — defer to M1. Recognises SCULPT + ENGRAVING via `core.layers`. |
+| `svg.py` | ⚠️ | `npoint()` float arg bug — defer to M1. Recognizes SCULPT + ENGRAVING via `core.layers`. |
 | `normalize.py` | ✅ | close_if_nearly_closed + points_to_polygon. |
 | `validate.py` | ✅ | Checks for OUTLINE + 2× LENS; iterates all layers for polygon validity. SCULPT/ENGRAVING pass through as optional layers without warnings. |
 

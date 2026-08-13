@@ -251,7 +251,7 @@ def test_small_tool_reaches_narrow_pocket_bulk_tool_cannot():
     res, init_z = 0.1, 9.0
     origin = (-4.0, -4.0)
     shape = (81, 81)
-    centre = (40, 40)
+    center = (40, 40)
 
     def sim(tool):
         op = hinge_pocket_op([pocket], floor_z, start_z, tool["radius_mm"], cam)
@@ -265,7 +265,7 @@ def test_small_tool_reaches_narrow_pocket_bulk_tool_cannot():
     big = sim(TOOLS["flat_3175"])             # r=1.5875 > pocket inradius ~1.2
     small = sim(TOOLS["flat_2mm"])            # r=1.0 fits
 
-    # the small tool drives the pocket centre down to the floor…
-    assert small[centre] == pytest.approx(floor_z, abs=0.2)
+    # the small tool drives the pocket center down to the floor…
+    assert small[center] == pytest.approx(floor_z, abs=0.2)
     # …the bulk tool leaves it well proud of the floor (uncut)
-    assert big[centre] >= floor_z + 1.5
+    assert big[center] >= floor_z + 1.5

@@ -234,7 +234,7 @@ class GdrawWorkspace:
     """One parsed workspace: layer-keyed geometry (``import_dxf``-shaped) + forming.
 
     ``texts`` are the raw GuildDraw text objects (``state["texts"]``, filtered to
-    recognised layers) — engraving is stored as a text object (string + font +
+    recognized layers) — engraving is stored as a text object (string + font +
     cap-height ``size_mm`` + anchor + rotation), NOT as curves, so this reader can't
     outline it without a font engine. They are carried raw (scene coords) with the
     ``posterior`` flag; the GUI renders them to ENGRAVING polylines (``gui.text_outline``)
@@ -300,7 +300,7 @@ def read_workspace_geometry(
 ) -> dict[str, list[list[Point]]]:
     """Flatten a workspace's ``state["curves"]`` to layer-keyed point lists.
 
-    Mirrors :func:`io_import.dxf.import_dxf`: only recognised layers are kept, and
+    Mirrors :func:`io_import.dxf.import_dxf`: only recognized layers are kept, and
     ``posterior=True`` applies the single (x, y) → (-x, -y) flip.
 
     Points only. Callers that can use the exact source curves — the B-Rep path —

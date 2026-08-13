@@ -1,5 +1,5 @@
 """Appearance parity round (V1-prep cluster b, GuildDraw patterns): per-layer
-colour overrides (Preferences ▸ Layers), the configurable 2D-canvas grid
+color overrides (Preferences ▸ Layers), the configurable 2D-canvas grid
 (Preferences ▸ Appearance ▸ Grid), and the prefs deep-merge that stops an old
 prefs.json from silently clobbering new nested defaults.
 """
@@ -60,7 +60,7 @@ def test_layer_override_wins_per_mode():
     assert theme.layer_color_for("LENS", dark=False) == "#112233"
     # No dark override — falls through to the shipped dark variant.
     assert theme.layer_color_for("LENS", dark=True) == "#5aa0e0"
-    # Un-overridden layers keep the shipped colours.
+    # Un-overridden layers keep the shipped colors.
     assert theme.layer_color_for("OUTLINE", dark=False) == "#1a1a1a"
 
 

@@ -49,7 +49,7 @@ class DxfCanvas(QWidget):
         self._program_zero_label: str = ""
 
         # toolpath overlay (BUILDPLAN M7.11): per-op cutting paths drawn over the
-        # design, colour-coded, with per-op visibility + a highlighted op.
+        # design, color-coded, with per-op visibility + a highlighted op.
         self._toolpaths: list[dict] = []          # [{name, paths:[[(x,y)..]..], color}]
         self._tp_visible: dict[str, bool] = {}
         self._tp_highlight: Optional[str] = None
@@ -210,7 +210,7 @@ class DxfCanvas(QWidget):
                 f"   ·   ∠B {angle_at(a, b, c):.1f}°")
 
     def fit_to_view(self) -> None:
-        """Scale and centre so all geometry fills 90% of the widget."""
+        """Scale and center so all geometry fills 90% of the widget."""
         if not self._layers:
             return
         xs: list[float] = []
@@ -236,7 +236,7 @@ class DxfCanvas(QWidget):
         scale_y = h * 0.9 / span_y
         self._scale = min(scale_x, scale_y)
 
-        # centre the content — DXF Y increases upward; screen Y increases downward
+        # center the content — DXF Y increases upward; screen Y increases downward
         cx = (min_x + max_x) / 2.0
         cy = (min_y + max_y) / 2.0
         self._offset = QPointF(
@@ -426,7 +426,7 @@ class DxfCanvas(QWidget):
                         )
 
     def _draw_toolpaths(self, painter: QPainter) -> None:
-        """Per-op cutting paths over the design, colour-coded; the rapids between
+        """Per-op cutting paths over the design, color-coded; the rapids between
         successive paths are faint dashed connectors (BUILDPLAN M7.11)."""
         if not self._toolpaths:
             return

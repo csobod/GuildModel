@@ -1,8 +1,8 @@
-"""The batched rasteriser, and the anterior surface that falls out of it.
+"""The batched rasterizer, and the anterior surface that falls out of it.
 
 `triangle_envelopes` replaced a loop over triangles with one vectorised pass
 over (triangle, cell) pairs, and split the two envelopes across the two
-facings. Both are optimisations of an answer that must not move, so the first
+facings. Both are optimizations of an answer that must not move, so the first
 test here is a reference implementation of the old loop, compared cell for cell
 — not a tolerance.
 
@@ -178,7 +178,7 @@ def test_inverted_winding_falls_back_instead_of_swapping_the_envelopes():
     assert np.array_equal(dn, dn_flipped), "winding changed the floor"
 
 
-def test_a_triangle_bigger_than_the_pair_budget_still_rasterises(monkeypatch):
+def test_a_triangle_bigger_than_the_pair_budget_still_rasterizes(monkeypatch):
     """The batcher must let an oversized triangle through on its own rather
     than loop forever or drop it — the blank's underside is exactly that."""
     from guildmodel.core import zmap

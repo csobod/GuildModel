@@ -91,7 +91,7 @@ class _StripSep(QWidget):
         pen.setCosmetic(True)          # exactly one device px at any DPI
         p.setPen(pen)
         r = self.rect()
-        x = r.center().x() + 0.5       # pixel-centre for a crisp vertical line
+        x = r.center().x() + 0.5       # pixel-center for a crisp vertical line
         p.drawLine(QPointF(x, r.top() + self._PAD),
                    QPointF(x, r.bottom() - self._PAD))
 
@@ -515,7 +515,7 @@ class Viewer3D(QWidget):
         """Render only when this widget is the visible, non-zero-size stack page.
         Rendering a hidden or zero-size QtInteractor throws `wglMakeCurrent: handle
         invalid` / an incomplete-framebuffer error (e.g. a play tick during a view
-        switch, minimise, or teardown)."""
+        switch, minimize, or teardown)."""
         if (self._plotter is not None and not self.isHidden()
                 and self.width() > 1 and self.height() > 1):
             self._enable_aa_if_sized()            # deferred from _ensure_plotter
@@ -533,7 +533,7 @@ class Viewer3D(QWidget):
         self._safe_render()
 
     def hideEvent(self, event) -> None:
-        """Pause playback when the viewer leaves the screen (a view switch / minimise
+        """Pause playback when the viewer leaves the screen (a view switch / minimize
         / close): animating an invisible viewport renders into a zero-size buffer
         (incomplete-framebuffer noise) and wastes cycles.
 
@@ -1014,7 +1014,7 @@ class Viewer3D(QWidget):
         grid.dimensions = (cols, rows, 2)
         self._removal_grid = grid
         self._removal_zmax = float(pb.stock_top.max())
-        # Colour by elevation so cut depth reads at a glance (deep = dark, uncut =
+        # Color by elevation so cut depth reads at a glance (deep = dark, uncut =
         # bright); a fixed ramp means a region visibly darkens as it's carved away.
         grid["colors"] = self._elev_colors(grid.points[:, 2], self._removal_zmax)
         lit = not self._flat_shaded()
@@ -1168,7 +1168,7 @@ class Viewer3D(QWidget):
     @staticmethod
     def _elev_colors(z, zmax) -> np.ndarray:
         """Per-vertex RGB on a dark-brown→amber elevation ramp (BUILDPLAN M7.12.1):
-        the lower (more deeply cut) a point, the darker — so depth reads as colour
+        the lower (more deeply cut) a point, the darker — so depth reads as color
         and a carved region darkens as it drops. No matplotlib dependency."""
         t = np.clip(z / max(float(zmax), 1e-6), 0.0, 1.0)
         lo = np.array([0.13, 0.08, 0.04])         # deep cut / base — in shadow

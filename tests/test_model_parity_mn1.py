@@ -427,7 +427,7 @@ def test_the_anterior_bezel_cuts_the_front_face_on_the_mesh_kernel(demo_front):
     """`face="anterior"` used to remove exactly nothing here.
 
     The anterior band reaches a solid kernel as a whole-ring `EdgeFeature`, and
-    only the B-Rep's `bezel_cutters` asked for it — so the mesh path modelled
+    only the B-Rep's `bezel_cutters` asked for it — so the mesh path modeled
     `"anterior"` as a bare frame and `"both"` as `"posterior"`, silently. The
     same porting gap the B-Rep had until UI-0 finding 3, missed for the same
     reason: nothing compared the kernels with the bezel anywhere but its default
@@ -544,14 +544,14 @@ def test_surface_features_agree_with_the_brep_kernel(fixture, feature, request):
 @pytest.mark.parametrize("fixture", ["aviator_front", "gabriel_front"])
 def test_the_scoop_does_not_dive_where_its_rays_find_nothing(fixture, kernel,
                                                              request):
-    """The scoop marches up the centreline, which is where a frame is not solid.
+    """The scoop marches up the centerline, which is where a frame is not solid.
 
     Both real drawings break the ray, for different reasons: seven of the
     aviator's thirteen stations sit inside its decorative keyhole, and two of
     Gabriel's run off the bottom of the bridge into the nose gap. Read as 0.0
     those misses mean "the surface is at the anterior face" and the section —
     which closes upward to `top` — takes the full thickness. Carried from the
-    neighbouring stations they mean "the surface continues", which is what a
+    neighboring stations they mean "the surface continues", which is what a
     scoop passing over an opening actually does.
 
     Asserted as a *floor on the cutter*, not as a volume, because the volume is

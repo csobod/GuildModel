@@ -4,7 +4,7 @@ Cut several components — frame front(s), temples, base-curve block(s) — in *
 GRBL program on the bed. The bed *is* the fixture (config/fixtures/guild_cnc.yaml
 already carries the six blank zones + hold-down screws); each component is
 generated in its own design frame, translated onto its bed zone, and the whole
-set is scheduled to **minimise tool changes across the bed** (group by tool while
+set is scheduled to **minimize tool changes across the bed** (group by tool while
 respecting each part's internal op order, M6.1) before posting.
 
 Everything here is geometry on `CamOp` paths plus a precedence-aware scheduler; the
@@ -36,7 +36,7 @@ Point3 = tuple[float, float, float]
 # ------------------------------------------------------------------ geometry
 
 def ops_bbox_center(ops: list[CamOp]) -> tuple[float, float]:
-    """XY centre of the combined bounding box of every op path (design frame)."""
+    """XY center of the combined bounding box of every op path (design frame)."""
     xs: list[float] = []
     ys: list[float] = []
     for op in ops:
@@ -69,7 +69,7 @@ def rotate_ops_about(ops: list[CamOp], cx: float, cy: float,
                      deg: float) -> list[CamOp]:
     """New CamOps rotated by `deg` about the point (cx, cy) — rotation in place that
     keeps the ops' current position (used for interactive bed rotation, where a placed
-    footprint spins about its own centre rather than the machine origin)."""
+    footprint spins about its own center rather than the machine origin)."""
     th = math.radians(deg)
     c, s = math.cos(th), math.sin(th)
     # rotate-about-(cx,cy) = rotate-about-origin then translate by (c - R·c)
@@ -79,7 +79,7 @@ def rotate_ops_about(ops: list[CamOp], cx: float, cy: float,
 
 
 def zone_center(fixture: dict, zone_name: str) -> tuple[float, float]:
-    """Machine-coordinate centre of a fixture blank zone."""
+    """Machine-coordinate center of a fixture blank zone."""
     z = fixture["blank_zones"][zone_name]
     return (z["x_mm"] + z["width_mm"] / 2.0, z["y_mm"] + z["height_mm"] / 2.0)
 
@@ -87,8 +87,8 @@ def zone_center(fixture: dict, zone_name: str) -> tuple[float, float]:
 def place_ops_at_zone(
     ops: list[CamOp], fixture: dict, zone_name: str, rotation_deg: float = 0.0,
 ) -> tuple[list[CamOp], tuple[float, float]]:
-    """Rotate (about origin) then translate `ops` so their bounding-box centre
-    lands on the zone centre. Returns (placed_ops, (dx, dy) applied)."""
+    """Rotate (about origin) then translate `ops` so their bounding-box center
+    lands on the zone center. Returns (placed_ops, (dx, dy) applied)."""
     rotated = transform_ops(ops, 0.0, 0.0, rotation_deg) if rotation_deg else ops
     bx, by = ops_bbox_center(rotated)
     cx, cy = zone_center(fixture, zone_name)
@@ -101,8 +101,8 @@ def place_ops_at_polygon_zone(
     ops: list[CamOp], zone, rotation_deg: float = 0.0,
 ) -> tuple[list[CamOp], tuple[float, float]]:
     """Like `place_ops_at_zone` but onto a tagged `WorktableZone` polygon (M7.6):
-    rotate about the origin then translate so the ops' bbox centre lands on the
-    zone's bbox centre. Returns (placed_ops, (dx, dy) applied)."""
+    rotate about the origin then translate so the ops' bbox center lands on the
+    zone's bbox center. Returns (placed_ops, (dx, dy) applied)."""
     rotated = transform_ops(ops, 0.0, 0.0, rotation_deg) if rotation_deg else ops
     bx, by = ops_bbox_center(rotated)
     cx, cy = zone.bbox_center()
@@ -117,15 +117,15 @@ def schedule_bed_ops(
     components: list[list[CamOp]],
     cost: Callable[[CamOp], float] | None = None,
 ) -> list[CamOp]:
-    """Order ops across components to minimise tool changes AND front-load the
-    briefest tools (BUILDPLAN M6.5 + operator-time optimisation).
+    """Order ops across components to minimize tool changes AND front-load the
+    briefest tools (BUILDPLAN M6.5 + operator-time optimization).
 
     Hard constraint: each component's ops keep their internal order (a part's
     drilling / relief must precede its profile release). Within that, we greedily
     stay on the current tool while any ready op needs it, and when forced to change
     pick the ready tool with the least TOTAL cutting work over the whole bed — so the
     distinct tools come out in ascending order of work and the single longest-running
-    tool is LAST. On a desktop CNC with no automatic tool changer that minimises the
+    tool is LAST. On a desktop CNC with no automatic tool changer that minimizes the
     operator's *monitored* time: every manual change happens in the brief opening
     phase, then the final tool runs the bulk of the job unattended. The change count
     stays the minimum (one per distinct tool) whenever the parts' tool orders agree.
@@ -294,9 +294,9 @@ class BedPart:
     contour_names: set = field(default_factory=set)
     drill_names: set = field(default_factory=set)
     rotation_deg: float = 0.0
-    # Place by the DESIGN ORIGIN (the blank centre) instead of the ops' bbox centre.
-    # A blank-end-snapped temple's ops live in its blank frame (blank centred on the
-    # origin, butt on the short edge); mapping blank centre → zone centre keeps the
+    # Place by the DESIGN ORIGIN (the blank center) instead of the ops' bbox center.
+    # A blank-end-snapped temple's ops live in its blank frame (blank centerd on the
+    # origin, butt on the short edge); mapping blank center → zone center keeps the
     # core end registered against the zone's end, exactly how the blank slides into
     # its slot on the worktable (2026-07-09 core-aligned nesting).
     place_by_origin: bool = False
@@ -365,9 +365,9 @@ class BedPlacement:
         self.dy += ddy
 
     def rotate(self, ddeg: float) -> None:
-        """Rotate the placement in place about its own footprint centre by `ddeg`
+        """Rotate the placement in place about its own footprint center by `ddeg`
         (interactive bed rotation — spin a temple so it loads into a slot, or flip the
-        left temple 180° to face the right). The centre is preserved, so the part stays
+        left temple 180° to face the right). The center is preserved, so the part stays
         on its zone; ``rotation_deg`` accumulates and clearance is re-checked by the
         caller. The rotated ops post directly, so the worktable.nc matches the render.
 
@@ -375,7 +375,7 @@ class BedPlacement:
         ``p → R(rotation_deg)·p + (dx, dy)`` from the design frame, and that has to
         keep describing where the part actually sits — the setup sheet reports it to
         the operator, and it is what lets the ops be rebuilt at posting fidelity.
-        Rotating about the footprint centre ``c`` composes as
+        Rotating about the footprint center ``c`` composes as
         ``R(φ)·R(θ) = R(θ+φ)`` with ``d' = R(φ)·(d − c) + c``.
         """
         cx, cy = ops_bbox_center(self.ops)
@@ -422,7 +422,7 @@ def nest_components_on_worktable(parts: list[BedPart], worktable) -> BedNest:
     Parts of a kind fill the same-role zones in order (bottom-left zone first), so
     N copies of a kind nest across N same-role zones; a part with no free matching
     zone is returned unplaced. Each placed part's ops are in machine coordinates
-    (bbox centre → zone bbox centre, like M6.5), names left UN-prefixed (the M7.7
+    (bbox center → zone bbox center, like M6.5), names left UN-prefixed (the M7.7
     combined post prefixes them; clearance + render read base names).
     """
     from ..project.schema import BedRole
@@ -450,8 +450,8 @@ def nest_components_on_worktable(parts: list[BedPart], worktable) -> BedNest:
         used[role] = i + 1
         zone = zones[i]
         if part.place_by_origin:
-            # Blank frame → zone: design origin (the blank centre) lands on the zone
-            # centre, so a snapped part keeps its registration against the zone end.
+            # Blank frame → zone: design origin (the blank center) lands on the zone
+            # center, so a snapped part keeps its registration against the zone end.
             dx, dy = zone.bbox_center()
             placed = transform_ops(part.ops, dx, dy, part.rotation_deg)
         else:
@@ -472,7 +472,7 @@ def nest_components_on_worktable(parts: list[BedPart], worktable) -> BedNest:
 class NestProgram:
     """One combined GRBL program for a whole nested bed (BUILDPLAN M7.7).
 
-    The worktable analogue of `BedProgram`: the scheduled, machine-coordinate op
+    The worktable analog of `BedProgram`: the scheduled, machine-coordinate op
     list (op names prefixed per placement) plus the through-cut / drill name sets
     `write_castle_program` needs, the placements it came from, and the tool-change
     count. Unlike `BedProgram` it carries the M7.6 `BedPlacement`s directly (their
@@ -490,7 +490,7 @@ def build_nest_program(nest: BedNest) -> NestProgram:
     The nest's placements are already in machine coordinates; here we prefix each
     placement's op names with its label (so two parts' "Perimeter" ops don't
     collide), collect the through-cut / drill name sets from the prefixed names,
-    and run the precedence-aware tool-change minimiser (`schedule_bed_ops`) over the
+    and run the precedence-aware tool-change minimizer (`schedule_bed_ops`) over the
     whole bed. The result posts through `write_castle_program` exactly like the M6.5
     fixture bed — only the placement source (a user-tagged `Worktable`, possibly
     nudged) differs. Op copies are renamed, so the nest's own ops (the bed render)

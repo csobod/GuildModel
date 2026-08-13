@@ -97,7 +97,7 @@ def test_every_kernel_name_builds(demo_front):
 def test_a_teaching_stage_stays_on_the_raster(demo_front):
     """The stepper's partial stages are a decomposition of the *raster*
     construction, not states a solid passes through. Asking for one on a
-    modelled kernel must fall back rather than silently return the finished
+    modeled kernel must fall back rather than silently return the finished
     part, which would make the stepper look broken."""
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.gui.mesh_build import build_component_mesh

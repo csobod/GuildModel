@@ -334,7 +334,7 @@ def sweep_sections(profiles: list[np.ndarray], closed: bool = True) -> Manifold:
     section rather than overlapping, and Manifold fails to cancel that shared
     face often enough to matter — about 0.65 sections per station, measured on
     synthetic sweeps with nothing else in the scene, and invariant to everything
-    tried: circle, off-centre circle and ellipse; a V, a scalene triangle and a
+    tried: circle, off-center circle and ellipse; a V, a scalene triangle and a
     tapering section; open and closed; 60, 120 and 240 stations. It reached the
     part as 76 / 94 / 82 self-touching edges on the lens groove.
 

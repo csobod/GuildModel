@@ -1,4 +1,4 @@
-"""The relief the CAM posts from, built by a kernel instead of rasterised.
+"""The relief the CAM posts from, built by a kernel instead of rasterized.
 
 `relief_from_zmap` filled `field` and the groove fields and left everything
 else at its default. That was enough for the parity gates, which only ever

@@ -47,7 +47,7 @@ from guildmodel.gui.component_workspace import (
 )
 
 
-class _Cancelled(Exception):
+class _Canceled(Exception):
     """Raised inside a worker's progress callback to abort at a stage boundary."""
 
 
@@ -62,7 +62,7 @@ class ToolSep(QWidget):
 
     A stylesheet ``QToolBar::separator`` with a 1 px width rounds inconsistently on
     fractional-DPI displays — each separator lands at a different sub-pixel position
-    and rasterises to 0/1/2 device px, so they look mismatched. This paints the line
+    and rasterizes to 0/1/2 device px, so they look mismatched. This paints the line
     itself with a *cosmetic* pen (width is transform-independent → exactly one device
     pixel everywhere), giving identical, hairline-crisp dividers at any scale, and
     flips its axis with the toolbar's orientation."""
@@ -106,7 +106,7 @@ class ToolSep(QWidget):
         p.setPen(pen)
         r = self.rect()
         if self._tb.orientation() == Qt.Orientation.Horizontal:
-            x = r.center().x() + 0.5       # pixel-centre for a crisp vertical line
+            x = r.center().x() + 0.5       # pixel-center for a crisp vertical line
             p.drawLine(QPointF(x, r.top() + self._pad), QPointF(x, r.bottom() - self._pad))
         else:
             y = r.center().y() + 0.5
@@ -118,7 +118,7 @@ class ToolSep(QWidget):
 class ImportWorker(QObject):
     """Runs DXF import + boxing measurement off the GUI thread."""
 
-    # layers, boxing|None, raw_summary, unrecognised, curves
+    # layers, boxing|None, raw_summary, unrecognized, curves
     finished = Signal(dict, object, dict, list, dict)
     error = Signal(str)
 
@@ -142,7 +142,7 @@ class ImportWorker(QObject):
                 lyr: dict(_Counter(types))
                 for lyr, types in raw_layers.items()
             }
-            unrecognised = [
+            unrecognized = [
                 lyr for lyr in raw_layers
                 if lyr.upper() not in SUPPORTED_LAYERS
             ]
@@ -159,7 +159,7 @@ class ImportWorker(QObject):
                 if len(valid) >= 2:
                     boxing = measure_from_polygon(valid[0], valid[1])
 
-            self.finished.emit(layers, boxing, raw_summary, unrecognised, curves)
+            self.finished.emit(layers, boxing, raw_summary, unrecognized, curves)
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -170,12 +170,12 @@ class _ProgressWorker(QObject):
     """Shared stage-progress + stage-boundary cancellation (M4.6 Part B).
 
     Subclasses call ``self._progress(label, frac)`` (passed as the ``progress=``
-    hook to core); it relays to the ``stage`` signal and raises :class:`_Cancelled`
+    hook to core); it relays to the ``stage`` signal and raises :class:`_Canceled`
     if :meth:`cancel` was called between stages.
     """
 
     stage = Signal(str, int)   # human label, percent 0..100
-    cancelled = Signal()
+    canceled = Signal()
 
     #: Which kernel builds the surface this worker cuts from — one of
     #: `mesh_build.KERNELS`. Set by the window from `_model_kernel()` after
@@ -195,7 +195,7 @@ class _ProgressWorker(QObject):
 
     def _progress(self, label: str, frac: float) -> None:
         if self._cancel:
-            raise _Cancelled()
+            raise _Canceled()
         self.stage.emit(label, int(round(frac * 100)))
 
 
@@ -225,8 +225,8 @@ class MeshWorker(_ProgressWorker):
                 self.spec, resolution=self.resolution, kernel=self.kernel,
                 progress=self._progress)
             self.finished.emit(mesh, self.stage_name, edges)
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -256,8 +256,8 @@ class FlatMeshWorker(_ProgressWorker):
             mesh, _edges, guide = build_component_mesh(
                 self.spec, resolution=self.resolution, progress=self._progress)
             self.finished.emit(mesh, guide)
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -303,8 +303,8 @@ class MultiMeshWorker(_ProgressWorker):
                     progress=sub)
                 self.built.emit(spec["index"], mesh, edges, guide)
             self.finished.emit()
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -355,8 +355,8 @@ class ExportWorker(_ProgressWorker):
             )
             mesh.export(str(self.path))
             self.finished.emit(str(self.path))
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -456,8 +456,8 @@ class GCodeWorker(_ProgressWorker):
     def run(self) -> None:
         try:
             self._generate()
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception as exc:
             # "Every operation is switched off" is the maker's own setting, not a
             # crash — report the sentence, not a traceback (M16 per-op enable).
@@ -970,7 +970,7 @@ class GCodeWorker(_ProgressWorker):
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
         rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
-        # Block ops are centred on the origin (center_on_origin); shift the overlay
+        # Block ops are centerd on the origin (center_on_origin); shift the overlay
         # back onto the lens as drawn so it lands on the part in the 2D view.
         self.op_overlay = _op_overlay(ops)
         if self.block_lens is not None:
@@ -1023,7 +1023,7 @@ class GCodeWorker(_ProgressWorker):
     def _generate_worktable(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
         """Combined worktable program (BUILDPLAN M6.5): the frame front + its
         base-curve block, auto-packed onto their fixture zones and cut in **one**
-        program, scheduled to minimise tool changes across the whole bed."""
+        program, scheduled to minimize tool changes across the whole bed."""
         import yaml
         from guildmodel.core.cam.block_ops import (
             BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
@@ -1409,8 +1409,8 @@ class SimWorker(_ProgressWorker):
                     for lens in relief.groove_lens_polys]
 
             self.finished.emit(report, lines, plan)
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -1554,8 +1554,8 @@ class FlatSimWorker(_ProgressWorker):
                 stock_top, f.origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, report.summary_lines(), plan)
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -1643,7 +1643,7 @@ class NestWorker(_ProgressWorker):
                     ops = generate_temple_program(
                         t_outline, t_eng, t, tools, cam, hinge_polys=t_hinge)
                     # A snapped temple's ops live in its blank frame: place blank
-                    # centre → zone centre so the core end stays registered against
+                    # center → zone center so the core end stays registered against
                     # the zone end, matching how the blank slides into its slot.
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                          set(TEMPLE_CONTOUR_OPS), set(),
@@ -1662,8 +1662,8 @@ class NestWorker(_ProgressWorker):
                     part.rotation_deg = default_nest_rotation(part.kind)
             self._progress("Nesting onto the bed", 0.95)
             self.finished.emit(nest_components_on_worktable(parts, self.worktable))
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -1760,8 +1760,8 @@ class BedSimWorker(_ProgressWorker):
             plan = build_bed_removal_plan(bed_parts, resolution=CUT_RES_MM)
             plan.op_tool_geom = geom
             self.finished.emit(report, report.summary_lines(), plan)
-        except _Cancelled:
-            self.cancelled.emit()
+        except _Canceled:
+            self.canceled.emit()
         except Exception:
             self.error.emit(traceback.format_exc())
 
@@ -1957,7 +1957,7 @@ class PrefsDialog(QDialog):
         # Must precede the Tools tab: its ToolView preview reads _dark_check.
         self._build_appearance_tab(tabs, prefs)
 
-        # ── Tab 2 — Layers (per-layer colour overrides, GuildDraw parity) ──
+        # ── Tab 2 — Layers (per-layer color overrides, GuildDraw parity) ──
         self._build_layers_tab(tabs, prefs)
 
         # ── Tab 3 — Materials ─────────────────────────────────────────────
@@ -2053,16 +2053,16 @@ class PrefsDialog(QDialog):
         vp_form.addRow("Canvas preset:", self._vp_combo)
 
         self._vp_custom_color = vp.get("custom_bg") or "#faf6ee"
-        self._vp_color_btn = QPushButton("Canvas colour…")
+        self._vp_color_btn = QPushButton("Canvas color…")
         self._vp_color_btn.setToolTip(
-            "Custom canvas colour; drawing ink is derived automatically.")
+            "Custom canvas color; drawing ink is derived automatically.")
         self._vp_color_btn.clicked.connect(self._pick_vp_color)
         self._vp_color_btn.setEnabled(cur_preset == "custom")
         self._update_vp_swatch()
         vp_form.addRow("Custom:", self._vp_color_btn)
         ap_lay.addWidget(vp_box)
 
-        # 3D render — light rig + key-light direction/strength + part colour.
+        # 3D render — light rig + key-light direction/strength + part color.
         r3 = prefs.get("render3d") or {}
         r3_box = QGroupBox("3D render")
         r3_form = QFormLayout(r3_box)
@@ -2119,13 +2119,13 @@ class PrefsDialog(QDialog):
         r3_form.addRow("Light intensity:", in_row)
 
         self._model_color = str(r3.get("model_color") or "")
-        self._model_color_btn = QPushButton("Model colour…")
+        self._model_color_btn = QPushButton("Model color…")
         self._model_color_btn.setToolTip(
-            "Surface colour of the 3D part (default: the theme's amber\n"
+            "Surface color of the 3D part (default: the theme's amber\n"
             "acetate look).")
         self._model_color_btn.clicked.connect(self._pick_model_color)
         mc_reset = QPushButton("Default")
-        mc_reset.setToolTip("Back to the theme's amber part colour.")
+        mc_reset.setToolTip("Back to the theme's amber part color.")
         mc_reset.clicked.connect(self._reset_model_color)
         mc_row = QWidget()
         mc_lay = QHBoxLayout(mc_row)
@@ -2134,11 +2134,11 @@ class PrefsDialog(QDialog):
         mc_lay.addWidget(self._model_color_btn, 1)
         mc_lay.addWidget(mc_reset)
         self._update_model_swatch()
-        r3_form.addRow("Model colour:", mc_row)
+        r3_form.addRow("Model color:", mc_row)
         ap_lay.addWidget(r3_box)
         self._on_rig_changed(self._rig_combo.currentIndex())
 
-        # Toolpath overlay palette (M7.11 overlay colours)
+        # Toolpath overlay palette (M7.11 overlay colors)
         tp_box = QGroupBox("Toolpath overlay")
         tp_form = QFormLayout(tp_box)
         self._tp_choices = [
@@ -2157,9 +2157,9 @@ class PrefsDialog(QDialog):
             (i for i, (k, _l) in enumerate(self._tp_choices) if k == cur_tp),
             0))
         self._tp_combo.setToolTip(
-            "Colour set cycled across a program's operations on the 2D\n"
+            "Color set cycled across a program's operations on the 2D\n"
             "toolpath overlay.")
-        tp_form.addRow("Path colours:", self._tp_combo)
+        tp_form.addRow("Path colors:", self._tp_combo)
         ap_lay.addWidget(tp_box)
 
         # 2D-canvas grid (GuildDraw parity). Shipped values = the historical
@@ -2193,15 +2193,15 @@ class PrefsDialog(QDialog):
         self._grid_width.setValue(float(gr.get("major_width_px", 1.0)))
         self._grid_width.setToolTip("Line weight of the major grid lines (screen pixels).")
         grid_form.addRow("Major width:", self._grid_width)
-        # Grid line colours: "" = follow the theme (mirrors the model-colour swatch).
+        # Grid line colors: "" = follow the theme (mirrors the model-color swatch).
         self._grid_minor_color = str(gr.get("minor_color") or "")
         self._grid_major_color = str(gr.get("major_color") or "")
-        self._grid_minor_btn = QPushButton("Minor colour…")
+        self._grid_minor_btn = QPushButton("Minor color…")
         self._grid_minor_btn.clicked.connect(lambda: self._pick_grid_color("minor"))
-        self._grid_major_btn = QPushButton("Major colour…")
+        self._grid_major_btn = QPushButton("Major color…")
         self._grid_major_btn.clicked.connect(lambda: self._pick_grid_color("major"))
         grid_reset = QPushButton("Theme default")
-        grid_reset.setToolTip("Clear both grid colour overrides — the grid "
+        grid_reset.setToolTip("Clear both grid color overrides — the grid "
                               "follows the theme again.")
         grid_reset.clicked.connect(self._reset_grid_colors)
         grid_colors_row = QWidget()
@@ -2212,7 +2212,7 @@ class PrefsDialog(QDialog):
         gc_lay.addWidget(self._grid_major_btn)
         gc_lay.addWidget(grid_reset)
         gc_lay.addStretch()
-        grid_form.addRow("Colours:", grid_colors_row)
+        grid_form.addRow("Colors:", grid_colors_row)
         self._update_grid_swatches()
         ap_lay.addWidget(grid_box)
 
@@ -2234,7 +2234,7 @@ class PrefsDialog(QDialog):
 
     def _pick_vp_color(self) -> None:
         c = QColorDialog.getColor(QColor(self._vp_custom_color), self,
-                                  "Canvas colour")
+                                  "Canvas color")
         if c.isValid():
             self._vp_custom_color = c.name()
             self._update_vp_swatch()
@@ -2251,7 +2251,7 @@ class PrefsDialog(QDialog):
 
     def _pick_model_color(self) -> None:
         current = self._model_color or theme.LIGHT.mesh_surface
-        c = QColorDialog.getColor(QColor(current), self, "Model surface colour")
+        c = QColorDialog.getColor(QColor(current), self, "Model surface color")
         if c.isValid():
             self._model_color = c.name()
             self._update_model_swatch()
@@ -2265,13 +2265,13 @@ class PrefsDialog(QDialog):
         pm.fill(QColor(self._model_color or theme.LIGHT.mesh_surface))
         self._model_color_btn.setIcon(QIcon(pm))
 
-    # ── Grid colours (Appearance ▸ Grid) ──────────────────────────────────
+    # ── Grid colors (Appearance ▸ Grid) ──────────────────────────────────
 
     def _pick_grid_color(self, which: str) -> None:
         current = (self._grid_minor_color if which == "minor"
                    else self._grid_major_color) or theme.LIGHT.grid
         c = QColorDialog.getColor(QColor(current), self,
-                                  f"Grid {which} colour")
+                                  f"Grid {which} color")
         if not c.isValid():
             return
         if which == "minor":
@@ -2292,7 +2292,7 @@ class PrefsDialog(QDialog):
             pm.fill(QColor(color or theme.LIGHT.grid))
             btn.setIcon(QIcon(pm))
 
-    # ── Layers tab (per-layer colour overrides — GuildDraw parity) ────────
+    # ── Layers tab (per-layer color overrides — GuildDraw parity) ────────
 
     def _build_layers_tab(self, tabs, prefs: dict) -> None:
         from guildmodel.core.layers import LAYER_STYLES
@@ -2307,8 +2307,8 @@ class PrefsDialog(QDialog):
         tabs.addTab(scroll, "Layers")
 
         note = QLabel(
-            "Drawing colour per design layer, for each UI mode. Reset returns "
-            "a layer to the shipped colour. With a pinned viewport preset the "
+            "Drawing color per design layer, for each UI mode. Reset returns "
+            "a layer to the shipped color. With a pinned viewport preset the "
             "override matching the backdrop's brightness applies.")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -2321,7 +2321,7 @@ class PrefsDialog(QDialog):
                 self._layer_colors[layer] = {"light": cfg.get("light") or "",
                                              "dark": cfg.get("dark") or ""}
 
-        grp = QGroupBox("Layer colours")
+        grp = QGroupBox("Layer colors")
         form = QFormLayout(grp)
         self._layer_btns: dict[tuple[str, str], QPushButton] = {}
         for layer in LAYER_STYLES:
@@ -2336,7 +2336,7 @@ class PrefsDialog(QDialog):
                 self._layer_btns[(layer, mode)] = btn
                 h.addWidget(btn)
             reset = QPushButton("Reset")
-            reset.setToolTip("Back to the shipped colour in both modes.")
+            reset.setToolTip("Back to the shipped color in both modes.")
             reset.clicked.connect(
                 lambda _=False, l=layer: self._reset_layer_color(l))
             h.addWidget(reset)
@@ -2347,8 +2347,8 @@ class PrefsDialog(QDialog):
         lay.addStretch()
 
     def _layer_swatch_color(self, layer: str, mode: str) -> str:
-        """The colour the swatch shows: the pending override for that mode, or
-        the shipped per-mode colour (raw — the dialog edits per-mode values)."""
+        """The color the swatch shows: the pending override for that mode, or
+        the shipped per-mode color (raw — the dialog edits per-mode values)."""
         ov = (self._layer_colors.get(layer) or {}).get(mode) or ""
         if ov:
             return ov
@@ -2358,7 +2358,7 @@ class PrefsDialog(QDialog):
     def _pick_layer_color(self, layer: str, mode: str) -> None:
         c = QColorDialog.getColor(
             QColor(self._layer_swatch_color(layer, mode)), self,
-            f"{layer} colour ({mode} mode)")
+            f"{layer} color ({mode} mode)")
         if not c.isValid():
             return
         self._layer_colors.setdefault(layer, {"light": "", "dark": ""})[mode] = c.name()
@@ -2970,7 +2970,7 @@ class MainWindow(QMainWindow):
         # model has been built for the current design, and the current program
         # has been stored into the open .gmodel. A design/CAM change that
         # invalidates the stored program clears _program_stored so green never
-        # outlives the toolpaths it stood for. Initialised before _connect_signals,
+        # outlives the toolpaths it stood for. Initialized before _connect_signals,
         # which can emit cam_changed during startup restore.
         self._dxf_loaded = False
         self._mesh_built = False
@@ -3919,10 +3919,10 @@ class MainWindow(QMainWindow):
         self._nest_worker.progress.connect(self.append_log)
         self._nest_worker.finished.connect(self._on_nest_finished)
         self._nest_worker.error.connect(self._on_nest_error)
-        self._nest_worker.cancelled.connect(self._on_nest_cancelled)
+        self._nest_worker.canceled.connect(self._on_nest_canceled)
         self._nest_worker.finished.connect(self._nest_thread.quit)
         self._nest_worker.error.connect(self._nest_thread.quit)
-        self._nest_worker.cancelled.connect(self._nest_thread.quit)
+        self._nest_worker.canceled.connect(self._nest_thread.quit)
         dlg = self._open_progress("Nesting components")
         self._nest_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._nest_worker.cancel)
@@ -3944,11 +3944,11 @@ class MainWindow(QMainWindow):
         self._bed_nest_status.setText("Nesting failed — see log")
         self.append_log("[nest ERROR]\n" + tb)
 
-    def _on_nest_cancelled(self) -> None:
+    def _on_nest_canceled(self) -> None:
         self._close_progress()
         self._bed_nest_btn.setEnabled(True)
-        self._bed_nest_status.setText("Nesting cancelled")
-        self.append_log("[nest] Cancelled.")
+        self._bed_nest_status.setText("Nesting canceled")
+        self.append_log("[nest] Canceled.")
 
     def _refresh_nest_render(self) -> None:
         """Build the bed-canvas footprints from the current nest, flag keep-out
@@ -4041,7 +4041,7 @@ class MainWindow(QMainWindow):
         self._sync_rotation_controls()
 
     def _rotate_selected_placement(self, ddeg: float) -> None:
-        """Rotate the selected placement by `ddeg` about its centre, then re-render +
+        """Rotate the selected placement by `ddeg` about its center, then re-render +
         re-check clearance (no program regeneration — the placed ops carry the spin)."""
         pl = self._selected_placement()
         if pl is None:
@@ -4096,7 +4096,7 @@ class MainWindow(QMainWindow):
         """Post the whole nested bed as one ``worktable.nc`` (BUILDPLAN M7.7).
 
         Generalises the M6.5 fixture worktable onto the user-tagged ``Worktable`` +
-        the multi-component nest (M7.6): one combined, tool-change-minimised program,
+        the multi-component nest (M7.6): one combined, tool-change-minimized program,
         linted + keep-out-clearance-checked + cut-timed over the whole bed, stored in
         the project. The component programs were already generated by Nest Components
         — on the posting grid, under the posting machine limits — so this is a fast
@@ -4263,10 +4263,10 @@ class MainWindow(QMainWindow):
         self._sim_worker.progress.connect(self.append_log)
         self._sim_worker.finished.connect(self._on_sim_bed_finished)
         self._sim_worker.error.connect(self._on_sim_bed_error)
-        self._sim_worker.cancelled.connect(self._on_sim_bed_cancelled)
+        self._sim_worker.canceled.connect(self._on_sim_bed_canceled)
         self._sim_worker.finished.connect(self._sim_thread.quit)
         self._sim_worker.error.connect(self._sim_thread.quit)
-        self._sim_worker.cancelled.connect(self._sim_thread.quit)
+        self._sim_worker.canceled.connect(self._sim_thread.quit)
         dlg = self._open_progress("Simulating bed")
         self._sim_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._sim_worker.cancel)
@@ -4323,10 +4323,10 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Bed simulation failed — see log")
         self._update_view_toggles()
 
-    def _on_sim_bed_cancelled(self) -> None:
+    def _on_sim_bed_canceled(self) -> None:
         self._close_progress()
-        self.append_log("[bed-sim] Cancelled.")
-        self.status_lbl.setText("Bed simulation cancelled")
+        self.append_log("[bed-sim] Canceled.")
+        self.status_lbl.setText("Bed simulation canceled")
         self._update_view_toggles()
 
     def _on_save_bed(self) -> None:
@@ -4743,9 +4743,9 @@ class MainWindow(QMainWindow):
         """Re-tint + re-orient the custom ToolSep dividers (BUILDPLAN M7.12 UI). Run on
         re-dock + theme change. Charcoal on light / a darker amber on dark keeps them
         subtle but well-defined against either toolbar background."""
-        colour = "#8d7030" if self._dark_mode else "#383838"
+        color = "#8d7030" if self._dark_mode else "#383838"
         for sep in getattr(self, "_tool_seps", []):
-            sep.set_color(colour)
+            sep.set_color(color)
             sep.refresh()                             # flip axis for the new orientation
 
     # -------------------------------------------------- customizable actions (M7.15)
@@ -4948,7 +4948,7 @@ class MainWindow(QMainWindow):
             return False
         if r == QMessageBox.StandardButton.Save:
             self._on_save_project()
-            return not self._dirty   # False if the save dialog was cancelled
+            return not self._dirty   # False if the save dialog was canceled
         return True   # Discard
 
     def _post_load_baseline(self) -> None:
@@ -5721,7 +5721,7 @@ class MainWindow(QMainWindow):
         non_empty = [k for k, v in ws.layers.items() if v]
         self.params.set_file(
             ws.label,
-            "Layers: " + ", ".join(non_empty) if non_empty else "No recognised layers")
+            "Layers: " + ", ".join(non_empty) if non_empty else "No recognized layers")
         self.params.set_zones(ws.partition)
 
         # Kind-aware param dock (M7.3): show this component's tabs and push its
@@ -5818,7 +5818,7 @@ class MainWindow(QMainWindow):
         self._load_active_geometry(ws)
         self._apply_workspace_to_ui(ws)
         # The dock PAGE is chosen by _switch_view (called from _apply_workspace_to_ui)
-        # so it follows the active view; here we only honour the sidebar toggle.
+        # so it follows the active view; here we only honor the sidebar toggle.
         self._right_dock.setVisible(self._act_sidebar.isChecked())
         if self.component_tabs.currentIndex() != index:
             self.component_tabs.blockSignals(True)
@@ -6022,7 +6022,7 @@ class MainWindow(QMainWindow):
         self._import_thread.start()
 
     def _on_import_finished(
-        self, layers: dict, boxing, raw_summary: dict, unrecognised: list,
+        self, layers: dict, boxing, raw_summary: dict, unrecognized: list,
         curves: dict | None = None,
     ) -> None:
         from guildmodel.core.project.schema import ComponentKind, component_label
@@ -6037,10 +6037,10 @@ class MainWindow(QMainWindow):
                 for lyr, types in raw_summary.items()
             )
         )
-        if unrecognised:
+        if unrecognized:
             self.append_log(
-                "[warn] Unrecognised layers (ignored): "
-                + ", ".join(repr(l) for l in unrecognised)
+                "[warn] Unrecognized layers (ignored): "
+                + ", ".join(repr(l) for l in unrecognized)
                 + "  (expected: " + " ".join(sorted(SUPPORTED_LAYERS)) + ")"
             )
 
@@ -6223,10 +6223,10 @@ class MainWindow(QMainWindow):
         self._mesh_worker.built.connect(self._on_multi_mesh_built)
         self._mesh_worker.finished.connect(self._on_multi_mesh_finished)
         self._mesh_worker.error.connect(self._on_multi_mesh_error)
-        self._mesh_worker.cancelled.connect(self._on_multi_mesh_cancelled)
+        self._mesh_worker.canceled.connect(self._on_multi_mesh_canceled)
         self._mesh_worker.finished.connect(self._mesh_thread.quit)
         self._mesh_worker.error.connect(self._mesh_thread.quit)
-        self._mesh_worker.cancelled.connect(self._mesh_thread.quit)
+        self._mesh_worker.canceled.connect(self._mesh_thread.quit)
         self._mesh_worker.stage.connect(self._on_stage)
         dlg = self._open_progress("Building 3D models")
         dlg.canceled.connect(self._mesh_worker.cancel)
@@ -6271,11 +6271,11 @@ class MainWindow(QMainWindow):
         self._act_build.setEnabled(True)
         self.status_lbl.setText("Build failed — see log")
 
-    def _on_multi_mesh_cancelled(self) -> None:
+    def _on_multi_mesh_canceled(self) -> None:
         self._close_progress()
         self._act_build.setEnabled(True)
         self._show_active_3d()
-        self.append_log("[3D] Build cancelled.")
+        self.append_log("[3D] Build canceled.")
 
     def _on_castle_sliding(self) -> None:
         """A Model-tab handle is moving: show the shape, and nothing else.
@@ -6394,7 +6394,7 @@ class MainWindow(QMainWindow):
                 geom = self._lens_od
             frame = self._temple_snap_frame()
             if frame is not None:
-                cx, cy = self._snap_to_design((0.0, 0.0), frame)  # the blank centre
+                cx, cy = self._snap_to_design((0.0, 0.0), frame)  # the blank center
             else:
                 cx, cy = 0.0, 0.0
                 if geom is not None:
@@ -6423,7 +6423,7 @@ class MainWindow(QMainWindow):
         (= -work_offset): the stock-box datum, or the design origin in fixture
         mode (BUILDPLAN M6.2). Flat parts draw it too (2026-07-09): a snapped
         temple back-projects the blank-frame datum through the inverse snap, a
-        block offsets it by the lens centre its CAM frame is centred on."""
+        block offsets it by the lens center its CAM frame is centerd on."""
         if self._active_is_flat():
             pz = self.params.cam_params().program_zero
             label = pz.label()
@@ -6476,7 +6476,7 @@ class MainWindow(QMainWindow):
         what is owed afterwards is one build of the current state. That also
         paces a drag at exactly the kernel's rate — start one, and when it lands
         start another if anything moved — with no interval to tune and no way to
-        livelock by cancelling faster than a build can finish.
+        livelock by canceling faster than a build can finish.
         """
         if not self._rebuild_pending:
             return
@@ -6520,10 +6520,10 @@ class MainWindow(QMainWindow):
         self._mesh_thread.started.connect(self._mesh_worker.run)
         self._mesh_worker.finished.connect(self._on_mesh_finished)
         self._mesh_worker.error.connect(self._on_mesh_error)
-        self._mesh_worker.cancelled.connect(self._on_mesh_cancelled)
+        self._mesh_worker.canceled.connect(self._on_mesh_canceled)
         self._mesh_worker.finished.connect(self._mesh_thread.quit)
         self._mesh_worker.error.connect(self._mesh_thread.quit)
-        self._mesh_worker.cancelled.connect(self._mesh_thread.quit)
+        self._mesh_worker.canceled.connect(self._mesh_thread.quit)
 
         if show_progress:
             dlg = self._open_progress("Building 3D model")
@@ -6560,10 +6560,10 @@ class MainWindow(QMainWindow):
         self._mesh_thread.started.connect(self._mesh_worker.run)
         self._mesh_worker.finished.connect(self._on_flat_mesh_finished)
         self._mesh_worker.error.connect(self._on_mesh_error)
-        self._mesh_worker.cancelled.connect(self._on_mesh_cancelled)
+        self._mesh_worker.canceled.connect(self._on_mesh_canceled)
         self._mesh_worker.finished.connect(self._mesh_thread.quit)
         self._mesh_worker.error.connect(self._mesh_thread.quit)
-        self._mesh_worker.cancelled.connect(self._mesh_thread.quit)
+        self._mesh_worker.canceled.connect(self._mesh_thread.quit)
 
         if show_progress:
             dlg = self._open_progress("Building 3D model")
@@ -6611,7 +6611,7 @@ class MainWindow(QMainWindow):
 
         The kernel's own `IsValid` is not consulted: it returns True for the
         empty results, the order-dependent boolean corruption and the leaking
-        shells catalogued in BUILDPLAN-NEW §3.1. The mesh is the only check
+        shells catalogd in BUILDPLAN-NEW §3.1. The mesh is the only check
         that has caught any of them.
         """
         from guildmodel.core.mesh_check import verify_mesh
@@ -6650,10 +6650,10 @@ class MainWindow(QMainWindow):
         # would also wedge every later rebuild behind one bad one.
         self._drain_pending_rebuild()
 
-    def _on_mesh_cancelled(self) -> None:
+    def _on_mesh_canceled(self) -> None:
         self._close_progress()
-        self.append_log("[3D] Build cancelled.")
-        self.status_lbl.setText("Build cancelled")
+        self.append_log("[3D] Build canceled.")
+        self.status_lbl.setText("Build canceled")
         self._act_build.setEnabled(True)
         # Dropped, not drained. Cancel is the one case where the maker has said
         # they do not want this build — starting the next one straight away
@@ -6813,10 +6813,10 @@ class MainWindow(QMainWindow):
         self._sim_worker.progress.connect(self.append_log)
         self._sim_worker.finished.connect(self._on_sim_finished)
         self._sim_worker.error.connect(self._on_sim_error)
-        self._sim_worker.cancelled.connect(self._on_sim_cancelled)
+        self._sim_worker.canceled.connect(self._on_sim_canceled)
         self._sim_worker.finished.connect(self._sim_thread.quit)
         self._sim_worker.error.connect(self._sim_thread.quit)
-        self._sim_worker.cancelled.connect(self._sim_thread.quit)
+        self._sim_worker.canceled.connect(self._sim_thread.quit)
 
         dlg = self._open_progress("Simulating cut")
         self._sim_worker.stage.connect(self._on_stage)
@@ -6840,7 +6840,7 @@ class MainWindow(QMainWindow):
             "warn": "Cut simulated — review the flagged regions",
             "fail": "Cut incomplete — see the flagged regions",
         }.get(report.status(), "Cut simulated"))
-        # Keep a serialisable summary for the .gmodel (no numpy masks).
+        # Keep a serializable summary for the .gmodel (no numpy masks).
         c, g = report.completeness, report.gouge
         self._last_report = {
             "status": report.status(),
@@ -6859,10 +6859,10 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Simulation failed — see log")
         self._update_view_toggles()
 
-    def _on_sim_cancelled(self) -> None:
+    def _on_sim_canceled(self) -> None:
         self._close_progress()
-        self.append_log("[sim] Cancelled.")
-        self.status_lbl.setText("Simulation cancelled")
+        self.append_log("[sim] Canceled.")
+        self.status_lbl.setText("Simulation canceled")
         self._update_view_toggles()
 
     def _on_generate(self) -> None:
@@ -6900,10 +6900,10 @@ class MainWindow(QMainWindow):
         self._gcode_worker.progress.connect(self.append_log)
         self._gcode_worker.finished.connect(self._on_gcode_finished)
         self._gcode_worker.error.connect(self._on_gcode_error)
-        self._gcode_worker.cancelled.connect(self._on_gcode_cancelled)
+        self._gcode_worker.canceled.connect(self._on_gcode_canceled)
         self._gcode_worker.finished.connect(self._gcode_thread.quit)
         self._gcode_worker.error.connect(self._gcode_thread.quit)
-        self._gcode_worker.cancelled.connect(self._gcode_thread.quit)
+        self._gcode_worker.canceled.connect(self._gcode_thread.quit)
 
         dlg = self._open_progress("Generating G-code")
         self._gcode_worker.stage.connect(self._on_stage)
@@ -6939,10 +6939,10 @@ class MainWindow(QMainWindow):
         worker.progress.connect(self.append_log)
         worker.finished.connect(self._on_gcode_finished)
         worker.error.connect(self._on_gcode_error)
-        worker.cancelled.connect(self._on_gcode_cancelled)
+        worker.canceled.connect(self._on_gcode_canceled)
         worker.finished.connect(self._gcode_thread.quit)
         worker.error.connect(self._gcode_thread.quit)
-        worker.cancelled.connect(self._gcode_thread.quit)
+        worker.canceled.connect(self._gcode_thread.quit)
 
         dlg = self._open_progress("Generating base-curve block")
         worker.stage.connect(self._on_stage)
@@ -6980,10 +6980,10 @@ class MainWindow(QMainWindow):
         worker.progress.connect(self.append_log)
         worker.finished.connect(self._on_gcode_finished)
         worker.error.connect(self._on_gcode_error)
-        worker.cancelled.connect(self._on_gcode_cancelled)
+        worker.canceled.connect(self._on_gcode_canceled)
         worker.finished.connect(self._gcode_thread.quit)
         worker.error.connect(self._gcode_thread.quit)
-        worker.cancelled.connect(self._gcode_thread.quit)
+        worker.canceled.connect(self._gcode_thread.quit)
 
         dlg = self._open_progress("Generating worktable program")
         worker.stage.connect(self._on_stage)
@@ -7031,7 +7031,7 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- toolpath overlay (M7.11)
 
     def _show_toolpath_overlay(self, overlay: list, rows: list) -> None:
-        """Colour the program's ops, draw them over the 2D design, and fill the
+        """Color the program's ops, draw them over the 2D design, and fill the
         toolpath inspector (BUILDPLAN M7.11)."""
         colors = theme.toolpath_colors()
         for i, op in enumerate(overlay):
@@ -7199,15 +7199,15 @@ class MainWindow(QMainWindow):
             and self._lens_od is not None)
         self.status_lbl.setText("G-code generation failed — see log")
 
-    def _on_gcode_cancelled(self) -> None:
+    def _on_gcode_canceled(self) -> None:
         self._close_progress()
-        self.append_log("[gcode] Cancelled.")
+        self.append_log("[gcode] Canceled.")
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
         self._act_worktable.setEnabled(
             self._partition is not None and self._partition.classified
             and self._lens_od is not None)
-        self.status_lbl.setText("G-code cancelled")
+        self.status_lbl.setText("G-code canceled")
 
     def _on_open_in_guildsend(self) -> None:
         """Hand the job to GuildSend (the ecosystem's sender). The saved
@@ -7223,7 +7223,7 @@ class MainWindow(QMainWindow):
             # The handoff is the file on disk; make sure it holds this session.
             self._on_save_project()
             if self._project_path is None or self._dirty:
-                return                            # save dialog cancelled
+                return                            # save dialog canceled
         cmd = _find_guildsend()
         if cmd is None:
             QMessageBox.warning(
@@ -7327,10 +7327,10 @@ class MainWindow(QMainWindow):
         self._export_worker.progress.connect(self.append_log)
         self._export_worker.finished.connect(self._on_export_finished)
         self._export_worker.error.connect(self._on_export_error)
-        self._export_worker.cancelled.connect(self._on_export_cancelled)
+        self._export_worker.canceled.connect(self._on_export_canceled)
         self._export_worker.finished.connect(self._export_thread.quit)
         self._export_worker.error.connect(self._export_thread.quit)
-        self._export_worker.cancelled.connect(self._export_thread.quit)
+        self._export_worker.canceled.connect(self._export_thread.quit)
 
         dlg = self._open_progress("Exporting STL")
         self._export_worker.stage.connect(self._on_stage)
@@ -7349,11 +7349,11 @@ class MainWindow(QMainWindow):
         self._act_export.setEnabled(True)
         self.status_lbl.setText("STL export failed — see log")
 
-    def _on_export_cancelled(self) -> None:
+    def _on_export_canceled(self) -> None:
         self._close_progress()
-        self.append_log("[export] Cancelled.")
+        self.append_log("[export] Canceled.")
         self._act_export.setEnabled(True)
-        self.status_lbl.setText("STL export cancelled")
+        self.status_lbl.setText("STL export canceled")
 
     def _on_about(self) -> None:
         from guildmodel import __version__

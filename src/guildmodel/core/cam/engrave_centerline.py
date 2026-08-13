@@ -4,7 +4,7 @@ GuildDraw exports engraving text as **closed glyph outlines** on the ENGRAVING l
 (the perimeter of each letterform — an "O" is an outer ring plus its counter ring).
 Tracing those outlines mills the *border* of every stroke, which double-cuts thin
 strokes and leaves a ridge down their middle. Instead we engrave a single line down
-the **centre of each stroke** at one fixed depth — efficient (one pass per stroke)
+the **center of each stroke** at one fixed depth — efficient (one pass per stroke)
 and faithful to the drawn glyph (serif spurs included, since they fall out of the
 medial axis naturally).
 
@@ -162,7 +162,7 @@ def engraving_centerlines(
     `spacing` must stay well below the stroke width or the Voronoi medial axis
     zig-zags between staggered boundary samples (a jagged engraving groove). At 0.1 mm
     it converges to the true smooth spine for the ~1 mm strokes of engraved text
-    (0.25 mm left the centre of a smooth stroke turning ~2× more than the stroke does).
+    (0.25 mm left the center of a smooth stroke turning ~2× more than the stroke does).
 
     `prune_len` is coupled to `spacing`: the only spurs a clean glyph outline throws are
     the ~`spacing`-long ones from boundary discretisation, so prune just above that

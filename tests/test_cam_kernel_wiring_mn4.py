@@ -6,7 +6,7 @@ They now go through `core.zmap.castle_relief`, and the new failure mode is one
 path that does not: a G-code program cut from a surface the maker is not
 looking at, with nothing on screen to say so.
 
-These are structural checks by AST rather than behavioural ones, because the
+These are structural checks by AST rather than behavioral ones, because the
 thing to prevent is a *call site* rather than a wrong answer — a future edit
 that adds a sixth posting path and forgets the keyword. They are cheap and they
 run without Qt.
@@ -92,7 +92,7 @@ def test_every_worker_that_reaches_the_cam_is_told_which_kernel():
 
 
 def test_the_dispatcher_falls_back_rather_than_raising_on_a_strange_name():
-    """A prefs file is not a contract. An unrecognised kernel must behave as
+    """A prefs file is not a contract. An unrecognized kernel must behave as
     the app always did, not stop a maker posting a job."""
     import inspect
 

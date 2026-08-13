@@ -1,7 +1,7 @@
 """A cutter must CROSS every surface it exits, never graze it.
 
 BUILDPLAN-NEW M-N0. The bridge relief's loft ended exactly on `y_base` — the
-highest point of the body on the centreline — so its end cap was the plane
+highest point of the body on the centerline — so its end cap was the plane
 y = y_base, tangent to the bridge wall along one vertical line at x = 0. The cut
 left that line carrying four faces: a non-manifold model with **no holes at
 all**, which `BRepCheck_Analyzer` called valid and which the app reported as
@@ -79,7 +79,7 @@ def test_the_model_verifies_end_to_end(scooped):
 def test_the_scoop_stays_above_its_anterior_clamp(scooped, aviator_front):
     """The cutter must not reach the anterior face, and on this fixture that is
     not a formality: the aviator's decorative keyhole sits on the scoop's
-    centreline, so seven of its thirteen anchor rays hit nothing.
+    centerline, so seven of its thirteen anchor rays hit nothing.
 
     While `surface_z_at` reported a miss as 0.0 the sections at those stations
     were anchored on the anterior face and — closing upward to `top` — took the
@@ -129,7 +129,7 @@ def test_the_extension_removes_no_extra_material(scooped):
     two solid kernels had been cutting a different scoop from the raster all
     along** *(2026-08-11)*. Both lofted a half-ellipse, `sqrt(1 - (x/a)**2)`;
     the raster carved a cosine bell, `0.5 + 0.5*cos(pi*x/a)`. Same width, same
-    depth at the centreline, and both were documented — the B-Rep's own
+    depth at the centerline, and both were documented — the B-Rep's own
     docstring said in as many words that the raster "substitutes a cosine bell"
     — so every gate that compared a depth or a width passed and nothing ever
     compared the areas. They differ by exactly `pi/2`: 7.5398 against 4.8000 mm2

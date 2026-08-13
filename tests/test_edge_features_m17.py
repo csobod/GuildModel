@@ -1,4 +1,4 @@
-"""Two-sided modelling foundations: the anterior surface and partial-span edge
+"""Two-sided modeling foundations: the anterior surface and partial-span edge
 chamfers / fillets (BUILDPLAN M17).
 
 The shape that motivated this: a chamfer on the **anterior brow**, over each
@@ -168,7 +168,7 @@ def test_a_whole_ring_cannot_be_trimmed_longer_than_itself(demo):
 def test_trimming_a_whole_ring_run_actually_shortens_the_cut(demo):
     """The unit above is where the bug was, but it is not what the maker sees.
 
-    Measured on the demo: 7662.828 mm3 untrimmed, and every millimetre of trim
+    Measured on the demo: 7662.828 mm3 untrimmed, and every millimeter of trim
     hands material back, monotonically. Before the fix all three builds returned
     the identical mesh.
     """
@@ -246,7 +246,7 @@ def test_brow_chamfer_does_not_cross_the_bridge(demo):
     assert len(x) > 100
     # two clusters, one per side, with a clear gap over the nose
     assert (x > 5).any() and (x < -5).any()
-    assert not ((np.abs(x) < 4).any()), "the chamfer reaches the bridge centreline"
+    assert not ((np.abs(x) < 4).any()), "the chamfer reaches the bridge centerline"
     # and it is a BROW: everything above the frame's vertical middle
     assert y.min() > 0
 
@@ -267,7 +267,7 @@ def test_mirror_off_cuts_one_side_only(demo):
     assert (x < 0).sum() == 0
 
 
-def test_a_run_with_no_ends_is_recognised_as_one(demo):
+def test_a_run_with_no_ends_is_recognized_as_one(demo):
     """`spans_whole_ring` is what stops the solid kernels treating the ring's
     arbitrary coordinate seam as two ends of a run — duplicating a station,
     capping the sweep twice in the same place, and feathering the cut to nothing
@@ -305,7 +305,7 @@ def test_mirrored_swaps_od_and_os_and_never_re_mirrors():
     # a lens edge swaps sides too
     lens = EdgeFeature(edge="lens_od", zones=["eyewire_inferior_od"])
     assert lens.mirrored().edge == "lens_os"
-    # a centre zone is its own mirror
+    # a center zone is its own mirror
     assert EdgeFeature(zones=["bridge"]).mirrored().zones == ["bridge"]
 
 
@@ -431,7 +431,7 @@ def test_mesh_bottom_rides_the_anterior_surface(demo):
 
 
 def test_posterior_program_is_unchanged_by_an_anterior_feature(demo):
-    """M17 is modelling only — the posted posterior program must not move."""
+    """M17 is modeling only — the posted posterior program must not move."""
     import yaml
     from guildmodel.core.cam.castle_ops import generate_castle_program
 
@@ -540,7 +540,7 @@ def test_panel_zone_picker_follows_the_loaded_drawing(tmp_path, monkeypatch, dem
     assert offered == {z.name for z in part.zones}
 
 
-def test_panel_bezel_face_greys_the_other_side(tmp_path, monkeypatch):
+def test_panel_bezel_face_grays_the_other_side(tmp_path, monkeypatch):
     p = _panel(tmp_path, monkeypatch)
     p.bezel_enable.setChecked(True)
     p.bezel_face.setCurrentIndex(1)                 # Anterior
@@ -553,7 +553,7 @@ def test_panel_bezel_face_greys_the_other_side(tmp_path, monkeypatch):
     assert p.bezel_width.isEnabled() and p.bezel_ant_width.isEnabled()
 
 
-def test_panel_fillet_greys_the_chamfer_numbers(tmp_path, monkeypatch):
+def test_panel_fillet_grays_the_chamfer_numbers(tmp_path, monkeypatch):
     p = _panel(tmp_path, monkeypatch)
     p._on_edge_add()
     p.ef_profile.setCurrentIndex(1)                 # Fillet
