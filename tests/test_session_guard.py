@@ -293,12 +293,26 @@ def test_boot_module_is_light():
 
 
 # ------------------------------------------------------- display platform + DPI
+#
+# `force_x11_on_wayland` is a Linux question — it guards on
+# `sys.platform.startswith("linux")`, because the X11-only renderer it works
+# around is VTK's Linux one. So each of these pins the platform, the way the
+# `ui_scale` tests below already do. Left unpinned they do not describe the
+# same behaviour on every runner:
+#
+#   * the switching test **failed the macOS release build** (2026-08-13), which
+#     is how this was found — it asserts a Linux-only True;
+#   * the no-XWayland test *passed* on macOS for the wrong reason, short-
+#     circuiting on the platform check before it ever reached the `DISPLAY`
+#     one it exists to pin. It would have gone on passing with that guard
+#     deleted, which is worse than failing.
 
 def test_force_x11_respects_an_explicit_platform(monkeypatch):
     """Someone debugging the Wayland path — or a test asking for `offscreen` —
     must be believed. Only an unset QT_QPA_PLATFORM may be filled in."""
     from guildmodel.gui.hidpi import force_x11_on_wayland
 
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
@@ -312,6 +326,7 @@ def test_force_x11_switches_on_a_wayland_session(monkeypatch):
     2026-08-07 on VTK 9.6.2 / PySide6 6.11.1 — still true."""
     from guildmodel.gui.hidpi import force_x11_on_wayland
 
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
@@ -325,6 +340,7 @@ def test_force_x11_will_not_strand_a_session_without_xwayland(monkeypatch):
     the app does not start at all, which is worse than 3D not working."""
     from guildmodel.gui.hidpi import force_x11_on_wayland
 
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
