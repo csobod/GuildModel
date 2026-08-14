@@ -147,6 +147,38 @@ To build it yourself on Windows: `scripts\build_release.ps1` (needs
 [Inno Setup](https://jrsoftware.org/isdl.php) for the installer; it produces the
 portable `.zip` without it).
 
+## Install (macOS)
+
+Download `GuildModel-<version>-macos-arm64.dmg` (Apple Silicon) or
+`-macos-x86_64.dmg` (Intel) and drag the app to Applications. The builds are
+unsigned, so the first launch needs **right-click the app ▸ Open ▸ Open**.
+
+## Install (Linux, or from source on any platform)
+
+There is no packaged Linux build. Download `GuildModel-<version>-source.zip`
+from the release (or clone this repo) and install it into a virtualenv:
+
+```
+python -m venv .venv
+source .venv/bin/activate
+pip install .
+guildmodel
+```
+
+**Install `.` and not `.[dev]`.** The `dev` extra exists for the parity gates
+and pulls OpenCASCADE (`cadquery-ocp`, **264 MB**) that the app itself never
+loads: the B-Rep kernel is not the default, does not post G-code, and no
+posterior feature reaches it on the shipped path. A plain `pip install .` gets
+you the whole application.
+
+If you do want the third kernel, `pip install ".[brep]"` installs it and
+`GUILDMODEL_BREP=1 guildmodel` puts it in Preferences ▸ General. Without both,
+`core.kernels` resolves a saved `"brep"` preference to the mesh kernel, so
+nothing breaks by leaving it out.
+
+Wayland needs nothing from you; see
+[Linux / Wayland](#linux--wayland--handled-automatically) below.
+
 ## Building releases without that platform
 
 Neither release build needs a machine of its own. Both workflows are manual —
@@ -165,6 +197,9 @@ PyInstaller does not cross-compile, which is why this is a matter of borrowing a
 runner rather than building everything in one place.
 
 ## Installation (development)
+
+For working on GuildModel, not for running it — this is the one that pulls
+OpenCASCADE, because the kernel parity gates measure the mesh against it:
 
 ```
 pip install -e ".[dev]"
