@@ -50,6 +50,18 @@ RELIEF_OPS = ("Rough Relief", "Fine Relief")
 # Gate midway, well clear of good and nowhere near bad.
 MAX_Z_REVERSALS_PER_100MM = 25.0
 
+# The v1.6 stepover (0.9 → 1.2) collapsed the DENSITY separation this gate was
+# calibrated on: preview-grade posting fell from 41.8 to 10.4 reversals per
+# 100 mm on this fixture, into the same band as correct posting (6.9). What a
+# coarse grid cannot hide is the SIZE of its steps — worst amplitude 1.71 mm
+# against the correct grid's 0.75, the quantization of a 0.4 mm cell showing
+# through the drop-cutter surface — so the incident condition is now gated on
+# both axes, and the canary below requires a coarse posting to trip at least
+# one of them. (Corner Optical's frame at shipped settings measures 0.946
+# worst; the 1.1 sits above every correct program we have and 28% under the
+# coarse floor on this fixture.)
+MAX_Z_AMPLITUDE_MM = 1.1
+
 
 # ------------------------------------------------------------------ helpers
 
@@ -226,8 +238,18 @@ def test_placement_transform_survives_an_interactive_rotation(cut_ops):
 
 # ------------------------------------------------------------------ §7.3 Z-thrash
 
+def _max_amplitude(op) -> float:
+    from guildmodel.core.cam.zprofile import measure_paths
+    return measure_paths(op).max_amplitude_mm
+
+
 def test_relief_ops_on_the_cut_grid_do_not_thrash_z(cut_ops):
-    """The gate the incident asks for: bounded Z-reversal density on the relief ops."""
+    """The gate the incident asks for: bounded Z-reversal density AND amplitude.
+
+    Two axes since v1.6 (see MAX_Z_AMPLITUDE_MM): the wider stepover collapsed
+    the density separation, and a coarse grid's unmistakable signature is now
+    the size of its steps, not how often they come.
+    """
     for name in RELIEF_OPS:
         op = next(o for o in cut_ops if o.name == name)
         density = _z_reversals_per_100mm(op)
@@ -235,19 +257,32 @@ def test_relief_ops_on_the_cut_grid_do_not_thrash_z(cut_ops):
             f"{name}: {density:.1f} Z reversals per 100 mm of XY travel exceeds "
             f"{MAX_Z_REVERSALS_PER_100MM} — the relief grid coarsened "
             "(INCIDENT-2026-07-29)")
+        amp = _max_amplitude(op)
+        assert amp <= MAX_Z_AMPLITUDE_MM, (
+            f"{name}: a {amp:.2f} mm Z reversal exceeds {MAX_Z_AMPLITUDE_MM} — "
+            "the relief grid coarsened (INCIDENT-2026-07-29)")
 
 
 def test_the_z_thrash_gate_has_teeth(demo_front):
-    """The preview grid must actually fail the gate above.
+    """A preview-grade posting must actually fail the gate above, on at least
+    one of its two axes.
 
-    Without this the gate could pass for reasons unrelated to resolution and would
-    not catch a regression to preview-grade posting.
+    Without this the gate could pass for reasons unrelated to resolution and
+    would not catch a regression to preview-grade posting. The axes are OR'd
+    here deliberately: at the old 0.9 stepover the coarse grid tripped density
+    (41.8 against the gate's 25); at 1.2 the density separation collapsed
+    (10.4 against correct's 6.9) and amplitude carries the tooth (1.71 against
+    correct's 0.75). Either way, coarse posting must not pass BOTH.
     """
     partition, hinges = demo_front
     coarse = _castle_ops(partition, hinges, CastleParams(), CastleCamParams(),
                          max(PREVIEW_RES_MM, 0.4))
-    worst = max(_z_reversals_per_100mm(next(o for o in coarse if o.name == n))
-                for n in RELIEF_OPS)
-    assert worst > MAX_Z_REVERSALS_PER_100MM, (
-        "a preview-grade relief no longer trips the Z-thrash gate — the gate has "
+    ops = [next(o for o in coarse if o.name == n) for n in RELIEF_OPS]
+    worst_density = max(_z_reversals_per_100mm(o) for o in ops)
+    worst_amp = max(_max_amplitude(o) for o in ops)
+    assert (worst_density > MAX_Z_REVERSALS_PER_100MM
+            or worst_amp > MAX_Z_AMPLITUDE_MM), (
+        f"a preview-grade relief no longer trips the Z-thrash gate on either "
+        f"axis (density {worst_density:.1f} <= {MAX_Z_REVERSALS_PER_100MM}, "
+        f"amplitude {worst_amp:.2f} <= {MAX_Z_AMPLITUDE_MM}) — the gate has "
         "stopped measuring what caused the incident")
