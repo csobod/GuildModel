@@ -689,15 +689,16 @@ class CastleCamParams(BaseModel):
     # into one long sweep, like a Fusion contour. A run still shorter than
     # `relief_min_run_mm` after linking is dropped (negligible material, hand-finished).
     relief_link_gap_mm: float = 4.0
-    # How far ABOVE its two cut neighbours a link may carry the tool (M-Z2). The
-    # linking above bridges a masked gap by riding the cutter over it at the
-    # drop-cutter height — fine for the thin cap it was written for, wrong for a
-    # nosepad tower, which is masked out precisely because it sits at stock height:
-    # bridging that drives the tool from the terrace up to the cap and back down at
-    # cutting feed. Corner Optical's frame climbed 5.8 mm out of the eyewire terrace
-    # this way. 0.5 mm still bridges a thin cap and refuses a tower; a gap that fails
-    # the test becomes two paths with a retract between, which is what the mask
-    # intended in the first place.
+    # How far ABOVE its two cut ends the tool may be carried when it rides the
+    # drop-cutter surface between them (M-Z2, M-Z3). Two places do that: the gap
+    # linking above, and the M12.2 stitch that joins adjacent paths into one sweep.
+    # Both were written for "a thin cap" and neither asked how tall it was — wrong
+    # wherever the ground between two cut points is masked *precisely because it
+    # stands at stock height*, which is what the rim band does next to uncut stock.
+    # Corner Optical's frame climbed 5.8 mm out of the eyewire terrace that way.
+    # 0.5 mm still rides a thin cap; over it, the link or the stitch is refused and
+    # the paths keep their own entries — a retract and a plunge, removing exactly the
+    # same material, which is what the cut mask intended in the first place.
     relief_link_max_rise_mm: float = Field(0.5, ge=0)
     relief_min_run_mm: float = 1.0
     simplify_tol_mm: float = 0.01

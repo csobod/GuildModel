@@ -211,11 +211,11 @@ def test_z_profile_issues_reach_the_inspector_with_their_own_severity():
 class TestLinkRiseBudget:
     """`_link_breaks` decides whether a masked gap in a relief ring is bridged.
 
-    The M11 linking only asked how WIDE the gap was. Where the gap is the
-    nosepad tower — masked out precisely because it stands at stock height —
-    bridging it drives the tool from the terrace up to the cap and back down at
-    cutting feed. Corner Optical's frame climbed 5.8 mm that way, which is the
-    residual the M-Z1 stepover floor could not touch.
+    The M11 linking only asked how WIDE the gap was. Where the ground under the
+    gap is masked *precisely because it stands at stock height* — the rim band
+    next to uncut stock, on Corner Optical's frame — bridging it drives the tool
+    from the terrace up onto that stock and back down at cutting feed. Theirs
+    climbed 5.8 mm that way, the residual the M-Z1 stepover floor could not touch.
     """
 
     @staticmethod
@@ -267,6 +267,58 @@ class TestLinkRiseBudget:
         tower = [5.0, 5.0, 5.0 + budget + 0.01, 5.0, 5.0]
         assert self._breaks([0, 1, 3, 4], thin, max_rise=budget) == []
         assert self._breaks([0, 1, 3, 4], tower, max_rise=budget) == [2]
+
+
+# --------------------------------------------- M-Z3: connectors have one too
+
+class TestStitchRiseBudget:
+    """`_stitch_close_paths` joins two adjacent paths with a connector riding the
+    same drop-cutter surface, and had the same blind spot for the same reason.
+
+    Nothing on a job we have exercises it — Corner Optical's frame is untouched
+    by the budget, and of the shipped fixtures only the demo loses a single
+    connector, a 0.9 mm ride over the nosepad tower in Rough Relief that moves no
+    guard metric. This is the hole closed rather than the bug caught: the two
+    join points are cut, everything between them need not be, and if a stitch
+    ever spans the rim band the link is now the only one of the two that would
+    refuse it.
+    """
+
+    @staticmethod
+    def _stitch(bridge_z: float, max_rise: float):
+        import numpy as np
+
+        from guildmodel.core.cam.castle_ops import _stitch_close_paths
+
+        z = np.full((10, 10), 5.0)
+        z[:, 5] = bridge_z                       # the ground midway between them
+        a = [(2.0, 5.0, 5.0), (3.0, 5.0, 5.0)]
+        b = [(7.0, 5.0, 5.0), (8.0, 5.0, 5.0)]
+        return _stitch_close_paths([a, b], z, 0.0, 0.0, 1.0, 4.0, max_rise)
+
+    def test_a_flat_step_across_is_stitched(self):
+        assert len(self._stitch(5.0, 0.5)) == 1
+
+    def test_a_climb_to_stock_height_is_refused(self):
+        out = self._stitch(10.0, 0.5)
+        assert len(out) == 2                     # each keeps its own entry
+        assert max(p[2] for path in out for p in path) == 5.0
+
+    def test_the_budget_is_what_decides_it(self):
+        assert len(self._stitch(10.0, 1e9)) == 1
+        assert len(self._stitch(5.0 + 0.49, 0.5)) == 1
+        assert len(self._stitch(5.0 + 0.51, 0.5)) == 2
+
+    def test_the_two_budgets_are_one_parameter(self):
+        """A maker turning this down means it in both places, or the number would
+        have to be explained twice."""
+        import inspect
+
+        from guildmodel.core.cam import castle_ops
+        src = inspect.getsource(castle_ops.relief_ops)
+        assert src.count("_stitch_close_paths(") == 3
+        assert src.count("res, link, max_rise)") == 3
+        assert "max_rise = params.relief_link_max_rise_mm" in src
 
 
 # ------------------------------------- M-Z2 end to end, on the rim gap that did it

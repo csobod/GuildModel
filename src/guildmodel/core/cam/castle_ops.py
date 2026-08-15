@@ -424,7 +424,7 @@ def order_paths_for_travel(paths: list, start: tuple = (0.0, 0.0)) -> list:
 
 
 def _stitch_close_paths(paths: list, zgrid, ox: float, oy: float, res: float,
-                        max_gap: float) -> list:
+                        max_gap: float, max_rise_mm: float) -> list:
     """Merge consecutive paths whose end→start gap is ≤ `max_gap` into one continuous
     sweep, joined by a connector that rides the drop-cutter surface `zgrid` (M12.2).
 
@@ -432,22 +432,36 @@ def _stitch_close_paths(paths: list, zgrid, ox: float, oy: float, res: float,
     follows the cutter-location surface so it never gouges (and rides over a thin cap
     just like the M11 gap-link). A wider gap — a jump to a separate region — stays its
     own path with its own entry. Run after `order_paths_for_travel`, so "close" means
-    genuinely adjacent."""
+    genuinely adjacent.
+
+    **A connector has a height as well as a width** (M-Z3), for the same reason the
+    M11 gap-link does and measured the same way: how far above the higher of the two
+    path ends the surface between them stands. "Rides over a thin cap" is the identical
+    piece of hand-waving that let `_link_breaks` drag a tool onto uncut stock — the two
+    join points are cut, everything between them need not be. Over budget, the stitch
+    is refused and the paths keep their own entries, which costs a retract and a plunge
+    and removes exactly the same material.
+    """
     if len(paths) < 2:
         return [list(p) for p in paths]
     g2 = max_gap * max_gap
     out = [list(paths[0])]
     for p in paths[1:]:
-        ax, ay = out[-1][-1][0], out[-1][-1][1]
-        bx, by = p[0][0], p[0][1]
+        ax, ay, az = out[-1][-1][:3]
+        bx, by, bz = p[0][:3]
         d2 = (bx - ax) ** 2 + (by - ay) ** 2
         if 0.0 < d2 <= g2:
             n = max(1, int(float(np.sqrt(d2)) / res))
+            zs = xs = ys = None
             if n > 1:                       # surface-riding connector, endpoints excluded
                 ts = np.arange(1, n) / n
                 xs = ax + (bx - ax) * ts
                 ys = ay + (by - ay) * ts
                 zs = _bilinear_sample(zgrid, xs, ys, ox, oy, res)
+            if zs is not None and float(zs.max()) - max(az, bz) > max_rise_mm:
+                out.append(list(p))         # too tall to ride: let it retract
+                continue
+            if zs is not None:
                 out[-1].extend((float(x), float(y), float(z))
                                for x, y, z in zip(xs, ys, zs))
             out[-1].extend(p)
@@ -635,14 +649,15 @@ def relief_ops(
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
     # tool works the part in nearest-neighbor order instead of hopping across it (M12.1),
     # then stitch the now-adjacent rings into continuous surface-riding sweeps so a region
-    # takes one entry instead of one plunge per ring (M12.2).
+    # takes one entry instead of one plunge per ring (M12.2) — under the same rise budget
+    # the gap links answer to, since a connector rides the same surface (M-Z3).
     link = params.relief_link_gap_mm
     fine.paths = _stitch_close_paths(order_paths_for_travel(fine.paths),
-                                     z_fine, ox, oy, res, link)
+                                     z_fine, ox, oy, res, link, max_rise)
     rough.paths = _stitch_close_paths(order_paths_for_travel(rough.paths),
-                                      z_rough, ox, oy, res, link)
+                                      z_rough, ox, oy, res, link, max_rise)
     features.paths = _stitch_close_paths(order_paths_for_travel(features.paths),
-                                         z_feat, ox, oy, res, link)
+                                         z_feat, ox, oy, res, link, max_rise)
     return rough, fine, features
 
 
