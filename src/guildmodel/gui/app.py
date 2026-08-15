@@ -535,12 +535,15 @@ class GCodeWorker(_ProgressWorker):
         # reach its feature, suggesting a fitting tool.
         from guildmodel.core.cam.castle_ops import (
             analyze_program_reach, build_tool_settings, count_tool_changes,
-            depth_reach_warnings, feature_reach_warnings,
+            depth_reach_warnings, feature_reach_warnings, relief_tool_warnings,
             unmachined_top_warnings,
         )
         reach = analyze_program_reach(ops, self.hinge_polys, tools_cfg)
         reach = list(reach) + depth_reach_warnings(ops, self.castle.stock.total_pad_height_mm)
         reach += feature_reach_warnings(self.castle, ops, tools_cfg)
+        # A ball on a terrace op posts a Z-heavy program the guard will flag;
+        # say why here, before the export hold's dialog does (M-Z5).
+        reach += relief_tool_warnings(ops)
         for r in reach:
             self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
 

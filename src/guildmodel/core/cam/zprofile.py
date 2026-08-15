@@ -23,6 +23,23 @@ per 100 mm at a median amplitude of 0.024 mm — noise on the last digit, and a
 raw per-100 mm figure weights it the same as a 4 mm plunge. `per100` therefore
 counts only reversals above `AMPLITUDE_FLOOR_MM`, and `max_amplitude_mm` is
 reported separately because one bad move is enough to matter.
+
+**Why there is no flat-topped-excursion metric, on purpose** *(calibrated and
+rejected, 2026-08-15)*. The reversal definition needs the two flanks to be
+consecutive, so a climb-flat-descend "bump" — the exact shape of riding up onto
+uncut stock and across it — moves no severity axis at all; a 0.907 mm connector
+ride measured precisely zero here. The obvious fix, scoring interior peaks by
+min(rise, fall), was built as a probe and calibrated against every program we
+have, and it cannot work: clean, correct programs carry legitimate 5.75 mm
+bumps, because contour rings genuinely climb zone ramps (bridge, endpiece) and
+come back down, while the worst genuine abuse topped out at 4.94 — the metric
+does not order abuse above health. What made the abusive bumps abusive was that
+the ground under them was MASKED, i.e. there was nothing to cut — knowledge
+only the emitter has. So that class is policed at emission, where the mask is
+known (`relief_link_max_rise_mm`, on both the gap links and the stitch
+connectors), and this module measures the dynamics that need no such context.
+Do not re-derive the bump metric without new evidence; the probe's numbers are
+in FINE-RELIEF-SAWTOOTH.md.
 """
 from __future__ import annotations
 

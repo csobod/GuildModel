@@ -213,6 +213,13 @@ GuildModel warns you when the assigned tool cannot finish a feature, and names
 one from your library that fits. A flat leaves a lip at every chamfer toe, and
 a ball larger than the bridge relief's interior radius bridges its trough.
 
+**Keep the ball off the terraces.** The reverse assignment — a ball nose on
+Rough or Fine Relief — cuts a complete part but a poor program: a ball rolls
+down every terrace wall a flat glides over, leaves scallop ridges on the flat
+terraces a flat cuts dead flat, and the resulting Z-heavy motion will trip the
+Z-profile check on export. GuildModel says so in the Inspector the moment the
+assignment is made. Flat tools for the terraces, the ball for Features.
+
 **Tools** live in Preferences ▸ Tools. The library is editable — add,
 duplicate, edit, import and export — and shows a live cross-section preview.
 Every tool selector in the app draws from it. GuildModel warns you when a cut

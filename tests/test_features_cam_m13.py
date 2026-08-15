@@ -313,6 +313,37 @@ def test_all_features_on_sim_green_with_ball_fine(demo, tools):
 
 # ------------------------------------------------------------------ reach
 
+def test_a_ball_on_a_terrace_op_is_flagged_before_the_guard_fires(demo, tools):
+    """M-Z5: a ball on Rough/Fine Relief posts a Z-heavy program (measured 671
+    significant reversals against the flat's 3 on this fixture) and the export
+    hold will fire on it. The maker should hear WHY from the inspector, not
+    first from a dialog refusing their export. Ball-on-Features — the workflow
+    per-op tools exist for — must stay unflagged: it measures CLEANER than the
+    flat there."""
+    from guildmodel.core.cam.castle_ops import (
+        generate_castle_program, relief_tool_warnings,
+    )
+    from guildmodel.core.project.schema import CastleCamParams
+
+    castle = _castle(splay=True)
+    relief = _build(demo, castle)
+    part, hinges = demo
+
+    ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                  params=CastleCamParams(
+                                      op_tools={"Fine Relief": "ball_2mm"}),
+                                  tools_cfg=tools)
+    warns = relief_tool_warnings(ops)
+    assert [w.op_name for w in warns] == ["Fine Relief"]
+    assert "Features" in warns[0].message()          # says where the ball belongs
+
+    ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                  params=CastleCamParams(
+                                      op_tools={"Features": "ball_2mm"}),
+                                  tools_cfg=tools)
+    assert relief_tool_warnings(ops) == []           # the intended use is quiet
+
+
 def test_groove_reach_warning_for_flat_fine_tool(demo, tools):
     from guildmodel.core.cam.castle_ops import (
         feature_reach_warnings, generate_castle_program,

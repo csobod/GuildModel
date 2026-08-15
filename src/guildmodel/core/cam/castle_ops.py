@@ -1197,6 +1197,40 @@ class FeatureReachWarning:
                 f"({self.tool_type}) leaves it proud{hint}")
 
 
+@dataclass
+class ReliefToolWarning:
+    """A ball-nose assigned to a terrace op (M-Z5, from the v1.6 bug hunt).
+
+    A ball on Rough or Fine Relief is legal and the sim gates pass it, but
+    nobody had ever measured how such a program MOVES: on the demo fixture a
+    ball fine pass posts 671 significant Z reversals (32 per 100 mm, 7% of
+    moves near-plunge) against 3 for the flat — not a defect, the ball's CLS
+    genuinely rolls down every terrace wall a flat's plateaus over, plus it
+    leaves ~0.1 mm scallop ridges on the flat terraces a flat cuts dead flat.
+    The Z-profile guard will score such a program `error` and the export hold
+    will fire; this warning tells the maker WHY before that dialog does. The
+    ball's home is Features (measured cleaner than the flat there: 0.35 vs
+    2.25 per 100 mm on a maker's frame) — which is what the per-op tools
+    exist for."""
+    op_name: str
+    tool_name: str
+
+    def message(self) -> str:
+        return (f"{self.op_name}: {self.tool_name} (ball) rolls down every "
+                f"terrace wall and leaves scallop on the flats — expect a "
+                f"Z-heavy program the guard will flag; a flat tool cuts the "
+                f"terraces, a ball belongs on Features")
+
+
+def relief_tool_warnings(ops: list[CamOp]) -> list[ReliefToolWarning]:
+    """Flag ball-nose tools on the terrace ops, before the Z guard has to."""
+    return [ReliefToolWarning(op.name, op.tool.get("display_name")
+                              or op.tool.get("name", "tool"))
+            for op in ops
+            if op.name in ("Rough Relief", "Fine Relief")
+            and op.tool and op.tool.get("type") == "ball"]
+
+
 def feature_reach_warnings(
     castle: CastleParams,
     ops: list[CamOp],
