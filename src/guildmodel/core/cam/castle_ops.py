@@ -544,10 +544,29 @@ def relief_ops(
     cls_fine = cutter_location_surface(cam_hf, fine_type, fine_r)
     if _same_tool(rough_tool, fine_tool):
         cls_rough_surf = cls_fine
-        stock_cls = cutter_location_surface(stock_hf, fine_type, fine_r)
     else:
         cls_rough_surf = cutter_location_surface(cam_hf, rough_type, rough_r)
-        stock_cls = cutter_location_surface(stock_hf, rough_type, rough_r)
+
+    # Each op's cut mask compares its own tool's surface against its OWN tool's
+    # stock ceiling (M-Z4). This used to be one `stock_cls` computed with the
+    # rough tool and borrowed by everyone — harmless while every op ran the same
+    # tool, wrong the moment they differ: a ball's ceiling rolls down the
+    # pad-block cliff where a flat's plateaus over it, so a ball fine pass
+    # measured against the flat's ceiling kept 172 cells (demo, ceiling delta up
+    # to the full 4 mm cliff) that the ball itself had nothing to cut, and would
+    # ride at its own stock height. With the tools reversed the same borrow
+    # flips to material silently left standing. One surface per distinct tool;
+    # the everyday single-tool job computes exactly one, as before.
+    _ceilings: dict = {}
+
+    def _stock_ceiling(ttype: str, r: float) -> np.ndarray:
+        key = (ttype, round(r, 6))
+        if key not in _ceilings:
+            _ceilings[key] = cutter_location_surface(stock_hf, ttype, r).z
+        return _ceilings[key]
+
+    stock_fine_z = _stock_ceiling(fine_type, fine_r)
+    stock_rough_z = _stock_ceiling(rough_type, rough_r)
 
     eps = params.skim_epsilon_mm
     fine = CamOp("Fine Relief")
@@ -556,9 +575,9 @@ def relief_ops(
 
     rows, cols = cls_fine.z.shape
     z_fine = cls_fine.z
-    z_rough = np.minimum(cls_rough_surf.z + params.rough_axial_stock_mm, stock_cls.z)
+    z_rough = np.minimum(cls_rough_surf.z + params.rough_axial_stock_mm, stock_rough_z)
     # rough only where stock actually sits above the rough target
-    cut_rough = band & ((cls_rough_surf.z + params.rough_axial_stock_mm) < stock_cls.z - eps)
+    cut_rough = band & ((cls_rough_surf.z + params.rough_axial_stock_mm) < stock_rough_z - eps)
 
     machining = relief.partition.body.buffer(band_mm, join_style="round")
 
@@ -618,7 +637,7 @@ def relief_ops(
     # concentric ring set is identical — build it once and share it (each _emit only
     # reads the rings, reversing/densifying its own copies, so sharing is safe).
     base_rings = contour_parallel_rings(machining, params.relief_stepover_mm)
-    _emit(fine, z_fine, band & (z_fine < stock_cls.z - eps), rings=base_rings)
+    _emit(fine, z_fine, band & (z_fine < stock_fine_z - eps), rings=base_rings)
     _emit(rough, z_rough, cut_rough, rings=base_rings)
     # Feature-finish band (M13): on a chamfer the contour rings are its level
     # curves, so a flat tool leaves facet ridges of stepover*tan(slope) between
@@ -637,14 +656,17 @@ def relief_ops(
         # every sloped cell, which is the whole of the maker's reason for
         # wanting a separate tool here; emitting one tool's paths off the
         # other's surface would put the ball through the chamfer.
+        stock_feat_z = stock_fine_z
         if not _same_tool(feature_tool, fine_tool):
             z_feat = cutter_location_surface(
                 cam_hf, feature_tool["type"], feature_tool["radius_mm"]).z
+            stock_feat_z = _stock_ceiling(feature_tool["type"],
+                                          feature_tool["radius_mm"])
         fb_wide = binary_dilation(fb, iterations=2)   # cover band-edge rounding
         dist_in = distance_transform_edt(inside, sampling=res)
         d_max = float(dist_in[fb_wide & inside].max()) + band_mm + f_step
         f_rings = contour_parallel_rings(machining, f_step, max_depth_mm=d_max)
-        _emit(features, z_feat, fb_wide & band & (z_feat < stock_cls.z - eps),
+        _emit(features, z_feat, fb_wide & band & (z_feat < stock_feat_z - eps),
               rings=f_rings)
     # Contour-ring emission interleaves the separate regions; reorder each pass so the
     # tool works the part in nearest-neighbor order instead of hopping across it (M12.1),

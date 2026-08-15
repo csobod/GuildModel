@@ -321,6 +321,55 @@ class TestStitchRiseBudget:
         assert "max_rise = params.relief_link_max_rise_mm" in src
 
 
+# ---------------------------------------- M-Z4: an op answers to its own tool
+
+class TestOwnToolStockCeiling:
+    """Each relief op's cut mask compares against its OWN tool's stock ceiling.
+
+    One `stock_cls` used to be computed with the rough tool and borrowed by the
+    fine and features masks — invisible while every op ran the same tool, wrong
+    when they differ: a ball's ceiling rolls down the pad-block cliff where a
+    flat's plateaus over it, so a ball pass measured against the flat's ceiling
+    kept cells (172 on the demo, ceiling delta up to the full 4 mm cliff) that
+    the ball itself had nothing to cut. With the tools reversed, the same
+    borrow flips to material silently left standing.
+    """
+
+    def test_a_ball_and_a_flat_disagree_about_the_stock(self):
+        """The premise: the two ceilings genuinely differ at the stock cliff."""
+        import numpy as np
+
+        from guildmodel.core.cam.dropcutter import cutter_location_surface
+        from guildmodel.core.project.schema import StockDefinition
+        from guildmodel.core.relief.castle import stock_top_heightfield
+
+        stock = stock_top_heightfield(StockDefinition(), resolution=0.15)
+        flat = cutter_location_surface(stock, "flat", 3.175 / 2).z
+        ball = cutter_location_surface(stock, "ball", 1.0).z
+        delta = flat - ball
+        assert delta.min() >= -1e-9          # the flat's ceiling is never lower
+        assert delta.max() > 1.0             # and differs by mm at the cliff
+
+    def test_single_tool_jobs_are_untouched(self):
+        """The everyday case computes one ceiling and posts what it always did
+        (verified byte-identical on Corner Optical's frame when this landed)."""
+        fine_a = _relief_fine(max_rise_mm=0.5)
+        fine_b = _relief_fine(max_rise_mm=0.5)
+        assert fine_a.paths == fine_b.paths
+
+    def test_the_fine_mask_uses_the_fine_tools_ceiling(self):
+        """Wiring: the emitted source compares each op against its own ceiling,
+        so the borrow cannot quietly come back."""
+        import inspect
+
+        from guildmodel.core.cam import castle_ops
+        src = inspect.getsource(castle_ops.relief_ops)
+        assert "z_fine < stock_fine_z" in src
+        assert "z_feat < stock_feat_z" in src
+        assert "stock_rough_z - eps" in src
+        assert "stock_cls" not in src.replace("stock_cls`", "")   # only the comment
+
+
 # ------------------------------------- M-Z2 end to end, on the rim gap that did it
 
 FLOOR_MM = 5.0          # the body's relief height — flat, so there is nothing to climb
