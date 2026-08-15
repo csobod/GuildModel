@@ -243,10 +243,19 @@ def test_steep_splay_band_does_not_sawtooth(demo, tools):
     Every other fixture in this repo is a bare castle — no splay, so no feature
     band, so nothing to measure. That blind spot is why the Hyde Park sawtooth
     survived four releases. This one turns the splay up steep on purpose.
-    """
-    import math
 
+    **Measured with the guard's own definition**, which is the point of the
+    numbers below. This gate first counted every reversal, and on that metric the
+    fix barely shows: 40.9 per 100 mm before, 23.9 after, so the gate had to sit
+    at a useless 32. Almost all of that count is last-digit wobble on a surface
+    that is nearly flat, which is exactly why `zprofile` scores only reversals
+    above a 0.1 mm amplitude floor. On that metric the same two programs are
+    15.86 and 1.25 per 100 mm, worst amplitude 5.961 mm and 0.238 mm, `error` and
+    `ok`. The gates sit twice clear of the shipped numbers and the pre-fix code
+    fails all three.
+    """
     from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.cam.zprofile import measure_paths
     from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
 
     part, hinges = demo
@@ -260,25 +269,10 @@ def test_steep_splay_band_does_not_sawtooth(demo, tools):
     if feat is None or not feat.paths:
         pytest.skip("no feature band on this fixture")
 
-    reversals = xy = 0
-    for path in feat.paths:
-        prev_dz = 0.0
-        for (x0, y0, z0), (x1, y1, z1) in zip(path, path[1:]):
-            d = math.hypot(x1 - x0, y1 - y0)
-            if d <= 1e-9:
-                continue
-            xy += d
-            dz = z1 - z0
-            if dz and prev_dz and (dz > 0) != (prev_dz > 0):
-                reversals += 1
-            prev_dz = dz
-    per100 = 100.0 * reversals / xy if xy else 0.0
-    # Measured on this fixture: 40.9 per 100 mm with the old sub-cell 0.12 floor,
-    # 23.9 with the shipped one. The gate sits between them rather than near
-    # either — the residual is still high because feature rings crossing the
-    # nosepad tower wall are not what the stepover controls (slope-masking the
-    # relief owns that), so tighten this only when that lands.
-    assert per100 < 32.0, f"{per100:.1f} Z reversals per 100 mm in Features"
+    prof = measure_paths(feat)
+    assert prof.max_amplitude_mm < 0.5, f"{prof.max_amplitude_mm:.3f} mm in Features"
+    assert prof.per100 < 3.0, f"{prof.per100:.2f} Z reversals per 100 mm in Features"
+    assert prof.severity() == "ok", prof.message()
 
 
 # ------------------------------------------------------------------ end to end

@@ -7288,12 +7288,13 @@ class MainWindow(QMainWindow):
     def _z_profile_hold(self, what: str) -> bool:
         """Ask before a program with a flagged Z profile leaves the app (M-Z1).
 
-        Deliberately a confirmation and not a refusal. The check is young, the
-        residual it fires on today is a known and documented one (feature rings
-        crossing the nosepad tower wall), and a maker who understands their job
-        must still be able to run it. What it removes is the failure mode this
-        whole investigation came from: a program leaving here with nobody having
-        looked at the number. Returns True when the caller should stop.
+        **A confirmation and not a refusal, settled deliberately** *(2026-08-15)*
+        — the question was put and answered: a maker needs the result for test
+        cuts and for edge cases we have not thought of, so a warning is enough
+        and clicking past it must stay possible. Do not promote this to a hard
+        block. What it removes is the failure mode this whole investigation came
+        from: a program leaving here with nobody having looked at the number.
+        Returns True when the caller should stop.
         """
         profs = list(getattr(self, "_diag_zprofile", []))
         if self._on_worktable_tab():
