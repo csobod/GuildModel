@@ -269,17 +269,37 @@ class TestLinkRiseBudget:
         assert self._breaks([0, 1, 3, 4], tower, max_rise=budget) == [2]
 
 
-# --------------------------------------- M-Z2 end to end, on a built-to-order relief
+# ------------------------------------- M-Z2 end to end, on the rim gap that did it
 
-def _tower_relief(tower_mm: float, tower_width_mm: float = 0.3):
-    """A rectangular body at 5 mm with a narrow strip standing at `tower_mm`.
+FLOOR_MM = 5.0          # the body's relief height — flat, so there is nothing to climb
+STOCK_TOP_MM = 10.0     # blank 6 + pad block 4, and the fixture sits inside the block
 
-    Corner Optical's cap gap comes from their outline, not their settings — every
-    parameter combination on the demo outline tops out at a 0.16 mm bridge rise
-    (`scripts/probe_capgap.py`), and their drawing is their own. So the situation
-    is built here instead: a strip narrow enough for the M11 width test to bridge
-    (1.5 mm against a 4 mm budget) and, when it stands at stock height, masked out
-    of the cut — which is exactly the nosepad tower.
+
+def _rim_slot_relief(slot_w_mm: float = 1.5, slot_h_mm: float = 2.0):
+    """A flat body with a narrow slot cut into one rim edge — Corner Optical's gap.
+
+    Their three refused gaps sit a tenth of a millimetre outside the body but
+    inside the machining region (`scripts/probe_gapsite.py`): `zone=outside`,
+    `relief=0.00`, `stock=10.00`, `CLS=10.00`. The drop-cutter surface is a max
+    over the tool disc, so just past the rim that disc overlaps **uncut stock**
+    and the CL surface rises to stock height — correct, and the reason those
+    cells are masked (M5: a flat tool cannot reach the rim floor with its edge
+    over uncut material). A ring whose cut coverage breaks there and resumes
+    inside `relief_link_gap_mm` gets bridged, and the bridge re-emits the skipped
+    cells at that height: the tool climbs onto the uncut stock at cutting feed.
+
+    So the fixture is a body concave enough that one ring leaves the cut mask at
+    the rim and re-enters within the link budget. A slot narrower than the tool
+    diameter does it: the offset ring nearest the boundary steps across the
+    slot's mouth rather than following it in, which puts it outside the body for
+    the width of the mouth — a gap of about 1.5 mm against a 4 mm budget.
+
+    **The body is flat at `FLOOR_MM`**, deliberately. Every cell in the cut mask
+    has a cutter-location height of exactly `FLOOR_MM`, so no emitted point can
+    rise above it by cutting anything. An earlier attempt raised a strip at stock
+    height instead and had to be thrown away: its rings climbed a *cut* feature,
+    the right number from the wrong mechanism. Here any Z above the floor is the
+    tool riding stock it should never have touched.
     """
     import numpy as np
     from shapely.geometry import Polygon
@@ -289,31 +309,40 @@ def _tower_relief(tower_mm: float, tower_width_mm: float = 0.3):
     from guildmodel.core.relief.heightfield import Heightfield
 
     res = 0.15
-    w_mm, h_mm = 40.0, 20.0
+    w_mm, h_mm = 40.0, 24.0
     cols, rows = int(w_mm / res), int(h_mm / res)
     origin = (-w_mm / 2, -h_mm / 2)
+    # The grid has to hold the rim band AND a tool radius of uncut stock beyond
+    # it, or the dilation never sees the stock and the gap does not appear.
+    margin = 4.0
+    x0, x1 = origin[0] + margin, -origin[0] - margin
+    y0, y1 = origin[1] + margin, -origin[1] - margin
 
-    z = np.full((rows, cols), 5.0)
-    x0 = int((0.0 - origin[0]) / res)
-    z[:, x0:x0 + int(tower_width_mm / res)] = tower_mm
+    hw = slot_w_mm / 2
+    if slot_w_mm > 0:
+        body = Polygon([(x0, y0), (x1, y0), (x1, y1), (hw, y1),
+                        (hw, y1 - slot_h_mm), (-hw, y1 - slot_h_mm), (-hw, y1),
+                        (x0, y1)])
+    else:
+        body = Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
 
-    body = Polygon([(-w_mm / 2 + 1, -h_mm / 2 + 1), (w_mm / 2 - 1, -h_mm / 2 + 1),
-                    (w_mm / 2 - 1, h_mm / 2 - 1), (-w_mm / 2 + 1, h_mm / 2 - 1)])
     xs = origin[0] + (np.arange(cols) + 0.5) * res
     ys = origin[1] + (np.arange(rows) + 0.5) * res
     gx, gy = np.meshgrid(xs, ys)
-    inside = ((gx > body.bounds[0]) & (gx < body.bounds[2])
-              & (gy > body.bounds[1]) & (gy < body.bounds[3]))
+    inside = (gx > x0) & (gx < x1) & (gy > y0) & (gy < y1)
+    if slot_w_mm > 0:
+        inside &= ~((np.abs(gx) < hw) & (gy > y1 - slot_h_mm))
 
-    f = Heightfield(z=z, origin=origin, resolution=res)
+    f = Heightfield(z=np.full((rows, cols), FLOOR_MM), origin=origin, resolution=res)
     return CastleRelief(field=f, inside=inside,
                         zone_index=np.zeros((rows, cols), int),
                         partition=CastlePartition(body=body), surface_field=f)
 
 
-def _fine_profile(tower_mm: float, max_rise_mm: float):
-    import yaml
+def _relief_fine(max_rise_mm: float, slot_w_mm: float = 1.5):
     from pathlib import Path
+
+    import yaml
 
     from guildmodel.core.cam.castle_ops import relief_ops
     from guildmodel.core.project.schema import CastleCamParams, StockDefinition
@@ -322,42 +351,87 @@ def _fine_profile(tower_mm: float, max_rise_mm: float):
         (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
          / "tools.yaml").read_text())
     tools = tools.get("tools", tools)
-    relief = _tower_relief(tower_mm)
     _rough, fine, _feat = relief_ops(
-        relief, StockDefinition(), tools["flat_3175"],
+        _rim_slot_relief(slot_w_mm), StockDefinition(), tools["flat_3175"],
         CastleCamParams(relief_link_max_rise_mm=max_rise_mm))
-    return measure_paths(fine)
+    return fine
 
 
-class TestRiseBudgetIsPlumbedThrough:
-    """`relief_link_max_rise_mm` reaches `_emit` and changes what is emitted.
+def _xy_length(op) -> float:
+    return sum(math.dist(a[:2], b[:2])
+               for path in op.paths for a, b in zip(path, path[1:]))
 
-    **This is a wiring test, not a reproduction.** It does not recreate Corner
-    Optical's cap gap, and it should not be read as though it does. That gap
-    needs their outline: every parameter combination tried on the demo outline
-    tops out at a 0.16 mm bridge rise (`scripts/probe_capgap.py`, including their
-    exact castle settings), because the trigger is an interaction between the
-    two-level stock boundary, the tool's own dilation, and the shape of the
-    frame — not a tall zone on its own. Their drawing is theirs, so it cannot
-    become a fixture.
 
-    What the relief below *does* give is a body with a masked strip narrow enough
-    for the M11 width test to bridge, which is enough to prove the parameter is
-    plumbed and takes effect. A faithful fixture is still owed — see the working
-    document — and until one exists the end-to-end behaviour is verified by hand
-    against their project.
+class TestTheLinkDoesNotClimbTheRim:
+    """End to end: the M11 link may not bridge a gap by riding up onto stock.
+
+    This is the failure Corner Optical's frame posted, on a body built to hold
+    it — not the parameter-wiring stand-in it replaces. `_rim_slot_relief`
+    explains the geometry; the short version is that the cut mask is flat at
+    `FLOOR_MM` everywhere it is set, so a path point above that height can only
+    have come from bridging cells the mask refused.
     """
 
-    def test_the_budget_changes_what_emit_produces(self):
-        loose = _fine_profile(10.0, max_rise_mm=1e9)
-        held = _fine_profile(10.0, max_rise_mm=0.5)
-        assert held.z_travel_mm < loose.z_travel_mm
-        assert held.max_amplitude_mm < loose.max_amplitude_mm
+    def test_nothing_in_the_cut_mask_stands_above_the_floor(self):
+        """The premise the rest of the class rests on: no feature to climb."""
+        import numpy as np
+        from scipy.ndimage import distance_transform_edt
 
-    def test_a_low_step_is_left_alone(self):
-        """The budget must not shatter every ring it meets — a step the tool can
-        ride over cheaply is what the M11 linking was written for."""
-        loose = _fine_profile(5.3, max_rise_mm=1e9)
-        held = _fine_profile(5.3, max_rise_mm=0.5)
-        assert held.moves == loose.moves
-        assert held.max_amplitude_mm == pytest.approx(loose.max_amplitude_mm)
+        from guildmodel.core.cam.castle_ops import stock_top_heightfield
+        from guildmodel.core.cam.dropcutter import cutter_location_surface
+        from guildmodel.core.project.schema import CastleCamParams, StockDefinition
+        from guildmodel.core.relief.heightfield import Heightfield
+
+        relief, params, radius = _rim_slot_relief(), CastleCamParams(), 3.175 / 2
+        f = relief.field
+        stock = stock_top_heightfield(StockDefinition(), resolution=f.resolution,
+                                      origin=f.origin, shape=f.z.shape)
+        assert stock.z.min() == STOCK_TOP_MM      # wholly inside the pad block
+        band_mm = max(radius, params.relief_stepover_mm)
+        dist, (iy, ix) = distance_transform_edt(~relief.inside, sampling=f.resolution,
+                                                return_indices=True)
+        band = relief.inside | (dist <= band_mm + 1e-9)
+        cam = Heightfield(z=np.where(band, np.minimum(f.z[iy, ix], stock.z), stock.z),
+                          origin=f.origin, resolution=f.resolution)
+        cls = cutter_location_surface(cam, "flat", radius).z
+        stock_cls = cutter_location_surface(stock, "flat", radius).z
+        cut = band & (cls < stock_cls - params.skim_epsilon_mm)
+
+        assert cut.any()
+        assert cls[cut].max() == pytest.approx(FLOOR_MM)   # nothing to ride up
+
+    def test_an_unbudgeted_link_drags_the_tool_up_onto_the_stock(self):
+        from shapely.geometry import Point
+
+        fine = _relief_fine(max_rise_mm=1e9)
+        peak = max((p for path in fine.paths for p in path), key=lambda p: p[2])
+        # Within a millimetre of the 10 mm stock top: the tool is over uncut
+        # material, at cutting feed, on a body whose cut surface is flat at 5 mm.
+        assert peak[2] > STOCK_TOP_MM - 1.0
+        # And it happens at the RIM, not somewhere in the interior — within a
+        # cell of the boundary, as their own three gaps were (0.09-0.11 mm out).
+        rim = _rim_slot_relief().partition.body.exterior
+        assert rim.distance(Point(peak[0], peak[1])) < 0.5
+        assert measure_paths(fine).severity() == "error"
+
+    def test_the_shipped_budget_refuses_it(self):
+        fine = _relief_fine(max_rise_mm=0.5)
+        peak = max(p[2] for path in fine.paths for p in path)
+        assert peak < FLOOR_MM + 2.0            # measured 6.03 against a 9.32
+        prof = measure_paths(fine)
+        assert prof.max_amplitude_mm < 0.5
+        assert prof.severity() == "ok"
+
+    def test_refusing_it_costs_no_coverage(self):
+        """Breaking the ring must not stop cutting anything: the bridged cells
+        were masked for having nothing to remove, so dropping them removes no
+        material. On their frame the cut simulator measured coverage unchanged to
+        the third digit — 827 uncut nosepad cells against 832."""
+        loose, held = _relief_fine(1e9), _relief_fine(0.5)
+        assert _xy_length(held) == pytest.approx(_xy_length(loose), rel=0.01)
+
+    def test_a_body_with_no_rim_gap_posts_identically(self):
+        """Inert on healthy geometry, decisive on the frame that was wrong — the
+        same asymmetry that leaves all three shipped fixtures byte-identical."""
+        assert (_relief_fine(1e9, slot_w_mm=0.0).paths
+                == _relief_fine(0.5, slot_w_mm=0.0).paths)
