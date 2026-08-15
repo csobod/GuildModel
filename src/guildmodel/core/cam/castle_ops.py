@@ -306,6 +306,36 @@ def _densify_xy(coords: list, spacing: float) -> np.ndarray:
                             np.interp(s, cum, pts[:, 1])])
 
 
+def _link_breaks(idx: np.ndarray, zline: np.ndarray,
+                 gap_cells: int, max_rise_mm: float) -> np.ndarray:
+    """Where to cut a relief ring into separate paths (M11 width, M-Z2 height).
+
+    `idx` are the ring's cut-mask cells, in order; `zline` the drop-cutter height
+    at every cell of the ring. Returns the split points for `np.split(idx, ...)`.
+
+    A masked gap between two cut cells is **bridged** — the skipped cells are
+    emitted at their drop-cutter height so the ring stays one sweep instead of a
+    string of retract+plunge stubs. Two things disqualify a gap:
+
+    * too **wide** (`gap_cells`) — the original M11 test;
+    * too **tall** (`max_rise_mm`) — how far above its two cut neighbours the
+      bridge would carry the tool. The linking was written for a thin cap, where
+      that is nearly zero. Where the gap is a nosepad tower, masked out precisely
+      because it stands at stock height, the bridge climbs the whole terrace step
+      and comes back down at cutting feed: 5.8 mm on Corner Optical's frame.
+
+    Consecutive cut cells have no gap between them and are never split. A gap of
+    a single skipped cell does have an interior, and is judged like any other —
+    one cell standing at the stock cap still lifts the tool the whole way.
+    """
+    span = np.diff(idx)
+    rise = np.zeros(span.size)
+    for t in np.flatnonzero(span > 1):
+        lo, hi = int(idx[t]), int(idx[t + 1])
+        rise[t] = float(zline[lo + 1:hi].max() - max(zline[lo], zline[hi]))
+    return np.flatnonzero((span > gap_cells) | (rise > max_rise_mm)) + 1
+
+
 def _bilinear_sample(zgrid: np.ndarray, xs: np.ndarray, ys: np.ndarray,
                      ox: float, oy: float, res: float) -> np.ndarray:
     """Bilinearly sample a heightfield at arbitrary world (xs, ys).
@@ -522,8 +552,20 @@ def relief_ops(
     # thin cap at its drop-cutter height) so a ring shattered by the cut mask becomes
     # one long sweep instead of a string of retract+plunge stubs ("drill holes"); a run
     # still shorter than `relief_min_run_mm` is dropped (negligible material).
+    #
+    # **A gap has a height as well as a width** (M-Z2). Bridging re-emits the skipped
+    # cells at their drop-cutter height, and "the thin cap" in the paragraph above is
+    # doing a lot of work: where the gap is the nosepad tower — masked out precisely
+    # because it sits AT stock height — riding across it drives the tool from the
+    # terrace up to the cap and back down at cutting feed. That is the residual left
+    # after the M-Z1 stepover floor on Corner Optical's frame: 60% of the remaining
+    # spike peaks land within 0.2 mm of the 10.00 mm stock top, the worst of them a
+    # 5.8 mm climb out of the 4.2 mm eyewire terrace. The comment on the cut mask
+    # below already names this failure ("Z bouncing 5↔10") — the mask prevents it and
+    # the bridge put it back.
     gap_cells = max(1, int(round(params.relief_link_gap_mm / res)))
     min_cells = max(2, int(round(params.relief_min_run_mm / res)))
+    max_rise = params.relief_link_max_rise_mm
 
     def _emit(op: CamOp, zgrid: np.ndarray, mask: np.ndarray,
               rings: list[list] | None = None) -> None:
@@ -542,7 +584,7 @@ def relief_ops(
             if idx.size < 2:
                 continue
             zline = _bilinear_sample(zgrid, dp[:, 0], dp[:, 1], ox, oy, res)
-            breaks = np.flatnonzero(np.diff(idx) > gap_cells) + 1
+            breaks = _link_breaks(idx, zline, gap_cells, max_rise)
             for grp in np.split(idx, breaks):
                 a, b = int(grp[0]), int(grp[-1])      # span the small internal gaps too
                 if b - a + 1 < min_cells:

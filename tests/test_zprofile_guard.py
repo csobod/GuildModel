@@ -204,3 +204,66 @@ def test_z_profile_issues_reach_the_inspector_with_their_own_severity():
     assert issues[0].category == "Z profile"
     assert issues[0].target == ("op", "Features")      # navigable to the op
     assert collect_issues(z_profiles=[_prof(xy_mm=1000.0)]) == []
+
+
+# ------------------------------------------------- M-Z2: links have a height
+
+class TestLinkRiseBudget:
+    """`_link_breaks` decides whether a masked gap in a relief ring is bridged.
+
+    The M11 linking only asked how WIDE the gap was. Where the gap is the
+    nosepad tower — masked out precisely because it stands at stock height —
+    bridging it drives the tool from the terrace up to the cap and back down at
+    cutting feed. Corner Optical's frame climbed 5.8 mm that way, which is the
+    residual the M-Z1 stepover floor could not touch.
+    """
+
+    @staticmethod
+    def _breaks(idx, zline, gap_cells=26, max_rise=0.5):
+        import numpy as np
+        from guildmodel.core.cam.castle_ops import _link_breaks
+        return list(_link_breaks(np.asarray(idx), np.asarray(zline, float),
+                                 gap_cells, max_rise))
+
+    def test_a_flat_gap_is_bridged(self):
+        # cells 0,1 cut · 2,3 masked but level · 4,5 cut
+        z = [5.0, 5.0, 5.05, 5.05, 5.0, 5.0]
+        assert self._breaks([0, 1, 4, 5], z) == []
+
+    def test_a_gap_that_climbs_to_a_cap_breaks(self):
+        # the same gap, but the masked cells stand at the 10 mm stock top
+        z = [5.0, 5.0, 10.0, 10.0, 5.0, 5.0]
+        assert self._breaks([0, 1, 4, 5], z) == [2]
+
+    def test_the_budget_is_measured_from_the_higher_neighbour(self):
+        """A ring stepping DOWN a terrace must not read the step as a cap: the
+        gap is only 'tall' if it rises above the cells it links."""
+        z = [9.0, 9.0, 9.0, 9.0, 5.0, 5.0]      # gap sits at the upper level
+        assert self._breaks([0, 1, 4, 5], z) == []
+
+    def test_a_wide_gap_still_breaks_on_width_alone(self):
+        z = [5.0] * 40
+        assert self._breaks([0, 39], z, gap_cells=26) == [1]
+
+    def test_consecutive_cut_cells_are_never_split(self):
+        z = [5.0, 5.0, 5.0, 5.0]
+        assert self._breaks([0, 1, 2, 3], z) == []
+
+    def test_even_a_single_skipped_cell_at_the_cap_breaks(self):
+        """One cell of tower still lifts the tool the whole terrace step."""
+        z = [5.0, 9.9, 5.0]
+        assert self._breaks([0, 2], z) == [1]
+
+    def test_budget_is_tunable_and_off_at_infinity(self):
+        z = [5.0, 5.0, 10.0, 10.0, 5.0, 5.0]
+        assert self._breaks([0, 1, 4, 5], z, max_rise=1e9) == []
+        assert self._breaks([0, 1, 4, 5], z, max_rise=0.01) == [2]
+
+    def test_shipped_default_bridges_a_thin_cap_and_refuses_a_tower(self):
+        from guildmodel.core.project.schema import CastleCamParams
+        budget = CastleCamParams().relief_link_max_rise_mm
+        assert budget == 0.5
+        thin = [5.0, 5.0, 5.0 + budget - 0.01, 5.0, 5.0]
+        tower = [5.0, 5.0, 5.0 + budget + 0.01, 5.0, 5.0]
+        assert self._breaks([0, 1, 3, 4], thin, max_rise=budget) == []
+        assert self._breaks([0, 1, 3, 4], tower, max_rise=budget) == [2]
