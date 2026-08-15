@@ -66,24 +66,43 @@ _EPS = 1e-6
 class Limits:
     """Thresholds for `severity()` / `warnings()`.
 
-    Calibrated against every program we have rather than picked round:
+    Calibrated against every program we have rather than picked round
+    (**re-measured 2026-08-15**; the fixture row previously read "0.50 max",
+    which was never true of the worst op and understated it twofold):
 
     ===========================  =======  =======  =====  ========
     program                      per100   max mm   steep  verdict
     ===========================  =======  =======  =====  ========
-    demo / gabriel / aviator     <= 0.9    0.50     1%    ok
+    demo, worst op                  0.2    0.66     0%    ok
+    gabriel, worst op               1.1    0.97     1%    ok
+    aviator, worst op               0.8    0.96     1%    ok
+    Hyde Park shipped, worst op     2.4    0.35     0%    ok
     Hyde Park v1.1.0 (refused)     13.4    1.62     6%    error
     Hyde Park pre-fix Features     37.3    3.88    13%    error
     Hyde Park post-fix Features     5.7    4.33     2%    error
     ===========================  =======  =======  =====  ========
 
     `fail_per100` is 10 and not 15 so that the program Corner Optical refused to
-    run scores the way its maker scored it. There is two orders of margin below
-    that to the shipped fixtures, so this is not a tight fit to one sample.
+    run scores the way its maker scored it, and the density axis keeps two
+    orders of margin to the fixtures — that half is not a tight fit.
 
-    The post-fix row is `error` on amplitude alone, and correctly: the feature
-    rings still cross the nosepad tower wall. The guard is not supposed to go
-    quiet because the density improved.
+    **The amplitude axis is tight, and honestly so.** The worst op on every
+    fixture is `Rough Relief` (0.66 / 0.97 / 0.96) — a 3% margin under
+    `warn_max_mm` — while every Fine Relief is quiet (0.13 / 0.42 / 0.28). That
+    is structural rather than accidental: the rough target is the finish
+    surface plus `rough_axial_stock_mm`, clamped at the stock ceiling, so a
+    rough pass steps where a finish pass glides. One real maker's frame
+    inverts it (Hyde Park Rough Relief measures 0.14), so there is not yet
+    evidence to say whether the fixtures or the frame are typical.
+
+    Do not "fix" the margin by raising the threshold on this evidence. If real
+    jobs start warning on Rough Relief and nothing else, the answer is a
+    per-operation limit — roughing and finishing are not the same promise —
+    and the data to choose one will come from programs makers actually post,
+    which now carry their own numbers in the header.
+
+    The post-fix Hyde Park row is `error` on amplitude alone, and correctly:
+    the guard is not supposed to go quiet because the density improved.
     """
     warn_per100: float = 5.0
     warn_max_mm: float = 1.0

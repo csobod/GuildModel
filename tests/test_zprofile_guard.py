@@ -131,7 +131,14 @@ def _prof(**kw) -> OpProfile:
 
 
 @pytest.mark.parametrize("per100,mx,steep,expect", [
-    (0.9, 0.50, 0.01, "ok"),        # demo / gabriel / aviator, every op
+    # Fixture rows are the WORST op of each program, re-measured 2026-08-15 —
+    # always Rough Relief, and a 3% margin rather than the twofold one this
+    # table used to claim. `test_every_shipped_fixture_posts_a_clean_program`
+    # is what keeps them honest as the CAM changes.
+    (0.2, 0.66, 0.00, "ok"),        # demo, worst op
+    (1.1, 0.97, 0.01, "ok"),        # gabriel, worst op — the tightest we ship
+    (0.8, 0.96, 0.01, "ok"),        # aviator, worst op
+    (2.4, 0.35, 0.00, "ok"),        # Hyde Park shipped, worst op
     (13.4, 1.62, 0.06, "error"),    # Hyde Park v1.1.0 — the maker refused to run it
     (37.3, 3.88, 0.13, "error"),    # Hyde Park pre-fix Features
     (5.7, 4.33, 0.02, "error"),     # Hyde Park post-fix — amplitude alone
