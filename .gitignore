@@ -66,6 +66,12 @@ src/guildmodel/assets/_iconcache/
 /*.gdraw
 /*.gmodel
 
+# Programs a maker sent us to look at, and programs posted at the root for a
+# hand-check. Customer material — it belongs in the investigation, not the
+# history. The suite's own reference program lives under tests/fixtures/, which
+# this root-anchored pattern leaves alone.
+/*.nc
+
 # The engineering record: milestone history, the B-Rep evaluation, and the
 # planning notes they were written against. Kept local from v1.5.0 — they are
 # working documents rather than published ones, and source docstrings still
