@@ -50,17 +50,21 @@ RELIEF_OPS = ("Rough Relief", "Fine Relief")
 # Gate midway, well clear of good and nowhere near bad.
 MAX_Z_REVERSALS_PER_100MM = 25.0
 
-# The v1.6 stepover (0.9 → 1.2) collapsed the DENSITY separation this gate was
-# calibrated on: preview-grade posting fell from 41.8 to 10.4 reversals per
-# 100 mm on this fixture, into the same band as correct posting (6.9). What a
-# coarse grid cannot hide is the SIZE of its steps — worst amplitude 1.71 mm
-# against the correct grid's 0.75, the quantization of a 0.4 mm cell showing
-# through the drop-cutter surface — so the incident condition is now gated on
-# both axes, and the canary below requires a coarse posting to trip at least
-# one of them. (Corner Optical's frame at shipped settings measures 0.946
-# worst; the 1.1 sits above every correct program we have and 28% under the
-# coarse floor on this fixture.)
-MAX_Z_AMPLITUDE_MM = 1.1
+# The v1.6 stepover change collapsed the DENSITY separation this gate was
+# calibrated on: at 0.9 a preview-grade posting ran 41.8 reversals per 100 mm
+# against correct posting's 5.6, and at the shipped 1.0 it runs 11.2 against
+# 6.9 — a 1.6x spread that no absolute threshold can sit inside. What a coarse
+# grid cannot hide is the SIZE of its steps: 0.849 mm worst amplitude against
+# the correct grid's 0.376, the quantization of a 0.4 mm cell showing through
+# the drop-cutter surface. So the incident condition is gated on both axes and
+# the canary below requires a coarse posting to trip at least one.
+#
+# **This constant is derived, not chosen, and the derivation moves with the
+# stepover** — re-measure both grids on this fixture before trusting it after
+# any tuning change (at 1.2 the same pair reads 0.753 / 1.709). 0.6 sits 37%
+# under the coarse floor and 60% over correct posting here; every shipped
+# fixture's relief ops stay below it at the shipped defaults.
+MAX_Z_AMPLITUDE_MM = 0.6
 
 
 # ------------------------------------------------------------------ helpers
@@ -270,9 +274,10 @@ def test_the_z_thrash_gate_has_teeth(demo_front):
     Without this the gate could pass for reasons unrelated to resolution and
     would not catch a regression to preview-grade posting. The axes are OR'd
     here deliberately: at the old 0.9 stepover the coarse grid tripped density
-    (41.8 against the gate's 25); at 1.2 the density separation collapsed
-    (10.4 against correct's 6.9) and amplitude carries the tooth (1.71 against
-    correct's 0.75). Either way, coarse posting must not pass BOTH.
+    (41.8 against the gate's 25); at the shipped 1.0 the density separation
+    collapsed (11.2 against correct's 6.9) and amplitude carries the tooth
+    (0.849 against correct's 0.376). Either way, coarse posting must not pass
+    BOTH — and this canary is what proved the density axis had gone blind.
     """
     partition, hinges = demo_front
     coarse = _castle_ops(partition, hinges, CastleParams(), CastleCamParams(),

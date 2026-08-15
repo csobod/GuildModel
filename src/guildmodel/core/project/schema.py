@@ -651,15 +651,28 @@ class CastleCamParams(BaseModel):
     # load with a clear error (the generators also floor them defensively). `gt=0`
     # is deliberately NOT on rough_axial_stock_mm (0 = leave no extra roughing stock).
     pocket_stepover_mm: float = Field(1.2, gt=0)
-    # 1.2 mm = 38% of the 3.175 flat (v1.6, was 0.9 "matches Fusion Scallop
+    # 1.0 mm = 31% of the 3.175 flat (v1.6, was 0.9 "matches Fusion Scallop
     # coverage"). A flat tool leaves zero scallop on the flat terraces at any
     # stepover under its diameter; sloped surfaces are the feature band's job at
-    # its own cusp-derived step. Measured on Corner Optical's frame: 55 s off a
-    # 12-minute cycle with identical cut-sim coverage (6.14% uncut either way),
-    # zero gouge and every op's Z profile unchanged-or-better. 1.4 is over the
-    # cliff — ring spacing outruns the rim band and coverage collapses to 34%
-    # uncut — so this is not a knob to nudge further without re-running the sim.
-    relief_stepover_mm: float = Field(1.2, gt=0)
+    # its own cusp-derived step. Against the shipped 0.9 this is 35 s off Corner
+    # Optical's 11.9-minute cycle at identical cut-sim coverage (6.14% uncut
+    # either way, zero gouge) and equivalent worst-case Z amplitude across the
+    # whole fixture corpus (0.943 -> 0.967 mm, every op `ok`).
+    #
+    # **1.2 was tried first and rejected on evidence**: it saves a further 16 s
+    # and makes the `gabriel` fixture post a WARNING — Fine Relief worst
+    # amplitude 1.118 mm, over the guard's own 1.0 threshold, in a *finishing*
+    # pass. Corner Optical's rough pass went to 0.946 with it, a 5% margin.
+    #
+    # Do NOT tune this by searching for a minimum. Worst amplitude against
+    # stepover is chaotic, the same trap `FEATURE_STEP_MIN_MM` documents:
+    # gabriel runs 0.364 / 0.967 / 1.118 at 0.9 / 1.0 / 1.2 while aviator runs
+    # 0.943 / 0.961 / 0.852. 1.0 is defensible only because it DOMINATES the
+    # incumbent 0.9 — faster, same coverage, same worst case across the corpus —
+    # not because it is optimal. Coverage also has a hard cliff at 1.4 (ring
+    # spacing outruns the rim band; 34% uncut), so re-run the sim AND
+    # `test_every_shipped_fixture_posts_a_clean_program` for any change here.
+    relief_stepover_mm: float = Field(1.0, gt=0)
     rough_axial_stock_mm: float = 2.0
     # Requested through-cut depth per pass, clamped down per material+machine by
     # `max_doc`. M12.4 set this to 4.0 ("cut as deep as the material allows") on the

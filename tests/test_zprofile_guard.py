@@ -9,6 +9,7 @@ operation, and a program carries its numbers in its own header.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -544,3 +545,76 @@ class TestTheLinkDoesNotClimbTheRim:
         same asymmetry that leaves all three shipped fixtures byte-identical."""
         assert (_relief_fine(1e9, slot_w_mm=0.0).paths
                 == _relief_fine(0.5, slot_w_mm=0.0).paths)
+
+
+# ------------------------------- the guard, turned on the programs WE ship
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _fixture_inputs(name: str):
+    """(partition, hinge polys) for a shipped fixture, however it is stored."""
+    from guildmodel.core.geometry.regions import partition_zones
+    from guildmodel.core.io_import.dxf import import_dxf
+    from guildmodel.core.io_import.normalize import points_to_polygon
+
+    if name == "demo":
+        raw = import_dxf(FIXTURES / "demo" / "GuildDraw DXF Export.dxf")
+        return (partition_zones(points_to_polygon(raw["OUTLINE"][0]),
+                                [points_to_polygon(c) for c in raw["LENS"]],
+                                raw["SCULPT"]),
+                [points_to_polygon(c) for c in raw["HINGE"]])
+
+    import tempfile
+    import zipfile
+
+    from guildmodel.gui.component_workspace import build_workspaces_from_gdraw
+    path = Path(tempfile.mkdtemp()) / f"{name}.gdraw"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted((FIXTURES / name).iterdir()):
+            zf.write(f, f.name)
+    ws = build_workspaces_from_gdraw(path)[0][0]
+    return ws.partition, ws.hinge_polys
+
+
+@pytest.mark.parametrize("fixture", ["demo", "gabriel", "aviator"])
+def test_every_shipped_fixture_posts_a_clean_program(fixture):
+    """Our own fixtures must post programs the guard calls `ok` — at the shipped
+    defaults, with the splay on so the feature band is exercised.
+
+    **The gate that was missing.** A guard nothing points at its own output is
+    the failure this module was written about, and for one release the module
+    had exactly that shape: the v1.6 stepover was raised to 1.2 on cycle time
+    and cut-sim coverage, the full suite stayed green, and `gabriel` was
+    quietly posting a WARNING — 1.118 mm worst amplitude in a *finishing* pass,
+    over the guard's own threshold. Nothing asked. This asks.
+
+    Kept deliberately as `severity() == "ok"` rather than a number: the numbers
+    move with every tuning change (worst across this corpus is Rough Relief at
+    ~0.97 mm, a 3% margin under the 1.0 mm warn line — thin, and worth knowing),
+    but the promise to a maker is the verdict, not the digits.
+    """
+    import yaml
+
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.project.schema import CastleParams
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+
+    tools = yaml.safe_load(
+        (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
+         / "tools.yaml").read_text())
+    tools = tools.get("tools", tools)
+
+    partition, hinges = _fixture_inputs(fixture)
+    castle = CastleParams()
+    castle.pad_splay.enabled = True
+    relief = build_castle_relief(partition, castle, hinges, resolution=CUT_RES_MM)
+    ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                  tools_cfg=tools)
+
+    profiles = [measure_paths(op) for op in ops]
+    assert profiles, f"{fixture} posted no operations"
+    bad = [p for p in profiles if p.severity() != "ok"]
+    assert not bad, (
+        f"{fixture} posts a program the guard flags:\n  "
+        + "\n  ".join(f"{p.severity()}: {p.message()}" for p in bad))
