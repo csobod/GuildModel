@@ -460,12 +460,15 @@ def _relief_fine(max_rise_mm: float, slot_w_mm: float = 1.5):
         (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
          / "tools.yaml").read_text())
     tools = tools.get("tools", tools)
-    # The stepover is pinned, not defaulted: whether a ring happens to cross the
-    # slot's mouth depends on where the boundary-offset rings land, and this
-    # fixture reproduces a MECHANISM (a ring leaving the cut mask at the rim and
-    # returning inside the link budget), not a tuning. The v1.6 stepover change
-    # to 1.2 moved the rings off the mouth and the reproduction went silent —
-    # exactly the way the original bug hid in fixtures that never built the
+    # The stepover is pinned, not defaulted, and 0.9 is not the shipped value:
+    # whether a ring happens to cross the slot's mouth depends on where the
+    # boundary-offset rings land, and this fixture reproduces a MECHANISM (a
+    # ring leaving the cut mask at the rim and returning inside the link
+    # budget), not a tuning. Measured at the moment of pinning, the unbudgeted
+    # climb is 9.32 mm at 0.9 and absent at both 1.0 (shipped) and 1.2 — the
+    # rings simply miss the mouth. Defaulting this would have retired a
+    # reproduction by changing an unrelated number, which is exactly how the
+    # original bug hid for four releases in fixtures that never built the
     # geometry that triggers it.
     _rough, fine, _feat = relief_ops(
         _rim_slot_relief(slot_w_mm), StockDefinition(), tools["flat_3175"],
