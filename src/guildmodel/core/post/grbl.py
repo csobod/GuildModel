@@ -108,7 +108,9 @@ class GRBLPost:
                initial_retract: bool = True) -> None:
         ts = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M")
         self._lines += [
-            f"; GuildModel — {self.job_name}",
+            # ASCII only: this line ships in every program, and the crustier
+            # field controllers are not unicode-tolerant. It was an em dash.
+            f"; GuildModel - {self.job_name}",
             f"; Side: {side}",
             f"; Material: {self.material}",
             f"; Tool: {self.tool_diameter_mm:.2f} mm diameter",

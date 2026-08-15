@@ -240,6 +240,31 @@ def test_grbl_program_lint(program, demo_inputs, tmp_path):
     rapid_z = [float(m) for m in re.findall(r"G0 Z(-?[\d.]+)", text)]
     assert min(rapid_z) >= castle.stock.total_pad_height_mm + 5.0 - 1e-6
 
+    # Pure ASCII, end to end: the header carried an em dash for five releases,
+    # and the crustier field controllers are not unicode-tolerant. Comments
+    # included — a byte a parser might choke on does not get a pass for being
+    # decorative.
+    text.encode("ascii")
+
+    # No dead Z cycles: a retract that rapids nowhere and plunges back to the
+    # point it left is the posted signature of two paths with coincident
+    # endpoints that the stitcher refused (`0.0 < d2`, 25 of them on a maker's
+    # frame before M-Z4). Walk rapid pairs: any G0 XY hop of zero length
+    # between a retract and a plunge is one.
+    lastxy = None
+    dead = 0
+    for line in text.splitlines():
+        m = re.match(r"G0 X(-?[\d.]+) Y(-?[\d.]+)\s*$", line)
+        if m:
+            xy = (float(m.group(1)), float(m.group(2)))
+            if lastxy is not None and xy == lastxy:
+                dead += 1
+            continue
+        m = re.match(r"G1 X(-?[\d.]+) Y(-?[\d.]+)", line)
+        if m:
+            lastxy = (float(m.group(1)), float(m.group(2)))
+    assert dead == 0, f"{dead} dead retract cycles"
+
 
 # ------------------------------------------------------------------ the NC gate
 

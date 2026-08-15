@@ -465,6 +465,12 @@ def _stitch_close_paths(paths: list, zgrid, ox: float, oy: float, res: float,
                 out[-1].extend((float(x), float(y), float(z))
                                for x, y, z in zip(xs, ys, zs))
             out[-1].extend(p)
+        elif d2 == 0.0 and abs(bz - az) <= 1e-9:
+            # Coincident endpoints — the most stitchable gap there is. `0.0 < d2`
+            # used to refuse it, posting a retract, a rapid that goes nowhere and
+            # a plunge back to the same point: 25 dead Z cycles on Corner
+            # Optical's frame. Continue the sweep, skipping the duplicate point.
+            out[-1].extend(p[1:])
         else:
             out.append(list(p))
     return out
