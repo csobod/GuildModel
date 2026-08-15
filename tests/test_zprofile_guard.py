@@ -267,3 +267,97 @@ class TestLinkRiseBudget:
         tower = [5.0, 5.0, 5.0 + budget + 0.01, 5.0, 5.0]
         assert self._breaks([0, 1, 3, 4], thin, max_rise=budget) == []
         assert self._breaks([0, 1, 3, 4], tower, max_rise=budget) == [2]
+
+
+# --------------------------------------- M-Z2 end to end, on a built-to-order relief
+
+def _tower_relief(tower_mm: float, tower_width_mm: float = 0.3):
+    """A rectangular body at 5 mm with a narrow strip standing at `tower_mm`.
+
+    Corner Optical's cap gap comes from their outline, not their settings — every
+    parameter combination on the demo outline tops out at a 0.16 mm bridge rise
+    (`scripts/probe_capgap.py`), and their drawing is their own. So the situation
+    is built here instead: a strip narrow enough for the M11 width test to bridge
+    (1.5 mm against a 4 mm budget) and, when it stands at stock height, masked out
+    of the cut — which is exactly the nosepad tower.
+    """
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from guildmodel.core.geometry.regions import CastlePartition
+    from guildmodel.core.relief.castle import CastleRelief
+    from guildmodel.core.relief.heightfield import Heightfield
+
+    res = 0.15
+    w_mm, h_mm = 40.0, 20.0
+    cols, rows = int(w_mm / res), int(h_mm / res)
+    origin = (-w_mm / 2, -h_mm / 2)
+
+    z = np.full((rows, cols), 5.0)
+    x0 = int((0.0 - origin[0]) / res)
+    z[:, x0:x0 + int(tower_width_mm / res)] = tower_mm
+
+    body = Polygon([(-w_mm / 2 + 1, -h_mm / 2 + 1), (w_mm / 2 - 1, -h_mm / 2 + 1),
+                    (w_mm / 2 - 1, h_mm / 2 - 1), (-w_mm / 2 + 1, h_mm / 2 - 1)])
+    xs = origin[0] + (np.arange(cols) + 0.5) * res
+    ys = origin[1] + (np.arange(rows) + 0.5) * res
+    gx, gy = np.meshgrid(xs, ys)
+    inside = ((gx > body.bounds[0]) & (gx < body.bounds[2])
+              & (gy > body.bounds[1]) & (gy < body.bounds[3]))
+
+    f = Heightfield(z=z, origin=origin, resolution=res)
+    return CastleRelief(field=f, inside=inside,
+                        zone_index=np.zeros((rows, cols), int),
+                        partition=CastlePartition(body=body), surface_field=f)
+
+
+def _fine_profile(tower_mm: float, max_rise_mm: float):
+    import yaml
+    from pathlib import Path
+
+    from guildmodel.core.cam.castle_ops import relief_ops
+    from guildmodel.core.project.schema import CastleCamParams, StockDefinition
+
+    tools = yaml.safe_load(
+        (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
+         / "tools.yaml").read_text())
+    tools = tools.get("tools", tools)
+    relief = _tower_relief(tower_mm)
+    _rough, fine, _feat = relief_ops(
+        relief, StockDefinition(), tools["flat_3175"],
+        CastleCamParams(relief_link_max_rise_mm=max_rise_mm))
+    return measure_paths(fine)
+
+
+class TestRiseBudgetIsPlumbedThrough:
+    """`relief_link_max_rise_mm` reaches `_emit` and changes what is emitted.
+
+    **This is a wiring test, not a reproduction.** It does not recreate Corner
+    Optical's cap gap, and it should not be read as though it does. That gap
+    needs their outline: every parameter combination tried on the demo outline
+    tops out at a 0.16 mm bridge rise (`scripts/probe_capgap.py`, including their
+    exact castle settings), because the trigger is an interaction between the
+    two-level stock boundary, the tool's own dilation, and the shape of the
+    frame — not a tall zone on its own. Their drawing is theirs, so it cannot
+    become a fixture.
+
+    What the relief below *does* give is a body with a masked strip narrow enough
+    for the M11 width test to bridge, which is enough to prove the parameter is
+    plumbed and takes effect. A faithful fixture is still owed — see the working
+    document — and until one exists the end-to-end behaviour is verified by hand
+    against their project.
+    """
+
+    def test_the_budget_changes_what_emit_produces(self):
+        loose = _fine_profile(10.0, max_rise_mm=1e9)
+        held = _fine_profile(10.0, max_rise_mm=0.5)
+        assert held.z_travel_mm < loose.z_travel_mm
+        assert held.max_amplitude_mm < loose.max_amplitude_mm
+
+    def test_a_low_step_is_left_alone(self):
+        """The budget must not shatter every ring it meets — a step the tool can
+        ride over cheaply is what the M11 linking was written for."""
+        loose = _fine_profile(5.3, max_rise_mm=1e9)
+        held = _fine_profile(5.3, max_rise_mm=0.5)
+        assert held.moves == loose.moves
+        assert held.max_amplitude_mm == pytest.approx(loose.max_amplitude_mm)
