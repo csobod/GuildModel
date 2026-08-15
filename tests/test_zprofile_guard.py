@@ -452,9 +452,17 @@ def _relief_fine(max_rise_mm: float, slot_w_mm: float = 1.5):
         (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
          / "tools.yaml").read_text())
     tools = tools.get("tools", tools)
+    # The stepover is pinned, not defaulted: whether a ring happens to cross the
+    # slot's mouth depends on where the boundary-offset rings land, and this
+    # fixture reproduces a MECHANISM (a ring leaving the cut mask at the rim and
+    # returning inside the link budget), not a tuning. The v1.6 stepover change
+    # to 1.2 moved the rings off the mouth and the reproduction went silent —
+    # exactly the way the original bug hid in fixtures that never built the
+    # geometry that triggers it.
     _rough, fine, _feat = relief_ops(
         _rim_slot_relief(slot_w_mm), StockDefinition(), tools["flat_3175"],
-        CastleCamParams(relief_link_max_rise_mm=max_rise_mm))
+        CastleCamParams(relief_link_max_rise_mm=max_rise_mm,
+                        relief_stepover_mm=0.9))
     return fine
 
 

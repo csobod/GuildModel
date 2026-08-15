@@ -651,7 +651,15 @@ class CastleCamParams(BaseModel):
     # load with a clear error (the generators also floor them defensively). `gt=0`
     # is deliberately NOT on rough_axial_stock_mm (0 = leave no extra roughing stock).
     pocket_stepover_mm: float = Field(1.2, gt=0)
-    relief_stepover_mm: float = Field(0.9, gt=0)   # matches Fusion Scallop coverage
+    # 1.2 mm = 38% of the 3.175 flat (v1.6, was 0.9 "matches Fusion Scallop
+    # coverage"). A flat tool leaves zero scallop on the flat terraces at any
+    # stepover under its diameter; sloped surfaces are the feature band's job at
+    # its own cusp-derived step. Measured on Corner Optical's frame: 55 s off a
+    # 12-minute cycle with identical cut-sim coverage (6.14% uncut either way),
+    # zero gouge and every op's Z profile unchanged-or-better. 1.4 is over the
+    # cliff — ring spacing outruns the rim band and coverage collapses to 34%
+    # uncut — so this is not a knob to nudge further without re-running the sim.
+    relief_stepover_mm: float = Field(1.2, gt=0)
     rough_axial_stock_mm: float = 2.0
     # Requested through-cut depth per pass, clamped down per material+machine by
     # `max_doc`. M12.4 set this to 4.0 ("cut as deep as the material allows") on the
