@@ -41,6 +41,7 @@ def collect_issues(
     machine_lint: Sequence[str] = (),
     collisions: Sequence[str] = (),
     cut_report: Any = None,
+    z_profiles: Iterable[Any] = (),
 ) -> list[Issue]:
     """Fold the engine's checks into one severity-sorted issue list.
 
@@ -85,6 +86,16 @@ def collect_issues(
                 f"Gouge: {g.gouge_cells} cells below target "
                 f"(worst {g.max_depth_mm:.2f} mm)",
                 ("view", "sim")))
+
+    # Posted-program Z profile, per operation. Carries its own severity rather
+    # than folding into "Machine lint": a program that reverses Z under load is
+    # a different kind of wrong from one that exceeds a feed ceiling, and the op
+    # name is the navigation target that makes it actionable.
+    for prof in z_profiles:
+        sev = prof.severity()
+        if sev != "ok":
+            issues.append(Issue(sev, "Z profile", prof.message(),
+                                ("op", getattr(prof, "name", None))))
 
     issues.sort(key=lambda i: (i.rank, i.category))
     return issues

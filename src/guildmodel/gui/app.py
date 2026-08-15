@@ -189,6 +189,9 @@ class _ProgressWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._cancel = False
+        #: Per-op `zprofile.OpProfile` for the program this worker posted (M-Z1);
+        #: the window reads it into the inspector, like `machine_warnings`.
+        self.z_profiles: list = []
 
     def cancel(self) -> None:
         self._cancel = True
@@ -197,6 +200,21 @@ class _ProgressWorker(QObject):
         if self._cancel:
             raise _Canceled()
         self.stage.emit(label, int(round(frac * 100)))
+
+    def _check_z_profile(self, text: str) -> str:
+        """Measure the posted program's Z behaviour, log it, and stamp it in.
+
+        Every worker that posts runs this — the Hyde Park sawtooth hid for four
+        releases in an operation nobody was measuring, so the guard measures all
+        of them or it is worth nothing. Returns the program with its profile in
+        the header, so the file a maker emails back carries its own numbers.
+        """
+        from guildmodel.core.cam.zprofile import annotate, measure_program, warnings
+        profiles = measure_program(text)
+        self.z_profiles = list(profiles.values())
+        for w in warnings(profiles):
+            self.progress.emit(f"[gcode] ⚠ Z profile: {w}")
+        return annotate(text, profiles)
 
 
 # ------------------------------------------------------------------ 3D mesh build worker
@@ -629,6 +647,7 @@ class GCodeWorker(_ProgressWorker):
         self.progress.emit(f"[gcode] posterior_cut.nc generated ({len(text):,} bytes)")
 
         # Lint against the machine + estimate cut time (machine dynamics).
+        text = self._check_z_profile(text)          # M-Z1 Z-profile guard
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
@@ -803,6 +822,7 @@ class GCodeWorker(_ProgressWorker):
         text = post.to_string()
         self.progress.emit(f"[gcode] temple_cut.nc generated ({len(text):,} bytes)")
 
+        text = self._check_z_profile(text)          # M-Z1 Z-profile guard
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
@@ -961,6 +981,7 @@ class GCodeWorker(_ProgressWorker):
         text = post.to_string()
         self.progress.emit(f"[gcode] base_curve_block.nc generated ({len(text):,} bytes)")
 
+        text = self._check_z_profile(text)          # M-Z1 Z-profile guard
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
@@ -1120,6 +1141,7 @@ class GCodeWorker(_ProgressWorker):
         text = post.to_string()
         self.progress.emit(f"[gcode] worktable.nc generated ({len(text):,} bytes)")
 
+        text = self._check_z_profile(text)          # M-Z1 Z-profile guard
         machine_warnings = lint_program(text, machine)
         for w in machine_warnings:
             self.progress.emit(f"[gcode] ⚠ machine: {w}")
@@ -3068,9 +3090,11 @@ class MainWindow(QMainWindow):
         self._diag_reach: list = []
         self._diag_clearance: list = []
         self._diag_lint: list = []
+        self._diag_zprofile: list = []
         self._diag_cut_report = None
         self._diag_bed_clearance: list = []
         self._diag_bed_lint: list = []
+        self._diag_bed_zprofile: list = []
         self._diag_bed_collisions: list = []
 
         # Castle preview state: current teaching stage + per-stage mesh cache
@@ -4172,6 +4196,18 @@ class MainWindow(QMainWindow):
                 contour_op_names=bed.contour_op_names, drill_op_names=bed.drill_op_names)
             text = post.to_string()
 
+            # M-Z1 Z-profile guard. INCIDENT-2026-07-29 was a BED program —
+            # relief built at preview resolution, Z reversing ~50 times per
+            # 100 mm under full acceleration, E-stopped on real hardware. This
+            # is the path that would have caught it.
+            from guildmodel.core.cam.zprofile import (
+                annotate as _z_annotate, measure_program as _z_measure,
+                warnings as _z_warnings)
+            _zprof = _z_measure(text)
+            for w in _z_warnings(_zprof):
+                self.append_log(f"[gcode] ⚠ Z profile: {w}")
+            text = _z_annotate(text, _zprof)
+            self._diag_bed_zprofile = list(_zprof.values())
             machine_warnings = lint_program(text, machine)
             for w in machine_warnings:
                 self.append_log(f"[gcode] ⚠ machine: {w}")
@@ -5675,6 +5711,7 @@ class MainWindow(QMainWindow):
         ws.diag = {                               # M7.14 inspector inputs per component
             "reach": self._diag_reach, "clearance": self._diag_clearance,
             "lint": self._diag_lint, "cut_report": self._diag_cut_report,
+            "zprofile": self._diag_zprofile,
         }
         # Capture this component's editable params from the kind-aware dock (M7.3).
         if ws.kind == ComponentKind.FRAME_FRONT:
@@ -5709,6 +5746,7 @@ class MainWindow(QMainWindow):
         self._diag_reach = d.get("reach", [])
         self._diag_clearance = d.get("clearance", [])
         self._diag_lint = d.get("lint", [])
+        self._diag_zprofile = d.get("zprofile", [])
         self._diag_cut_report = d.get("cut_report")
         self._refresh_inspector()
 
@@ -6731,6 +6769,7 @@ class MainWindow(QMainWindow):
             issues = collect_issues(
                 clearance_violations=self._diag_bed_clearance,
                 machine_lint=self._diag_bed_lint,
+                z_profiles=self._diag_bed_zprofile,
                 collisions=self._diag_bed_collisions,
             )
         else:
@@ -6739,6 +6778,7 @@ class MainWindow(QMainWindow):
                 clearance_violations=self._diag_clearance,
                 machine_lint=self._diag_lint,
                 cut_report=self._diag_cut_report,
+                z_profiles=self._diag_zprofile,
             )
             # The model's own verdict leads the list (BUILDPLAN-NEW UI-0): a
             # broken model makes every downstream check meaningless, so it must
@@ -7177,6 +7217,7 @@ class MainWindow(QMainWindow):
             self._diag_reach = list(getattr(w, "reach_warnings", []))
             self._diag_clearance = list(getattr(w, "clearance_violations", []))
             self._diag_lint = list(getattr(w, "machine_warnings", []))
+            self._diag_zprofile = list(getattr(w, "z_profiles", []))
             self._diag_cut_report = None
             self._refresh_inspector()
         # Draw the toolpaths over the 2D design + fill the inspector (M7.11); the
@@ -7219,6 +7260,8 @@ class MainWindow(QMainWindow):
                 self, "Open in GuildSend",
                 "Generate a program first — GuildSend runs the stored G-code.")
             return
+        if self._z_profile_hold("hand off anyway"):
+            return
         if self._project_path is None or self._dirty:
             # The handoff is the file on disk; make sure it holds this session.
             self._on_save_project()
@@ -7242,6 +7285,33 @@ class MainWindow(QMainWindow):
         self.append_log(f"[send] Opened {self._project_path.name} in GuildSend.")
         self.status_lbl.setText(f"Sent to GuildSend — {self._project_path.name}")
 
+    def _z_profile_hold(self, what: str) -> bool:
+        """Ask before a program with a flagged Z profile leaves the app (M-Z1).
+
+        Deliberately a confirmation and not a refusal. The check is young, the
+        residual it fires on today is a known and documented one (feature rings
+        crossing the nosepad tower wall), and a maker who understands their job
+        must still be able to run it. What it removes is the failure mode this
+        whole investigation came from: a program leaving here with nobody having
+        looked at the number. Returns True when the caller should stop.
+        """
+        profs = list(getattr(self, "_diag_zprofile", []))
+        if self._on_worktable_tab():
+            profs = list(getattr(self, "_diag_bed_zprofile", []))
+        bad = [pr for pr in profs if pr.severity() == "error"]
+        if not bad:
+            return False
+        detail = "\n".join(f"  \u2022 {pr.message()}" for pr in bad)
+        ans = QMessageBox.warning(
+            self, f"Z profile \u2014 {what}?",
+            f"This program reverses Z under load harder than the guard allows:\n\n"
+            f"{detail}\n\n"
+            "A Z axis reversing at cutting feed is hard on the machine and can "
+            "leave witness marks. Review the toolpath before running it.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Cancel)
+        return ans != QMessageBox.StandardButton.Ok
+
     def _on_export_nc(self) -> None:
         """Write the generated program(s) to standalone .nc file(s) on demand
         (the program lives in the project by default; this is the opt-in loose
@@ -7251,6 +7321,8 @@ class MainWindow(QMainWindow):
                 self, "Export G-code",
                 "Generate G-code first (Ctrl+G) — then export it to a .nc file.",
             )
+            return
+        if self._z_profile_hold("export anyway"):
             return
         base = Path(self._prefs["last_output_dir"] or ".")
         if len(self._last_programs) == 1:
