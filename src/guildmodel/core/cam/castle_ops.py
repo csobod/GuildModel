@@ -37,7 +37,7 @@ ProgressFn = Callable[[str, float], None]
 from ..project.schema import (
     CastleCamParams, CastleParams, HoldingParams, StockDefinition,
 )
-from ..relief.castle import CastleRelief, stock_top_heightfield
+from ..relief.castle import CUT_RES_MM, CastleRelief, stock_top_heightfield
 from ..relief.heightfield import Heightfield
 from .dropcutter import cutter_location_surface
 from .pocketing import _inward_offsets, _SCALE
@@ -48,6 +48,37 @@ Point3 = tuple[float, float, float]
 # Facet-cusp target on the M13 posterior-feature chamfers: the feature-finish
 # band's stepover is derived as cusp / tan(steepest feature angle).
 FEATURE_CUSP_MM = 0.15
+
+#: Floor on that stepover: two cells of the grid every posted path is built on.
+#:
+#: The band is finished by rings riding a heightfield of pitch `CUT_RES_MM`, and
+#: each ring is densified at that pitch too, so two rings closer together than
+#: two cells read the same samples. The cusp they would resolve is finer than the
+#: surface's own reconstruction error — one cell on a slope θ is `res·tan(θ)` of
+#: Z, which at 0.15 mm and 60° is 0.26 mm, already past the 0.15 mm cusp target.
+#: Asking for a finer stepover than that buys no accuracy and costs a Z sawtooth:
+#: the rings stop tracing the chamfer and start tracing the grid's quantization.
+#:
+#: Keyed to `CUT_RES_MM` rather than the relief's own `resolution` on purpose.
+#: A relief handed to the CAM at a *preview* pitch (0.3 / 0.2) is not on a path
+#: that ends in a `.nc` — see the note on `CUT_RES_MM` — and the toolpath must
+#: not quietly change because of the grid someone happened to preview on.
+#:
+#: This floor used to be a bare `0.12` mm, chosen with no reference to
+#: `CUT_RES_MM` and therefore *below* it. Corner Optical's Hyde Park frame posted
+#: **966 Z reversals, 53.1 per 100 mm, and 1152 mm of Z travel** in the Features
+#: op on rings whose Z should barely move at all — they are the chamfer's level
+#: curves. At two cells that becomes 122 reversals and 198 mm of Z. The cut
+#: simulator puts the finish cost at +6% uncut cells in the nosepad zone
+#: (783 → 832) and +0.16 mm worst-proud, because the flat tool's reach into the
+#: splay concavity — 2.5 mm proud at *any* stepover — is what actually limits
+#: that surface, not the facet ridge.
+#:
+#: NOTE this does not bound the worst Z *amplitude*, which stays ~4.3 mm however
+#: the stepover is set: that comes from feature rings crossing the nosepad tower
+#: wall, and whether a ring lands on the wall is chaotic in the stepover (0.40 mm
+#: measures worse than 0.12 mm). Slope-masking the relief is what owns that.
+FEATURE_STEP_MIN_MM = 2.0 * CUT_RES_MM
 
 
 @dataclass
@@ -544,7 +575,7 @@ def relief_ops(
         from scipy.ndimage import binary_dilation
         slope = math.radians(min(85.0, max(5.0, relief.feature_max_slope_deg)))
         f_step = min(params.relief_stepover_mm,
-                     max(0.12, FEATURE_CUSP_MM / math.tan(slope)))
+                     max(FEATURE_STEP_MIN_MM, FEATURE_CUSP_MM / math.tan(slope)))
         # The feature op rides its OWN tool's drop-cutter surface. A ball and a
         # flat of the same radius have different cutter-location surfaces on
         # every sloped cell, which is the whole of the maker's reason for

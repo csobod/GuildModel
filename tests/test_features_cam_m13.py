@@ -206,6 +206,81 @@ def test_contours_byte_equal_features_on_vs_off(demo, tools):
         assert a.paths == b.paths
 
 
+# ------------------------------------------------- feature stepover vs the grid
+
+def test_feature_stepover_never_finer_than_the_posting_grid(demo, tools):
+    """A steep splay must not drive the band stepover below two grid cells.
+
+    Corner Optical's Hyde Park frame (pad splay at 59.7°) drove
+    `cusp / tan(slope)` to 0.088 mm, under a floor that was a bare 0.12 mm — both
+    below `CUT_RES_MM`. Rings spaced finer than the surface they sample stop
+    tracing the chamfer and trace the grid's quantization instead: that program
+    posted 966 Z reversals and 1152 mm of Z travel in Features, on rings that are
+    the chamfer's level curves and should barely move in Z at all.
+    """
+    import math
+
+    from guildmodel.core.cam.castle_ops import (
+        CUT_RES_MM, FEATURE_CUSP_MM, FEATURE_STEP_MIN_MM,
+    )
+
+    assert FEATURE_STEP_MIN_MM >= 2.0 * CUT_RES_MM
+
+    # the formula's own output at a Hyde-Park-steep splay, before the floor
+    steep = math.radians(59.7)
+    assert FEATURE_CUSP_MM / math.tan(steep) < CUT_RES_MM      # sub-cell
+    f_step = max(FEATURE_STEP_MIN_MM, FEATURE_CUSP_MM / math.tan(steep))
+    assert f_step >= 2.0 * CUT_RES_MM
+
+    # a gentle chamfer still gets the cusp-derived step, not the floor
+    gentle = math.radians(20.0)
+    assert FEATURE_CUSP_MM / math.tan(gentle) > FEATURE_STEP_MIN_MM
+
+
+def test_steep_splay_band_does_not_sawtooth(demo, tools):
+    """The band rings on a steep splay stay near their own level curve.
+
+    Every other fixture in this repo is a bare castle — no splay, so no feature
+    band, so nothing to measure. That blind spot is why the Hyde Park sawtooth
+    survived four releases. This one turns the splay up steep on purpose.
+    """
+    import math
+
+    from guildmodel.core.cam.castle_ops import generate_castle_program
+    from guildmodel.core.relief.castle import CUT_RES_MM, build_castle_relief
+
+    part, hinges = demo
+    castle = _castle(splay=True)
+    castle.pad_splay.angle_center_deg = 59.7
+    castle.pad_splay.angle_middle_deg = 58.0
+    relief = build_castle_relief(part, castle, hinges, resolution=CUT_RES_MM)
+    ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"])
+
+    feat = next((op for op in ops if op.name == "Features"), None)
+    if feat is None or not feat.paths:
+        pytest.skip("no feature band on this fixture")
+
+    reversals = xy = 0
+    for path in feat.paths:
+        prev_dz = 0.0
+        for (x0, y0, z0), (x1, y1, z1) in zip(path, path[1:]):
+            d = math.hypot(x1 - x0, y1 - y0)
+            if d <= 1e-9:
+                continue
+            xy += d
+            dz = z1 - z0
+            if dz and prev_dz and (dz > 0) != (prev_dz > 0):
+                reversals += 1
+            prev_dz = dz
+    per100 = 100.0 * reversals / xy if xy else 0.0
+    # Measured on this fixture: 40.9 per 100 mm with the old sub-cell 0.12 floor,
+    # 23.9 with the shipped one. The gate sits between them rather than near
+    # either — the residual is still high because feature rings crossing the
+    # nosepad tower wall are not what the stepover controls (slope-masking the
+    # relief owns that), so tighten this only when that lands.
+    assert per100 < 32.0, f"{per100:.1f} Z reversals per 100 mm in Features"
+
+
 # ------------------------------------------------------------------ end to end
 
 def test_all_features_on_sim_green_with_ball_fine(demo, tools):
