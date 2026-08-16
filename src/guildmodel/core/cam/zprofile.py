@@ -103,6 +103,14 @@ class Limits:
 
     The post-fix Hyde Park row is `error` on amplitude alone, and correctly:
     the guard is not supposed to go quiet because the density improved.
+
+    **These numbers are vendored downstream.** GuildSend carries a copy of the
+    measurement half (`profiles/zprofile.py`) so it can re-measure any program
+    it loads — including one saved into a `.gmodel`, which never passes
+    GuildModel's export hold. Verified identical on a real 4,700-line program,
+    and its `test_the_vendored_constants_still_match_guildmodel` pins these six
+    values. Move a threshold here and that test fails there, by design: change
+    them together or the two apps quote different figures for the same file.
     """
     warn_per100: float = 5.0
     warn_max_mm: float = 1.0
