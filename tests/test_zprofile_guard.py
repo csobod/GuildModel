@@ -358,12 +358,53 @@ class TestOwnToolStockCeiling:
         assert delta.min() >= -1e-9          # the flat's ceiling is never lower
         assert delta.max() > 1.0             # and differs by mm at the cliff
 
-    def test_single_tool_jobs_are_untouched(self):
-        """The everyday case computes one ceiling and posts what it always did
-        (verified byte-identical on Corner Optical's frame when this landed)."""
-        fine_a = _relief_fine(max_rise_mm=0.5)
-        fine_b = _relief_fine(max_rise_mm=0.5)
-        assert fine_a.paths == fine_b.paths
+    @staticmethod
+    def _stock_ceilings_built(fine_tool: str, rough_tool: str) -> int:
+        """How many distinct stock ceilings `relief_ops` builds for a job."""
+        import yaml
+
+        from guildmodel.core.cam import castle_ops
+        from guildmodel.core.project.schema import CastleCamParams, StockDefinition
+        from guildmodel.core.relief.castle import stock_top_heightfield
+
+        tools = yaml.safe_load(
+            (Path(__file__).parents[1] / "src" / "guildmodel" / "config"
+             / "tools.yaml").read_text())
+        tools = tools.get("tools", tools)
+        relief = _rim_slot_relief()
+        stock_z = stock_top_heightfield(
+            StockDefinition(), resolution=relief.field.resolution,
+            origin=relief.field.origin, shape=relief.field.z.shape).z
+
+        real = castle_ops.cutter_location_surface
+        built: list = []
+
+        def spy(hf, ttype, radius):
+            if hf.z.shape == stock_z.shape and (hf.z == stock_z).all():
+                built.append((ttype, round(radius, 6)))
+            return real(hf, ttype, radius)
+
+        castle_ops.cutter_location_surface = spy
+        try:
+            castle_ops.relief_ops(relief, StockDefinition(), tools[fine_tool],
+                                  CastleCamParams(relief_stepover_mm=0.9),
+                                  rough_tool=tools[rough_tool])
+        finally:
+            castle_ops.cutter_location_surface = real
+        return len(built)
+
+    def test_a_single_tool_job_builds_exactly_one_stock_ceiling(self):
+        """Why the everyday job posts byte-identical output to before the fix
+        (checked hash-for-hash on Corner Optical's frame when this landed): with
+        one tool there is one ceiling, so there is nothing for the per-op lookup
+        to change. The cache is what keeps that true — without it this would be
+        the same surface computed three times."""
+        assert self._stock_ceilings_built("flat_3175", "flat_3175") == 1
+
+    def test_a_mixed_tool_job_builds_one_ceiling_per_tool(self):
+        """And the fix itself: two tools, two ceilings, each op measured against
+        its own. One ceiling here would mean a mask borrowing again."""
+        assert self._stock_ceilings_built("ball_2mm", "flat_3175") == 2
 
     def test_the_fine_mask_uses_the_fine_tools_ceiling(self):
         """Wiring: the emitted source compares each op against its own ceiling,
