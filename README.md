@@ -13,11 +13,54 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.5.0.** GuildModel builds the posterior castle relief and the
+**v1.6.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
+
+> **New in v1.6.0 — the CAM measures its own output.** A maker read a Z-axis
+> sawtooth off a toolpath display, wrote his own analyzer, and refused to run
+> the program. He was right, and nothing here would have caught it, because
+> nothing in the pipeline ever measured how the programs it writes actually
+> **move**. Now something does: every posted operation is measured for Z
+> reversals, worst amplitude and near-plunge moves; the numbers reach the
+> Inspector, ride in the program's own header so you can quote them, and a
+> flagged program asks before it leaves the app. It asks — it does not refuse.
+> You may need that program for a test cut, and the value was never the veto,
+> it is that nobody posts one of these without having been shown the number.
+>
+> *Three separate faults produced his sawtooth, and all three are fixed.* The
+> posterior feature stepover had a floor **below the grid the program is
+> rasterized on**, so the finishing rings traced quantization instead of the
+> chamfer. Ring linking bridged a masked gap by asking only how **wide** it
+> was, never how **tall** — dragging the cutter up onto uncut stock at the rim
+> and back down, at cutting feed. Path stitching had the identical hole. On his
+> frame: **966 → 16** significant Z reversals, worst move **3.88 → 0.35 mm**,
+> and no move over 71° anywhere in the program.
+>
+> **Re-post any program you still have.** The relief stepover moved from 0.9 to
+> 1.0 mm — a shorter cycle at identical cut coverage — so a program posted
+> before this release is not the program this release writes.
+
+> **New in v1.6.0 — the sender checks the work too.** GuildSend re-measures
+> every program it loads, including one opened straight from a `.gmodel` that
+> never passed GuildModel's export prompt, and shows what it finds in pre-flight
+> beside the envelope and feed checks. A warning, never a block. Both apps use
+> the same measurement, verified figure-for-figure on a real program, so what
+> your analyzer says, what the Inspector says and what the sender says are the
+> same numbers for the same file.
+
+> **Also in v1.6.0.** A **ball nose assigned to Rough or Fine Relief** is now
+> called out in the Inspector as you assign it: a ball rolls down every terrace
+> wall a flat glides over, and posts a Z-heavy program for no gain. Its home is
+> the **Features** operation, where it measures *better* than a flat. Two fixes
+> in the posted G-code itself: retract cycles that rapided nowhere and plunged
+> back to the point they left are gone, and the header is pure ASCII — it
+> carried one em dash, and not every field controller is unicode-tolerant.
+> Finally, when a job runs **different tools on different operations**, each
+> operation now measures the stock with its own tool instead of borrowing the
+> roughing tool's.
 
 > **New in v1.5.0 — the posterior features answer to the maker.** The bridge relief's
 > cross-section is now a **U with both corners named** — an exterior radius where
