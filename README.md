@@ -43,14 +43,6 @@ maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 > 1.0 mm — a shorter cycle at identical cut coverage — so a program posted
 > before this release is not the program this release writes.
 
-> **New in v1.6.0 — the sender checks the work too.** GuildSend re-measures
-> every program it loads, including one opened straight from a `.gmodel` that
-> never passed GuildModel's export prompt, and shows what it finds in pre-flight
-> beside the envelope and feed checks. A warning, never a block. Both apps use
-> the same measurement, verified figure-for-figure on a real program, so what
-> your analyzer says, what the Inspector says and what the sender says are the
-> same numbers for the same file.
-
 > **Also in v1.6.0.** A **ball nose assigned to Rough or Fine Relief** is now
 > called out in the Inspector as you assign it: a ball rolls down every terrace
 > wall a flat glides over, and posts a Z-heavy program for no gain. Its home is
