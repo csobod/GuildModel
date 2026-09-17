@@ -286,7 +286,7 @@ _BASE_CACHE_MAX = 2
 
 
 def _base_key(partition: CastlePartition, castle: CastleParams,
-              heights: dict[str, float] | None) -> tuple:
+              heights: dict[str, float] | None, curved: bool) -> tuple:
     """Everything `castle_base` reads, and nothing else.
 
     Zone thicknesses and overrides (terrace heights), the footing schedule
@@ -300,6 +300,7 @@ def _base_key(partition: CastlePartition, castle: CastleParams,
     groove = getattr(castle, "lens_groove", None)
     return (
         id(partition),
+        bool(curved),          # the flat rebuild is a different base, not a hit
         castle.zones.model_dump_json(),
         json.dumps(castle.zone_height_overrides, sort_keys=True),
         castle.footing.model_dump_json(),
@@ -316,7 +317,8 @@ def clear_base_cache() -> None:
 
 def castle_base(partition: CastlePartition, castle: CastleParams,
                 heights: dict[str, float] | None = None,
-                progress: Optional[ProgressFn] = None):
+                progress: Optional[ProgressFn] = None,
+                curved: bool | None = None):
     """The castle before any finishing feature: terraces plus footing blends.
 
     Split out and cached because it is ~8 s of every rebuild on the demo frame
@@ -328,7 +330,9 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
     the lens groove enabled it is replaced by the shrunk lip partition and every
     feature downstream has to be built against that one, not the original.
     """
-    key = _base_key(partition, castle, heights)
+    if curved is None:
+        curved = CURVED_TERRACES
+    key = _base_key(partition, castle, heights, curved)
     source = partition
     for cached_key, _src, value in _BASE_CACHE:
         if cached_key == key:
@@ -348,7 +352,7 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
         from .features import lip_partition
         partition = lip_partition(partition, groove.depth_mm)
         h = zone_heights(partition, castle, heights)
-    use_curves = CURVED_TERRACES
+    use_curves = curved
     source = SourceCurves(partition) if use_curves else None
     solid = build_terraces(partition, h, curved=use_curves, source=source)
 
@@ -405,11 +409,98 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
 
 # --------------------------------------------------------------------- build
 
+def closes(shape) -> bool:
+    """Does this solid's surface actually close? The app's own oracle, asked here.
+
+    `BRepCheck_Analyzer` says yes to shapes this returns False for — that is the
+    whole of BUILDPLAN-NEW UI-0, and it is not a theoretical gap. On
+    one drawing in the maker's corpus the curved base is `is_valid()` and
+    carries a single
+    0.08 mm triangular hole where the nosepad-to-bridge blend meets the bridge
+    terrace at z = 5.3, plus 247 edges with more than two faces on them. The
+    counts do not move between a 0.2 mm and a 0.002 mm tessellation, so it is
+    the topology rather than the meshing.
+
+    It runs on every B-Rep build and it is not free: the tessellation is a real
+    one, not the viewer's reused, because the viewer's carries edges and has not
+    been asked for yet. Measured on the fully featured gabriel front, 0.46 s
+    against a 13.72 s build — **3.3%**, of which the weld-and-count is 5 ms and
+    the rest is meshing. That buys the one thing `BRepCheck_Analyzer` will not
+    tell you, on the path where a wrong answer reaches a machine.
+    """
+    try:
+        from ..mesh_check import welded_surfaces
+        from .tessellate import tessellate
+
+        pair = welded_surfaces(tessellate(shape, with_edges=False).to_trimesh())
+        if pair is None:
+            return False
+        full, live = pair
+        if not len(live.faces):
+            return False
+        holes = int((np.unique(full.edges_sorted, axis=0,
+                               return_counts=True)[1] == 1).sum())
+        overlaps = int((np.unique(live.edges_sorted, axis=0,
+                                  return_counts=True)[1] > 2).sum())
+        return not holes and not overlaps
+    except Exception:                                        # noqa: BLE001
+        return True      # never let the check itself fail a build
+
+
 def build_castle_solid(partition: CastlePartition, castle: CastleParams,
                        hinges: list | None = None,
                        heights: dict[str, float] | None = None,
                        progress: Optional[ProgressFn] = None,
                        return_surface: bool = False):
+    """Terraces, footing blends, features and pockets — closed, or rebuilt flat.
+
+    Builds with the curved terraces, checks the result actually closes, and on
+    the frames where it does not, rebuilds once from the flattened partition and
+    returns that instead. See `_build_castle_solid` for the build itself and
+    `closes` for the check.
+
+    **Why a fallback rather than a fix.** The curved build is the more faithful
+    one and is right on 39 of the frame library's 40 buildable fronts. On
+    one drawing of the forty its nosepad-to-bridge blend leaves a 0.08 mm hole
+    where it meets the bridge terrace — one of a mirrored pair, the two
+    differing by
+    0.0009 mm3, so the same blend on the other side of the same frame is fine. A
+    near-tangency landing on opposite sides of a tolerance is not something the
+    caller can be asked to avoid, and neither `SetUseOBB`, `SetRunParallel`, a
+    fuzzy value, `ShapeUpgrade_UnifySameDomain` nor `BRepBuilderAPI_Sewing`
+    closes it — sewing takes the self-touching edges from 247 to 112 and moves
+    the volume 3.9 mm3 in the process.
+
+    The flat rebuild is clean, valid, and **faster** (5.6 s against 14.0 s). It
+    costs 1.5 mm3, 0.017% of the part — the chord deficit between the authored
+    spline and the polygon inscribed in it, an order inside the 0.1% the kernel
+    parity gate already allows, and it is paid only by the frames that need it.
+
+    A maker whose drawing GuildDraw passed should get a model they can cut. This
+    is the same principle `castle_relief` applies to an unknown kernel name:
+    fall back rather than refuse.
+    """
+    solid = _build_castle_solid(partition, castle, hinges, heights, progress,
+                                return_surface, curved=None)
+    check = solid[0] if return_surface else solid
+    if CURVED_TERRACES and not closes(check):
+        _report(progress, "Rebuilding without curved terraces", 0.95)
+        flat = _build_castle_solid(partition, castle, hinges, heights, progress,
+                                   return_surface, curved=False)
+        if closes(flat[0] if return_surface else flat):
+            return flat
+        # Neither closes. Hand back the faithful one and let `verify_mesh` say
+        # so — a worse model returned silently is the failure mode UI-0 exists
+        # to prevent.
+    return solid
+
+
+def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
+                        hinges: list | None = None,
+                        heights: dict[str, float] | None = None,
+                        progress: Optional[ProgressFn] = None,
+                        return_surface: bool = False,
+                        curved: bool | None = None):
     """Terraces, footing blends, posterior features and hinge pockets.
 
     Order mirrors the raster exactly: terraces -> footings -> posterior finishing
@@ -424,7 +515,8 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     Still to come as sweeps: pad splay, brow chamfer (`EdgeFeature`), bridge
     relief, lens groove.
     """
-    partition, h, top, solid = castle_base(partition, castle, heights, progress)
+    partition, h, top, solid = castle_base(partition, castle, heights, progress,
+                                           curved=curved)
 
     _report(progress, "Finishing features", 0.85)
     from .features import (apply_surface_features, hinge_pocket_cutters,
