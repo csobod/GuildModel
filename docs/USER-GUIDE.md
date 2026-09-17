@@ -1,4 +1,4 @@
-# GuildModel User Guide (v1.6.0)
+# GuildModel User Guide (v1.7.0)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -171,6 +171,24 @@ caches its own model. The view strip carries:
 - a 3D section plane
 
 A parameter edit rebuilds the model live and keeps your zoom.
+
+### Export STL
+
+**File ▸ Export STL (Ctrl+E)** writes the component you are looking at.
+**File ▸ Export All STL (Ctrl+Shift+E)** asks for a folder and writes every
+component that can be built — the frame front, both temples and each base-curve
+template — one file each, named for the component. A drawing with more than two
+lens curves makes more than two templates, and those are numbered.
+
+Export always rebuilds at the **export resolution** in Preferences, never from
+what the 3D view happens to be showing. The frame front is written by whichever
+model kernel is selected; a temple and a base-curve template are flat parts, so
+they are built exactly and the resolution setting does not apply to them.
+
+The log reports each file's triangle count, volume and verdict as it is written,
+along with anything wrong with it — including a mounting hole that will not fit
+the lens it is drilled into. You get the file either way: a warning tells you
+what you are holding, it does not withhold it.
 
 ## 3. Temples and base-curve blocks
 

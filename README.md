@@ -13,11 +13,43 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.6.0.** GuildModel builds the posterior castle relief and the
+**v1.7.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
 (drageoir V-groove in each eyewire wall, off by default).
+
+> **New in v1.7.0 — every component you can build, you can export.** Export STL
+> was wired to the frame front alone; a temple and a base-curve forming template
+> had no path out to a file at all, and a maker who asked for one was told to
+> draw five SCULPT section cuts, which is advice that component can never take.
+> Now anything that builds, exports. **Export All STL** (Ctrl+Shift+E) takes one
+> folder and writes every buildable component into it, numbering the templates
+> when a drawing carries more than two lens curves. Exports are also **the
+> model's own triangles** now rather than a raster remesh of them; on a frame
+> front that is 34,000 triangles and 1.71 MB in place of 262,000 and 13.10 MB.
+>
+> *The base-curve template had been unexportable for two separate reasons.* The
+> rim conform projects grid vertices onto a polyline, which produces triangles
+> of exactly zero area; the validity check dropped those before counting open
+> edges, and dropping a face out of a valid tiling unpairs three edges that were
+> never open. 86 such faces were reported as **258 gaps** in a solid that
+> trimesh, an STL round-trip and the Euler characteristic all called closed. The
+> check now counts gaps and self-contacts on the surfaces that can answer each
+> question, and the mesher no longer emits the faces in the first place.
+>
+> *Three faults that passed every gate are also fixed.* An OpenCASCADE boolean
+> switch was rejecting face pairs that do intersect; one frame came out
+> **29.1 mm3 light with every check green**, contradicted by two independent
+> kernels. A footing blend that will not close now falls back to flat terraces
+> at a cost of 0.017% of the part. And the fixed three-hole M4 mounting pattern
+> is finally measured against the lens being cut: **10 of 96** templates in a
+> real corpus have a hole that breaks the rim, which leaves a watertight mesh
+> and a template that cannot be bolted down.
+>
+> **No program changes.** The toolpath generator reads the relief heightfield
+> and never touches the mesher this release rewrote, so programs posted with
+> v1.6.0 remain valid and nothing needs re-posting.
 
 > **New in v1.6.0 — the CAM measures its own output.** A maker read a Z-axis
 > sawtooth off a toolpath display, wrote his own analyzer, and refused to run
