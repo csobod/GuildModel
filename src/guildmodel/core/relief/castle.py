@@ -652,6 +652,64 @@ def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray) -> list[tuple[np.nda
     return out
 
 
+def _tri_area(p: np.ndarray, q: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """Area of each triangle in three parallel (k, 3) corner arrays."""
+    return 0.5 * np.linalg.norm(np.cross(q - p, r - p), axis=1)
+
+
+def _split_quads(verts: np.ndarray, a: np.ndarray, b: np.ndarray,
+                 c: np.ndarray, d: np.ndarray) -> np.ndarray:
+    """Triangulate grid quads, flipping the diagonal where the default collapses.
+
+    A quad splits on a-d instead of b-c when — and only when — the b-c split
+    leaves a triangle of no area. Two properties make that safe, and both are
+    the reason this is a flip rather than a drop:
+
+    * **The geometry does not move.** The default split collapses exactly when
+      three of the four corners are collinear, and three collinear points plus a
+      fourth are always coplanar — so the quad is flat there, and both splits
+      cover the identical region. Every quad that is *not* degenerate keeps the
+      diagonal it has, which matters because a grid quad is generally NOT planar
+      and the two splits describe different surfaces: choosing per-quad by area
+      everywhere would quietly re-cut the frame front and move the demo-STL
+      parity gate.
+    * **The rim does not notice.** The diagonal is interior to its own quad and
+      used by both of its triangles, so the four outer edges — the only ones
+      `boundary` is computed from — are the same either way. The choice can
+      therefore be made *after* `_conform_rim`, which is the only time it can be
+      made at all, since conforming is what creates the collapse.
+
+    Where both diagonals collapse — all four corners on one ring segment, 2 of
+    the gabriel front's 30,098 quads and none of any base-curve block's — the
+    default is kept rather than dropped. Those faces carry no area but they do
+    carry the seam, and dropping them would strand the rim quad stitched below.
+    In practice the weld then merges their coincident corners and the repeated-
+    index filter at the end of `build_castle_mesh` takes them, so nothing
+    degenerate reaches the oracle; `mesh_check.welded_surfaces` counts them
+    correctly either way rather than relying on that.
+
+    Why it exists: `_snap_to_rings` projects onto a *polyline*, so three corners
+    landing on one straight segment come out exactly collinear. On a flat part —
+    a temple, a base-curve template — the top and bottom are planes, so collinear
+    in XY is collinear in 3D and it happened on every build: 43 quads per face on
+    the gabriel block, which the oracle reported as 258 gaps and which is why a
+    base-curve template could not be exported.
+    """
+    from ..mesh_check import NO_AREA_MM2
+
+    A, B, C, D = verts[a], verts[b], verts[c], verts[d]
+    bad = np.minimum(_tri_area(A, B, C), _tri_area(C, B, D)) <= NO_AREA_MM2
+    flip = bad & (np.minimum(_tri_area(A, B, D), _tri_area(A, D, C))
+                  > NO_AREA_MM2)
+    keep = ~flip
+    return np.vstack([
+        np.column_stack([a[keep], b[keep], c[keep]]),
+        np.column_stack([c[keep], b[keep], d[keep]]),
+        np.column_stack([a[flip], b[flip], d[flip]]),
+        np.column_stack([a[flip], d[flip], c[flip]]),
+    ])
+
+
 def _conform_rim(
     relief: CastleRelief,
     verts: np.ndarray,
@@ -761,6 +819,11 @@ def build_castle_mesh(
     if conform:
         _report(progress, "Conforming rim to curves", 0.97)
         verts = _conform_rim(relief, verts, vid, n, boundary)
+        # Conforming is what can collapse a quad's default diagonal, so the
+        # triangulation is chosen here, after it — see `_split_quads` for why
+        # that leaves `boundary` (taken above) still valid.
+        top = _split_quads(verts, i00, i01, i10, i11)
+        bottom = _split_quads(verts, i00 + n, i10 + n, i01 + n, i11 + n)
 
     # Lens bevel groove (V1): the aperture walls get a PROFILED ribbon — a V
     # notch whose apex pushes out to the original LENS contour — instead of the

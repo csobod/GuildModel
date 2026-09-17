@@ -37,7 +37,67 @@ MIN_VOLUME_MM3 = 1.0
 #: emits are exactly zero; the bound is here so a collinear-but-not-identical
 #: triangle is caught too. Far below any real feature: the narrowest thing this
 #: app cuts is a lens groove around 0.6 mm wide.
-_NO_AREA_MM2 = 1e-12
+#:
+#: Public because `relief.castle` triangulates against the same bound. The two
+#: of them disagreeing about what "degenerate" means is the whole of the
+#: base-curve export defect: the mesher's guard was index-based and caught 0 of
+#: the 86 collinear faces the area-based drop here then removed.
+NO_AREA_MM2 = 1e-12
+
+
+def welded_surfaces(mesh):
+    """`(all_faces, live_faces)` welded by position, or `None` if unreadable.
+
+    Two surfaces because closure asks two questions and they want different
+    answers about a face that carries no area.
+
+    * `all_faces` keeps every face. A zero-area face contributes no *surface*,
+      but it does contribute *connectivity* — its edges are the seam between
+      the faces around it. So it can never be the reason a surface has a hole,
+      and holes are counted here.
+    * `live_faces` is that surface with the dead faces dropped, which is what
+      `welded_surface` returns and what self-touching has to be counted on: a
+      face with no area must not be able to inflate an overlap count.
+
+    Asking one surface both questions is what made the base-curve template
+    unexportable. The rim conform projects onto a *polyline*, so three corners
+    of one grid quad landing on a single straight segment come out exactly
+    collinear — a real grid triangle, 0.3-0.4 mm on a side, of zero area. Drop
+    it and its three edges each lose a face: 86 such triangles on the gabriel
+    block were reported as 258 gaps in a solid that trimesh, an STL round-trip
+    and the genus all agreed was closed. Every raster build carried it; the
+    frame front could be talked out of it by switching kernel, and a flat part,
+    whose top and bottom are planes, could not.
+    """
+    try:
+        import trimesh
+
+        verts = np.asarray(mesh.vertices, dtype=np.float64)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
+        if verts.ndim != 2 or faces.ndim != 2 or faces.shape[1] != 3:
+            return None
+
+        welded = trimesh.Trimesh(vertices=verts.copy(), faces=faces.copy(),
+                                 process=False)
+        welded.merge_vertices()
+
+        faces = welded.faces
+        if not len(faces):
+            return welded, welded
+        repeated = ((faces[:, 0] == faces[:, 1]) | (faces[:, 1] == faces[:, 2])
+                    | (faces[:, 0] == faces[:, 2]))
+        corners = welded.vertices[faces]
+        area = 0.5 * np.linalg.norm(
+            np.cross(corners[:, 1] - corners[:, 0],
+                     corners[:, 2] - corners[:, 0]), axis=1)
+        dead = repeated | (area <= NO_AREA_MM2)
+        if not dead.any():
+            return welded, welded
+        live = trimesh.Trimesh(vertices=welded.vertices, faces=faces[~dead],
+                               process=False)
+        return welded, live
+    except Exception:                                        # noqa: BLE001
+        return None
 
 
 def welded_surface(mesh):
@@ -58,11 +118,16 @@ def welded_surface(mesh):
     edges, the aviator 247, the gabriel 232, and this module said nothing about
     any of them (BUILDPLAN-NEW risk 0).
 
-    **Dropping the dead faces is not optional either.** Welding is what exposes
-    the zero-area stitches, and each one hands its long edge to the count a
-    second time. Skipping the drop reported 194 on the demo base where the
-    honest figure was 157 — and reported the *B-Rep* as defective too, which is
-    how a measurement error nearly became a bug report against the shipped path.
+    **Dropping the dead faces is not optional for an overlap count.** Welding is
+    what exposes the zero-area stitches, and each one hands its long edge to the
+    count a second time. Skipping the drop reported 194 on the demo base where
+    the honest figure was 157 — and reported the *B-Rep* as defective too, which
+    is how a measurement error nearly became a bug report against the shipped
+    path.
+
+    It *is* wrong for a hole count, which is why `welded_surfaces` exists and
+    why `verify_mesh` no longer asks this surface that question. Read that
+    docstring before using this one to decide whether something is closed.
 
     The weld tolerance is trimesh's own, about 1e-8 mm — six orders of magnitude
     tighter than the float32 grid (~4e-6 mm at a 50 mm coordinate) that produced
@@ -73,34 +138,8 @@ def welded_surface(mesh):
     featured demo frame (22,632 triangles), against 35 ms for the whole verdict
     and a 1.5 s build. Not a reason to make the check optional or lazy.
     """
-    try:
-        import trimesh
-
-        verts = np.asarray(mesh.vertices, dtype=np.float64)
-        faces = np.asarray(mesh.faces, dtype=np.int64)
-        if verts.ndim != 2 or faces.ndim != 2 or faces.shape[1] != 3:
-            return None
-
-        welded = trimesh.Trimesh(vertices=verts.copy(), faces=faces.copy(),
-                                 process=False)
-        welded.merge_vertices()
-
-        faces = welded.faces
-        if not len(faces):
-            return welded
-        repeated = ((faces[:, 0] == faces[:, 1]) | (faces[:, 1] == faces[:, 2])
-                    | (faces[:, 0] == faces[:, 2]))
-        corners = welded.vertices[faces]
-        area = 0.5 * np.linalg.norm(
-            np.cross(corners[:, 1] - corners[:, 0],
-                     corners[:, 2] - corners[:, 0]), axis=1)
-        dead = repeated | (area <= _NO_AREA_MM2)
-        if not dead.any():
-            return welded
-        return trimesh.Trimesh(vertices=welded.vertices, faces=faces[~dead],
-                               process=False)
-    except Exception:                                        # noqa: BLE001
-        return None
+    pair = welded_surfaces(mesh)
+    return None if pair is None else pair[1]
 
 
 @dataclass(frozen=True)
@@ -154,7 +193,8 @@ def verify_mesh(mesh) -> MeshVerdict:
     """Check a `trimesh.Trimesh` is a closed solid, and say so in plain terms.
 
     Closure is judged on the **welded** surface — see `welded_surface` for why
-    the index table is the wrong thing to ask. Winding, volume and body count
+    the index table is the wrong thing to ask, and `welded_surfaces` for why
+    gaps and overlaps are counted on two of them. Winding, volume and body count
     still come from the mesh as given: winding is an index property and means
     nothing once an edge carries more than two faces, and welding two genuinely
     severed pieces back together is a way to *lose* a real fault, not find one.
@@ -183,18 +223,23 @@ def verify_mesh(mesh) -> MeshVerdict:
 
     volume = float(getattr(mesh, "volume", 0.0) or 0.0)
 
-    welded = welded_surface(mesh)
-    if welded is None:            # unreadable as triangles; fall back to trimesh
+    pair = welded_surfaces(mesh)
+    if pair is None:              # unreadable as triangles; fall back to trimesh
         watertight = bool(getattr(mesh, "is_watertight", False))
         if not watertight:
             problems.extend(_surface_problems(0, 0))
-    elif not len(welded.faces):   # every face was degenerate: no surface at all
+    elif not len(pair[1].faces):  # every face was degenerate: no surface at all
         watertight = False
         problems.extend(_surface_problems(0, 0))
     else:
-        counts = np.unique(welded.edges_sorted, axis=0, return_counts=True)[1]
-        holes = int((counts == 1).sum())
-        overlaps = int((counts > 2).sum())
+        # Each question to the surface that can answer it — see
+        # `welded_surfaces`. A face with no area cannot open a hole, and must
+        # not be able to invent an overlap.
+        full, live = pair
+        holes = int((np.unique(full.edges_sorted, axis=0,
+                               return_counts=True)[1] == 1).sum())
+        overlaps = int((np.unique(live.edges_sorted, axis=0,
+                                  return_counts=True)[1] > 2).sum())
         watertight = not holes and not overlaps
         if not watertight:
             problems.extend(_surface_problems(holes, overlaps))

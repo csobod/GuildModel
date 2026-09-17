@@ -13,7 +13,7 @@ import pytest
 import trimesh
 
 from guildmodel.core.mesh_check import (MIN_VOLUME_MM3, verify_mesh,
-                                        welded_surface)
+                                        welded_surface, welded_surfaces)
 
 
 def _box(size=10.0):
@@ -192,3 +192,67 @@ def test_the_real_castle_verifies(tmp_path):
     verdict = verify_mesh(tessellate(solid).to_trimesh())
     assert verdict.ok, verdict.problems
     assert verdict.volume_mm3 > 1000.0
+
+
+def _collinear_tiling(scale=3.0):
+    """A closed solid carrying two zero-area faces, tiled validly.
+
+    This is the shape `_conform_rim` actually produced: one grid quad whose
+    corner C has been snapped onto the line through A and B, so triangle (A,B,C)
+    has three distinct vertices, real 1 mm edges, and no area. Every edge is
+    still used exactly twice — the tiling is not broken, the *positions* are
+    collinear — which is precisely why dropping the face before counting turned
+    a closed solid into a report of six gaps.
+    """
+    xy = np.array([[0, 0], [1, 0], [2, 0], [1, 1]], float) * scale
+    verts = np.vstack([np.column_stack([xy, np.full(4, scale)]),
+                       np.column_stack([xy, np.zeros(4)])])
+    faces = [(0, 1, 2), (2, 1, 3), (4, 6, 5), (6, 7, 5)]
+    for u, v in [(0, 1), (1, 3), (3, 2), (2, 0)]:        # top's boundary loop
+        faces += [(v, u, u + 4), (v, u + 4, v + 4)]
+    mesh = trimesh.Trimesh(vertices=verts, faces=np.array(faces), process=False)
+    if mesh.volume < 0:
+        mesh.invert()
+    return mesh
+
+
+def test_a_collinear_face_in_a_valid_tiling_is_not_reported_as_a_gap():
+    """The base-curve export defect, in miniature.
+
+    A face with no area carries no *surface*, but it does carry *connectivity*:
+    its edges are the seam between the faces around it. Drop it before counting
+    and each of its three edges loses a face — so a closed solid reads as gaps,
+    one per dropped edge. On the gabriel base-curve template that was 86 faces
+    reported as 258 gaps, on a mesh trimesh, an STL round-trip and the genus all
+    agreed was closed, and it made the part unexportable.
+    """
+    mesh = _collinear_tiling()
+    assert mesh.is_watertight, "the fixture itself must be a closed solid"
+    full, live = welded_surfaces(mesh)
+    assert len(full.faces) - len(live.faces) == 2, "fixture should carry 2"
+
+    verdict = verify_mesh(mesh)
+    assert verdict.ok, verdict.problems
+    assert verdict.watertight
+    assert verdict.volume_mm3 == pytest.approx(mesh.volume)
+
+
+def test_a_zero_area_face_cannot_hide_a_real_hole():
+    """Counting holes on the surface that keeps the dead faces must not become a
+    way to miss one. Open the fixture and it is still caught."""
+    mesh = _collinear_tiling()
+    leaky = trimesh.Trimesh(vertices=mesh.vertices.copy(),
+                            faces=mesh.faces[:-2].copy(), process=False)
+    verdict = verify_mesh(leaky)
+    assert not verdict.ok
+    assert any("gaps" in p for p in verdict.problems)
+
+
+def test_a_zero_area_face_does_not_invent_an_overlap_either():
+    """The other half of the split: overlaps are still counted on the surface
+    with the dead faces gone, because a face with no area must not be able to
+    put a third surface on an edge. A clean fixture reports neither failure."""
+    mesh = _collinear_tiling()
+    _, live = welded_surfaces(mesh)
+    counts = np.unique(live.edges_sorted, axis=0, return_counts=True)[1]
+    assert int((counts > 2).sum()) == 0
