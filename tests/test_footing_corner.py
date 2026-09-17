@@ -29,7 +29,7 @@ would not have caught it and will not catch the next one.
 
 **2026-08-12 — the same fin, and why this file did not catch it either.** A maker
 reported "protrusion of material at the nosepad, across many frames" with two
-drawings attached; the Calasanz stands a **2.4 mm** fin at the nose notch, and
+drawings attached; one of them stands a **2.4 mm** fin at the nose notch, and
 since M-N3 the mesh kernel is not just the preview but the surface the CAM posts
 from, so it was going to be cut.
 
@@ -49,7 +49,7 @@ directly and fails on all three fixtures against the old constant.
 
 Whole-surface mesh-vs-raster would *not* have caught it, and that is worth
 recording: on the three fixtures the old code's worst disagreement anywhere was
-0.10 mm (gabriel), inside any tolerance anyone would have written. The Calasanz's
+0.10 mm, inside any tolerance anyone would have written. The reported drawing's
 was 2.05.
 """
 import zipfile

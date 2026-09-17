@@ -79,7 +79,7 @@ __all__ = ["CAP_CROSS_MM", "CUT_LEAD_MM", "cap_leads", "cut_stations",
 #: **All of which was true, and 0.5 mm was still the wrong number — because
 #: "clear of the zone" is a property of the frame, not a constant.** Reported
 #: 2026-08-10 as a spike of material at the nosepad "across many frames", with
-#: two drawings attached; the Calasanz builds a 2.4 mm fin at the nose notch on
+#: two drawings attached; one of them builds a 2.4 mm fin at the nose notch on
 #: the mesh kernel, which since M-N3 is also the surface the CAM posts from.
 #:
 #: The convergence table above is real and was measured honestly. What it could

@@ -53,18 +53,24 @@ src/guildmodel/assets/_iconcache/
 /frame_illustration.svg
 /hinge_th-23_front.dxf
 
-# Maker correspondence and the frames that came with it. The designs are the
-# maker's own work, not ours to publish; the report is the working copy the
-# 2026-08-10 round was answered from.
+# Maker correspondence and the frames that came with it.
 /Bug Report *.txt
-/Aquinas *.gdraw
-/Calasanz *.gdraw
 
-# Sample drawings kept for hand-testing. Nothing in the app or the suite loads
-# them — the tests vendor their own under tests/fixtures/ — so they are working
-# material rather than part of the project.
-/*.gdraw
-/*.gmodel
+# **Drawings are never committed, anywhere in the tree.** The designs are the
+# maker's own product line — sold, not sample data — so a .gdraw is not ours to
+# publish whatever folder it is sitting in. These patterns are deliberately
+# *not* root-anchored: the earlier `/*.gdraw` only ever covered the repo root,
+# which is how three drawings were nearly vendored under tests/fixtures/ as
+# unpacked SVGs, a path no root-anchored rule can reach.
+#
+# Testing against real drawings is still supported and still worth doing — it
+# is what found this season's silent defects — but by pointing the suite at a
+# corpus on disk rather than by copying one in. See tests/test_frame_corpus.py
+# and its GUILDMODEL_FRAME_CORPUS variable. tests/test_no_drawings_committed.py
+# fails if one lands in the index anyway.
+*.gdraw
+*.gdraw.bak
+*.gmodel
 
 # Programs a maker sent us to look at, and programs posted at the root for a
 # hand-check. Customer material — it belongs in the investigation, not the
