@@ -47,15 +47,21 @@ jobs:
           .venv/bin/pip install -e ".[dev,packaging]"
           .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
 
-      # Full suite as the gate. offscreen keeps Qt off the window server; the
-      # thread timeout method turns any native-event-loop hang into a stack
-      # dump naming the test (the default signal method cannot interrupt one).
-      # 90, not 25 — see the Windows workflow's note.
+      # The gate, minus the tests that build a real MainWindow. offscreen keeps
+      # Qt off the window server; the thread timeout method turns any
+      # native-event-loop hang into a stack dump naming the test (the default
+      # signal method cannot interrupt one).
+      #
+      # `-m "not gui"` for the reason the Windows workflow spells out: on
+      # macos-15-intel one window test parks the main thread and the thread
+      # timeout method then kills the interpreter, so a single hang ends the run
+      # and no artifact is produced. macos-14 runs them green, which is why this
+      # is a quarantine and not a fix. 90, not 25 — see the Windows note.
       - name: Test gate
         timeout-minutes: 90
         env:
           QT_QPA_PLATFORM: offscreen
-        run: .venv/bin/python -m pytest tests -q --timeout=300 --timeout-method=thread
+        run: .venv/bin/python -m pytest tests -q -m "not gui" --timeout=300 --timeout-method=thread
 
       - name: Build (.app + zip + dmg)
         env:
@@ -71,3 +77,16 @@ jobs:
             dist/GuildModel-*-macos-*.zip
             dist/GuildModel-*-macos-*.dmg
           if-no-files-found: error
+
+      # Dead last, on purpose. These are the tests known to hang on this runner,
+      # and `continue-on-error` only stops a hang from failing the job — it does
+      # not stop it from spending 20 minutes. Run before the build, that is 20
+      # minutes taken out of a budget the heavy step still needs (macOS: 140
+      # total, 90 of it already the gate). Run after the upload, the artifact is
+      # already safe and the worst a hang can do is make the run look slow.
+      - name: Window tests (reported, non-blocking)
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/bin/python -m pytest tests -q -m gui --timeout=300 --timeout-method=thread

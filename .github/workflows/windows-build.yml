@@ -50,9 +50,24 @@ jobs:
           .venv\Scripts\python.exe -m pip install -e ".[dev,packaging]"
           .venv\Scripts\python.exe -m pip install pytest-timeout   # CI-only: per-test hang guard
 
-      # Full suite as the gate. offscreen keeps Qt off the window station; the
-      # thread timeout method turns any native-event-loop hang into a stack
-      # dump naming the test (the default signal method cannot interrupt one).
+      # The gate, minus the tests that build a real MainWindow. offscreen keeps
+      # Qt off the window station; the thread timeout method turns any
+      # native-event-loop hang into a stack dump naming the test (the default
+      # signal method cannot interrupt one).
+      #
+      # **Why `-m "not gui"` rather than the whole suite.** On this runner and on
+      # macos-15-intel, one window test parks the main thread indefinitely — the
+      # same frame on two unrelated platforms, which is the signature of a GIL
+      # holder rather than a slow test. It does not reproduce on Linux or on
+      # macos-14. `--timeout-method=thread` cannot interrupt that politely, so it
+      # kills the interpreter: one stuck test ends the run and the build produces
+      # no artifact. That cost 80 minutes here and 79 on macOS across v1.5.0's
+      # first two attempts, before anyone knew which test to look at.
+      #
+      # It is quarantined, not fixed. The `gui` mark is what makes the quarantine
+      # possible and tests/test_gui_marker.py is what keeps it honest — it fails
+      # if a new MainWindow test forgets the mark and lands back in here.
+      #
       # 90, not 25: measured at 1085 tests / 60 minutes on a 20-core desktop
       # (v1.5.0). A runner is slower, and a gate that trips is indistinguishable
       # from a red suite at the point it matters most — cutting a release.
@@ -61,7 +76,7 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
-        run: .venv\Scripts\python.exe -m pytest tests -q --timeout=300 --timeout-method=thread
+        run: .venv\Scripts\python.exe -m pytest tests -q -m "not gui" --timeout=300 --timeout-method=thread
 
       # Not on the runner image. Chocolatey drops ISCC.exe in
       # "C:\Program Files (x86)\Inno Setup 6\", which build_release.ps1 probes.
@@ -84,3 +99,17 @@ jobs:
             dist/GuildModel-*-win64.zip
             dist/GuildModel-*-setup.exe
           if-no-files-found: error
+
+      # Dead last, on purpose. These are the tests known to hang on this runner,
+      # and `continue-on-error` only stops a hang from failing the job — it does
+      # not stop it from spending 20 minutes. Run before the build, that is 20
+      # minutes taken out of a budget the heavy step still needs (macOS: 140
+      # total, 90 of it already the gate). Run after the upload, the artifact is
+      # already safe and the worst a hang can do is make the run look slow.
+      - name: Window tests (reported, non-blocking)
+        timeout-minutes: 20
+        continue-on-error: true
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv\Scripts\python.exe -m pytest tests -q -m gui --timeout=300 --timeout-method=thread
