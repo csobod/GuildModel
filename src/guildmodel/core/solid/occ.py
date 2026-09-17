@@ -917,22 +917,51 @@ def spline_wire(pts_xy: np.ndarray, z: float):
 # ------------------------------------------------------------------ booleans
 
 def _run(op, label: str) -> TopoDS_Shape:
-    # Three switches OCCT leaves off by default, none of which trades accuracy.
+    # Two switches OCCT leaves off by default, neither of which trades accuracy.
+    # There was a third; see below for why "none of which trades accuracy" was
+    # not true of it.
     #
     # `SetRunParallel` — the boolean core is thread-parallel. Measured on the
     # demo frame's all-features build: 82.0 s -> 62.2 s, bit-identical result.
-    #
-    # `SetUseOBB` — oriented rather than axis-aligned bounding boxes when
-    # rejecting face pairs that cannot intersect. Worth 8% on the demo's
-    # eight-tool feature cut (17.6 s -> 16.2 s, same 4,981 faces, same volume);
-    # it pays off here because a chamfer band round a curved rim is exactly the
-    # kind of long thin diagonal shape an axis-aligned box describes badly.
+    # Re-checked on the three frames `SetUseOBB` was corrupting: parallel is not
+    # implicated, they fail identically with it off.
     #
     # `SetToFillHistory` — off because nothing in `core/solid` asks a boolean
     # what became of which input face. If anything ever does (a feature tree
     # would), this has to go back on.
+    #
+    # **`SetUseOBB` was here and is deliberately gone (2026-09-16).** It used
+    # oriented rather than axis-aligned boxes to reject face pairs that cannot
+    # intersect, and was justified at 8% on the demo's eight-tool feature cut.
+    # It rejects pairs that *do* intersect, and then the faces that should have
+    # been cut are simply left touching. Over the 40 buildable frame fronts in
+    # the frame library:
+    #
+    #   * two drawings holding the same geometry under different names: 6
+    #     gaps and 154
+    #     self-touching edges, from the footing carve in `castle_base` — before
+    #     any feature, before the hinge pockets. Deterministic, 5 runs of 5.
+    #   * a third drawing: **no** verdict failure at all, and 29.1 mm3 of
+    #     material silently missing (11,123.39 against 11,152.52). The raster
+    #     says 11,151.80 and Manifold 11,152.18, so two independent kernels and
+    #     this one without OBB agree to 0.006% and the OBB build is the outlier.
+    #     Nothing anywhere would have caught that.
+    #   * the other 37: bit-identical volume *and* triangle count.
+    #
+    # What gave it away is that meshing a shape first makes the same boolean
+    # come out right — OCCT builds an OBB from a face's triangulation when one
+    # exists and from cruder sampling when it does not, so the rejection test
+    # was running on boxes too small to trust. `volume()` or `is_valid()` first
+    # does not help, and tolerances are identical either way, which rules out
+    # the usual suspects.
+    #
+    # The price of removing it, measured on the workload it was tuned against
+    # (all four features on): demo 29.56 s -> 30.25 s, gabriel 35.67 -> 36.45,
+    # aviator 31.49 -> 31.58 — +2.4% at worst, and identical volumes. Across
+    # the whole library sweep it was +0.0% (528.7 s -> 528.8 s). That is not a
+    # trade against correctness worth making, and one of the three failures it
+    # causes is invisible to every gate this app has.
     op.SetRunParallel(True)
-    op.SetUseOBB(True)
     op.SetToFillHistory(False)
     op.Build()
     if not op.IsDone():
