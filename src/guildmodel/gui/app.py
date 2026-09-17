@@ -330,49 +330,77 @@ class MultiMeshWorker(_ProgressWorker):
 # ------------------------------------------------------------------ STL export worker
 
 class ExportWorker(_ProgressWorker):
-    """Rebuilds the full castle at export resolution and writes the STL.
+    """Rebuilds components at export resolution and writes their STL files.
 
     Never the preview cache (M4.5 Part B): export quality is controlled by
     the export_resolution_mm preference, independent of the 3D view.
+
+    **It builds through `mesh_build.build_component_mesh`**, the one builder the
+    viewer and Build 3D already use, and that is two fixes rather than a tidy-up.
+
+    It used to call `castle_relief` + `build_castle_mesh` itself, which meant it
+    could only ever export a frame front — a temple and a base-curve template had
+    no export path at all, and the single `mesh.export` in the app sat behind a
+    castle-only gate. It also meant the chosen kernel never reached the file:
+    `castle_relief` uses the kernel to build a solid and then rasterizes it back
+    into a heightfield, so `mesh`/`brep` exports were a raster remesh of an exact
+    model. The Inspector could read "Model verified" off a Manifold build while
+    the maker received something that had been through the grid. Now the exact
+    kernels export their own triangles, and the verdict describes the file.
+
+    The verdict is logged per component rather than gating the write: a maker who
+    asks for the mesh gets the mesh, and is told what is wrong with it.
     """
 
-    finished = Signal(str)   # written path
+    finished = Signal(list)  # written paths
     progress = Signal(str)   # log line
     error = Signal(str)
 
-    def __init__(
-        self, partition, castle, hinge_polys, resolution: float, path: Path,
-    ) -> None:
+    def __init__(self, specs: list[dict], resolution: float,
+                 paths: list[Path]) -> None:
         super().__init__()
-        self.partition = partition
-        self.castle = castle
-        self.hinge_polys = list(hinge_polys)
+        self.specs = list(specs)
+        self.paths = [Path(p) for p in paths]
         self.resolution = resolution
-        self.path = Path(path)
 
     def run(self) -> None:
         try:
-            from guildmodel.core.relief.castle import build_castle_mesh
-            from guildmodel.core.zmap import castle_relief
-            self.progress.emit(
-                f"[export] Building castle at {self.resolution} mm "
-                f"({self.kernel})…"
-            )
-            # Same surface the CAM cuts and the viewer draws. Still remeshed
-            # from a heightfield rather than exported as the model's own
-            # triangles, which is the better end state and a separate change.
-            relief = castle_relief(
-                self.partition, self.castle, self.hinge_polys,
-                kernel=self.kernel, resolution=self.resolution,
-                progress=self._progress,
-            )
-            mesh = build_castle_mesh(relief, progress=self._progress)
-            self.progress.emit(
-                f"[export] {len(mesh.vertices):,} verts, "
-                f"{len(mesh.faces):,} tris, watertight={mesh.is_watertight}"
-            )
-            mesh.export(str(self.path))
-            self.finished.emit(str(self.path))
+            from guildmodel.core.mesh_check import verify_mesh
+            from guildmodel.gui.mesh_build import build_component_mesh
+
+            written: list[str] = []
+            total = max(1, len(self.specs))
+            for k, (spec, path) in enumerate(zip(self.specs, self.paths)):
+                label = spec.get("label") or spec.get("kind") or "component"
+                # The kernel applies to a frame front only; a temple and a
+                # base-curve template are flat parts the raster builds exactly.
+                kernel = self.kernel if spec["mode"] == "castle" else "raster"
+                how = (f"at {self.resolution} mm" if kernel == "raster" else
+                       "exact (the resolution setting is a raster control)")
+                self.progress.emit(f"[export] {label}: {kernel}, {how}…")
+                mesh, _, _ = build_component_mesh(
+                    spec, resolution=self.resolution, kernel=kernel,
+                    progress=lambda lbl, f, _k=k: self._progress(
+                        lbl, (_k + f) / total),
+                )
+                verdict = verify_mesh(mesh)
+                self.progress.emit(
+                    f"[export] {label}: {len(mesh.vertices):,} verts, "
+                    f"{len(mesh.faces):,} tris, {verdict.volume_mm3:,.1f} mm3 "
+                    f"— {verdict.summary}"
+                )
+                for problem in verdict.problems:
+                    self.progress.emit(f"[export] ⚠ {problem}")
+                # A base-curve template can be a perfectly closed solid and still
+                # be the wrong part: `verify_mesh` cannot see that a mounting hole
+                # broke through the rim, because the breach leaves a clean notch.
+                if spec["mode"] == "block":
+                    from guildmodel.core.cam.block_ops import hole_fit_warnings
+                    for w in hole_fit_warnings(spec["lens"], spec["block"]):
+                        self.progress.emit(f"[export] ⚠ {w}")
+                mesh.export(str(path))
+                written.append(str(path))
+            self.finished.emit(written)
         except _Canceled:
             self.canceled.emit()
         except Exception:
@@ -893,6 +921,7 @@ class GCodeWorker(_ProgressWorker):
         import yaml
         from guildmodel.core.cam.block_ops import (
             BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
+            hole_fit_warnings,
         )
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, build_tool_settings, count_tool_changes,
@@ -959,7 +988,13 @@ class GCodeWorker(_ProgressWorker):
             fixture = yaml.safe_load(fh)
         zone = block.fixture_zone if block.fixture_zone in fixture.get("blank_zones", {}) else "bc_template_right"
         profile_r = resolve_tool(block.profile_tool, tools_cfg)["radius_mm"]
-        violations = fixture_clearance_violations(ops, fixture, profile_r, blank=zone)
+        violations = list(fixture_clearance_violations(ops, fixture, profile_r, blank=zone))
+        # Does the mounting pattern actually fit this lens? Nothing asked until
+        # 2026-09-16, and the failure is silent at every other gate: a hole that
+        # breaks the rim leaves a clean notch, so the mesh stays watertight, the
+        # viewer draws it and the program drills it. 10 of the frame library's
+        # 96 templates fail it — see `block_ops.hole_fit_warnings`.
+        violations += hole_fit_warnings(self.block_lens, block)
         for v in violations:
             self.progress.emit(f"[gcode] WARNING: {v}")
 
@@ -4543,9 +4578,17 @@ class MainWindow(QMainWindow):
 
         self._act_export = QAction("Export STL", self)
         self._act_export.setShortcut("Ctrl+E")
-        self._act_export.setToolTip("Export the watertight STL mesh…  (Ctrl+E)")
+        self._act_export.setToolTip(
+            "Export this component's watertight STL mesh…  (Ctrl+E)")
         self._act_export.setEnabled(False)
         self._act_export.triggered.connect(self._on_export_stl)
+
+        self._act_export_all = QAction("Export All STL", self)
+        self._act_export_all.setShortcut("Ctrl+Shift+E")
+        self._act_export_all.setToolTip(
+            "Export every component's STL to one folder…  (Ctrl+Shift+E)")
+        self._act_export_all.setEnabled(False)
+        self._act_export_all.triggered.connect(self._on_export_all_stl)
 
         self._act_export_nc = QAction("Export G-code", self)
         self._act_export_nc.setShortcut("Ctrl+Shift+G")
@@ -4805,6 +4848,9 @@ class MainWindow(QMainWindow):
             ("gcode", self._act_gcode, "Generate G-code", "build", True),
             ("export_nc", self._act_export_nc, "Export G-code", "build", True),
             ("export", self._act_export, "Export STL", "build", True),
+            # Off the default toolbar (the single-component export is the one a
+            # maker reaches for while iterating), but rebindable like the rest.
+            ("export_all", self._act_export_all, "Export All STL", "build", False),
             # ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),  # retired rc2
             ("block", self._act_block, "Generate Base-Curve Block", "build", False),
             ("worktable_gen", self._act_worktable, "Generate Worktable Program", "build", False),
@@ -4870,6 +4916,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_worktable)
         file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
+        file_menu.addAction(self._act_export_all)
         file_menu.addSeparator()
         # file_menu.addAction(self._act_send)   # retired rc2 — see _act_send note
         # file_menu.addSeparator()
@@ -5610,9 +5657,17 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------- active 3D preview
 
+    def _active_workspace(self):
+        """The active component's workspace, or None before anything is loaded."""
+        i = self._active_ws
+        return self._workspaces[i] if 0 <= i < len(self._workspaces) else None
+
     def _active_is_flat(self) -> bool:
         """The active component is a flat part (temple / base-curve block)."""
-        return self._is_temple or (self._outline_poly is None and self._lens_od is not None)
+        ws = self._active_workspace()
+        if ws is None:
+            return self._is_temple
+        return bool(ws.is_temple or self._is_block_workspace(ws))
 
     def _active_mesh_key(self) -> str:
         """The active component's mesh cache key (its teaching stage, or 'flat')."""
@@ -5802,9 +5857,12 @@ class MainWindow(QMainWindow):
         has_outline = ws.outline_poly is not None
         # Build 3D: a matched frame castle, or a flat part — a temple (outline) or
         # a base-curve block (its lens) — via the flat-extrusion mesher (M7).
-        flat_buildable = ws.is_temple or (ws.outline_poly is None and ws.lens_od is not None)
+        flat_buildable = ws.is_temple or self._is_block_workspace(ws)
         self._act_build.setEnabled(ws.castle_ready or flat_buildable)
-        self._act_export.setEnabled(ws.castle_ready)
+        # Anything that can be built can be exported — a temple and a base-curve
+        # template included. This read `ws.castle_ready` until 2026-09-16.
+        self._act_export.setEnabled(self._workspace_buildable(ws))
+        self._act_export_all.setEnabled(bool(self._buildable_workspaces()))
         # Cut simulation now runs on every component — a matched frame, a temple, or
         # a base-curve block (BUILDPLAN M7: machine sim on multiple components).
         self._act_simulate.setEnabled(ws.castle_ready or flat_buildable)
@@ -6181,21 +6239,53 @@ class MainWindow(QMainWindow):
         castle frame front (BUILDPLAN M7 per-component 3D)."""
         if self._is_temple and self._outline_poly is not None:
             return "temple"
-        if self._outline_poly is None and self._lens_od is not None:
+        ws = self._active_workspace()
+        if ws is not None and self._is_block_workspace(ws):
             return "block"
         return None
+
+    @staticmethod
+    def _is_block_workspace(ws) -> bool:
+        """A lone lens and nothing else — a base-curve template.
+
+        Not "whatever is left over after castle and temple". That fallthrough
+        built a half-drawn **frame front** as a base-curve block: the drawing
+        had five SCULPT cuts and one LENS but no OUTLINE, so it was not
+        castle-ready, `is_temple` wants an outline and does not match either,
+        and the last branch took it. The frame-front tab rendered a base-curve
+        template, and once Export STL followed buildability it would have
+        written one out under that name.
+
+        Tested on the geometry rather than `ws.kind` because a DXF import is a
+        single workspace that is always tagged FRAME_FRONT (`_load_dxf`), so the
+        kind cannot tell a temple drawing from a frame one. A real base-curve
+        component carries only its LENS — `build_project_from_gdraw` gives it an
+        otherwise empty layer set — so "no outline and no sculpt" is exactly the
+        shape of one, and a half-drawn front is excluded by its SCULPT.
+        """
+        return bool(ws.lens_od is not None
+                    and ws.outline_poly is None
+                    and not ws.layers.get("SCULPT"))
+
+    @staticmethod
+    def _workspace_buildable(ws) -> bool:
+        """Can this component's 3D be built — a matched frame, a temple, or a
+        base-curve block?
+
+        One definition because three call sites want it: Build 3D's target list,
+        the per-component action enables, and Export STL. Export used to ask
+        `castle_ready` instead, which is how a base-curve template ended up with
+        a working preview and no way out to a file.
+        """
+        return bool(ws.castle_ready or ws.is_temple
+                    or MainWindow._is_block_workspace(ws))
 
     def _buildable_workspaces(self) -> list[int]:
         """Indices of every enabled component whose 3D can be built — a matched
         frame, a temple, or a base-curve block (BUILDPLAN M7 UX: Build 3D builds
         *all* loaded components, not just the active one)."""
-        out: list[int] = []
-        for i, ws in enumerate(self._workspaces):
-            if not ws.enabled:
-                continue
-            if ws.castle_ready or ws.is_temple or (ws.outline_poly is None and ws.lens_od is not None):
-                out.append(i)
-        return out
+        return [i for i, ws in enumerate(self._workspaces)
+                if ws.enabled and self._workspace_buildable(ws)]
 
     def _on_build_3d(self) -> None:
         targets = self._buildable_workspaces()
@@ -6227,6 +6317,15 @@ class MainWindow(QMainWindow):
                     "temple": ws.temple_params or self.params.temple_params(),
                     "hinge": list(ws.hinge_polys),
                     "engraving": list(ws.engraving_curves)}
+        if not self._is_block_workspace(ws):
+            # Every caller draws its targets from `_buildable_workspaces`, so
+            # reaching here means that gate and this dispatch have drifted apart.
+            # Say so rather than returning a base-curve block for whatever the
+            # component actually was — that silent fallthrough is what rendered
+            # a half-drawn frame front as a template.
+            raise ValueError(
+                f"{ws.label or kind} cannot be built: it is not a matched frame, "
+                "a temple, or a lone lens")
         return {"index": i, "mode": "block", "kind": kind, "label": ws.label,
                 "lens": ws.lens_od,
                 "block": ws.block_params or self.params.block_params()}
@@ -7369,18 +7468,85 @@ class MainWindow(QMainWindow):
             + (f" (+{len(written) - 1} more)" if len(written) > 1 else "")
         )
 
+    @staticmethod
+    def _export_blocked_reason(ws) -> str:
+        """Why *this* component cannot be exported, in terms that apply to it.
+
+        The SCULPT-zone hint is only ever true of a frame front. A base-curve
+        template is a single LENS curve with no OUTLINE and no SCULPT layer by
+        definition, so showing it that message told the maker to go and draw
+        five section cuts that the component would never have — an instruction
+        that could not be followed, on a part whose 3D preview was working. That
+        is how "cannot export a base-curve template" read as a drawing problem.
+        """
+        from guildmodel.core.project.schema import ComponentKind
+
+        if ws is None:
+            return "Open a drawing or a project first."
+        if ws.kind == ComponentKind.FRAME_FRONT:
+            # Name what is actually absent. "Draw the SCULPT zones" is the usual
+            # answer but not always the true one: a drawing can have all five
+            # section cuts and no OUTLINE at all, and telling its maker to draw
+            # the zones again would send them to the one layer that is fine.
+            missing = []
+            if ws.outline_poly is None:
+                missing.append("an OUTLINE")
+            if ws.lens_od is None or ws.lens_os is None:
+                missing.append("two LENS curves")
+            if not ws.layers.get("SCULPT"):
+                missing.append("a SCULPT zone layout (5 section cuts per side)")
+            if missing:
+                return ("This frame front is missing " + ", ".join(missing)
+                        + ". Draw it in GuildDraw and re-export.")
+            return ("This frame front's SCULPT cuts do not resolve into zones. "
+                    "Check that there are 5 section cuts per side.")
+        if ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
+            return "This temple has no OUTLINE curve to build from."
+        return "This base-curve template has no LENS curve to build from."
+
+    def _export_filenames(self) -> list[str]:
+        """One `.stl` name per workspace, unique across the whole project.
+
+        **A kind is not a unique name.** `build_project_from_gdraw` makes one
+        base-curve template *per LENS curve in the front*, split right/left by
+        centroid — so a drawing that carries decorative lens shapes has several
+        of a kind. One drawing in the maker's library builds ten components,
+        four of them Base Curve R. Naming by kind alone gave those four a single
+        path: Export All built all ten and wrote four files, so six meshes were
+        computed, exported over, and gone — with a "Wrote …" line logged for
+        each of them. Silent, because every individual write succeeds.
+
+        Repeated kinds are numbered in component order. A kind that appears once
+        keeps its plain name, so the canonical five-component project still
+        exports `frame_front.stl`, `temple_right.stl` and the rest unchanged.
+        Numbering spans every workspace rather than the exported batch, so a
+        component's filename does not move when a sibling is disabled or when it
+        is exported on its own.
+        """
+        from collections import Counter
+
+        kinds = [ws.kind.value for ws in self._workspaces]
+        totals = Counter(kinds)
+        seen: Counter = Counter()
+        out: list[str] = []
+        for k in kinds:
+            if totals[k] == 1:
+                out.append(f"{k}.stl")
+            else:
+                seen[k] += 1
+                out.append(f"{k}_{seen[k]}.stl")
+        return out
+
     def _on_export_stl(self) -> None:
-        if not self._castle_ready():
+        i = self._active_ws
+        ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
+        if ws is None or not self._workspace_buildable(ws):
             QMessageBox.information(
-                self, "Export STL",
-                "STL export needs the standard SCULPT zone layout "
-                "(5 section cuts per side). Draw them in GuildDraw and "
-                "re-export the DXF.",
-            )
+                self, "Export STL", self._export_blocked_reason(ws))
             return
-        start = str(
-            Path(self._prefs["last_output_dir"] or ".") / "frame_front.stl"
-        )
+        self._sync_active_workspace()      # capture the dock's pending edits
+        start = str(Path(self._prefs["last_output_dir"] or ".")
+                    / self._export_filenames()[i])
         path_str, _ = QFileDialog.getSaveFileName(
             self, "Export STL", start, "STL files (*.stl)"
         )
@@ -7388,14 +7554,55 @@ class MainWindow(QMainWindow):
             return
         self._prefs["last_output_dir"] = str(Path(path_str).parent)
         prefs_mod.save(self._prefs)
+        self._start_export([self._build_spec(i)], [Path(path_str)],
+                           title="Exporting STL")
 
-        # Always a fresh build at export resolution — never the preview cache.
+    def _on_export_all_stl(self) -> None:
+        """Write every buildable component to one folder, one file each.
+
+        Build 3D has always built all of them; a project is five components and
+        base-curve templates come in pairs, so exporting them one dialog at a
+        time was the slow half of the same job. Names come from
+        `_export_filenames`, which is what keeps a drawing with four Base Curve R
+        components from writing one file and discarding three builds.
+        """
+        targets = self._buildable_workspaces()
+        if not targets:
+            QMessageBox.information(
+                self, "Export All STL",
+                "Nothing can be built yet — a frame needs its SCULPT zone "
+                "layout (5 section cuts per side); a drawing also builds its "
+                "temples and base-curve templates.")
+            return
+        self._sync_active_workspace()
+        folder = QFileDialog.getExistingDirectory(
+            self, "Export every component as STL",
+            self._prefs["last_output_dir"] or ".")
+        if not folder:
+            return
+        names = self._export_filenames()
+        paths = [Path(folder) / names[i] for i in targets]
+        clash = [p.name for p in paths if p.exists()]
+        if clash and QMessageBox.question(
+            self, "Export All STL",
+            "These files already exist in that folder and will be "
+            "overwritten:\n\n  " + "\n  ".join(clash) + "\n\nContinue?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._prefs["last_output_dir"] = folder
+        prefs_mod.save(self._prefs)
+        self._start_export([self._build_spec(i) for i in targets], paths,
+                           title="Exporting STL files")
+
+    def _start_export(self, specs: list[dict], paths: list[Path], *,
+                      title: str) -> None:
+        """Run an export off the GUI thread. Always a fresh build at export
+        resolution — never the preview cache (M4.5 Part B)."""
         self._act_export.setEnabled(False)
-        self.status_lbl.setText("Exporting STL…")
+        self._act_export_all.setEnabled(False)
+        self.status_lbl.setText(f"{title}…")
         self._export_worker = ExportWorker(
-            self._partition, self.params.castle_params(), self._hinge_polys,
-            resolution=self._prefs["export_resolution_mm"], path=Path(path_str),
-        )
+            specs, resolution=self._prefs["export_resolution_mm"], paths=paths)
         self._export_worker.kernel = self._model_kernel()
         self._export_thread = QThread()
         self._export_worker.moveToThread(self._export_thread)
@@ -7408,27 +7615,42 @@ class MainWindow(QMainWindow):
         self._export_worker.error.connect(self._export_thread.quit)
         self._export_worker.canceled.connect(self._export_thread.quit)
 
-        dlg = self._open_progress("Exporting STL")
+        dlg = self._open_progress(title)
         self._export_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._export_worker.cancel)
         self._export_thread.start()
 
-    def _on_export_finished(self, path: str) -> None:
+    def _restore_export_actions(self) -> None:
+        """Re-enable the export actions against current readiness, rather than
+        unconditionally — an export that ran on a component the maker has since
+        navigated away from must not light up a button for one that cannot."""
+        i = self._active_ws
+        ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
+        self._act_export.setEnabled(ws is not None
+                                    and self._workspace_buildable(ws))
+        self._act_export_all.setEnabled(bool(self._buildable_workspaces()))
+
+    def _on_export_finished(self, paths: list) -> None:
         self._close_progress()
-        self.append_log(f"[export] Wrote {path}")
-        self._act_export.setEnabled(True)
-        self.status_lbl.setText("STL exported")
+        for p in paths:
+            self.append_log(f"[export] Wrote {p}")
+        self._restore_export_actions()
+        if not paths:
+            self.status_lbl.setText("STL export wrote nothing")
+            return
+        more = f" (+{len(paths) - 1} more)" if len(paths) > 1 else ""
+        self.status_lbl.setText(f"STL exported — {Path(paths[0]).name}{more}")
 
     def _on_export_error(self, tb: str) -> None:
         self._close_progress()
         self.append_log("[export ERROR]\n" + tb)
-        self._act_export.setEnabled(True)
+        self._restore_export_actions()
         self.status_lbl.setText("STL export failed — see log")
 
     def _on_export_canceled(self) -> None:
         self._close_progress()
         self.append_log("[export] Canceled.")
-        self._act_export.setEnabled(True)
+        self._restore_export_actions()
         self.status_lbl.setText("STL export canceled")
 
     def _on_about(self) -> None:

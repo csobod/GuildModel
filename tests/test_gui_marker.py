@@ -80,9 +80,10 @@ def test_every_mainwindow_test_carries_the_gui_marker():
 
 def test_the_marker_is_not_over_applied():
     """The other half: a `gui` mark on a test that never builds a window quietly
-    drops it out of the gate. 31 tests need it, out of a suite of ~1085 — if
+    drops it out of the gate. 32 tests need it, out of a suite of ~1,165 — if
     that count climbs on a change that added no window tests, something is being
-    excused rather than marked."""
+    excused rather than marked. (32 since 2026-09-16: Export STL gained a window
+    test when it stopped being frame-front-only.)"""
     marked = 0
     for path in sorted(TESTS.glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -98,4 +99,4 @@ def test_the_marker_is_not_over_applied():
                 assert node.name in reaching, (
                     f"{path.name}::{node.name} is marked `gui` but does not "
                     "build a MainWindow — it belongs in the gating run")
-    assert marked == 31, f"{marked} tests marked `gui`, expected 31"
+    assert marked == 32, f"{marked} tests marked `gui`, expected 32"

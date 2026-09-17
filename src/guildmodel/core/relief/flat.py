@@ -13,9 +13,11 @@ mask, exactly like the frame's lens openings).
     to the engrave tool) as shallow grooves. Optionally snapped so the hinge/butt
     end registers to one end of the 170 mm blank (the injected metal core runs the
     temple's length); the core itself is a 3D **visual reference**, not machined.
-  * **Base-curve block** — a blank-size box extruded to the blank thickness; the
-    lens-interior footprint scribed on the top as the forming reference; the M4
-    mounting holes as through-holes; centerd on the origin.
+  * **Base-curve block** — the **lens shape itself** extruded to the blank
+    thickness, with the M4 mounting holes as through-holes, centerd on the
+    origin. There is no surrounding box and no scribe: the block *is* the lens
+    shape, because it sits on the base-curve press holding the eyewire
+    (confirmed with the user 2026-06-19, and matching what `block_ops` cuts).
 """
 from __future__ import annotations
 
