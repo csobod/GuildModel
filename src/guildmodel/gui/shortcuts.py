@@ -31,13 +31,26 @@ def effective_shortcuts(specs, overrides: dict) -> dict[str, str]:
     return out
 
 
-def find_conflicts(bindings: dict[str, str]) -> dict[str, list[str]]:
+#: Shortcuts bound outside the registry, which a rebind must not take: Qt
+#: treats two actions on one key as ambiguous and fires neither, so a maker who
+#: put Build 3D on Ctrl+Q lost both Quit and Build with no warning.
+RESERVED_SHORTCUTS = {"Ctrl+Q": "Quit", "Ctrl+,": "Preferences"}
+
+
+def find_conflicts(bindings: dict[str, str],
+                   reserved: dict[str, str] | None = None) -> dict[str, list[str]]:
     """Map a shortcut → the action keys that share it, for any non-empty shortcut
-    bound to more than one action. Empty result means no conflicts."""
+    bound to more than one action, or to an action and a reserved built-in
+    (`RESERVED_SHORTCUTS`; the built-in appears by its name). Empty result
+    means no conflicts."""
+    reserved = RESERVED_SHORTCUTS if reserved is None else reserved
     by_sc: dict[str, list[str]] = defaultdict(list)
     for key, sc in bindings.items():
         if sc:
             by_sc[sc].append(key)
+    for sc, name in reserved.items():
+        if sc in by_sc:
+            by_sc[sc].append(name)
     return {sc: keys for sc, keys in by_sc.items() if len(keys) > 1}
 
 

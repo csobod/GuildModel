@@ -141,6 +141,11 @@ class ParamSlider(QWidget):
     #: yet; it is the seam a live-continuous preview attaches to, kept separate
     #: so a drag cannot start one model rebuild per pixel by accident.
     sliding = Signal(float)
+    #: The handle was let go, whether or not the value moved. `valueChanged`
+    #: is the settled edit; this is for a listener that showed something
+    #: provisional while the drag ran (the Forming view's uncut base) and
+    #: has to put the real thing back even when the drag ended where it began.
+    released = Signal()
 
     def __init__(
         self,
@@ -371,3 +376,4 @@ class ParamSlider(QWidget):
         # rebuild is too expensive to spend on one.
         if self.spin.value() != self._pressed_at:
             self.valueChanged.emit(self.spin.value())
+        self.released.emit()

@@ -181,10 +181,17 @@ def test_the_cam_cannot_reach_either_model_kernel():
             if isinstance(node, ast.Import):
                 imported.update(a.name for a in node.names)
             elif isinstance(node, ast.ImportFrom):
-                imported.add(node.module or "")
+                # the module *and* every name taken from it, with the dots of
+                # a relative import: `from .. import forming` names no module
+                base = "." * node.level + (node.module or "")
+                imported.add(base)
+                imported.update(f"{base}.{a.name}" for a in node.names)
+        # `forming` joined the list with M18: the formed front is a view of
+        # the flat part and an STL, never a program, and the cheapest way to
+        # keep that true is to make the import impossible.
         bad = [m for m in imported
                if "solid" in m or m.endswith("model") or ".model." in m
-               or "OCP" in m or "manifold" in m]
+               or "OCP" in m or "manifold" in m or "forming" in m]
         if bad:
             offenders[path.name] = sorted(bad)
     assert not offenders, f"core.cam reaches a model kernel: {offenders}"

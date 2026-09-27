@@ -50,8 +50,30 @@ def _write_user(data: dict) -> None:
         pass
 
 
+
+#: The merged table, keyed on the files' (mtime, size): the Cut tab and the
+#: workers ask for a tool or a material per change, and re-reading two YAML
+#: files each time was most of a keystroke's cost.
+_cache: tuple | None = None
+
+
+def _stamp(path: pathlib.Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
 def effective() -> dict:
     """Shipped tools with user overrides/additions merged and deletions removed."""
+    global _cache
+    key = (str(_SHIPPED), _stamp(_SHIPPED), str(_USER), _stamp(_USER))
+    if _cache is None or _cache[0] != key:
+        _cache = (key, _merge())
+    return {name: dict(vals) for name, vals in _cache[1].items()}
+
+
+def _merge() -> dict:
     merged = {name: dict(vals) for name, vals in shipped().items()}
     for name, vals in _user().items():
         if not isinstance(vals, dict):

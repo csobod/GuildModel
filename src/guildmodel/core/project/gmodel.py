@@ -46,6 +46,11 @@ _REPORT = "cut_report.json"
 _STL = "model.stl"
 _PREVIEW = "preview.png"
 _PROGRAM_DIR = "program"
+# Every component's own program set, so a whole-model project keeps the
+# temple programs as well as the front's: ``components/<id>/program/*.nc``
+# plus that component's setup / machine / cut report. The top-level set
+# stays the active component's (the job GuildSend streams).
+_COMPONENTS_DIR = "components"
 
 #: files (besides ``program/*.nc``) that a gSender fork consumes
 HANDOFF_FILES = (_MANIFEST, _MACHINE, _SETUP)
@@ -80,6 +85,9 @@ class GModelBundle:
     dxf_bytes: bytes | None = None
     gdraw_bytes: bytes | None = None
     programs: dict[str, str] = field(default_factory=dict)
+    #: Per component id: {"programs", "setup", "machine", "report"} — see
+    #: `_COMPONENTS_DIR`. Empty for a bundle saved before v1.8.0.
+    component_artifacts: dict[str, dict] = field(default_factory=dict)
     machine: dict | None = None
     setup: dict | None = None
     report: dict | None = None
@@ -92,6 +100,12 @@ class GModelBundle:
 
     def has_program(self) -> bool:
         return bool(self.programs)
+
+
+def component_key(component_id: str) -> str:
+    """A component id as a zip directory name: one path segment, whatever
+    GuildDraw called the workspace."""
+    return str(component_id).replace("/", "_").replace("\\", "_") or "component"
 
 
 def save_gmodel(
@@ -108,6 +122,7 @@ def save_gmodel(
     preview_bytes: bytes | None = None,
     run_mode: str = "two_file",
     created: str | None = None,
+    component_artifacts: dict[str, dict] | None = None,
 ) -> None:
     """Write a ``.gmodel`` container. Only ``project`` is required; pass whatever of
     the rest exists at this stage. Written atomically (temp file + replace)."""
@@ -128,6 +143,18 @@ def save_gmodel(
         files[_SETUP] = json.dumps(setup, indent=2, default=str).encode("utf-8")
     if report is not None:
         files[_REPORT] = json.dumps(report, indent=2, default=str).encode("utf-8")
+    for cid, art in (component_artifacts or {}).items():
+        base = f"{_COMPONENTS_DIR}/{component_key(cid)}"
+        for name, text in (art.get("programs") or {}).items():
+            files[f"{base}/{_PROGRAM_DIR}/{name}"] = text.encode("utf-8")
+        if art.get("machine") is not None:
+            m = art["machine"]
+            md = m.model_dump() if isinstance(m, MachineProfile) else dict(m)
+            files[f"{base}/{_MACHINE}"] = yaml.safe_dump(md, sort_keys=False).encode("utf-8")
+        if art.get("setup") is not None:
+            files[f"{base}/{_SETUP}"] = json.dumps(art["setup"], indent=2, default=str).encode("utf-8")
+        if art.get("report") is not None:
+            files[f"{base}/{_REPORT}"] = json.dumps(art["report"], indent=2, default=str).encode("utf-8")
     if stl_bytes is not None:
         files[_STL] = bytes(stl_bytes)
     if preview_bytes is not None:
@@ -188,12 +215,31 @@ def load_gmodel(path, verify: bool = True) -> GModelBundle:
             n[len(_PROGRAM_DIR) + 1:]: zf.read(n).decode("utf-8")
             for n in names if n.startswith(_PROGRAM_DIR + "/") and not n.endswith("/")
         }
+        component_artifacts: dict[str, dict] = {}
+        for n in sorted(names):
+            if not n.startswith(_COMPONENTS_DIR + "/") or n.endswith("/"):
+                continue
+            parts = n.split("/")
+            if len(parts) < 3:
+                continue
+            art = component_artifacts.setdefault(
+                parts[1], {"programs": {}, "setup": None, "machine": None, "report": None})
+            rest = "/".join(parts[2:])
+            if rest.startswith(_PROGRAM_DIR + "/"):
+                art["programs"][rest[len(_PROGRAM_DIR) + 1:]] = zf.read(n).decode("utf-8")
+            elif rest == _MACHINE:
+                art["machine"] = yaml.safe_load(zf.read(n))
+            elif rest == _SETUP:
+                art["setup"] = json.loads(zf.read(n))
+            elif rest == _REPORT:
+                art["report"] = json.loads(zf.read(n))
         return GModelBundle(
             project=project,
             manifest=manifest,
             dxf_bytes=zf.read(_SOURCE) if _SOURCE in names else None,
             gdraw_bytes=zf.read(_SOURCE_GDRAW) if _SOURCE_GDRAW in names else None,
             programs=programs,
+            component_artifacts=component_artifacts,
             machine=yaml.safe_load(zf.read(_MACHINE)) if _MACHINE in names else None,
             setup=json.loads(zf.read(_SETUP)) if _SETUP in names else None,
             report=json.loads(zf.read(_REPORT)) if _REPORT in names else None,

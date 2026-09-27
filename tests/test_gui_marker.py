@@ -17,7 +17,7 @@ the macos-14 runner, both of which run the whole suite green.
 
 So the marker is checked here rather than trusted. The scan is deliberately
 syntactic — a test qualifies if it names `MainWindow` itself or calls a
-module-level helper that does, which is how all 41 of the current ones reach
+module-level helper that does, which is how all 39 of the current ones reach
 one. A test that gets there some other way (a fixture in `conftest`, say) would
 slip past, and the cost of that is a wedged CI run, so put the mark on by hand
 if you write one.
@@ -80,10 +80,10 @@ def test_every_mainwindow_test_carries_the_gui_marker():
 
 def test_the_marker_is_not_over_applied():
     """The other half: a `gui` mark on a test that never builds a window quietly
-    drops it out of the gate. 32 tests need it, out of a suite of ~1,165 — if
+    drops it out of the gate. 39 tests need it, out of a suite of ~1,310 — if
     that count climbs on a change that added no window tests, something is being
     excused rather than marked. (32 since 2026-09-16: Export STL gained a window
-    test when it stopped being frame-front-only.)"""
+    test when it stopped being frame-front-only; 37 since M18's five.)"""
     marked = 0
     for path in sorted(TESTS.glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -99,4 +99,7 @@ def test_the_marker_is_not_over_applied():
                 assert node.name in reaching, (
                     f"{path.name}::{node.name} is marked `gui` but does not "
                     "build a MainWindow — it belongs in the gating run")
-    assert marked == 32, f"{marked} tests marked `gui`, expected 32"
+    # 32 through v1.7.0; M18 (the Forming view) added five in
+    # `test_forming_gui_m18`; the 2026-09-26 bug hunt two in
+    # `test_bug_hunt_v180_gui` (a reopened project's programs, Cancel).
+    assert marked == 39, f"{marked} tests marked `gui`, expected 39"

@@ -74,9 +74,40 @@ def build_component_mesh(spec: dict, *, resolution: float,
     mode = spec["mode"]
     if mode == "castle":
         return _build_castle(spec, resolution, kernel, progress)
+    if mode == "formed":
+        return _build_formed(spec, resolution, kernel, progress)
     if mode == "temple":
         return _build_temple(spec, resolution, progress)
     return _build_block(spec, resolution, progress)
+
+
+#: The build modes the model kernel applies to. A temple and a base-curve
+#: template are flat parts the raster builds exactly; a frame front, flat or
+#: formed, is built by the chosen kernel.
+KERNEL_MODES = ("castle", "formed")
+
+
+def formed_spec(spec: dict, forming, *, bridge) -> dict:
+    """The formed-front build description derived from a castle spec (M18).
+
+    Returns a **new** dict with a **copied** `CastleParams`: the formed build
+    enables the lens bevel groove whenever the forming asks for it, because
+    the printed part is the finished piece, and that override must never
+    reach the castle the cutting model and the CAM read. Pydantic models are
+    mutable and `spec["castle"]` is the panel's own snapshot, so an in-place
+    `castle.lens_groove.enabled = True` here would have switched the groove on
+    for the next G-code build. `test_forming_m18` posts before and after and
+    compares the bytes.
+    """
+    castle = spec["castle"]
+    if bool(forming.formed_groove) != bool(castle.lens_groove.enabled):
+        castle = castle.model_copy(update={
+            "lens_groove": castle.lens_groove.model_copy(
+                update={"enabled": bool(forming.formed_groove)})})
+    out = dict(spec)
+    out.update(mode="formed", castle=castle, forming=forming, bridge=bridge,
+               label=f"{spec.get('label') or spec.get('kind') or 'frame front'} (formed)")
+    return out
 
 
 def _build_castle(spec, resolution, kernel, progress):
@@ -133,6 +164,39 @@ def _build_castle_mesh(spec, progress):
     if progress is not None:
         progress("Edges", 0.97)
     mesh = to_trimesh(model)
+    return mesh, feature_edges(mesh), None
+
+
+def _build_formed(spec, resolution, kernel, progress):
+    """The frame front after forming (M18): the flat build, cut along the
+    creases, refined in the band, and warped.
+
+    Every kernel hands over its flat trimesh and `core.forming.tessellate`
+    takes it from there: the mesh kernel's output (and a closed raster) goes
+    through Manifold to be simplified and coarsely refined, which is the
+    exact path and the one the fixtures verify on; a B-Rep tessellation,
+    usually open, is subdivided in place (see `form_trimesh`). At the export
+    lengths: this is the path the STL takes, and the preview forms the cached
+    mesh in the window with the same code at its own lengths.
+    """
+    from guildmodel.core.forming import FormingMesh, ThermoformMap, weld_for_file
+    from guildmodel.core.model import feature_edges
+
+    fmap = ThermoformMap.from_metadata(spec["forming"], bridge=spec["bridge"])
+    # The flat build's own fractions run to 1.0; scaled into the first 90 %
+    # so the bar does not reach the end and then walk back for the forming,
+    # and with a checkpoint between the steps so Cancel is heard during them.
+    sub = None if progress is None else (lambda lbl, f: progress(lbl, 0.9 * f))
+    flat, _, _ = _build_castle(dict(spec, mode="castle", stage="pockets"),
+                               resolution, kernel, sub)
+    if progress is not None:
+        progress("Forming", 0.92)
+    formed = FormingMesh.for_export(flat).formed(fmap)
+    if progress is not None:
+        progress("Welding", 0.96)
+    mesh = weld_for_file(formed)
+    if progress is not None:
+        progress("Edges", 0.98)
     return mesh, feature_edges(mesh), None
 
 

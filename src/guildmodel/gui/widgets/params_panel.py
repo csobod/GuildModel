@@ -101,6 +101,10 @@ def _spinbox(
     sb.setDecimals(decimals)
     sb.setValue(value)
     sb.setSuffix(suffix)
+    # The value settles on Enter, Tab or a click away, not on every keystroke:
+    # typing "1500" into a feed used to fire 1, 15, 150 and 1500, and each one
+    # invalidated the program, dropped the cut sim and wrote the prefs file.
+    sb.setKeyboardTracking(False)
     return sb
 
 
@@ -769,6 +773,14 @@ class ParamsPanel(QTabWidget):
         self.hinge_pocket_depth.setToolTip(
             "Pocket floor sits this far below the endpiece height."
         )
+        self.hinge_pocket_angle = _slider(0.0, -15.0, 15.0, step=0.5, decimals=1,
+                                          suffix="°")
+        towers.addRow("Hinge pocket angle:", self.hinge_pocket_angle)
+        self.hinge_pocket_angle.setToolTip(
+            "Tilts the pocket floor to adjust the pantoscopic tilt at the hinge.\n"
+            "The superior edge stays at the pocket depth; a positive angle makes\n"
+            "the inferior edge deeper, and a negative angle makes it shallower."
+        )
         glay.addLayout(towers)
 
         # --- Walls: the eyewires spanning between the towers ---
@@ -1178,7 +1190,7 @@ class ParamsPanel(QTabWidget):
     def _castle_spinboxes(self) -> list[Numeric]:
         boxes = [
             self.zone_endpiece, self.zone_bridge, self.zone_nosepad,
-            self.hinge_pocket_depth,
+            self.hinge_pocket_depth, self.hinge_pocket_angle,
             self.zone_eyewire_superior, self.zone_eyewire_inferior,
         ]
         for ext_sb, int_sb in self.footing_spins.values():
@@ -1207,6 +1219,7 @@ class ParamsPanel(QTabWidget):
             "zones.eyewire_superior_mm": self.zone_eyewire_superior,
             "zones.eyewire_inferior_mm": self.zone_eyewire_inferior,
             "hinge_pocket_depth_mm": self.hinge_pocket_depth,
+            "hinge_pocket_angle_deg": self.hinge_pocket_angle,
             "pad_splay.anterior_clamp_mm": self.splay_clamp,
             "pad_splay.gap_mm": self.splay_gap,
             "eyewire_bezel.anterior_clamp_mm": self.bezel_clamp,
@@ -1257,7 +1270,8 @@ class ParamsPanel(QTabWidget):
 
         castle = self.castle_params()
         bounds = dict(castle_limits(castle, getattr(self, "_partition", None),
-                                    self._groove_depth_ceiling()))
+                                    self._groove_depth_ceiling(),
+                                    getattr(self, "_hinge_polys", None)))
         widgets = dict(self._limit_targets())
 
         row = self.edge_list.currentRow()
@@ -1274,6 +1288,27 @@ class ParamsPanel(QTabWidget):
             limit = bounds.get(path)
             if limit is not None and isinstance(widget, ParamSlider):
                 widget.set_safe_range(limit.low, limit.high, limit.reason)
+
+    def _refresh_temple_limits(self) -> None:
+        """The Temple tab's pocket depth and angle, each against the other and
+        the blank thickness (`limits.temple_limits`). Writes no values."""
+        if not hasattr(self, "temple_hinge_angle"):
+            return                # tabs still under construction
+        from guildmodel.core.project.limits import temple_limits
+
+        bounds = temple_limits(TempleParams(
+                                   blank_thickness_mm=self.temple_blank_thickness.value(),
+                                   hinge_pocket_depth_mm=self.temple_hinge_depth.value(),
+                                   hinge_pocket_angle_deg=self.temple_hinge_angle.value()),
+                               getattr(self, "_hinge_polys", None),
+                               getattr(self, "_hinge_outline", None))
+        for path, widget in (("hinge_pocket_depth_mm", self.temple_hinge_depth),
+                             ("hinge_pocket_angle_deg", self.temple_hinge_angle)):
+            limit = bounds.get(path)
+            if limit is not None:
+                widget.set_safe_range(limit.low, limit.high, limit.reason)
+            else:
+                widget.set_safe_range(*widget.hard_range())
 
     def _connect_live_handles(self) -> None:
         """Every Model-tab handle reports while it is being dragged.
@@ -1404,6 +1439,21 @@ class ParamsPanel(QTabWidget):
             "Engrave one center line per stroke instead of tracing the outlines.")
         self.temple_engrave_centerline.toggled.connect(self.cam_changed)
         form.addRow("", self.temple_engrave_centerline)
+        self.temple_hinge_depth = _slider(d.hinge_pocket_depth_mm, 0.0, 3.0,
+                                          decimals=1)
+        self.temple_hinge_depth.setToolTip(
+            "Pocket floor sits this far below the top face at the anterior edge.")
+        form.addRow("Hinge pocket depth:", self.temple_hinge_depth)
+        self.temple_hinge_angle = _slider(d.hinge_pocket_angle_deg, -15.0, 15.0,
+                                          step=0.5, decimals=1, suffix="°")
+        self.temple_hinge_angle.setToolTip(
+            "Tilts the pocket floor to offset splay built into the hinge.\n"
+            "The anterior (hinge-end) edge stays at the pocket depth; a positive\n"
+            "angle makes the posterior edge deeper, and a negative angle makes it\n"
+            "shallower.")
+        form.addRow("Hinge pocket angle:", self.temple_hinge_angle)
+        for w in (self.temple_hinge_depth, self.temple_hinge_angle):
+            w.valueChanged.connect(self._refresh_temple_limits)
         self.temple_hinge_tool = QComboBox()
         self.temple_hinge_tool.addItems(_tool_names())
         self.temple_hinge_tool.setCurrentText(d.hinge_tool)
@@ -1421,9 +1471,11 @@ class ParamsPanel(QTabWidget):
 
         for w in (self.temple_blank_length, self.temple_blank_width,
                   self.temple_blank_thickness, self.temple_engrave_depth,
-                  self.temple_engrave_stepdown,
+                  self.temple_engrave_stepdown, self.temple_hinge_depth,
+                  self.temple_hinge_angle,
                   self.temple_onion, self.temple_allowance):
             w.valueChanged.connect(self.cam_changed)
+        self.temple_blank_thickness.valueChanged.connect(self._refresh_temple_limits)
         self.temple_engrave_tool.currentIndexChanged.connect(self.cam_changed)
         self.temple_hinge_tool.currentIndexChanged.connect(self.cam_changed)
         self.temple_profile_tool.currentIndexChanged.connect(self.cam_changed)
@@ -1557,6 +1609,14 @@ class ParamsPanel(QTabWidget):
         self._zone_overrides.clear()
         self._refresh_zone_list()
         self.castle_changed.emit()
+
+    def set_hinges(self, hinge_polys, outline=None) -> None:
+        """The active component's HINGE polygons (and outline, which tells a
+        temple's hinge end). The pocket angle's range is measured on them."""
+        self._hinge_polys = list(hinge_polys or [])
+        self._hinge_outline = outline
+        self._refresh_limits()
+        self._refresh_temple_limits()
 
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
@@ -2403,6 +2463,7 @@ class ParamsPanel(QTabWidget):
             zone_height_overrides=dict(self._zone_overrides),
             footing=footing,
             hinge_pocket_depth_mm=self.hinge_pocket_depth.value(),
+            hinge_pocket_angle_deg=self.hinge_pocket_angle.value(),
             stock=self.stock_definition(),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
@@ -2460,6 +2521,7 @@ class ParamsPanel(QTabWidget):
             (self.zone_eyewire_superior, z.eyewire_superior_mm),
             (self.zone_eyewire_inferior, z.eyewire_inferior_mm),
             (self.hinge_pocket_depth, c.hinge_pocket_depth_mm),
+            (self.hinge_pocket_angle, c.hinge_pocket_angle_deg),
             (self.onion_skin, c.onion_skin_mm),
             (self.hand_allowance, c.hand_finishing_allowance_mm),
             (self.blank_length, c.stock.blank_length_mm),
@@ -2533,6 +2595,10 @@ class ParamsPanel(QTabWidget):
         self.set_edge_features(c.edge_features)          # M17 chamfers / fillets
         self.set_holding_params(c.holding)
         self._update_passes_readout()  # the restored stock drives the pass count
+        # The pocket depth and angle bound each other, so a reopened tilted
+        # pocket needs its ranges computed for *its* values, not the defaults'
+        # (`set_temple_params` already does; this one did not).
+        self._refresh_limits()
         self.castle_changed.emit()
         self.stock_changed.emit()
 
@@ -2628,6 +2694,8 @@ class ParamsPanel(QTabWidget):
             blank_length_mm=self.temple_blank_length.value(),
             blank_width_mm=self.temple_blank_width.value(),
             blank_thickness_mm=self.temple_blank_thickness.value(),
+            hinge_pocket_depth_mm=self.temple_hinge_depth.value(),
+            hinge_pocket_angle_deg=self.temple_hinge_angle.value(),
             engrave_depth_mm=self.temple_engrave_depth.value(),
             engrave_stepdown_mm=self.temple_engrave_stepdown.value(),
             engrave_tool=self.temple_engrave_tool.currentText(),
@@ -2651,6 +2719,8 @@ class ParamsPanel(QTabWidget):
             (self.temple_blank_thickness, t.blank_thickness_mm),
             (self.temple_engrave_depth, t.engrave_depth_mm),
             (self.temple_engrave_stepdown, t.engrave_stepdown_mm),
+            (self.temple_hinge_depth, t.hinge_pocket_depth_mm),
+            (self.temple_hinge_angle, t.hinge_pocket_angle_deg),
             (self.temple_onion, t.onion_skin_mm),
             (self.temple_allowance, t.hand_finishing_allowance_mm),
         ):
@@ -2670,6 +2740,7 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank.setChecked(t.snap_to_blank_end)
         self.temple_snap_blank.blockSignals(False)
         self.temple_stock_side.setEnabled(t.snap_to_blank_end)
+        self._refresh_temple_limits()
 
     def block_params(self) -> BaseCurveBlockParams:
         """Base-curve forming-block params from the Base Curve tab (BUILDPLAN M7.3)."""

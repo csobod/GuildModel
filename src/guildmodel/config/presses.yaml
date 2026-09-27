@@ -1,0 +1,28 @@
+# The maker's base-curve presses (BUILDPLAN M18).
+#
+# One row per die, tagged the way the forms are: the lens base curve in
+# diopters and the face form the frame comes off it with, read from the SBT
+# base-curve press drawing (2026-09-24). `radius_mm` is the die's own radius
+# and is what the model uses on that row; the SBT dies are not 530 / D. A row
+# without it uses 530 / base_curve.
+#
+# Your own presses go in ~/.guildmodel/presses.yaml in the same shape. A row
+# there with a label below replaces it; a new label adds a press; a row of
+# `{_deleted: true}` hides one. This file is never written by the app.
+
+SBT base 2 / lens 4:
+  base_curve: 2.0
+  radius_mm: 259.0
+  face_form_deg: 174.69
+SBT base 3 / lens 4:
+  base_curve: 3.0
+  radius_mm: 181.0
+  face_form_deg: 169.24
+SBT base 4 / lens 4:
+  base_curve: 4.0
+  radius_mm: 144.0
+  face_form_deg: 163.97
+SBT base 2 / lens 2:
+  base_curve: 2.0
+  radius_mm: 262.0
+  face_form_deg: 170.11

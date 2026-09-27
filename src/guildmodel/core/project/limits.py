@@ -300,13 +300,16 @@ def max_groove_depth(partition, low: float = 0.05, high: float = 4.0,
 
 
 def castle_limits(castle: CastleParams, partition=None,
-                  groove_ceiling: float | None = None) -> dict[str, Limit]:
+                  groove_ceiling: float | None = None,
+                  hinge_polys=None) -> dict[str, Limit]:
     """Every bound the Model and Stock tabs need, keyed by schema path.
 
     `partition` sharpens the stock ceilings from "what the pad block is for" to
     "what this drawing's zones actually stand on". `groove_ceiling` is
     `max_groove_depth`'s answer, passed in rather than computed because it costs
     a re-partition per probe and only changes when the drawing does.
+    `hinge_polys` gives the pocket angle its range: without them there is no
+    lever to measure and the angle keeps its hard range.
     """
     stock = castle.stock
     out: dict[str, Limit] = dict(stock_limits(stock))
@@ -331,14 +334,62 @@ def castle_limits(castle: CastleParams, partition=None,
                 0.0, ceiling, f"{stack} gives {ceiling:g} mm of material over {name}")
 
     endpiece = float(castle.zones.endpiece_mm)
-    out["hinge_pocket_depth_mm"] = Limit(
-        0.0, max(0.0, endpiece - MIN_POCKET_FLOOR_MM),
-        f"a pocket deeper than this comes out of the front of a {endpiece:g} mm "
-        f"endpiece")
+    from ..geometry.pocket_floor import FRONT_AXIS, pocket_span
+    out.update(pocket_limits(
+        castle.hinge_pocket_depth_mm, castle.hinge_pocket_angle_deg,
+        max(0.0, endpiece - MIN_POCKET_FLOOR_MM),
+        pocket_span(hinge_polys, FRONT_AXIS),
+        f"a {endpiece:g} mm endpiece", "inferior"))
 
     out.update(_groove_limits(castle, groove_ceiling))
     out.update(_finishing_limits(castle))
     return out
+
+
+def pocket_limits(depth: float, angle_deg: float, ceiling: float, span: float,
+                  what: str, moving: str) -> dict[str, Limit]:
+    """Hinge pocket depth and angle, each against the other.
+
+    The set depth holds along one edge of the pocket and the angle moves the
+    other, `span` mm away (`geometry.pocket_floor`). Both edges have to stay
+    between the surface and `ceiling`, the deepest a pocket may go. With no span
+    (no hinge drawn) the angle is unconstrained and the depth keeps its old
+    range.
+    """
+    ceiling = max(0.0, float(ceiling))
+    out = {"hinge_pocket_depth_mm": Limit(
+        0.0, ceiling,
+        f"a pocket deeper than this comes out of the front of {what}")}
+    if span <= 1e-9:
+        return out
+    rise = span * math.tan(math.radians(float(angle_deg)))  # moving edge, deeper by
+    # A rise the material cannot hold at any depth (|rise| past the ceiling)
+    # is the angle's fault, and the angle limit below says so; the depth keeps
+    # its plain range rather than collapsing to a point outside the material.
+    if 1e-12 < abs(rise) < ceiling:
+        out["hinge_pocket_depth_mm"] = Limit(
+            max(0.0, -rise), ceiling - max(0.0, rise),
+            f"at {angle_deg:g}° the {moving} edge of the pocket sits "
+            f"{rise:+.2f} mm from this depth, and has to stay inside {what}")
+    d = float(depth)
+    out["hinge_pocket_angle_deg"] = Limit(
+        math.degrees(math.atan(-d / span)),
+        math.degrees(math.atan(max(0.0, ceiling - d) / span)),
+        f"beyond this the {moving} edge of a {span:.1f} mm pocket either comes "
+        f"out of the surface or out of the front of {what}")
+    return out
+
+
+def temple_limits(temple, hinge_polys=None, outline=None) -> dict[str, Limit]:
+    """The Temple tab's hinge pocket bounds: the same rule as the front's, cut
+    into the blank thickness instead of the endpiece."""
+    from ..geometry.pocket_floor import pocket_span, temple_axis
+    thickness = float(temple.blank_thickness_mm)
+    return pocket_limits(
+        temple.hinge_pocket_depth_mm, temple.hinge_pocket_angle_deg,
+        max(0.0, thickness - MIN_POCKET_FLOOR_MM),
+        pocket_span(hinge_polys, temple_axis(outline, hinge_polys)),
+        f"a {thickness:g} mm temple blank", "posterior")
 
 
 def _groove_limits(castle: CastleParams,

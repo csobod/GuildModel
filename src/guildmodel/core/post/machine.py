@@ -11,6 +11,7 @@ any supported machine, or a clear, actionable warning when it cannot.
 """
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass, field
@@ -35,7 +36,9 @@ def available_machines(config_dir: Path | None = None) -> list[tuple[str, str]]:
     for f in sorted(machines_dir(config_dir).glob("*.yaml")):
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-        except Exception:
+        except Exception as exc:                             # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "machine profile %s skipped (not valid YAML): %s", f.name, exc)
             continue
         out.append((data.get("name", f.stem), data.get("display_name", f.stem)))
     out.sort(key=lambda t: (t[0] != "guild_cnc", t[1]))

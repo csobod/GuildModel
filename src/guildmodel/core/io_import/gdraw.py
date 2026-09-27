@@ -4,7 +4,9 @@ A ``.gdraw`` is a ZIP of ``manifest.json`` + ``front.svg`` + ``temple_r.svg`` +
 ``temple_l.svg`` + ``hinge.svg``. Each SVG carries the authoritative geometry in a
 ``<metadata>`` child of the root ``<svg>`` — a JSON blob with the curves (line /
 spline / circle / arc, each with cubic spline nodes), the ``forming`` metadata
-(``apical_radius_mm`` = base curve, ``bridge_angle_deg``), the bridge ``mirror``
+(``apical_radius_mm`` — GuildDraw's *Apical radius*, the crest of the bridge in
+the frontal plane, **not** a base curve — and ``bridge_angle_deg``, its *Frontal
+angle*), the bridge ``mirror``
 axis, and per-layer visibility (see GuildDraw ``framedraft/export/svg.py`` +
 ``export/gdraw.py``). This reader parses that JSON **directly** — not the rendered
 ``<path>`` ``d`` strings — and flattens every curve to the **same layer-keyed point
@@ -345,14 +347,21 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
     texts = [dict(t) for t in (state.get("texts") or [])
              if isinstance(t, dict) and t.get("layer") in ALL_LAYERS]
     layers, curves = read_workspace_curves(state, chord_tol, posterior)
+
+    def number(block: dict, key: str, what: str) -> float:
+        try:
+            return float(block.get(key, 0.0) or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise GdrawError(f"{what} is not a number: {block.get(key)!r}") from exc
+
     return GdrawWorkspace(
         name=name,
         layers=layers,
         curves=curves,
-        apical_radius_mm=float(frm.get("apical_radius_mm", 0.0) or 0.0),
-        bridge_angle_deg=float(frm.get("bridge_angle_deg", 0.0) or 0.0),
+        apical_radius_mm=number(frm, "apical_radius_mm", "forming.apical_radius_mm"),
+        bridge_angle_deg=number(frm, "bridge_angle_deg", "forming.bridge_angle_deg"),
         mirror_enabled=bool(mir.get("enabled", True)),
-        mirror_x=float(mir.get("x", 0.0) or 0.0),
+        mirror_x=number(mir, "x", "mirror.x"),
         texts=texts,
         posterior=posterior,
     )

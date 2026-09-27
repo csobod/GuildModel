@@ -150,6 +150,10 @@ QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */
 QWidget#toolbarStrip { background-color: #ffd580; border-bottom: 1px solid #d4a840; }
+/* The Forming panel (M18) sits under the 3D viewport in the strip's chrome. */
+QFrame#formingPanel { background-color: #ffd580; border-top: 1px solid #d4a840; }
+QFrame#formingPanel QLabel { background: transparent; }
+QFrame#formingPanel QLabel#formingBadge { font-weight: bold; }
 /* The 3D viewer's strip buttons are icon-only squares: without this override
    the app-wide QPushButton min-width/padding stretches them wide (their
    setFixedWidth loses to the stylesheet box model). */
@@ -310,6 +314,10 @@ QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */
 QWidget#toolbarStrip { background-color: #1a1a1a; border-bottom: 1px solid #554433; }
+/* The Forming panel (M18) — see the light theme. */
+QFrame#formingPanel { background-color: #1a1a1a; border-top: 1px solid #554433; }
+QFrame#formingPanel QLabel { background: transparent; }
+QFrame#formingPanel QLabel#formingBadge { font-weight: bold; }
 /* Icon-only square strip buttons — see the light-theme note. */
 QWidget#toolbarStrip QPushButton { padding: 1px; min-width: 0px; }
 /* Sim-playback button: comfortable target + readable glyph (see light theme). */

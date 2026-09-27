@@ -82,17 +82,22 @@ def temple_hinge_pocket_op(
     temple: TempleParams,
     tools_cfg: dict,
     params: CastleCamParams,
+    outline: Polygon | None = None,
 ) -> CamOp:
     """Pocket each HINGE poly to ``thickness − hinge_pocket_depth`` with the same
     ramped lap-entry pocketing the frame uses, cut with the temple's hinge tool.
-    The op may have no paths if every pocket is too small for the tool — the caller
-    drops it in that case."""
+    `outline` locates the hinge end the pocket angle pivots on
+    (`geometry.pocket_floor`). The op may have no paths if every pocket is too
+    small for the tool — the caller drops it in that case."""
+    from ..geometry.pocket_floor import aligned, temple_pocket_floors
     tool = resolve_tool(temple.hinge_tool, tools_cfg)
     floor_z = temple.blank_thickness_mm - temple.hinge_pocket_depth_mm
     op = hinge_pocket_op(
         hinge_polys, floor_z,
         start_z=temple.blank_thickness_mm + 0.5,
         tool_radius_mm=tool["radius_mm"], params=params,
+        floors=aligned(temple_pocket_floors(hinge_polys, temple, outline),
+                       hinge_polys),
     )
     op.tool = tool
     return op
@@ -218,7 +223,8 @@ def generate_temple_program(
 
     ops: list[CamOp] = []
     if hinges:
-        hinge_op = temple_hinge_pocket_op(hinges, temple, tools_cfg, params)
+        hinge_op = temple_hinge_pocket_op(hinges, temple, tools_cfg, params,
+                                          outline=outline)
         if hinge_op.paths:                 # skip when the pockets can't admit the tool
             ops.append(hinge_op)
     if engraving_curves:

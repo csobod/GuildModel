@@ -460,11 +460,14 @@ def build_castle_relief(
 
     # ---- Hinge pockets: sharp-walled cut below the endpiece height ----
     _report(progress, "Hinge pockets", 0.88)
-    pocket_floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
-    for poly in hinge_polys:
+    from ..geometry.pocket_floor import castle_pocket_floors
+    for poly, floor in castle_pocket_floors(hinge_polys, castle):
         prepare(poly)
-        in_pocket = contains_xy(poly, flat_x, flat_y).reshape(rows, cols)
-        z[in_pocket & inside] = np.minimum(z[in_pocket & inside], pocket_floor)
+        m = contains_xy(poly, flat_x, flat_y).reshape(rows, cols) & inside
+        if floor.flat:
+            z[m] = np.minimum(z[m], floor.z_fixed)
+        else:
+            z[m] = np.minimum(z[m], floor.z(Xs[m], Ys[m]))
 
     z[~inside] = 0.0
     surface[~inside] = 0.0

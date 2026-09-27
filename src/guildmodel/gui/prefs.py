@@ -203,9 +203,16 @@ def load() -> dict:
 
 
 def save(prefs: dict) -> None:
-    """Write prefs dict to disk.  Silently ignores write errors."""
+    """Write prefs dict to disk.  Silently ignores write errors.
+
+    Written to a sibling and renamed over: ``write_text`` truncates first, so
+    a crash or a full disk mid-write left an empty ``prefs.json``, which
+    `load` reads as the defaults and the next save cements — recents,
+    hotkeys, toolbar, CAM prefs and the window layout gone in one step."""
     try:
         _DIR.mkdir(parents=True, exist_ok=True)
-        _FILE.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        tmp = _FILE.with_name(_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        tmp.replace(_FILE)
     except Exception:
         pass

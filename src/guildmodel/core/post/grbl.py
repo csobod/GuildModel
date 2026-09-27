@@ -20,20 +20,21 @@ def _cumlen(xy: list[tuple[float, float]]) -> list[float]:
     return cum
 
 
-def _interp_xy(xy: list[tuple[float, float]], cum: list[float], s: float) -> tuple[float, float]:
+def _interp_xy(xy: list[tuple], cum: list[float], s: float) -> tuple:
+    """The point at arc length ``s`` along ``xy``, every coordinate
+    interpolated — so a (x, y, z) path keeps its z (a tabbed pass)."""
     s = max(0.0, min(s, cum[-1]))
     k = bisect.bisect_left(cum, s)
     if k <= 0:
-        return xy[0]
+        return tuple(xy[0])
     if k >= len(xy):
-        return xy[-1]
+        return tuple(xy[-1])
     s0, s1 = cum[k - 1], cum[k]
     t = 0.0 if s1 <= s0 else (s - s0) / (s1 - s0)
-    return (xy[k - 1][0] + (xy[k][0] - xy[k - 1][0]) * t,
-            xy[k - 1][1] + (xy[k][1] - xy[k - 1][1]) * t)
+    return tuple(a + (b - a) * t for a, b in zip(xy[k - 1], xy[k]))
 
 
-def _lap_from(xy: list[tuple[float, float]], cum: list[float], start_s: float) -> list[tuple[float, float]]:
+def _lap_from(xy: list[tuple], cum: list[float], start_s: float) -> list[tuple]:
     """One full lap of a closed loop (xy[0]==xy[-1]) starting at arc-length
     start_s, going forward and returning to that same point."""
     sp = _interp_xy(xy, cum, start_s)
@@ -155,7 +156,28 @@ class GRBLPost:
             self._last_z = z
         self._lines.append(" ".join(parts))
 
+    def _check_below_safe(self, z: float | None) -> None:
+        """A cutting move at or above the safe plane means the plane is inside
+        the stock, and every rapid of the program would run through material.
+        The simulation cannot see it (rapids are not stamped), so the post
+        refuses the program rather than write it."""
+        if z is not None and z >= self.safe_z_mm - 1e-6:
+            raise ValueError(
+                f"safe Z {self.safe_z_mm:.2f} mm is not above a cut at Z {z:.2f} mm: "
+                "the rapid plane is inside the stock")
+
+    def _feed_word(self, feed: float | None) -> str:
+        """The F word of a cutting move. A feed of 0 is refused here, where it
+        would be written: a material preset with no feed rate posted F0, and
+        GRBL halts on the first G1 (error 22)."""
+        f = feed if feed is not None else self.feed_rate_mmpm
+        if not f or f <= 0:
+            raise ValueError("the feed rate is not set: the material preset or the Cut "
+                             "tab has no feed rate, and a program with F0 stops at its first cut")
+        return f"F{f:.0f}"
+
     def feed(self, x: float | None = None, y: float | None = None, z: float | None = None, feed: float | None = None) -> None:
+        self._check_below_safe(z)
         ox, oy, oz = self.work_offset
         parts = ["G1"]
         if x is not None:
@@ -165,8 +187,7 @@ class GRBLPost:
         if z is not None:
             parts.append(f"Z{z + oz:.4f}")
             self._last_z = z
-        f = feed if feed is not None else self.feed_rate_mmpm
-        parts.append(f"F{f:.0f}")
+        parts.append(self._feed_word(feed))
         self._lines.append(" ".join(parts))
 
     def arc(
@@ -177,14 +198,14 @@ class GRBLPost:
         current position. ccw -> G3, cw -> G2 (G17 plane; z makes it helical).
         I/J are center-relative, so the work offset (a translation) leaves them
         unchanged; only the absolute X/Y/Z endpoint shifts."""
+        self._check_below_safe(z)
         ox, oy, oz = self.work_offset
         parts = ["G3" if ccw else "G2", f"X{x + ox:.4f}", f"Y{y + oy:.4f}"]
         if z is not None:
             parts.append(f"Z{z + oz:.4f}")
             self._last_z = z
         parts += [f"I{i:.4f}", f"J{j:.4f}"]
-        f = feed if feed is not None else self.feed_rate_mmpm
-        parts.append(f"F{f:.0f}")
+        parts.append(self._feed_word(feed))
         self._lines.append(" ".join(parts))
 
     def plunge(self, z: float) -> None:
@@ -283,6 +304,16 @@ class GRBLPost:
         self.spindle_rpm = ts.spindle_rpm
         self.comment(f"--- Tool T{ts.number}: {ts.name} ({ts.diameter_mm:.2f} mm) ---")
 
+    def apply_cut(self, cut) -> None:
+        """Adopt one op's own context (`castle_ops.OpCut`): the feeds its
+        component's material calls for, and a spindle speed re-issued when
+        it differs (``M3 S`` while running changes the speed alone)."""
+        self.feed_rate_mmpm = float(cut.feed_rate_mmpm)
+        self.plunge_rate_mmpm = float(cut.plunge_rate_mmpm)
+        if int(cut.spindle_rpm) != int(self.spindle_rpm):
+            self.spindle_rpm = int(cut.spindle_rpm)
+            self.spindle_on()
+
     def tool_change(self, ts: "ToolSetting", mode: str = "m0",
                     message: str | None = None) -> None:
         """Emit a tool-change block, then adopt the new tool (BUILDPLAN M6.1).
@@ -334,7 +365,12 @@ class GRBLPost:
         self, pts: list[tuple[float, float, float]], ramp_height: float,
         ramp_angle_deg: float, arc_tol: float,
     ) -> None:
-        """Partial-lap ramped lead-in for a closed constant-Z contour loop.
+        """Partial-lap ramped lead-in for a closed contour loop.
+
+        The loop may carry its own z: a tabbed release pass rises over its
+        tabs, and it used to be refused here as "not constant-Z" and given a
+        straight slot-plunge to full depth instead. The ramp is an offset
+        above the path's own z that falls to nothing over the lead-in.
 
         Feed down through cleared air to one stepdown above the cut, ramp down to
         full depth over a short lead-in distance (set by the ramp angle, capped
@@ -348,8 +384,7 @@ class GRBLPost:
         """
         z_cut = pts[0][2]
         z_top = z_cut + ramp_height
-        xy = [(p[0], p[1]) for p in pts]          # closed: xy[0] == xy[-1]
-        cum = _cumlen(xy)
+        cum = _cumlen([(p[0], p[1]) for p in pts])   # closed: pts[0] == pts[-1]; planar length
         total = cum[-1] or 1.0
         if ramp_angle_deg and ramp_angle_deg > 0:
             ramp_dist = min(total, ramp_height / math.tan(math.radians(ramp_angle_deg)))
@@ -362,18 +397,19 @@ class GRBLPost:
         self._rapid_to_feed_plane(z_top)
         self.feed(z=z_top, feed=self.plunge_rate_mmpm)
 
-        # Phase A — ramp z_top -> z_cut over the first ramp_dist of the loop
-        for k in range(1, len(xy)):
+        # Phase A — the offset falls from ramp_height to 0 over the first
+        # ramp_dist of the loop, riding the path's own z
+        for k in range(1, len(pts)):
             if cum[k] >= ramp_dist - 1e-9:
                 break
-            z = z_top + (z_cut - z_top) * (cum[k] / ramp_dist)
-            self.feed(x=xy[k][0], y=xy[k][1], z=z, feed=self.plunge_rate_mmpm)
-        pr = _interp_xy(xy, cum, ramp_dist)
-        self.feed(x=pr[0], y=pr[1], z=z_cut, feed=self.plunge_rate_mmpm)
+            z = pts[k][2] + ramp_height * (1.0 - cum[k] / ramp_dist)
+            self.feed(x=pts[k][0], y=pts[k][1], z=z, feed=self.plunge_rate_mmpm)
+        pr = _interp_xy(pts, cum, ramp_dist)
+        self.feed(x=pr[0], y=pr[1], z=pr[2], feed=self.plunge_rate_mmpm)
 
         # Phase B — one full finish lap at depth, starting/ending at the ramp end
-        lap = _lap_from(xy, cum, ramp_dist)
-        self._emit_moves([(x, y, z_cut) for x, y in lap], arc_tol)
+        lap = _lap_from(pts, cum, ramp_dist)
+        self._emit_moves([tuple(p) for p in lap], arc_tol)
         return (pr[0], pr[1])      # the tool ends here, not at pts[-1] (pass linking)
 
     def emit_polyline(
@@ -394,8 +430,7 @@ class GRBLPost:
         closed = (len(pts) >= 4
                   and abs(pts[0][0] - pts[-1][0]) < 1e-6
                   and abs(pts[0][1] - pts[-1][1]) < 1e-6)
-        const_z = (max(p[2] for p in pts) - min(p[2] for p in pts)) < 1e-6
-        if ramp_height > 0 and closed and const_z:
+        if ramp_height > 0 and closed:
             # The ramped lap ends at the ramp-end point, not pts[-1] — record where the
             # tool actually is so the next pass's link retract checks the right segment.
             self._last_xy = self._emit_ramped_loop(pts, ramp_height, ramp_angle_deg, arc_tol)

@@ -35,7 +35,13 @@ def profile_cut(
         result = pco.Execute(delta * _SCALE)
         if not result:
             return None
-        return [(p[0] / _SCALE, p[1] / _SCALE) for p in result[0]]
+        pts = [(p[0] / _SCALE, p[1] / _SCALE) for p in result[0]]
+        # pyclipper returns the ring open; without the closing point the last
+        # segment of every pass — perimeter, tabbed release pass, each hole —
+        # was never cut (1.3 mm of web on the aviator, a whole side of a
+        # rectangular hole). `castle_ops._ring_to_points` closes the same way.
+        pts.append(pts[0])
+        return pts
 
     offset_pts = _offset(outline.exterior, tool_radius_mm)
     if offset_pts is None:

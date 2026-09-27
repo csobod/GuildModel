@@ -57,7 +57,7 @@ def transform_ops(ops: list[CamOp], dx: float, dy: float,
     c, s = math.cos(th), math.sin(th)
     out: list[CamOp] = []
     for op in ops:
-        new = CamOp(op.name, tool=op.tool)
+        new = CamOp(op.name, tool=op.tool, cut=op.cut)
         for path in op.paths:
             new.paths.append([(c * x - s * y + dx, s * x + c * y + dy, z)
                               for x, y, z in path])

@@ -223,7 +223,10 @@ def test_a_posted_frame_with_a_hole_lints_clean():
                                   tools["flat_3175"], params=CastleCamParams(),
                                   tools_cfg=tools)
     post = GRBLPost(job_name="aviator", material="acetate", tool_diameter_mm=3.175,
-                    spindle_rpm=18000, feed_rate_mmpm=1200, plunge_rate_mmpm=400)
+                    spindle_rpm=18000, feed_rate_mmpm=1200, plunge_rate_mmpm=400,
+                    # the post refuses a rapid plane inside the stock now, and the
+                    # default 5 mm was one: the castle cuts up to 6.5 mm
+                    safe_z_mm=CastleParams().stock.total_pad_height_mm + 5.0)
     settings, _ = build_tool_settings(
         ops, tools, default_feed=1200, default_plunge=400, default_spindle=18000,
         machine=MachineProfile())

@@ -33,7 +33,7 @@ from manifold3d import Manifold
 
 from ..geometry.regions import CastlePartition
 from ..project.schema import CastleParams
-from .kernel import (ManifoldError, drop_degenerate, extrude, intersect_all,
+from .kernel import (ManifoldError, _check, drop_degenerate, extrude, intersect_all,
                      subtract_all, swept_profile, to_trimesh, union_all)
 
 ProgressFn = Optional[Callable[[str, float], None]]
@@ -371,13 +371,18 @@ def build_base(partition: CastlePartition, castle: CastleParams,
 def hinge_pockets(hinges, castle: CastleParams, top: float) -> list[Manifold]:
     """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
     ray, so these never care what has already been cut."""
-    polys = [p for p in hinges or []
-             if p is not None and not p.is_empty and p.area > 0]
-    if not polys:
-        return []
-    floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
-    height = max(top - floor, CUT_MARGIN_MM)
-    return [extrude(p, height, base=floor) for p in polys]
+    from ..geometry.pocket_floor import castle_pocket_floors
+    out = []
+    for p, floor in castle_pocket_floors(hinges, castle):
+        low, _ = floor.extremes(p)
+        prism = extrude(p, max(top - low, CUT_MARGIN_MM), base=low)
+        if not floor.flat:
+            # A tilted floor: keep what lies above the plane. The prism starts
+            # at the plane's lowest point, so the trim only ever removes.
+            normal, offset = floor.plane()
+            prism = _check(prism.trim_by_plane(normal, offset), "pocket tilt")
+        out.append(prism)
+    return out
 
 
 def build_castle_model(partition: CastlePartition, castle: CastleParams,

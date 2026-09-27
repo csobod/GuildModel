@@ -1,4 +1,4 @@
-# GuildModel User Guide (v1.7.0)
+# GuildModel User Guide (v1.8.0)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -14,7 +14,7 @@ yet cut on real stock. Air-cut them first, then cut a test piece.
 
 ## 1. Open your drawing
 
-**File ▸ Open Drawing (Ctrl+Shift+O)** opens a GuildDraw `.gdraw`. The whole
+**File ▸ Open Drawing (Ctrl+O)** opens a GuildDraw `.gdraw`. The whole
 model comes in as one project, with one tab per component: **Frame Front**,
 **Temple R / L**, and a derived **Base Curve R / L** template per lens. A
 **Worktable** tab follows them.
@@ -24,7 +24,7 @@ A component you never drew shows as a disabled tab.
 Each tab keeps its own parameters, model, program and readiness state. You can
 switch tabs freely, because nothing is lost.
 
-**File ▸ Open DXF (Ctrl+O)** opens a single frame front exported as DXF.
+**File ▸ Open DXF (Ctrl+Shift+O)** opens a single frame front exported as DXF.
 GuildModel reads these layers:
 
 | Layer | Contents |
@@ -65,6 +65,13 @@ The sidebar shows what the active component needs. A frame front has
 The Model tab sets the per-zone tower heights, the footing radius and the
 hinge-pocket depth. Below them are the posterior finishing features, all off by
 default: the pad-splay chamfer, the bezeled eyewire and the bridge relief.
+
+**Hinge pocket angle** tilts the floor of the hinge pockets to change the
+pantoscopic tilt at the hinge. The superior edge of each pocket stays at the
+pocket depth; a positive angle makes the inferior edge deeper, and a negative
+angle makes it shallower. At 0° the floor is flat. The slider stops where
+either edge would come out of the surface or get closer than 0.5 mm to the
+anterior face.
 
 **Pad splay ▸ Non-contiguous** is for a **keyhole bridge**. A splay run through
 bottom-center planes the keyhole's shape straight off. Tick this box and set
@@ -190,6 +197,100 @@ along with anything wrong with it — including a mounting hole that will not fi
 the lens it is drilled into. You get the file either way: a warning tells you
 what you are holding, it does not withhold it.
 
+### The formed front — printing a prototype
+
+A front is cut flat and formed afterwards: the **base curve** is molded into
+each rim on the press, the **face form** is the angle between the two eyewire
+planes at the bridge center line, and the **bridge** is projected at the bench,
+where a convex die pressed against the back of the frame, with a V-shaped
+plate bracing the front, leaves the classic crease along the plate's edges and
+the bulbous bump between them. **View ▸ Forming (F)** shows the front that way,
+in the same 3D view, so a prototype can be printed and put on a face before any
+acetate is cut.
+
+Press **F** on a built frame front and a panel opens under the view:
+
+- **Press** — *Flat*, the SBT press rows, your own presses, or *Custom*. A row
+  sets the base curve and the face form together, because on the press they
+  come as a pair. Touching either slider makes the choice *Custom*.
+- **Base curve** — the lens base curve in diopters, 0 to 16 in the quarter
+  steps a frame is ordered in, the way the forms are tagged. 0 is flat. On a
+  press row the die's own radius is used; anywhere else the optical
+  convention, 530 / D. The radius in use is shown beside the slider.
+- **Face form** — the included angle at the bridge, as the press states it;
+  180° is flat and the wrap beside it is 180° minus that.
+- **Bridge projection** — how far the die sets the bridge forward, away from
+  the face, in millimeters. The die only presses forward; 0 leaves the bridge
+  in the curve.
+- **Crease gap** — the distance between the two creases at the bridge's top
+  edge: the width of the V plate. Seeded from the drawing's own bridge width.
+- **Crease angle** — the V's included angle, seen from the front: how fast the
+  creases converge toward the nose. 0° keeps them parallel.
+- **Bridge offset** — the V's center line left or right of the frame's axis,
+  for a bridge that is not drawn centered.
+- **Die radius** — the radius of the anvil's convex face that presses the
+  posterior bridge. Between the die and each crease the sheet runs straight,
+  tangent to the die, so a small die gives a defined bulge with flat flanks
+  and a large one a broad bow. *Auto* is the largest die that still reaches
+  the projection through the gap — the arc through both creases — and its
+  radius is shown beside the slider. A die wider than that rests on the V
+  plate before it reaches the projection; the readout says how far it got.
+  Where the V narrows toward the nose the die rests on the plate's edges
+  and the bump shrinks with it. A die shallower than the projection sets the
+  bridge only as deep as its own radius.
+- **Crease blend** — *Sharp* leaves the fold the plate's edge makes; a radius
+  rounds it into the flat on both sides of each crease, as a softened plate
+  edge or a relaxed sheet would.
+- **Eyewire groove** — on by default. The formed front is built with the lens
+  bevel groove whether or not the Model tab has it on, at the Model tab's
+  groove dimensions, because the printed part is the finished piece.
+- **Show flat ghost** — the flat part, translucent, under the formed one.
+
+The sliders are live: the handle moves and the front bends, with no progress
+dialog. The strip label carries the press and the numbers — **FORMED · SBT
+base 4 · 4.00 D · 164° · +4 mm** — and the panel reads out the formed size and
+where the bridge lands. Every display mode, camera preset, the section plane
+and the turntable work on the formed front, because it is simply another
+mesh. The stock ghost and the program zero are hidden while forming is on;
+they belong to the flat part on the fixture.
+
+At a steep base curve the two rims, each curved about its own lens center,
+force a reverse bend at the bridge; when that bend is tighter than the part is
+thick the preview folds through itself there, and the readout and the log say
+so rather than draw it as a part. Ease the base curve or the face form.
+
+The creases are cut into the mesh before it is formed, so each is a clean
+edge rather than a zigzag between triangles, and the bridge band is meshed
+finely (0.5 mm on screen, 0.25 mm in the file) against the rims' 3 mm and
+1.5 mm. Dragging the crease gap, angle, offset or blend moves the cut, so
+those four handles show the uncut front while they move and re-cut it on
+release; the base curve, face form, projection and die stay live throughout.
+
+**Export Formed STL…** (on the panel, and under File) writes
+`frame_front_formed.stl`: a fresh build at export resolution with the groove,
+refined to 1.5 mm outside the bridge and 0.25 mm in it, cut along the creases,
+welded at the file's own float32 precision so a slicer reads one closed body,
+formed, and verified by the same check that gates every export. **Export All
+STL** adds the formed file whenever the project's forming is not flat, so a
+print job is one folder.
+
+Forming is a way of looking at the model, not a change to it. The cut model
+does not change, no program is generated for a formed front, the readiness dot
+ignores forming entirely, and the forming values are saved with the component
+in the `.gmodel` — a drawing that carries none opens flat.
+
+Your own presses go in `~/.guildmodel/presses.yaml`, one row per die, tagged
+with its lens base curve; give `radius_mm` when you know the die's own radius:
+
+```yaml
+Bench die 6:
+  base_curve: 6.0
+  radius_mm: 88.0
+  face_form_deg: 158.0
+```
+
+A row with a shipped label replaces it; `{_deleted: true}` hides one.
+
 ## 3. Temples and base-curve blocks
 
 **Temple.** The outline extruded on the blank, with hinge blind-pockets from
@@ -197,6 +298,11 @@ the `HINGE` layer and engraving grooves from `ENGRAVING`. The hinge end snaps
 to the 170×30 blank edge. The injected-core bar shown in 3D is a visual guide
 only. Program: Hinge Pockets → Engraving → Holes → Temple Profile. The Holes
 operation appears only when the drawing has decorative openings in the outline.
+
+The Temple tab sets the **Hinge pocket depth** and the **Hinge pocket angle**.
+The angle tilts the pocket floor along the temple to offset splay built into
+a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
+positive angle makes the posterior edge deeper.
 
 **Base-curve block.** The heat-forming template: the lens shape cut from a
 70×70 acetal blank, with three M4 through-holes that double as the fixture's
@@ -332,7 +438,7 @@ that any sender can run.
 
 Your preferences, window layout and recent files persist in
 `~/.guildmodel/prefs.json`. The material, tool and frame-style overrides live
-beside it.
+beside it, and so do your presses (`presses.yaml`, §2).
 
 ## 9. Files and data safety
 
@@ -345,17 +451,26 @@ beside it.
 - **Frame-style presets** (in Preferences and on the Info tab) recall a house
   style's parameters in one click.
 
-## 10. Fixed shortcuts
+## 10. Default shortcuts
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+O | Open DXF |
-| Ctrl+Shift+O | Open Drawing (.gdraw) |
+| Ctrl+O | Open Drawing (.gdraw) |
+| Ctrl+Shift+O | Open DXF |
 | Ctrl+S | Save Project |
+| F5 | Build 3D Model |
+| Ctrl+G | Generate G-code |
 | Ctrl+Shift+G | Export G-code (.nc) |
+| Ctrl+E | Export STL |
+| Ctrl+Shift+E | Export All STL |
 | Ctrl+Shift+S | Simulate the cut |
+| M | Measure |
+| Ctrl+B | Worktable |
+| Ctrl+0 | Fit to View |
 | Alt+T | Turntable (3D views) |
+| F | Forming (frame front) |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
 
-Everything else is rebindable in Preferences ▸ Hotkeys.
+Every row is rebindable in Preferences ▸ Hotkeys except the last two; Ctrl+,
+and Ctrl+Q are fixed.

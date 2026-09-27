@@ -13,11 +13,29 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.7.0.** GuildModel builds the posterior castle relief and the
+**v1.8.0.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
-maker's guide (`docs/USER-GUIDE.md`), and an optional lens bevel groove
-(drageoir V-groove in each eyewire wall, off by default).
+maker's guide (`docs/USER-GUIDE.md`), an optional lens bevel groove (drageoir
+V-groove in each eyewire wall, off by default), and a Forming view that shows
+and exports the front as it will be after the press and the bench.
+
+> **New in v1.8.0 — the front as it will be worn.** **View ▸ Forming (F)**
+> bends the frame front the way the press and the bench will: the base curve
+> molded into each rim, in diopters as the forms are tagged; the face form at
+> the bridge center line; and the bridge set forward between the two creases
+> the V plate leaves, at a chosen gap, angle and offset, by a die of a chosen
+> radius, with the crease left sharp or blended — all driven live from a
+> panel under the 3D view, with each crease a clean edge in the mesh. The maker's SBT press rows ship as presets; your
+> own presses go in `~/.guildmodel/presses.yaml`. **Export Formed STL** writes that front, with
+> the lens bevel groove in the rims, as one closed solid for SLA printing, and
+> **Export All STL** adds it whenever a project's forming is not flat. Nothing
+> a machine cuts changes: the CAM cannot import the forming code, the posted
+> program is byte-identical with forming on and off, and the readiness dot
+> never reads a forming value. The pre-release bug hunt also fixed a reopened
+> project losing its stored program, saved every component's program rather
+> than the active tab's, and made the Cancel button stop a build; the rest of
+> the notes are in `CHANGELOG.md`.
 
 > **New in v1.7.0 — every component you can build, you can export.** Export STL
 > was wired to the frame front alone; a temple and a base-curve forming template

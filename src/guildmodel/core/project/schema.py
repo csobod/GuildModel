@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BoxingParams(BaseModel):
@@ -422,6 +422,10 @@ class CastleParams(BaseModel):
     zone_height_overrides: dict[str, float] = Field(default_factory=dict)
     footing: FootingSchedule = Field(default_factory=FootingSchedule)
     hinge_pocket_depth_mm: float = 1.0       # below the endpiece zone height
+    # Tilt of the pocket floor (geometry.pocket_floor). The superior edge keeps
+    # the depth; + sinks the inferior edge, changing the temple's pantoscopic
+    # angle at the hinge. 0 = the flat floor every earlier project has.
+    hinge_pocket_angle_deg: float = Field(0.0, ge=-15.0, le=15.0)
     stock: StockDefinition = Field(default_factory=StockDefinition)
     onion_skin_mm: float = 0.4               # axial stock left under through-cuts (skin holding)
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
@@ -651,6 +655,10 @@ class CastleCamParams(BaseModel):
     # load with a clear error (the generators also floor them defensively). `gt=0`
     # is deliberately NOT on rough_axial_stock_mm (0 = leave no extra roughing stock).
     pocket_stepover_mm: float = Field(1.2, gt=0)
+    # Line spacing of the finishing pass a *tilted* hinge pocket floor gets
+    # (cam.castle_ops.tilted_floor_finish); a flat floor has no such pass. The
+    # ridge it leaves is spacing x tan(angle): 0.02 mm at 5 degrees.
+    pocket_finish_stepover_mm: float = Field(0.25, gt=0)
     # 1.0 mm = 31% of the 3.175 flat (v1.6, was 0.9 "matches Fusion Scallop
     # coverage"). A flat tool leaves zero scallop on the flat terraces at any
     # stepover under its diameter; sloped surfaces are the feature band's job at
@@ -729,7 +737,7 @@ class CastleCamParams(BaseModel):
     feed_rate_mmpm: float | None = None
     plunge_rate_mmpm: float | None = None
     spindle_rpm: int | None = None
-    safe_z_clearance_mm: float = 5.0       # rapid clearance above the tallest obstacle
+    safe_z_clearance_mm: float = Field(5.0, gt=0)   # rapid clearance above the tallest obstacle
     # Height of the work-holding screws / clamps above the table (z = 0). Single-part
     # rapids retract above the TALLER of the stock and this, so travels clear the
     # hold-downs even when only one part is cut (M8 prep). 0 = flush work-holding.
@@ -741,7 +749,7 @@ class CastleCamParams(BaseModel):
     # across), which keeps the full safe-Z retract. Cuts the many full retracts of
     # the small relief/rough passes. Set False to always retract to safe Z.
     link_retracts: bool = True
-    link_clearance_mm: float = 1.5         # low-retract height above the stock top
+    link_clearance_mm: float = Field(1.5, gt=0)     # low-retract height above the stock top
     screw_head_diameter_mm: float = 7.0
     screw_keepout_margin_mm: float = 2.0   # extra clearance the tool edge keeps off a head
 
@@ -767,6 +775,10 @@ class TempleParams(BaseModel):
     blank_width_mm: float = 30.0
     blank_thickness_mm: float = 4.0
     hinge_pocket_depth_mm: float = 1.0     # HINGE pocket floor below the top face
+    # Tilt of the pocket floor (geometry.pocket_floor). The anterior (hinge-end)
+    # edge keeps the depth; + sinks the posterior edge, offsetting splay built
+    # into the hinge. 0 = the flat floor every earlier project has.
+    hinge_pocket_angle_deg: float = Field(0.0, ge=-15.0, le=15.0)
     engrave_depth_mm: float = 0.3          # groove depth below the top face
     # Axial depth per engraving pass. A groove deeper than this is cut in several
     # passes instead of one plunge to full depth — a 1.5 mm channel with a slender
@@ -945,18 +957,103 @@ class MachineRef(BaseModel):
     preset_file: str = "machines/guild_cnc.yaml"
 
 
-class FormingMetadata(BaseModel):
-    """Recorded for archive; NOT machined in v1. Heat-forming is post-cutting.
+#: The optical convention: a lens base curve in diopters is 530 mm over the
+#: radius. Here rather than in `core.forming` because the schema is imported
+#: by the CAM, and the CAM must not be able to reach the forming code even
+#: through a lazy import in a method it calls.
+DIOPTER_MM = 530.0
 
-    `apical_radius_mm` and `bridge_angle_deg` carry the GuildDraw `.gdraw` forming
-    values losslessly (BUILDPLAN M7.2). The base-curve template is flat in v1, so
-    the apical radius is metadata for now — the 3D forming surface is post-1.0.
+
+def radius_for(base_curve: float) -> float:
+    """The radius the optical convention gives a base curve, 0 for flat."""
+    return DIOPTER_MM / base_curve if base_curve and base_curve > 0 else 0.0
+
+
+class FormingMetadata(BaseModel):
+    """How the frame front is formed after cutting (BUILDPLAN M18).
+
+    Never machined: forming is after cutting, so nothing here reaches the CAM
+    or the readiness dot. It drives the Forming view and the formed STL.
+
+    Two fields come from GuildDraw's *Construction guides* through the `.gdraw`
+    intake and are carried losslessly (BUILDPLAN M7.2): `apical_radius_mm` is
+    the **Apical radius** (2-24 mm), the crest of the bridge in the frontal
+    plane that GuildDraw draws as an arc over the nose — it is **not** the base
+    curve, whatever an older comment here said — and `bridge_angle_deg` is the
+    **Frontal angle**. The forming values are the maker's, from the press, and
+    live in the `.gmodel`; GuildDraw does not carry them.
+
+    `base_curve` is the maker's number — the lens base curve in diopters, in
+    the quarter steps a frame is ordered in — and `base_radius_mm` is the
+    radius the model bends to: a press row's own die radius when the values
+    name one, else the optical convention's 530 / D. `with_base_curve` keeps
+    the two in step; 0 is flat. `face_form_wrap_deg` holds 180 minus the face
+    form the press states, so a flat front is 0 here and 180 on the panel.
+
+    The bridge is projected between two creases (the V plate's edges): a gap
+    apart at the bridge's top edge, converging toward the nose at the V's
+    angle, centred a chosen offset from the frame's axis for a bridge that is
+    not drawn centred. A gap of 0 means the drawing's own bridge width. The
+    die's convex face has its own radius, `die_radius_mm`, 0 meaning the
+    largest die that still reaches the projection through the gap; and the
+    fold at each crease is sharp unless `crease_blend_mm` rounds it.
     """
-    base_curve: float = 0.0          # diopters (optical convention)
+    # A file may carry the `NaN` and `Infinity` tokens; neither the forward-only
+    # rule nor `is_flat` can see them, so they are refused at the door.
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    base_curve: float = 0.0          # lens base curve, diopters; 0 = flat
     pantoscopic_tilt_deg: float = 0.0
-    face_form_wrap_deg: float = 0.0
-    apical_radius_mm: float = 0.0    # base-curve forming radius, from the .gdraw
-    bridge_angle_deg: float = 0.0    # bridge / face-form angle, from the .gdraw
+    face_form_wrap_deg: float = 0.0  # 180 − face form; 0 = flat
+    apical_radius_mm: float = 0.0    # GuildDraw's Apical radius: the bridge crest, not the base curve
+    bridge_angle_deg: float = 0.0    # GuildDraw's Frontal angle
+    # M18 — the maker's forming. All default to flat, so every earlier .gmodel
+    # opens exactly as it did.
+    base_radius_mm: float = 0.0      # the radius bent to: a press row's die, else 530 / base_curve
+    bridge_projection_mm: float = 0.0  # forward set of the bridge, mm, away from the face; never negative
+    crease_gap_mm: float = 0.0       # distance between the creases at the bridge's top edge; 0 = the drawing's
+    crease_angle_deg: float = 45.0   # the V's included angle; 0 = parallel creases
+    bridge_offset_mm: float = 0.0    # the V's centre line off the frame's axis, mm
+    die_radius_mm: float = 0.0       # the die's convex face; 0 = the arc through both creases
+    crease_blend_mm: float = 0.0     # fillet at each crease; 0 = a sharp fold
+    formed_groove: bool = True       # the formed export carries the lens bevel groove
+    press_preset: str = ""           # the press row these values came from; "" = custom
+
+    @model_validator(mode="after")
+    def _forward_only(self) -> "FormingMetadata":
+        """The die only presses forward: a negative projection, which no panel
+        can set, is read as none."""
+        if self.bridge_projection_mm < 0.0:
+            self.bridge_projection_mm = 0.0
+        return self
+
+    @property
+    def face_form_deg(self) -> float:
+        """The included angle between the eyewire planes, as the press states it."""
+        return 180.0 - self.face_form_wrap_deg
+
+    @property
+    def is_flat(self) -> bool:
+        """No curve, no wrap, no projection: the formed part is the flat part."""
+        return (self.base_radius_mm <= 0.0 and self.face_form_wrap_deg == 0.0
+                and self.bridge_projection_mm == 0.0)
+
+    def with_base_curve(self, base_curve: float, face_form_deg: float, *,
+                        radius_mm: float | None = None,
+                        **update) -> "FormingMetadata":
+        """A copy with the base curve and face form set together — the way the
+        press pairs them — and the radius in step: `radius_mm` when a press
+        row supplies its die's, else the optical convention's 530 / D.
+
+        Validated, not `model_copy`'d: a copy skips the validators, and the
+        forward-only rule and the field bounds have to hold for a value that
+        arrives here as much as for one read from a file."""
+        d = max(0.0, float(base_curve))
+        r = float(radius_mm) if radius_mm and d > 0 else radius_for(d)
+        return type(self).model_validate({
+            **self.model_dump(),
+            "base_curve": d, "base_radius_mm": max(0.0, r),
+            "face_form_wrap_deg": 180.0 - float(face_form_deg), **update})
 
 
 class MaterialRef(BaseModel):

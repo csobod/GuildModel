@@ -502,8 +502,14 @@ def surface_z_at(mesh, pts_xy, missing: float = float("nan"),
     origins = np.column_stack([np.asarray(pts_xy, dtype=float),
                                np.full(len(pts_xy), -1e4)])
     directions = np.tile([0.0, 0.0, 1.0], (len(origins), 1))
-    locations, index_ray, _tri = mesh.ray.intersects_location(
-        origins, directions, multiple_hits=True)
+    # The intermediate mesh after the pad-splay subtraction can carry one
+    # Manifold sliver with two coincident vertices; trimesh's barycentric
+    # divides by its zero area and warns twice per run. The sliver never
+    # answers a ray (its barycentrics go NaN and the hit is dropped), the
+    # neighbouring faces do, and the final mesh has no zero-area face.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        locations, index_ray, _tri = mesh.ray.intersects_location(
+            origins, directions, multiple_hits=True)
 
     out = np.full(len(origins), float(missing), dtype=float)
     if len(locations) == 0:

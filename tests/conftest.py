@@ -24,6 +24,7 @@ Autouse and session-scoped tmp dir: the isolation is per-run, not per-test, so
 tests that deliberately save prefs and read them back in a second window still
 work. Anything wanting a clean slate patches over this, as before.
 """
+import datetime
 import pathlib
 
 import pytest
@@ -37,6 +38,7 @@ _HOME_STORES = [
     ("guildmodel.gui.tool_store", "_USER", "tools.yaml"),
     ("guildmodel.gui.material_store", "_USER", "materials.yaml"),
     ("guildmodel.gui.style_store", "_USER", "frame_styles.yaml"),
+    ("guildmodel.core.forming.presses", "_USER", "presses.yaml"),
 ]
 
 
@@ -107,3 +109,27 @@ def _destroy_windows():
     # Run the deferred deletes now rather than whenever an event loop next
     # turns — several of these tests never start one.
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+# ---------------------------------------------------------------- the clock
+
+class _FrozenDatetime(datetime.datetime):
+    """``datetime`` whose ``now()`` is pinned.
+
+    The post writes a ``Generated:`` line at minute precision, and the tests
+    that post a program twice and compare the bytes (``test_cam_relief_mn4``'s
+    determinism gate, ``test_forming_m18``'s groove-override gate, and their
+    kin) failed whenever the two posts straddled a minute boundary. Seen
+    2026-09-26: ``17:45`` against ``17:46``. Pinning the clock for the whole
+    run removes the flake at the one place the stamp is read rather than at
+    twenty comparison sites.
+    """
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 1, 1, 12, 0, 0, tzinfo=tz)
+
+
+@pytest.fixture(autouse=True)
+def _freeze_post_clock(monkeypatch):
+    monkeypatch.setattr("guildmodel.core.post.grbl.datetime", _FrozenDatetime)

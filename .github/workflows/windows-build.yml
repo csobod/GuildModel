@@ -30,7 +30,8 @@ jobs:
     # runaway job; a healthy run finishes well inside it.
     #
     # Raised from 60 for v1.5.0: the gate below is most of this budget now. The
-    # suite was ~576 tests when these numbers were written and is 1085, with the
+    # suite was ~576 tests when these numbers were written and is 1,292 at
+    # v1.8.0 (the v1.7.0 gate ran 41 minutes on the hosted runner), with the
     # B-Rep parity work — which `dev` pulls in via `guildmodel[brep]` — the slow
     # part. It runs 60 minutes on a 20-core desktop, so 60 for the whole job
     # could not have produced an artifact.
@@ -69,7 +70,7 @@ jobs:
       # if a new MainWindow test forgets the mark and lands back in here.
       #
       # 90, not 25: measured at 1085 tests / 60 minutes on a 20-core desktop
-      # (v1.5.0). A runner is slower, and a gate that trips is indistinguishable
+      # (v1.5.0); 41 minutes on the hosted runner at v1.7.0. A runner is slower, and a gate that trips is indistinguishable
       # from a red suite at the point it matters most — cutting a release.
       - name: Test gate
         timeout-minutes: 90

@@ -32,7 +32,7 @@ jobs:
     continue-on-error: ${{ !matrix.required }}
     # Raised from 50 for v1.5.0 — see the Windows workflow for the measurement;
     # the test gate below is now most of the budget.
-    timeout-minutes: 140            # VTK freeze + dmg is heavy; never burn hours
+    timeout-minutes: 160            # VTK freeze + dmg is heavy; never burn hours
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +57,13 @@ jobs:
       # timeout method then kills the interpreter, so a single hang ends the run
       # and no artifact is produced. macos-14 runs them green, which is why this
       # is a quarantine and not a fix. 90, not 25 — see the Windows note.
+      #
+      # 110 for v1.8.0: the v1.7.0 Intel gate ran 76 of its 90 minutes
+      # (macos-14: 29), and M18 plus the hinge pocket angle added 110
+      # non-gui tests, about a tenth of the suite. A gate that trips on the
+      # optional leg leaves the workflow green with no x86_64 artifact.
       - name: Test gate
-        timeout-minutes: 90
+        timeout-minutes: 110
         env:
           QT_QPA_PLATFORM: offscreen
         run: .venv/bin/python -m pytest tests -q -m "not gui" --timeout=300 --timeout-method=thread

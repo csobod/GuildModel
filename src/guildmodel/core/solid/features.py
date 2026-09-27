@@ -101,8 +101,10 @@ def apply_hinge_pockets(solid: TopoDS_Shape, hinges: Iterable[Polygon],
     """Sharp-walled pockets cut below the endpiece height.
 
     Matches the raster exactly: the floor is `endpiece_mm - hinge_pocket_depth_mm`
-    and the walls are vertical. No tool-radius offset here — that belongs to
-    `cam.castle_ops.hinge_pocket_op`, which does the pocketing cascade.
+    along the superior edge, tilted by `hinge_pocket_angle_deg`
+    (`geometry.pocket_floor`), and the walls are vertical. No tool-radius offset
+    here — that belongs to `cam.castle_ops.hinge_pocket_op`, which does the
+    pocketing cascade.
     """
     return cut_many(solid, hinge_pocket_cutters(hinges, castle, top))
 
@@ -111,12 +113,37 @@ def hinge_pocket_cutters(hinges: Iterable[Polygon], castle: CastleParams,
                          top: float) -> list[TopoDS_Shape]:
     """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
     ray, so like the groove these never care what has already been cut."""
-    polys = [p for p in hinges if p is not None and not p.is_empty and p.area > 0]
-    if not polys:
-        return []
-    floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
-    height = max(top - floor, CUT_MARGIN_MM)
-    return [extrude(polygon_to_face(p, floor), height) for p in polys]
+    from ..geometry.pocket_floor import castle_pocket_floors
+    out = []
+    for p, floor in castle_pocket_floors(hinges, castle):
+        low, _ = floor.extremes(p)
+        prism = extrude(polygon_to_face(p, low), max(top - low, CUT_MARGIN_MM))
+        if not floor.flat:
+            prism = _above_plane(prism, floor, p, top)
+        out.append(prism)
+    return out
+
+
+def _above_plane(prism: TopoDS_Shape, floor, poly: Polygon,
+                 top: float) -> TopoDS_Shape:
+    """The part of `prism` on or above a tilted pocket floor: its common with the
+    half-space over the floor plane (the mesh kernel's `trim_by_plane`)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeHalfSpace
+    from OCP.gp import gp_Dir, gp_Pln
+
+    (nx, ny, nz), offset = floor.plane()
+    plane = gp_Pln(gp_Pnt(nx * offset, ny * offset, nz * offset), gp_Dir(nx, ny, nz))
+    c = poly.centroid
+    above = gp_Pnt(c.x, c.y, float(top) + 10.0)
+    half = BRepPrimAPI_MakeHalfSpace(BRepBuilderAPI_MakeFace(plane).Face(),
+                                     above).Solid()
+    common = BRepAlgoAPI_Common(prism, half)
+    common.Build()
+    if not common.IsDone():
+        raise BooleanError("tilting the hinge pocket floor failed")
+    return common.Shape()
 
 
 # ------------------------------------------------------------- eyewire bezel

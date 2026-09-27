@@ -11,6 +11,7 @@ frame-front DXF there is no anterior→posterior flip; the linework is read as d
 """
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -240,7 +241,11 @@ def load_user_default_bed() -> Worktable | None:
         return None
     try:
         return load_bed(p)
-    except Exception:
+    except Exception as exc:                                 # noqa: BLE001
+        # Said, not swallowed: a corrupt or schema-drifted default.bed used to
+        # replace the shop's bed with the shipped fixture and nobody was told.
+        logging.getLogger(__name__).warning(
+            "%s could not be read; the shipped bed is used instead: %s", p, exc)
         return None
 
 

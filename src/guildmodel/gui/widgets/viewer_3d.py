@@ -230,6 +230,16 @@ class Viewer3D(QWidget):
         self._model_label_text = "No mesh"
         self._section_on = False                  # 3D section cutting plane (M7.13)
 
+        # The formed front (BUILDPLAN M18): a second model-mode scene drawn
+        # *instead of* the flat one while the Forming view is on. The flat
+        # cache above is never touched by it, so toggling forming off is a
+        # re-render from cache with nothing to rebuild.
+        self._formed_on = False
+        self._formed_pv = None                    # pv.PolyData of the warped front
+        self._formed_edges = None                 # its creases, warped with it
+        self._formed_badge = ""                   # the strip label while formed
+        self._formed_ghost = False                # draw the flat part under it
+
         # sim-mode scene cache
         self._report = None
         self._sim_mesh = None                     # pv.PolyData (cut floor)
@@ -594,25 +604,12 @@ class Viewer3D(QWidget):
         """
         if not self._ensure_plotter():
             return
-        import pyvista as pv
-
-        verts = np.array(mesh.vertices, dtype=np.float32)
+        pv_mesh, verts = self._polydata(mesh)
         faces = mesh.faces
-        pv_faces = np.hstack([
-            np.full((len(faces), 1), 3, dtype=np.int32), faces.astype(np.int32),
-        ]).ravel()
-        pv_mesh = pv.PolyData(verts, pv_faces)
-        # split sharp creases so smooth shading keeps the footing blends soft
-        pv_mesh = pv_mesh.compute_normals(split_vertices=True, feature_angle=40.0)
 
         self._model_edges = self._edges_polydata(edges)
-        has_edges = self._model_edges is not None
-        self._display_combo.setEnabled(has_edges)
-        if not has_edges and self._display_mode != "shaded":
-            self._display_mode = "shaded"
-            self._display_combo.blockSignals(True)
-            self._display_combo.setCurrentIndex(0)
-            self._display_combo.blockSignals(False)
+        if not self._formed_on:
+            self._sync_display_combo(self._model_edges is not None)
 
         self._model_pv = pv_mesh
         self._model_stock = stock
@@ -621,13 +618,107 @@ class Viewer3D(QWidget):
         self._model_label_text = f"{len(verts):,} verts · {len(faces):,} tris"
         if edges:
             self._model_label_text += f" · {len(edges):,} edges"
-        keep = self._keep_camera((float(verts[:, 0].min()), float(verts[:, 0].max()),
-                                  float(verts[:, 1].min()), float(verts[:, 1].max()))
-                                 if len(verts) else None)
+        keep = self._keep_camera(self._xy_bounds(verts))
         if self._mode == "model":
             self._render_model(reset_camera=not keep)
         else:
             self._mesh_label.setText(self._model_label_text)
+
+    @staticmethod
+    def _polydata(mesh, normals=None):
+        """A trimesh as VTK polydata with split-crease normals, plus its
+        float32 vertices (for the camera decision).
+
+        With `normals` given (one per vertex, as the formed front supplies —
+        `core.forming.tessellate` on why) they are used as they are and VTK
+        computes none: the mesh already has its vertices split where the
+        shading should break, and a formed crease is sharp at any angle.
+        """
+        import pyvista as pv
+
+        verts = np.array(mesh.vertices, dtype=np.float32)
+        faces = mesh.faces
+        pv_faces = np.hstack([
+            np.full((len(faces), 1), 3, dtype=np.int32), faces.astype(np.int32),
+        ]).ravel()
+        pv_mesh = pv.PolyData(verts, pv_faces)
+        if normals is not None:
+            pv_mesh.point_data.active_normals = np.asarray(normals, dtype=np.float32)
+            return pv_mesh, verts
+        # split sharp creases so smooth shading keeps the footing blends soft
+        return pv_mesh.compute_normals(split_vertices=True, feature_angle=40.0), verts
+
+    @staticmethod
+    def _xy_bounds(verts):
+        if not len(verts):
+            return None
+        return (float(verts[:, 0].min()), float(verts[:, 0].max()),
+                float(verts[:, 1].min()), float(verts[:, 1].max()))
+
+    def _sync_display_combo(self, has_edges: bool) -> None:
+        """The edge display modes need a model with edges; without them the
+        combo is disabled and pinned to Shaded rather than drawing noise."""
+        self._display_combo.setEnabled(has_edges)
+        if not has_edges and self._display_mode != "shaded":
+            self._display_mode = "shaded"
+            self._display_combo.blockSignals(True)
+            self._display_combo.setCurrentIndex(0)
+            self._display_combo.blockSignals(False)
+
+    # ------------------------------------------------------- formed front (M18)
+
+    @property
+    def formed_active(self) -> bool:
+        return self._formed_on
+
+    def show_formed(self, mesh, edges=None, badge: str = "",
+                    ghost: bool = False, normals=None) -> None:
+        """Draw the formed front in place of the flat model (BUILDPLAN M18).
+
+        Simply another mesh, so every display mode, camera preset, the section
+        plane and the turntable keep working. The stock ghost and the program
+        zero are *not* drawn: they belong to the flat part on the fixture, and
+        drawing them under a bent front would assert something false. The
+        strip label carries `badge` — the press and the numbers — instead of
+        the triangle count. `ghost` draws the flat part translucent beneath.
+        `normals`, when given, are drawn with instead of computed (see
+        `_polydata`).
+
+        The flat scene's cache is left exactly as `show_mesh` set it, which is
+        what makes `show_flat` instant.
+        """
+        if not self._ensure_plotter():
+            return
+        pv_mesh, verts = self._polydata(mesh, normals)
+        self._formed_pv = pv_mesh
+        self._formed_edges = self._edges_polydata(edges)
+        self._formed_badge = badge or "FORMED"
+        self._formed_ghost = bool(ghost)
+        self._formed_on = True
+        self._sync_display_combo(self._formed_edges is not None)
+        keep = self._keep_camera(self._xy_bounds(verts))
+        if self._mode == "model":
+            self._render_model(reset_camera=not keep)
+        else:
+            self._mesh_label.setText(self._formed_badge)
+
+    def set_formed_ghost(self, on: bool) -> None:
+        """Toggle the translucent flat part under the formed one, live."""
+        self._formed_ghost = bool(on)
+        if self._formed_on and self._mode == "model":
+            self._render_model(reset_camera=False)
+
+    def show_flat(self) -> None:
+        """Back to the flat model, from cache, with nothing rebuilt."""
+        if not self._formed_on:
+            return
+        self._formed_on = False
+        self._formed_pv = None
+        self._formed_edges = None
+        self._formed_badge = ""
+        self._sync_display_combo(self._model_edges is not None)
+        if self._mode == "model" and self._plotter is not None:
+            self._render_model(reset_camera=False)
 
     @staticmethod
     def _edges_polydata(edges):
@@ -681,13 +772,18 @@ class Viewer3D(QWidget):
         self._plotter.clear()
         self._clear_plane_widgets()
         self._zero_actors = []
-        if self._model_pv is None:
+        # The formed front (M18) stands in for the flat model wholesale: same
+        # surface and edge drawing, no stock, no guide, no datum, its own label.
+        formed = self._formed_on and self._formed_pv is not None
+        scene_pv = self._formed_pv if formed else self._model_pv
+        scene_edges = self._formed_edges if formed else self._model_edges
+        if scene_pv is None:
             self._mesh_label.setText("No mesh")
             self._safe_render()
             return
 
         lit = not self._flat_shaded()
-        mode = self._display_mode if self._model_edges is not None else "shaded"
+        mode = self._display_mode if scene_edges is not None else "shaded"
         lit = lit and mode != "wireframe"
         mesh_kwargs = dict(
             color=self._palette.mesh_surface, smooth_shading=True,
@@ -704,19 +800,32 @@ class Viewer3D(QWidget):
             # interior profile (M7.13); fall back to the full mesh if the widget fails
             try:
                 self._plotter.add_mesh_clip_plane(
-                    self._model_pv, normal="x", invert=False,
+                    scene_pv, normal="x", invert=False,
                     widget_color=self._palette.measure, **mesh_kwargs)
                 sectioned = True
             except Exception:
                 sectioned = False
         if not sectioned and mode != "wireframe":
-            self._plotter.add_mesh(self._model_pv, **mesh_kwargs)
-        if mode != "shaded" and self._model_edges is not None:
+            self._plotter.add_mesh(scene_pv, **mesh_kwargs)
+        if mode != "shaded" and scene_edges is not None:
             self._plotter.add_mesh(
-                self._model_edges, color=self._palette.mesh_edge,
+                scene_edges, color=self._palette.mesh_edge,
                 line_width=1.6, lighting=False, render_lines_as_tubes=False,
                 pickable=False)
         self._apply_scene_lights()
+
+        if formed:
+            if self._formed_ghost and self._model_pv is not None:
+                self._plotter.add_mesh(
+                    self._model_pv, color=self._palette.stock_ghost,
+                    opacity=0.22, lighting=False, pickable=False)
+            if reset_camera:
+                self._plotter.reset_camera(render=False)
+            else:
+                self._camera_restore(cam)
+            self._safe_render()
+            self._mesh_label.setText(self._formed_badge)
+            return
 
         stock = self._model_stock
         if stock is not None:
@@ -794,7 +903,9 @@ class Viewer3D(QWidget):
                 pass
         self._zero_actors = []
         self._zero_xyz = tuple(point) if point is not None else None
-        if point is None:
+        if point is None or self._formed_on:
+            # A datum belongs to the flat part on the fixture; under a formed
+            # front it would assert something false (M18).
             self._safe_render()
             return
 
@@ -1248,6 +1359,16 @@ class Viewer3D(QWidget):
         self._model_zero = None
         self._model_label_text = "No mesh"
         self._zero_actors = []
+        self._formed_pv = None
+        self._formed_edges = None
+        self._formed_badge = ""
+        # A cleared scene is a flat scene: leaving `_formed_on` set here made
+        # the next `show_mesh` (a temple built on a tab the front had been
+        # formed on) skip its datum triad and its display combo.
+        self._formed_on = False
+        self._formed_ghost = False
+        self._model_edges = None
+        self._sync_display_combo(False)
         if self._plotter is not None and self._mode == "model":
             self._clear_plane_widgets()
             self._plotter.clear()

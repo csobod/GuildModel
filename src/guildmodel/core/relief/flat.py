@@ -29,6 +29,7 @@ from shapely import contains_xy, prepare
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
+from ..geometry.pocket_floor import PocketFloor, temple_pocket_floors
 from ..geometry.regions import CastlePartition
 from ..project.schema import BaseCurveBlockParams, TempleParams
 from .castle import GRID_MARGIN_MM, PREVIEW_RES_MM, ProgressFn, _report
@@ -52,7 +53,7 @@ def _build_flat_relief(
     thickness: float,
     resolution: float,
     *,
-    pockets: list[tuple[Polygon, float]] = (),
+    pockets: list[tuple[Polygon, "float | PocketFloor"]] = (),
     grooves: list[tuple[Polygon, float]] = (),
     margin: float = GRID_MARGIN_MM,
     progress: Optional[ProgressFn] = None,
@@ -83,7 +84,10 @@ def _build_flat_relief(
             continue
         prepare(poly)
         m = contains_xy(poly, fx, fy).reshape(rows, cols) & inside
-        z[m] = np.minimum(z[m], float(floor_z))
+        if isinstance(floor_z, PocketFloor):          # tilted (or flat) hinge floor
+            z[m] = np.minimum(z[m], floor_z.z(Xs[m], Ys[m]))
+        else:
+            z[m] = np.minimum(z[m], float(floor_z))
         pocket_polys.append(poly)
     for poly, floor_z in grooves:
         if poly is None or poly.is_empty:
@@ -210,9 +214,9 @@ def build_temple_relief(
     pockets (1 mm default) and the ENGRAVING grooves (0.3 mm default). The geometry
     is taken as-drawn; the GUI applies the blank-end snap before calling this."""
     thickness = temple.blank_thickness_mm
-    pocket_floor = thickness - temple.hinge_pocket_depth_mm
-    pockets = [(p, pocket_floor) for p in hinge_polys
-               if p is not None and p.is_valid and p.area > 0.0]
+    pockets = [(p, floor) for p, floor
+               in temple_pocket_floors(hinge_polys, temple, outline)
+               if p.is_valid]
 
     groove_floor = thickness - temple.engrave_depth_mm
     grooves: list[tuple[Polygon, float]] = []

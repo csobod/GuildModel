@@ -28,12 +28,13 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 
 # Optional stage-boundary progress hook (BUILDPLAN M4.6 Part B); see
 # relief.castle.ProgressFn. Default None — core never imports the GUI.
 ProgressFn = Callable[[str, float], None]
 
+from ..geometry.pocket_floor import aligned, castle_pocket_floors
 from ..project.schema import (
     CastleCamParams, CastleParams, HoldingParams, StockDefinition,
 )
@@ -81,6 +82,25 @@ FEATURE_CUSP_MM = 0.15
 FEATURE_STEP_MIN_MM = 2.0 * CUT_RES_MM
 
 
+@dataclass(frozen=True)
+class OpCut:
+    """The post context one op was generated under.
+
+    On a bed program the parts come from different materials, and a tool the
+    front and a block share cannot carry both materials' feeds in one
+    `ToolSetting`; the block's depth per pass and its lead-in are its own as
+    well. So each op says what it was built for, and the post adopts it as
+    the op begins. A single-component program leaves this None and the
+    program's tool settings rule, exactly as before.
+    """
+    feed_rate_mmpm: float
+    plunge_rate_mmpm: float
+    spindle_rpm: int
+    contour_stepdown_mm: float
+    contour_lead_in: str
+    contour_ramp_angle_deg: float
+
+
 @dataclass
 class CamOp:
     name: str
@@ -91,6 +111,12 @@ class CamOp:
     # (multi-tool jobs, BUILDPLAN M6.1) — the post, sim, cut-time model and
     # fixture-clearance check all read it.
     tool: dict | None = None
+    #: Per-component post context on a shared program (the bed): see `OpCut`.
+    cut: OpCut | None = None
+    #: What the generator left out and why — a hole narrower than the tool,
+    #: say — in the maker's words. Every posting path logs these; they never
+    #: reach the file.
+    notes: list = field(default_factory=list)
 
     @property
     def tool_name(self) -> str | None:
@@ -237,6 +263,7 @@ def hinge_pocket_op(
     start_z: float,
     tool_radius_mm: float,
     params: CastleCamParams,
+    floors: list | None = None,
 ) -> CamOp:
     """Pocket each hinge outline to floor_z in ramped levels.
 
@@ -247,6 +274,17 @@ def hinge_pocket_op(
     then take the ENTIRE remaining depth in one full-depth cascade, which buries
     the cutter on anything but a shallow recess. A pocket no deeper than one
     stepdown is a single level and posts exactly the historical path.
+
+    `floors` (one `geometry.pocket_floor.PocketFloor` or None per polygon) tilts
+    a pocket's floor. The levels then run down to the lowest point the tool can
+    reach, and every point is held at or above `floor + r·tan(angle)`: the
+    height at which the flat end's uphill edge just touches the plane. The
+    last level therefore follows the plane without gouging it. A tilted pocket
+    then gets a finishing pass (`tilted_floor_finish`) that takes the cascade's
+    `stepover·tan(angle)` ridges down to `pocket_finish_stepover_mm·tan(angle)`.
+    Up to `2·r·tan(angle)` stays against the downhill wall, where the flat end
+    cannot reach. A flat floor, or no `floors`, gets no finishing pass and posts
+    exactly the historical path.
     """
     op = CamOp("Hinge Pockets")
     # A non-positive ramp step never descends (max(floor_z, z - 0) == z) — guard it
@@ -254,11 +292,24 @@ def hinge_pocket_op(
     # straight to the level in one lap. The inward cascade's stepover is guarded in
     # _inward_offsets, the level spacing in pocket_levels.
     ramp_step = params.ramp_step_mm if params.ramp_step_mm > 1e-9 else float("inf")
-    levels = pocket_levels(start_z, floor_z, params.pocket_stepdown_mm)
-    for poly in hinge_polys:
+    flat_levels = pocket_levels(start_z, floor_z, params.pocket_stepdown_mm)
+    floors = list(floors) if floors is not None else [None] * len(hinge_polys)
+    for poly, floor in zip(hinge_polys, floors):
         rings = _poly_rings(poly, tool_radius_mm, params.pocket_stepover_mm)
         if not rings:
             continue
+        tilted = floor is not None and not floor.flat
+        if tilted:
+            lift = tool_radius_mm * abs(floor.slope)
+            # The plane's low point over the region the tool *centre* can
+            # reach: over the whole pocket it sat r·tan lower than any point
+            # the tool touches, and a last level under the reachable floor
+            # clamped to the level before it and was posted twice.
+            inset = poly.buffer(-tool_radius_mm)
+            low, _ = floor.extremes(inset if not inset.is_empty else poly)
+            levels = pocket_levels(start_z, low + lift, params.pocket_stepdown_mm)
+        else:
+            levels = flat_levels
         outer = rings[0]
         path: list[Point3] = []
 
@@ -284,8 +335,82 @@ def hinge_pocket_op(
                 # outer ring's start to ramp the next level. Everything inside the
                 # outer ring is already cleared AT this level, so the move is air.
                 path.append((*ring_xy[0], level))
+        if tilted:
+            pts = np.asarray(path, dtype=np.float64)
+            pts[:, 2] = np.maximum(pts[:, 2],
+                                   floor.z(pts[:, 0], pts[:, 1]) + lift)
+            path = [tuple(p) for p in pts.tolist()]
         op.paths.append(_rdp(path, params.simplify_tol_mm))
+        if tilted:
+            op.paths += [_rdp(p, params.simplify_tol_mm) for p in
+                         tilted_floor_finish(poly, floor, tool_radius_mm,
+                                             params.pocket_finish_stepover_mm)]
     return op
+
+
+def tilted_floor_finish(poly: Polygon, floor, tool_radius_mm: float,
+                        stepover_mm: float) -> list[list[Point3]]:
+    """Finishing lines across a tilted hinge pocket floor.
+
+    The lines run along the floor's contours, perpendicular to its slope, so
+    each line is level. Its height is `floor + r·tan(angle)`, the height at
+    which the flat end's uphill edge touches the plane. The lines step
+    `stepover_mm` apart from the fixed edge down the slope and zigzag. Each link
+    is a straight move along the slope; it lies on the same gouge-safe surface,
+    so it cuts too. A link that would leave the tool-center region (a pocket
+    that is not convex) starts a new path instead. The pass follows the ramped
+    cascade, so it takes only the ridges the cascade left.
+    """
+    # Round, like the cascade's outer ring (pyclipper JT_ROUND): a mitred
+    # inset loses a sliver at every reflex corner that the cascade and the
+    # simulation both treat as reachable, and the finish never visited it.
+    region = poly.buffer(-tool_radius_mm, join_style="round")
+    if region.is_empty:
+        return []
+    ax, ay = floor.axis
+    tx, ty = -ay, ax                          # along the contours
+    lift = tool_radius_mm * abs(floor.slope)
+    xs, ys = np.asarray(poly.exterior.coords).T
+    along = xs * ax + ys * ay
+    across = xs * tx + ys * ty
+    d0, d1 = float(along.min()), float(along.max())
+    u0, u1 = float(across.min()) - 1.0, float(across.max()) + 1.0
+    step = stepover_mm if stepover_mm > 1e-9 else (d1 - d0) or 1.0
+    n = max(1, int(math.ceil((d1 - d0) / step)))
+    reach = region.buffer(1e-6)
+
+    def at(d: float, u: float) -> Point3:
+        x, y = d * ax + u * tx, d * ay + u * ty
+        return (x, y, float(floor.z(x, y)) + lift)
+
+    paths: list[list[Point3]] = []
+    path: list[Point3] = []
+    flip = False
+    for k in range(n + 1):
+        d = d0 + (d1 - d0) * k / n
+        cut = LineString([(d * ax + u0 * tx, d * ay + u0 * ty),
+                          (d * ax + u1 * tx, d * ay + u1 * ty)]).intersection(region)
+        segs = [g for g in getattr(cut, "geoms", [cut])
+                if isinstance(g, LineString) and g.length > 1e-9]
+        spans = []
+        for g in segs:
+            (xa, ya), (xb, yb) = g.coords[0], g.coords[-1]
+            ua, ub = xa * tx + ya * ty, xb * tx + yb * ty
+            spans.append((min(ua, ub), max(ua, ub)))
+        spans.sort()
+        if flip:
+            spans = [(b, a) for a, b in reversed(spans)]
+        for a, b in spans:
+            start, end = at(d, a), at(d, b)
+            if path and not LineString([path[-1][:2], start[:2]]).within(reach):
+                paths.append(path)
+                path = []
+            path += [start, end]
+        if spans:
+            flip = not flip
+    if path:
+        paths.append(path)
+    return paths
 
 
 # ------------------------------------------------------------------ ops 2+3: relief
@@ -761,6 +886,7 @@ def contour_op(
     for poly in polys:
         buffered = poly.buffer(offset if side == "outside" else -offset, join_style="round")
         geoms = buffered.geoms if buffered.geom_type == "MultiPolygon" else [buffered]
+        found = 0
         for g in geoms:
             if g.is_empty:
                 continue
@@ -768,6 +894,17 @@ def contour_op(
             if _ring_is_ccw(coords) != want_ccw:
                 coords = coords[::-1]
             rings.append(coords)
+            found += 1
+        if not found and side == "inside":
+            # An opening the tool cannot enter offsets away to nothing. Said,
+            # not skipped in silence: the cut report cannot see a hole that
+            # was never cut, and the maker found it on the part.
+            x0, y0, x1, y1 = poly.bounds
+            op.notes.append(
+                f"{name}: an opening about {x1 - x0:.1f} x {y1 - y0:.1f} mm is narrower "
+                f"than the {2.0 * offset:.2f} mm a {2.0 * tool_radius_mm:.3f} mm tool needs "
+                f"with its {allowance_mm:.2f} mm allowance, and was skipped; cut it with a "
+                "smaller tool")
 
     tabs = holding is not None and holding.tabs_on()
     # Tabs hold the part instead of the skin, so the stack must reach the anterior
@@ -1347,6 +1484,7 @@ def generate_castle_program(
         hinge_polys, floor_z,
         start_z=stock.blank_thickness_mm + 0.5,
         tool_radius_mm=hinge_tool["radius_mm"], params=params,
+        floors=aligned(castle_pocket_floors(hinge_polys, castle), hinge_polys),
     )
     op1.tool = hinge_tool
     ops.append(op1)
@@ -1578,6 +1716,40 @@ def build_tool_settings(
     return settings, warnings
 
 
+def stamp_cut_settings(ops: list[CamOp], tools_cfg: dict, cam, clamp, *,
+                       machine=None) -> list[str]:
+    """Give every op of one component its own post context (`OpCut`).
+
+    `cam` and `clamp` are that component's: its overrides layered on the
+    project's, clamped through *its* material and the machine
+    (`component.resolve_component_cam` or the bed paths' equivalent). Feeds
+    per op follow the same precedence a single-component program uses — the
+    tool's own tools.yaml feeds when set, else the component's material's —
+    and the depth per pass and the lead-in are the component's. Returns the
+    tool-clamp warnings, to log.
+    """
+    settings, warnings = build_tool_settings(
+        ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
+        default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
+        machine=machine)
+    for op in ops:
+        ts = settings.get(op.tool_name) if op.tool_name else None
+        op.cut = OpCut(
+            feed_rate_mmpm=ts.feed_rate_mmpm if ts else float(clamp.feed_rate_mmpm),
+            plunge_rate_mmpm=ts.plunge_rate_mmpm if ts else float(clamp.plunge_rate_mmpm),
+            spindle_rpm=int(ts.spindle_rpm if ts else clamp.spindle_rpm),
+            contour_stepdown_mm=float(cam.contour_stepdown_mm),
+            contour_lead_in=str(cam.contour_lead_in),
+            contour_ramp_angle_deg=float(cam.contour_ramp_angle_deg))
+    return warnings
+
+
+def op_notes(ops: list[CamOp]) -> list[str]:
+    """Everything the generators left out and said so (`CamOp.notes`), in
+    op order, for the log and the Inspector."""
+    return [n for op in ops for n in op.notes]
+
+
 def write_castle_program(
     ops: list[CamOp],
     post: "GRBLPost",  # noqa: F821
@@ -1635,6 +1807,14 @@ def write_castle_program(
             post.tool_change(tool_settings[nm], mode=tool_change_mode)
             current = nm
         post.comment(f"--- {op.name} ---")
+        # A bed program's ops carry their own component's context (`OpCut`):
+        # feeds for its material, its depth per pass, its lead-in.
+        if op.cut is not None:
+            post.apply_cut(op.cut)
+        stepdown = op.cut.contour_stepdown_mm if op.cut is not None else contour_stepdown_mm
+        lead_in = op.cut.contour_lead_in if op.cut is not None else contour_lead_in
+        ramp_angle = (op.cut.contour_ramp_angle_deg if op.cut is not None
+                      else contour_ramp_angle_deg)
         if op.name in drill_ops:
             # each path is a hole, stored as [(x, y, z_top), (x, y, z_bottom)]
             for path in op.paths:
@@ -1646,10 +1826,9 @@ def write_castle_program(
         # partial-lap ramped lead-in — which is exactly `contour_lead_in="plunge"`.
         # A zero ramp ANGLE would not do this: the post reads that as "ramp the
         # whole lap" (see `_emit_ramped_loop`), which is the opposite request.
-        ramp = (contour_stepdown_mm
-                if op.name in contour_ops and contour_lead_in != "plunge" else 0.0)
+        ramp = stepdown if op.name in contour_ops and lead_in != "plunge" else 0.0
         for path in op.paths:
             post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp,
-                               ramp_angle_deg=contour_ramp_angle_deg)
+                               ramp_angle_deg=ramp_angle)
         post.safe_retract()
     post.end_program()

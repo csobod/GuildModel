@@ -24,6 +24,7 @@ later fillet cuts. Here that is `(terraces ∪ fills) − carves`.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Callable, Optional
 
 import numpy as np
@@ -65,6 +66,8 @@ FOOTING_STATIONS = 30
 # SWEEP_MARGIN_MM comes from `geometry.heights` — see the note where
 # `zone_heights` used to be defined, below.
 
+
+_log = logging.getLogger(__name__)
 
 def _report(progress: Optional[ProgressFn], label: str, frac: float) -> None:
     if progress is not None:
@@ -443,8 +446,11 @@ def closes(shape) -> bool:
         overlaps = int((np.unique(live.edges_sorted, axis=0,
                                   return_counts=True)[1] > 2).sum())
         return not holes and not overlaps
-    except Exception:                                        # noqa: BLE001
-        return True      # never let the check itself fail a build
+    except Exception as exc:                                 # noqa: BLE001
+        # The check failing is not the solid passing: a crash in here used
+        # to report a broken B-Rep as closed, and it went to the CAM verified.
+        _log.warning("B-Rep closure check failed; reporting the solid as open: %s", exc)
+        return False
 
 
 def build_castle_solid(partition: CastlePartition, castle: CastleParams,

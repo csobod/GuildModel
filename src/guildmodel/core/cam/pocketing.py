@@ -22,7 +22,11 @@ def pocket_paths(
     while z > -depth_mm - 1e-9:
         z_actual = max(z, -depth_mm)
         contours = _inward_offsets(scaled, tool_radius_mm, stepover_mm)
-        depth_pass = [[(p[0] / _SCALE, p[1] / _SCALE, z_actual) for p in contour] for contour in contours]
+        # pyclipper's rings come back open; closed here so the last segment
+        # is cut (the rings `_inward_offsets` returns stay open, because the
+        # hinge pockets and the relief close their own copies)
+        depth_pass = [[(p[0] / _SCALE, p[1] / _SCALE, z_actual) for p in list(contour) + [contour[0]]]
+                      for contour in contours]
         passes.append(depth_pass)
         z -= stepdown_mm
 
@@ -53,7 +57,7 @@ def _inward_offsets(
         shrunk = pco.Execute(-offset)
         if not shrunk:
             break
-        all_contours.extend(shrunk)
+        all_contours.extend(shrunk)          # open: castle_ops closes its own copies
         current = shrunk
         offset = step_px
 
