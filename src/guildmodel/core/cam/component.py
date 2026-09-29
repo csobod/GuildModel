@@ -46,10 +46,12 @@ def resolve_component_cam(
     "each path resolves its own CAM params by hand" is how a part ends up posting
     legally on its own tab and illegally somewhere else.
     """
+    from .feeds import for_material
     ov = (component.cam_overrides if component is not None
           else ComponentCamOverrides())
-    cam = ov.apply(cam)
-    name = ov.material or material_name
+    block = component.base_curve_block if component is not None else None
+    name = ov.material or getattr(block, "material", None) or material_name
+    cam = ov.apply(for_material(cam, name, material_name))
     mats = mats_cfg or {}
     mat = mats.get((name.split() or ["acetate"])[0].lower()) or mats.get("acetate") or {}
     clamp = None

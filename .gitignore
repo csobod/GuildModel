@@ -53,8 +53,13 @@ src/guildmodel/assets/_iconcache/
 /frame_illustration.svg
 /hinge_th-23_front.dxf
 
-# Maker correspondence and the frames that came with it.
+# Maker correspondence and the frames that came with it, and reference photos
+# dropped at the root while a design is discussed (never the app's own images,
+# which live under docs/ and src/).
 /Bug Report *.txt
+/*.jpg
+/*.jpeg
+/*.png
 
 # **Drawings are never committed, anywhere in the tree.** The designs are the
 # maker's own product line — sold, not sample data — so a .gdraw is not ours to

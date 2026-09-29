@@ -119,6 +119,39 @@ def save_tool(name: str, spec_or_dict) -> None:
     _write_user(data)
 
 
+_FEED_KEYS = ("feed_rate_mmpm", "plunge_rate_mmpm", "spindle_rpm")
+
+
+def feed_departures(name: str, feeds) -> dict:
+    """Which of a project's per-tool feeds (a `ToolFeeds` or a dict) differ from
+    the library's entry for `name`: field -> the project's value. A field the
+    library does not carry counts as different; a tool the library does not
+    know, or nothing set, gives {} (2026-09-27, the write-back offer)."""
+    t = tool(name)
+    if not t:
+        return {}
+    out: dict = {}
+    for key in _FEED_KEYS:
+        v = feeds.get(key) if isinstance(feeds, dict) else getattr(feeds, key, None)
+        if v is None:
+            continue
+        lib = t.get(key)
+        if lib is None or abs(float(lib) - float(v)) > 1e-6:
+            out[key] = float(v)
+    return out
+
+
+def save_feeds(name: str, feeds: dict) -> None:
+    """Write feed / plunge / spindle onto the tool's library entry, keeping the
+    rest of the tool as it is (the write-back of a project's per-tool feeds)."""
+    s = spec(name)
+    for key in _FEED_KEYS:
+        v = feeds.get(key)
+        if v is not None:
+            setattr(s, key, float(v))
+    save_tool(name, s)
+
+
 def delete_tool(name: str) -> None:
     """Hide a tool: tombstone a shipped one, drop a user-added one."""
     data = _user()

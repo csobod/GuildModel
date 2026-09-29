@@ -35,6 +35,17 @@ Point3 = tuple[float, float, float]
 # profile so it never plunges the tool straight to full depth.
 TEMPLE_CONTOUR_OPS = {"Temple Profile", "Holes"}
 
+# What must precede what (`cam.sequence.order_by_tool_work`, 2026-09-27): the
+# pockets and the engraving both want the blank rigid and do not depend on each
+# other, so whichever tool has the least work goes first; the inside through-cuts
+# follow; the profile releases the part last. An op not named here is a barrier
+# and keeps its place.
+TEMPLE_OP_TIERS: tuple[frozenset[str], ...] = (
+    frozenset({"Hinge Pockets", "Engraving"}),
+    frozenset({"Holes"}),
+    frozenset({"Temple Profile"}),
+)
+
 
 def engrave_op(
     engraving_curves: list[list[tuple[float, float]]],
@@ -256,4 +267,9 @@ def generate_temple_program(
             profile, temple.blank_length_mm, temple.stock_side)
     if profile.paths:
         ops.append(profile)
-    return params.enabled_ops(ops)
+    # The briefest tool first, where the tiers allow: with the pockets and the
+    # profile on one end mill and the engraving on its bit, the bit runs first
+    # and the operator swaps once. Ordered after the enable filter so a
+    # disabled op's work does not count toward its tool.
+    from .sequence import order_by_tool_work
+    return order_by_tool_work(params.enabled_ops(ops), TEMPLE_OP_TIERS)

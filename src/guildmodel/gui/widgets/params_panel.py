@@ -41,6 +41,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
+from guildmodel.core.cam.feeds import (
+    chip_load_mm, chip_load_status, for_material, material_key, resolve_tool_feeds,
+    surface_speed_m_per_min,
+)
 from guildmodel.core.layers import LAYER_STYLES
 from guildmodel.gui.style import theme
 from guildmodel.gui import material_store
@@ -51,7 +55,7 @@ from guildmodel.core.project.schema import (
     ComponentCamOverrides, ComponentKind, DEFAULT_OP_TOOLS, EdgeFeature,
     EyewireBezelParams, FootingFillet, FootingSchedule, HoldingParams, LensGrooveParams,
     PadSplayParams, POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams,
-    ZoneThicknesses,
+    ToolFeeds, ZoneThicknesses,
 )
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
@@ -148,6 +152,103 @@ class _ZoneList(QListWidget):
         super().leaveEvent(event)
 
 
+class _ToolFeedRow(QFrame):
+    """One tool's feeds on the Cut tab (2026-09-27): the values it will cut at,
+    where they come from, and the chip load they make. The spin boxes show the
+    *resolved* values; typing writes the project's own for that field, and
+    Reset gives the tool back to its library feeds or the material's."""
+
+    edited = Signal(str, str, float)      # tool, field, value (0 = clear the field)
+    reset = Signal(str)
+
+    _STATUS = {
+        "ok": ("\u2713 within the material's window", "#3a8c3a"),
+        "low": ("\u26a0 light cut \u2014 chip too thin (rubbing)", "#c08a00"),
+        "high": ("\u26a0 heavy cut \u2014 chip too thick", "#c0392b"),
+        "unknown": ("", ""),
+    }
+
+    def __init__(self, name: str, ops: list[str], parent=None) -> None:
+        super().__init__(parent)
+        self.name = name
+        self.ops = list(ops)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(4)
+        head = QHBoxLayout()
+        self.title = QLabel(f"<b>{name}</b> \u00b7 {', '.join(ops)}")
+        self.title.setTextFormat(Qt.TextFormat.RichText)
+        self.title.setWordWrap(True)
+        self.source = QLabel("")
+        self.source.setObjectName("hintLabel")
+        self.reset_btn = QPushButton("Reset")
+        self.reset_btn.setToolTip(
+            "Drop this project's feeds for the tool; it cuts at its library feeds, "
+            "or the material's.")
+        head.addWidget(self.title, 1)
+        head.addWidget(self.source)
+        head.addWidget(self.reset_btn)
+        lay.addLayout(head)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self.feed = QDoubleSpinBox()
+        self.feed.setRange(0.0, 10000.0)
+        self.feed.setSingleStep(50.0)
+        self.feed.setDecimals(0)
+        self.plunge = QDoubleSpinBox()
+        self.plunge.setRange(0.0, 5000.0)
+        self.plunge.setSingleStep(25.0)
+        self.plunge.setDecimals(0)
+        self.spindle = QSpinBox()
+        self.spindle.setRange(0, 60000)
+        self.spindle.setSingleStep(500)
+        for w in (self.feed, self.plunge, self.spindle):
+            # A typed number settles on Enter, Tab or a click away — typing 1500
+            # must not post 1, 15 and 150 first, each one a CAM change, a prefs
+            # write and, on a temple, a preview rebuild.
+            w.setKeyboardTracking(False)
+        for label, w, tip in (("Feed", self.feed, "Cutting feed, mm/min"),
+                              ("Plunge", self.plunge, "Plunge feed, mm/min"),
+                              ("RPM", self.spindle, "Spindle speed")):
+            w.setToolTip(tip + " \u2014 0 gives the field back to the tool or the material.")
+            w.setMinimumWidth(64)
+            row.addWidget(QLabel(label + ":"))
+            row.addWidget(w, 1)
+        lay.addLayout(row)
+        self.chip = QLabel("")
+        self.chip.setWordWrap(True)
+        lay.addWidget(self.chip)
+        self.feed.valueChanged.connect(
+            lambda v: self.edited.emit(self.name, "feed_rate_mmpm", float(v)))
+        self.plunge.valueChanged.connect(
+            lambda v: self.edited.emit(self.name, "plunge_rate_mmpm", float(v)))
+        self.spindle.valueChanged.connect(
+            lambda v: self.edited.emit(self.name, "spindle_rpm", float(v)))
+        self.reset_btn.clicked.connect(lambda: self.reset.emit(self.name))
+
+    def show_values(self, resolved, flutes: int, diameter_mm: float,
+                    window: tuple) -> None:
+        for w, v in ((self.feed, resolved.feed_rate_mmpm),
+                     (self.plunge, resolved.plunge_rate_mmpm),
+                     (self.spindle, resolved.spindle_rpm)):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        self.source.setText(resolved.source_label())
+        self.reset_btn.setEnabled("project" in resolved.sources)
+        cl = chip_load_mm(resolved.feed_rate_mmpm, resolved.spindle_rpm, int(flutes or 0))
+        vc = surface_speed_m_per_min(float(diameter_mm or 0.0), resolved.spindle_rpm)
+        text, color = self._STATUS[chip_load_status(cl, window[0], window[1])]
+        bits = [f"{cl:.4f} mm/tooth" if cl is not None else "\u2014 mm/tooth"]
+        if vc:
+            bits.append(f"{vc:.0f} m/min")
+        if text:
+            bits.append(text)
+        self.chip.setText(" \u00b7 ".join(bits))
+        self.chip.setStyleSheet(f"color: {color}; font-weight: 600;" if color else "")
+
+
 class ParamsPanel(QTabWidget):
     """Tabbed parameter panel (Info / Model / Stock / Temple / Base Curve / Cut /
     Machine), shown per component kind. The Model tab carries the castle
@@ -157,6 +258,7 @@ class ParamsPanel(QTabWidget):
     castle_changed = Signal()      # any zone height / footing / pocket depth
     stock_changed = Signal()       # blank / pad block dimensions
     cam_changed = Signal()         # tool / material / allowances / fallback
+    temple_apply_both = Signal()   # Temple tab ▸ Apply to both temples (2026-09-27)
     zone_hovered = Signal(str)     # zone name under the cursor, "" on leave
     # A Model-tab handle is being dragged: the value is not settled, but the
     # shape it describes is worth showing. Separate from `castle_changed`
@@ -185,6 +287,11 @@ class ParamsPanel(QTabWidget):
         # apply to every component; Model (castle) + Stock are frame-only, Temple
         # and Base Curve their own. The old catch-all "CAM" tab split into the
         # everyday "Cut" and the setup-once "Machine" (BUILDPLAN UX pass).
+        # Per-tool feeds this project sets (2026-09-27): tool name -> ToolFeeds;
+        # the Cut tab's Feeds & Speeds rows show and edit them.
+        self._tool_feeds: dict = {}
+        self._tool_rows: dict = {}
+        self._tool_rows_key = None
         self._tab_info = self.addTab(self._scroll_tab(self._build_info_tab), "Info")
         self._tab_castle = self.addTab(self._scroll_tab(self._build_castle_tab), "Model")
         self._tab_stock = self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
@@ -197,8 +304,12 @@ class ParamsPanel(QTabWidget):
         # (stepovers), and the chip read-out reads the Machine tab's tool — so both
         # must run only after every tab's widgets exist.
         self.apply_material_values(material_store.cam_values(self.material.currentText()))
-        self.cam_changed.connect(self._update_chip_readout)   # keep it live (M7.10)
-        self._update_chip_readout()
+        # The per-tool feed rows follow every CAM edit (a tool combo, the
+        # material row, an override) and the Model tab's groove tool (M7.10 →
+        # 2026-09-27).
+        self.cam_changed.connect(self._refresh_tool_feed_rows)
+        self.castle_changed.connect(self._refresh_tool_feed_rows)
+        self._refresh_tool_feed_rows()
 
         # What each Model / Stock number is allowed to be depends on the others,
         # so it is re-derived after every change rather than only at build time.
@@ -251,6 +362,7 @@ class ParamsPanel(QTabWidget):
             grp.setVisible(is_frame)
         self._update_passes_readout()        # the read-out is per-kind
         self._refresh_operations_hint()      # so is the operation list (M16)
+        self._refresh_tool_feed_rows()       # and the tools it is cut with (2026-09-27)
         if not self.isTabVisible(self.currentIndex()):
             self.setCurrentIndex(self._tab_info)
 
@@ -378,7 +490,7 @@ class ParamsPanel(QTabWidget):
         once. The span is chosen by castle zone (see `EdgeFeature`), so the list
         reads in the maker's own vocabulary and mirrors by name.
         """
-        grp = QGroupBox("Edge Features  (chamfers & fillets)")
+        grp = QGroupBox("Edge Features  (chamfers && fillets)")
         v = QVBoxLayout(grp)
 
         hint = QLabel(
@@ -1479,6 +1591,23 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_tool.currentIndexChanged.connect(self.cam_changed)
         self.temple_hinge_tool.currentIndexChanged.connect(self.cam_changed)
         self.temple_profile_tool.currentIndexChanged.connect(self.cam_changed)
+
+        # Both temples alike: copy this tab onto the other temple, so the same
+        # tools, depths and blank are used on each. The window does the copy — it
+        # owns the workspaces — and enables the button when there is another
+        # temple to copy to.
+        self.temple_apply_both_btn = QPushButton("Apply to both temples")
+        self.temple_apply_both_btn.setToolTip(
+            "Copy this tab's settings to the other temple — blank, snap and stock "
+            "side, hinge pocket depth and angle, engraving, tools, onion skin, hand "
+            "allowance and holding.\nEach temple keeps its own program zero "
+            "(Machine tab) and cut settings (Cut tab).")
+        self.temple_apply_both_btn.setEnabled(False)
+        self.temple_apply_both_btn.clicked.connect(self.temple_apply_both)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(self.temple_apply_both_btn)
+        form.addRow("", row)
         lay.addWidget(grp)
 
     # ------------------------------------------------------------------ Base Curve tab
@@ -1512,6 +1641,7 @@ class ParamsPanel(QTabWidget):
         hf = QFormLayout(hg)
         hf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.block_hole_count = QSpinBox()
+        self.block_hole_count.setKeyboardTracking(False)   # settles on Enter or a click away
         self.block_hole_count.setRange(0, 6)
         self.block_hole_count.setValue(d.hole_count)
         hf.addRow("Hole count:", self.block_hole_count)
@@ -1686,12 +1816,11 @@ class ParamsPanel(QTabWidget):
         Universal (every component kind); the old 'CAM' tab split into Cut + Machine
         so the maker's routine choices aren't buried under machine setup (UX pass)."""
         self._build_material_group(lay)      # material (leads) + allowances
-        self._build_feeds_group(lay)         # feeds & speeds, from the material
+        self._build_feeds_group(lay)         # feeds & speeds: material row + per tool
         self._build_depth_group(lay)         # depth per pass + the pass read-out
         self._build_holding_group(lay)       # onion skin | hold-down tabs (M16)
         self._build_operations_group(lay)    # per-op enable/skip (M16)
         self._build_overrides_group(lay)     # per-component CAM overrides (M16)
-        self._build_chip_group(lay)          # chip-load / surface-speed read-out
 
     # ------------------------------------------------------------ Machine tab
 
@@ -1707,33 +1836,114 @@ class ParamsPanel(QTabWidget):
         self._build_strategy_group(lay)      # relief strategy (frame-only)
         self._build_fallback_group(lay)      # profile fallback (frame-only)
 
-    def _update_chip_readout(self) -> None:
-        """Re-derive the chip load + surface speed for the active tool / feed /
-        spindle / material and flag it against the material's window (M7.10)."""
-        if not hasattr(self, "_chip_load_lbl"):
+    # ------------------------------------------------------------ per-tool feeds
+
+    def tools_for_active_component(self) -> list[tuple[str, list[str]]]:
+        """The tools the active component's program will use, in program order,
+        each with the operations it cuts — what the Feeds & Speeds rows show.
+        Mirrors the generators' tool choices (2026-09-27)."""
+        kind = getattr(self, "_component_kind", ComponentKind.FRAME_FRONT)
+        pairs: list[tuple[str, str]] = []
+        if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
+            pairs = [(self.temple_engrave_tool.currentText(), "Engraving"),
+                     (self.temple_hinge_tool.currentText(), "Hinge Pockets"),
+                     (self.temple_profile_tool.currentText(), "Temple Profile")]
+        elif kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
+            pairs = [(self.block_drill_tool.currentText(), "Drill Holes"),
+                     (self.block_profile_tool.currentText(), "Block Profile")]
+        else:
+            cam = self.cam_params()
+            for op in POSTERIOR_OPS:
+                pairs.append((cam.tool_for_op(op), op))
+            # Features default to the fine tool, not the global one (castle_ops).
+            pairs.append((cam.op_tools.get("Features") or cam.tool_for_op("Fine Relief"),
+                          "Features"))
+            if "Holes" in cam.op_tools:
+                pairs.append((cam.op_tools["Holes"], "Holes"))
+            if getattr(self, "groove_enable", None) is not None and self.groove_enable.isChecked():
+                pairs.append((cam.op_tools.get("Lens Groove") or self.groove_tool.currentText(),
+                              "Lens Groove"))
+        out: dict[str, list[str]] = {}
+        for name, op in pairs:
+            if name:
+                out.setdefault(name, []).append(op)
+        return [(name, ops) for name, ops in out.items()]
+
+    def tool_feed_rows(self) -> dict:
+        """The live Feeds & Speeds rows, by tool name."""
+        return dict(self._tool_rows)
+
+    def _refresh_tool_feed_rows(self, *_args) -> None:
+        """Rebuild the per-tool rows when the tool set changes; refresh their
+        values and chip loads otherwise."""
+        box = getattr(self, "_tool_rows_box", None)
+        if box is None:
             return
-        from guildmodel.core.cam import feeds
-        from guildmodel.gui import material_store, tool_store
-        mat = material_store.material(self.material.currentText())
-        tool = tool_store.spec(self.cam_tool.currentText())
-        feed = float(self.feed_override.value()) or float(mat.get("feed_rate_mmpm", 0) or 0)
-        spindle = float(self.spindle_override.value()) or float(mat.get("spindle_rpm", 0) or 0)
-        cl = feeds.chip_load_mm(feed, spindle, int(tool.flutes or 0))
-        vc = feeds.surface_speed_m_per_min(float(tool.diameter_mm or 0), spindle)
-        self._chip_load_lbl.setText(f"{cl:.4f} mm/tooth" if cl is not None else "—")
-        self._surface_speed_lbl.setText(f"{vc:.0f} m/min" if vc else "—")
-        status = feeds.chip_load_status(cl, mat.get("chip_load_min_mm"),
-                                        mat.get("chip_load_max_mm"))
-        text, color = {
-            "ok": ("✓ within the material's window", "#3a8c3a"),
-            "low": ("⚠ light cut — chip too thin (rubbing); raise feed or lower RPM",
-                    "#c08a00"),
-            "high": ("⚠ heavy cut — chip too thick; lower feed or raise RPM", "#c0392b"),
-            "unknown": ("", ""),
-        }[status]
-        self._chip_status_lbl.setText(text)
-        self._chip_status_lbl.setStyleSheet(
-            f"color: {color}; font-weight: 600;" if color else "")
+        wanted = self.tools_for_active_component()
+        key = [(name, tuple(ops)) for name, ops in wanted]
+        if key != self._tool_rows_key:
+            for row in self._tool_rows.values():
+                box.removeWidget(row)
+                row.setParent(None)
+                row.deleteLater()
+            self._tool_rows = {}
+            for name, ops in wanted:
+                row = _ToolFeedRow(name, ops)
+                row.edited.connect(self._on_tool_feed_edited)
+                row.reset.connect(self._on_tool_feed_reset)
+                box.addWidget(row)
+                self._tool_rows[name] = row
+            self._tool_rows_key = key
+        from guildmodel.gui import tool_store
+        mat_name = self.posting_material_name()
+        mat = material_store.material(mat_name)
+        if hasattr(self, "_material_caption"):
+            self._material_caption.setText(f"Material \u2014 {mat_name}")
+        # The program's own feeds: this component's override, else the Cut tab's
+        # material row when the component is cut from the project material, else
+        # the preset — the same chain the post walks (`cam_params_for`).
+        same = material_key(mat_name) == material_key(self.material_name())
+        ov_feed = float(getattr(self, "ov_feed", None).value()) if hasattr(self, "ov_feed") else 0.0
+        ov_spindle = float(self.ov_spindle.value()) if hasattr(self, "ov_spindle") else 0.0
+        row_feed = float(self.feed_override.value()) if same else 0.0
+        row_plunge = float(self.plunge_override.value()) if same else 0.0
+        row_spindle = float(self.spindle_override.value()) if same else 0.0
+        feed = ov_feed or row_feed or float(mat.get("feed_rate_mmpm", 0) or 0)
+        plunge = row_plunge or float(mat.get("plunge_rate_mmpm", 0) or 0)
+        spindle = ov_spindle or row_spindle or float(mat.get("spindle_rpm", 0) or 0)
+        window = (mat.get("chip_load_min_mm"), mat.get("chip_load_max_mm"))
+        for name, row in self._tool_rows.items():
+            try:
+                tool = tool_store.tool(name)
+            except Exception:
+                tool = {}
+            try:
+                spec = tool_store.spec(name)
+                flutes, diameter = int(spec.flutes or 0), float(spec.diameter_mm or 0.0)
+            except Exception:
+                flutes, diameter = int(tool.get("flutes", 0) or 0), float(tool.get("diameter_mm", 0) or 0)
+            resolved = resolve_tool_feeds(
+                tool, default_feed=feed, default_plunge=plunge, default_spindle=spindle,
+                override=self._tool_feeds.get(name))
+            row.show_values(resolved, flutes, diameter, window)
+
+    def _on_tool_feed_edited(self, name: str, field: str, value: float) -> None:
+        cur = self._tool_feeds.get(name) or ToolFeeds()
+        if value > 0:
+            new = cur.model_copy(update={field: int(value) if field == "spindle_rpm" else float(value)})
+        else:
+            new = cur.model_copy(update={field: None})
+        if new.is_empty():
+            self._tool_feeds.pop(name, None)
+        else:
+            self._tool_feeds[name] = new
+        self.cam_changed.emit()
+
+    def _on_tool_feed_reset(self, name: str) -> None:
+        if self._tool_feeds.pop(name, None) is not None:
+            self.cam_changed.emit()
+        else:
+            self._refresh_tool_feed_rows()
 
     # mapping between schema literals and the combo display order
     _PZ_MODE = [("stock_box", "Stock box"), ("fixture", "Fixture (design frame)")]
@@ -1799,7 +2009,7 @@ class ParamsPanel(QTabWidget):
         self._sync_program_zero_enabled()
 
     def _build_machine_tool_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Machine & Tool")
+        grp = QGroupBox("Machine && Tool")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -1887,13 +2097,13 @@ class ParamsPanel(QTabWidget):
             cb = getattr(self, attr, None)
             if cb is not None:
                 _repop(cb)
-        self._update_chip_readout()         # a tool's flutes/Ø may have changed (M7.10)
+        self._refresh_tool_feed_rows()      # a tool's flutes/Ø/feeds may have changed
 
     def _build_material_group(self, lay: QVBoxLayout) -> None:
         """The everyday cut choices: the material (which drives the feeds & speeds)
         and the two hand-finishing allowances. Leads the Cut tab (BUILDPLAN UX pass —
         the maker picks a material first)."""
-        grp = QGroupBox("Material & Allowances")
+        grp = QGroupBox("Material && Allowances")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -1920,16 +2130,56 @@ class ParamsPanel(QTabWidget):
         lay.addWidget(grp)
 
     def _build_feeds_group(self, lay: QVBoxLayout) -> None:
-        """Feeds, speeds and rapid clearances — populated from the material, editable."""
-        og = QGroupBox("Feeds & Speeds  (from material)")
-        of = QFormLayout(og)
+        """Feeds & speeds (2026-09-27): the material row — the program's own
+        feeds, seeded from the material and editable — then one row per tool
+        the active component uses, showing what that tool will actually cut at
+        (the project's per-tool setting, else the tool's library feeds, else
+        the material row) with its chip load. Tools with their own library
+        feeds — an engraving bit — used to win silently over this tab; now the
+        tab shows it and lets the project have the last word. Rapid clearances
+        follow."""
+        og = QGroupBox("Feeds && Speeds")
+        og.setToolTip(
+            "Feeds in mm/min, spindle in RPM. The material row is the program's own "
+            "feeds; each tool below shows what it will cut at \u2014 this project's "
+            "setting for it, else the tool's library feeds, else the material row "
+            "\u2014 and the chip load that makes.")
+        col = QVBoxLayout(og)
+        col.setSpacing(6)
+        self._material_caption = QLabel("Material")
+        self._material_caption.setObjectName("hintLabel")
+        col.addWidget(self._material_caption)
+        of = QFormLayout()
         of.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.feed_override = _spinbox(0.0, 0.0, 10000.0, step=50.0, decimals=0, suffix=" mm/min")
         self.plunge_override = _spinbox(0.0, 0.0, 5000.0, step=25.0, decimals=0, suffix=" mm/min")
         self.spindle_override = QSpinBox()
+        self.spindle_override.setKeyboardTracking(False)   # settles on Enter or a click away
         self.spindle_override.setRange(0, 60000)
         self.spindle_override.setSingleStep(500)
         self.spindle_override.setSuffix(" RPM")
+        for w in (self.feed_override, self.plunge_override, self.spindle_override):
+            w.setToolTip("The material's value as this project has it; every tool "
+                         "without its own feeds cuts at this. 0 = the preset's value.")
+            w.setSpecialValueText("(preset)")     # 0 has always meant the preset's
+        of.addRow("Feed:", self.feed_override)
+        of.addRow("Plunge:", self.plunge_override)
+        of.addRow("Spindle:", self.spindle_override)
+        col.addLayout(of)
+
+        per_tool = QLabel("Per tool \u2014 this component")
+        per_tool.setObjectName("hintLabel")
+        per_tool.setToolTip(
+            "The tools this component's program uses, in order. Type a value to set "
+            "it for this project; Reset gives the tool back to its library feeds or "
+            "the material's.")
+        col.addWidget(per_tool)
+        self._tool_rows_box = QVBoxLayout()
+        self._tool_rows_box.setSpacing(6)
+        col.addLayout(self._tool_rows_box)
+
+        cf = QFormLayout()
+        cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.safe_z_clearance = _spinbox(
             CastleCamParams().safe_z_clearance_mm, 1.0, 30.0, step=0.5)
         self.safe_z_clearance.setToolTip(
@@ -1938,34 +2188,15 @@ class ParamsPanel(QTabWidget):
             CastleCamParams().hold_down_height_mm, 0.0, 60.0, step=0.5)
         self.hold_down_height.setToolTip(
             "Height of the work-holding clamps above the table; rapids clear it.")
-        of.addRow("Feed override:", self.feed_override)
-        of.addRow("Plunge override:", self.plunge_override)
-        of.addRow("Spindle override:", self.spindle_override)
-        of.addRow("Safe-Z clearance:", self.safe_z_clearance)
-        of.addRow("Work-holding height:", self.hold_down_height)
+        cf.addRow("Safe-Z clearance:", self.safe_z_clearance)
+        cf.addRow("Work-holding height:", self.hold_down_height)
+        col.addLayout(cf)
+
         for w in (self.feed_override, self.plunge_override,
                   self.safe_z_clearance, self.hold_down_height):
             w.valueChanged.connect(self.cam_changed)
         self.spindle_override.valueChanged.connect(self.cam_changed)
         lay.addWidget(og)
-
-    def _build_chip_group(self, lay: QVBoxLayout) -> None:
-        """Chip-load / surface-speed read-out (BUILDPLAN M7.10): the relationship
-        between the tool (flutes / diameter), the spindle, and the feed."""
-        cg = QGroupBox("Chip load  (feed per tooth)")
-        cg.setToolTip(
-            "Chip load & surface speed vs the material's window "
-            "(green = OK, amber = light, red = heavy).")
-        cf = QFormLayout(cg)
-        cf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self._chip_load_lbl = QLabel("—")
-        self._surface_speed_lbl = QLabel("—")
-        self._chip_status_lbl = QLabel("")
-        self._chip_status_lbl.setWordWrap(True)
-        cf.addRow("Chip load:", self._chip_load_lbl)
-        cf.addRow("Surface speed:", self._surface_speed_lbl)
-        cf.addRow(self._chip_status_lbl)
-        lay.addWidget(cg)
 
     def _build_depth_group(self, lay: QVBoxLayout) -> None:
         """How deep each pass bites — the everyday depth choice, on the Cut tab.
@@ -2120,6 +2351,7 @@ class ParamsPanel(QTabWidget):
         form.addRow("Strategy:", self.hold_strategy)
 
         self.hold_tab_count = QSpinBox()
+        self.hold_tab_count.setKeyboardTracking(False)   # settles on Enter or a click away
         self.hold_tab_count.setRange(0, 16)
         self.hold_tab_count.setValue(d.tab_count)
         self.hold_tab_count.setSuffix("  tabs")
@@ -2273,6 +2505,7 @@ class ParamsPanel(QTabWidget):
         self.ov_feed.setSpecialValueText("(project)")
         form.addRow("Feed:", self.ov_feed)
         self.ov_spindle = QSpinBox()
+        self.ov_spindle.setKeyboardTracking(False)   # settles on Enter or a click away
         self.ov_spindle.setRange(0, 60000)
         self.ov_spindle.setSingleStep(500)
         self.ov_spindle.setSuffix(" RPM")
@@ -2313,6 +2546,10 @@ class ParamsPanel(QTabWidget):
                      (self.ov_feed, ov.feed_rate_mmpm or 0.0),
                      (self.ov_spindle, ov.spindle_rpm or 0)):
             w.blockSignals(True); w.setValue(v); w.blockSignals(False)
+        # The Feeds & Speeds rows read these overrides; set under blockSignals,
+        # nothing else refreshes them, and the rows kept showing the previous
+        # component's feeds against this one's material row.
+        self._refresh_tool_feed_rows()
 
     def _build_strategy_group(self, lay: QVBoxLayout) -> None:
         """Frame-posterior *relief* strategy — the surfacing passes that only a
@@ -2343,7 +2580,7 @@ class ParamsPanel(QTabWidget):
         every component kind at post time — they were simply invisible on a temple
         or base-curve block, so those parts inherited whatever the frame was set to."""
         d = CastleCamParams()
-        grp = QGroupBox("Through-cut lead-in & output")
+        grp = QGroupBox("Through-cut lead-in && output")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2405,6 +2642,7 @@ class ParamsPanel(QTabWidget):
         fb.addRow("Profile stepdown:", self.stepdown_profile)
 
         self.tab_count = QSpinBox()
+        self.tab_count.setKeyboardTracking(False)   # settles on Enter or a click away
         self.tab_count.setRange(0, 8)
         self.tab_count.setValue(4)
         self.tab_count.setSuffix("  tabs")
@@ -2585,6 +2823,9 @@ class ParamsPanel(QTabWidget):
         self._on_bridge_relief_toggled(c.bridge_relief.enabled)
         self._refresh_bridge_relief_shape()
         self._on_groove_toggled(c.lens_groove.enabled)
+        # The groove's enable and tool were restored under blockSignals; the
+        # Feeds & Speeds rows list the groove tool only from them.
+        self._refresh_tool_feed_rows()
         self._refresh_zone_list()      # show the restored per-zone overrides
         self._update_groove_angle()
         self.bezel_face.blockSignals(True)
@@ -2645,6 +2886,7 @@ class ParamsPanel(QTabWidget):
             feed_rate_mmpm=_opt(self.feed_override.value()),
             plunge_rate_mmpm=_opt(self.plunge_override.value()),
             spindle_rpm=int(self.spindle_override.value()) or None,
+            tool_feeds={k: v for k, v in self._tool_feeds.items() if not v.is_empty()},
             safe_z_clearance_mm=self.safe_z_clearance.value(),
             hold_down_height_mm=self.hold_down_height.value(),
         ))
@@ -2654,6 +2896,8 @@ class ParamsPanel(QTabWidget):
         # Keep the whole model as the base `cam_params` updates, so the fields with
         # no widget survive the round-trip instead of reverting to schema defaults.
         self._cam_base = cp
+        self._tool_feeds = {k: v.model_copy() for k, v in (cp.tool_feeds or {}).items()
+                            if not v.is_empty()}
         if cp.tool_name:
             self.cam_tool.setCurrentText(cp.tool_name)
         for op, cb in getattr(self, "op_tool_combos", {}).items():
@@ -2688,6 +2932,8 @@ class ParamsPanel(QTabWidget):
         self.safe_z_clearance.setValue(cp.safe_z_clearance_mm)
         self.hold_down_height.setValue(cp.hold_down_height_mm)
 
+        self._refresh_tool_feed_rows()       # the rows show the restored feeds
+
     def temple_params(self) -> TempleParams:
         """Temple component params from the Temple tab (BUILDPLAN M7.3)."""
         return TempleParams(
@@ -2709,6 +2955,19 @@ class ParamsPanel(QTabWidget):
             holding=self.holding_params(),
             fixture_zone=self._temple_fixture_zone,
         )
+
+    def set_temple_apply_both_enabled(self, on: bool, why: str = "") -> None:
+        """Enable the Apply-to-both button; `why` becomes the tooltip when off."""
+        btn = self.temple_apply_both_btn
+        btn.setEnabled(on)
+        if not on and why:
+            btn.setToolTip(why)
+        elif on:
+            btn.setToolTip(
+                "Copy this tab's settings to the other temple — blank, snap and stock "
+                "side, hinge pocket depth and angle, engraving, tools, onion skin, hand "
+                "allowance and holding.\nEach temple keeps its own program zero "
+                "(Machine tab) and cut settings (Cut tab).")
 
     def set_temple_params(self, t: TempleParams) -> None:
         """Restore the Temple tab from a TempleParams (component activation)."""
@@ -2741,6 +3000,7 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank.blockSignals(False)
         self.temple_stock_side.setEnabled(t.snap_to_blank_end)
         self._refresh_temple_limits()
+        self._refresh_tool_feed_rows()
 
     def block_params(self) -> BaseCurveBlockParams:
         """Base-curve forming-block params from the Base Curve tab (BUILDPLAN M7.3)."""
@@ -2789,6 +3049,7 @@ class ParamsPanel(QTabWidget):
                         (self.block_drill_tool, b.drill_tool)):
             if cb.findText(val) >= 0:
                 cb.blockSignals(True); cb.setCurrentText(val); cb.blockSignals(False)
+        self._refresh_tool_feed_rows()
 
     # ------------------------------------------------------------------ material
 
@@ -2804,12 +3065,31 @@ class ParamsPanel(QTabWidget):
         frame's depth per pass. The material itself is not a CAM field — it selects
         the preset the post clamps against; see `effective_material_name`.
         """
-        return self.cam_overrides().apply(self.cam_params())
+        return self.cam_params_for(self.effective_material_name(), self.cam_overrides())
+
+    def cam_params_for(self, material: str,
+                       overrides: ComponentCamOverrides | None = None) -> CastleCamParams:
+        """`cam_params()` for a component cut from `material`, its `overrides` on top:
+        the Cut tab's row only when that is the project material (`for_material`).
+        Until the per-tool feeds (2026-09-27) the temple and block paths never
+        read the row; when they began to, a lone block was cut at the acetate
+        front's feeds (found posting against v1.7.0, 2026-09-29)."""
+        cam = for_material(self.cam_params(), material, self.material_name())
+        return (overrides or ComponentCamOverrides()).apply(cam)
 
     def effective_material_name(self) -> str:
         """The material this component is actually cut from — its own override if
         it has one, else the project's."""
         return self.cam_overrides().material or self.material_name()
+
+    def posting_material_name(self) -> str:
+        """The material the active component's program is clamped against: a
+        base-curve block's own (`BaseCurveBlockParams.material`, which the block
+        path reads; acetal as shipped), else `effective_material_name()`."""
+        if getattr(self, "_component_kind", None) in (
+                ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
+            return self._block_material
+        return self.effective_material_name()
 
     def set_material(self, name: str) -> None:
         """Select a material without repopulating the feeds (used on restore,

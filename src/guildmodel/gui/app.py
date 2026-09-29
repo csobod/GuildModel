@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import os
 import sys
 import traceback
@@ -26,15 +27,17 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QLineEdit, QScrollArea, QDockWidget, QFrame,
     QToolBar, QProgressDialog, QTabBar, QComboBox,
     QListWidget, QListWidgetItem, QSpinBox, QSplitter,
-    QSlider, QColorDialog,
+    QSlider, QColorDialog, QStyle, QAbstractSpinBox,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize, QPointF
 from PySide6.QtGui import QAction, QKeySequence, QColor, QPainter, QPen, QPixmap, QIcon
 
 from guildmodel.core.layers import ALL_LAYERS as SUPPORTED_LAYERS
 from guildmodel.gui import prefs as prefs_mod
+from guildmodel.gui import part_defaults as part_defaults_mod
 from guildmodel.gui import icons as icons_mod
 from guildmodel.gui import hidpi
+from guildmodel.gui.tooltips import TooltipFilter
 from guildmodel.gui.mesh_build import build_component_mesh
 from guildmodel.gui.style import theme
 from guildmodel.gui.widgets.dxf_canvas import DxfCanvas
@@ -617,24 +620,32 @@ class GCodeWorker(_ProgressWorker):
         # leave tool_settings None and post exactly as before. A lens-groove job
         # is ALWAYS multi-tool: the drageoir op is not in POSTERIOR_OPS, so
         # is_multi_tool() alone can't see it (V1).
+        # Every tool's feeds resolve one way — the project's row for the tool,
+        # else the tool's library feeds, else the material row — and clamp to
+        # the machine (2026-09-27). A single-tool job still posts without a
+        # tool block, but at *its* tool's resolved feeds: it took the material
+        # row while the Cut tab's row for that tool read "this project".
+        resolved, ts_warns = build_tool_settings(
+            ops, tools_cfg,
+            default_feed=clamp.feed_rate_mmpm,
+            default_plunge=clamp.plunge_rate_mmpm,
+            default_spindle=clamp.spindle_rpm,
+            machine=machine,
+            tool_feeds=cam.tool_feeds,
+        )
+        for w in ts_warns:
+            self.progress.emit(f"[gcode] tool: {w}")
         tool_settings = None
         if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
-            tool_settings, ts_warns = build_tool_settings(
-                ops, tools_cfg,
-                default_feed=clamp.feed_rate_mmpm,
-                default_plunge=clamp.plunge_rate_mmpm,
-                default_spindle=clamp.spindle_rpm,
-                machine=machine,
-            )
-            for w in ts_warns:
-                self.progress.emit(f"[gcode] tool: {w}")
+            tool_settings = resolved
             n_changes = count_tool_changes(ops)
             tools_list = ", ".join(f"T{s.number} {n}" for n, s in tool_settings.items())
             self.progress.emit(
                 f"[gcode] Multi-tool: {tools_list} · {n_changes} tool change(s) "
                 f"({machine.tool_change_mode.upper()})"
             )
-            first_ts = tool_settings[ops[0].tool_name]
+        first_ts = resolved.get(ops[0].tool_name) if ops else None
+        if first_ts is not None:
             post_dia = first_ts.diameter_mm
             post_spindle = first_ts.spindle_rpm
             post_feed = first_ts.feed_rate_mmpm
@@ -720,7 +731,8 @@ class GCodeWorker(_ProgressWorker):
             summary += f"\n⚠ {len(violations)} fixture clearance warning(s) — see log."
         if machine_warnings:
             summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
-        rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm)
+        rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm,
+                            tool_settings=resolved)
         self.op_overlay = _op_overlay(ops)
 
         # Stash artifacts for the .gmodel container (M5.1); read on the GUI thread.
@@ -819,10 +831,16 @@ class GCodeWorker(_ProgressWorker):
                 f"Z {zmin:.2f}..{zmax:.2f} · {op.tool_name}"
             )
 
+        # The clamp's feeds are the Cut tab's material row (or the preset when
+        # the tab leaves them unset), as the front has always posted; this path
+        # used to reach past the tab to the raw preset. A temple cut from another
+        # material than the project's arrives without the row, so it takes that
+        # material's preset (`ParamsPanel.cam_params_for`). The project's
+        # per-tool feeds ride on top (2026-09-27).
         tool_settings, ts_warns = build_tool_settings(
-            ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-            default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
-            machine=machine)
+            ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
+            default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
+            machine=machine, tool_feeds=cam.tool_feeds)
         for w in ts_warns:
             self.progress.emit(f"[gcode] tool: {w}")
         n_changes = count_tool_changes(ops)
@@ -877,7 +895,8 @@ class GCodeWorker(_ProgressWorker):
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
-        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
+                            tool_settings=tool_settings)
         # The ops live in the BLANK frame (snapped); back-project the overlay into
         # the design frame so it draws on the part in the 2D view (2026-07-09).
         self.op_overlay = _op_overlay(ops)
@@ -982,10 +1001,14 @@ class GCodeWorker(_ProgressWorker):
                 f"Z {zmin:.2f}..{zmax:.2f} · {op.tool_name}"
             )
 
+        # The clamp's feeds are the block's override, else its material's preset:
+        # the window hands this path the Cut tab's row only when the block is cut
+        # from the project material (`ParamsPanel.cam_params_for`). The project's
+        # per-tool feeds ride on top (2026-09-27).
         tool_settings, ts_warns = build_tool_settings(
-            ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-            default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"],
-            machine=machine)
+            ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
+            default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
+            machine=machine, tool_feeds=cam.tool_feeds)
         for w in ts_warns:
             self.progress.emit(f"[gcode] tool: {w}")
         n_changes = count_tool_changes(ops)
@@ -1046,7 +1069,8 @@ class GCodeWorker(_ProgressWorker):
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
-        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+        rows = op_summaries(ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
+                            tool_settings=tool_settings)
         # Block ops are centerd on the origin (center_on_origin); shift the overlay
         # back onto the lens as drawn so it lands on the part in the 2D view.
         self.op_overlay = _op_overlay(ops)
@@ -1139,8 +1163,8 @@ class GCodeWorker(_ProgressWorker):
         # The block under its own CAM: its overrides and its material (acetal,
         # in the standard job), clamped the same way (M16 on the bed).
         block_cam, block_clamp, block_mat = _spec_cam(
-            {"cam_overrides": self.block_overrides}, self.cam_params or CastleCamParams(),
-            machine, mats_cfg, mat_name)
+            {"mode": "block", "block": block, "cam_overrides": self.block_overrides},
+            self.cam_params or CastleCamParams(), machine, mats_cfg, mat_name)
         self.progress.emit(
             f"[gcode] Block: {block_mat}, feed {block_clamp.feed_rate_mmpm:.0f} / plunge "
             f"{block_clamp.plunge_rate_mmpm:.0f} mm/min, {block_clamp.spindle_rpm} RPM, "
@@ -1184,12 +1208,12 @@ class GCodeWorker(_ProgressWorker):
                 f"[gcode]   {p.label} ({p.kind}) → {p.fixture_zone} "
                 f"@ ({p.x_mm:.1f}, {p.y_mm:.1f}) mm")
 
-        tool_settings, ts_warns = build_tool_settings(
+        # The clamp warnings were logged per part by stamp_cut_settings above;
+        # this map is the bed's T-numbers and header, so its copies are dropped.
+        tool_settings, _ts_warns = build_tool_settings(
             bed.ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
             default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
-            machine=machine)
-        for w in ts_warns:
-            self.progress.emit(f"[gcode] tool: {w}")
+            machine=machine, tool_feeds=cam.tool_feeds)
 
         # parts are placed in absolute machine coordinates → touch off machine zero
         violations = bed_clearance_violations(bed.ops, fixture, skip_op_names=bed.drill_op_names)
@@ -1225,7 +1249,8 @@ class GCodeWorker(_ProgressWorker):
         report = estimate_program(text, MachineDynamics.from_profile(machine),
                                   tool_change_seconds=machine.tool_change_seconds)
         self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
-        rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+        rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
+                            tool_settings=tool_settings)
 
         summary = ("Worktable program (frame front + base-curve block) generated "
                    "and stored in the project.\nSave the project (Ctrl+S) or File ▸ "
@@ -1410,13 +1435,19 @@ class SimWorker(_ProgressWorker):
             # Multi-tool jobs (M6.1): post with per-tool change blocks and sweep
             # each move with its own tool profile, so the sim matches the real
             # cut. A lens-groove job is ALWAYS multi-tool (see GCodeWorker).
+            # Feeds as the post resolves them (2026-09-27): the project's row for
+            # the tool, else the library's, else the Cut tab's material row, else
+            # the preset — for a single-tool job too, which posts no tool block.
+            resolved, _ = build_tool_settings(
+                ops, tools_cfg,
+                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+                tool_feeds=cam.tool_feeds)
             tool_settings = None
             if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
-                tool_settings, _ = build_tool_settings(
-                    ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-                    default_plunge=mat["plunge_rate_mmpm"],
-                    default_spindle=mat["spindle_rpm"])
-            first = tool_settings[ops[0].tool_name] if tool_settings else None
+                tool_settings = resolved
+            first = resolved.get(ops[0].tool_name) if ops else None
             post = GRBLPost(
                 job_name="sim", material=self.material_name,
                 tool_diameter_mm=(first.diameter_mm if first else tool["diameter_mm"]),
@@ -1608,8 +1639,11 @@ class FlatSimWorker(_ProgressWorker):
 
             self._progress("Posting the program", 0.55)
             tool_settings, _ = build_tool_settings(
-                ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-                default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"])
+                ops, tools_cfg,
+                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+                tool_feeds=cam.tool_feeds)
             first = tool_settings[ops[0].tool_name]
             post = GRBLPost(
                 job_name="sim", material=self.material_name,
@@ -1669,10 +1703,14 @@ def _spec_cam(spec: dict, cam, machine, mats_cfg: dict, material_name: str):
     without a machine profile. Mirrors `core.cam.component.resolve_component_cam`
     for a build spec rather than a schema Component.
     """
+    from guildmodel.core.cam.feeds import for_material
     from guildmodel.core.project.schema import ComponentCamOverrides
     ov = spec.get("cam_overrides") or ComponentCamOverrides()
-    cam = ov.apply(cam)
-    name = ov.material or material_name or "acetate"
+    # A block's material is its own (acetal as shipped), as on its own program;
+    # the bed read only the override, so a block without one cut as the project.
+    block = spec.get("block") if spec.get("mode") == "block" else None
+    name = ov.material or getattr(block, "material", None) or material_name or "acetate"
+    cam = ov.apply(for_material(cam, name, material_name))
     mats = mats_cfg or {}
     mat = mats.get((name.split() or ["acetate"])[0].lower()) or mats.get("acetate") or {}
     clamp = None
@@ -1906,6 +1944,22 @@ class BedSimWorker(_ProgressWorker):
             self.error.emit(traceback.format_exc())
 
 
+# ------------------------------------------------------------------ dialog sizing
+
+def _available_screen(widget):
+    """The usable area of the screen `widget` (or its parent) will show on — what
+    a pop-up's size is bounded by. Falls back to the primary screen, and to a
+    plain rectangle when there is no screen at all (a headless import)."""
+    from PySide6.QtCore import QRect
+    parent = widget.parentWidget() if widget is not None else None
+    screen = None
+    try:
+        screen = (parent.screen() if parent is not None else None) or QApplication.primaryScreen()
+    except Exception:
+        screen = None
+    return screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 800)
+
+
 # ------------------------------------------------------------------ op summary dialog
 
 class OpSummaryDialog(QDialog):
@@ -1949,10 +2003,12 @@ class OpSummaryDialog(QDialog):
         table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
-        table.setFixedHeight(
-            table.horizontalHeader().height()
-            + sum(table.rowHeight(r) for r in range(len(rows))) + 8
-        )
+        # Tall enough to show every row, but never more than half the screen:
+        # a bed program's thirty operations scroll instead of pushing the OK
+        # button off the bottom (2026-09-27 dialog sizing).
+        natural = (table.horizontalHeader().height()
+                   + sum(table.rowHeight(r) for r in range(len(rows))) + 8)
+        table.setFixedHeight(min(natural, _available_screen(self).height() // 2))
         lay.addWidget(table)
 
         foot = QLabel("* cutting moves at the material feed rate; rapids excluded.")
@@ -1975,12 +2031,18 @@ class PrefsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
         self.setMinimumWidth(380)
+        # GuildDraw's floor, for parity — bounded by the screen: on a short panel
+        # with the OS scale up the floor beat `_initial_size`'s 80 % clamp and
+        # put the OK row back under the screen edge.
+        self.setMinimumHeight(min(480, _available_screen(self).height()))
+        self.setSizeGripEnabled(True)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
         tabs = QTabWidget()
+        self._tabs = tabs
         root_layout.addWidget(tabs)
 
         btn_row = QHBoxLayout()
@@ -2019,6 +2081,37 @@ class PrefsDialog(QDialog):
         )
         app_form.addRow(self._log_check)
         gen_lay.addWidget(app_box)
+
+        # The offers GuildModel makes, each with a "Don't ask again" on the box
+        # itself; this is where a silenced one is turned back on.
+        prompt_box = QGroupBox("Prompts")
+        prompt_form = QFormLayout(prompt_box)
+        self._prompt_checks: dict[str, QCheckBox] = {}
+        for key, label, tip in (
+            ("prompt_set_default_bed",
+             "Offer to make a changed worktable the default bed",
+             "Asked when a project whose bed differs from the default is saved or "
+             "its worktable program exported."),
+            ("prompt_set_part_defaults",
+             "Offer to adopt a project's part zeros, stock and temple alignment as defaults",
+             "Asked on Save when a part's program zero or stock size, or the "
+             "temples' snap to blank end or stock side, differs from "
+             "Preferences ▸ Parts."),
+            ("prompt_material_writeback",
+             "Offer to save tuned cut settings back to the material",
+             "Asked on Generate when feeds, speeds, stepover or stepdown differ "
+             "from the selected material's defaults."),
+            ("prompt_tool_feeds_writeback",
+             "Offer to save a project's per-tool feeds to the tool library",
+             "Asked on Generate when a tool's feed, plunge or spindle on the Cut "
+             "tab differs from the tool's own library feeds."),
+        ):
+            cb = QCheckBox(label)
+            cb.setChecked(bool(prefs.get(key, True)))
+            cb.setToolTip(tip)
+            prompt_form.addRow(cb)
+            self._prompt_checks[key] = cb
+        gen_lay.addWidget(prompt_box)
 
         # Preview / export mesh resolution
         def _res_spin(value: float) -> QDoubleSpinBox:
@@ -2096,7 +2189,16 @@ class PrefsDialog(QDialog):
 
         gen_lay.addStretch()
 
-        # ── Tab 1 — Appearance (mode / viewport / 3D render / toolpaths) ───
+        # ── Tab 1 — Parts (the shop defaults a fresh drawing starts from) ──
+        from guildmodel.gui.widgets.part_defaults_page import PartDefaultsPage
+        parts_scroll = QScrollArea()
+        parts_scroll.setWidgetResizable(True)
+        parts_scroll.setFrameShape(parts_scroll.Shape.NoFrame)
+        self._parts_page = PartDefaultsPage(prefs)
+        parts_scroll.setWidget(self._parts_page)
+        tabs.addTab(parts_scroll, "Parts")
+
+        # ── Tab 2 — Appearance (mode / viewport / 3D render / toolpaths) ───
         # Must precede the Tools tab: its ToolView preview reads _dark_check.
         self._build_appearance_tab(tabs, prefs)
 
@@ -2118,6 +2220,52 @@ class PrefsDialog(QDialog):
         if self._action_specs:
             self._build_hotkeys_tab(tabs)
             self._build_toolbar_tab(tabs)
+
+        # Open at the size the maker left it, else at the content's own size,
+        # within the screen — see `_initial_size`. Until 2026-09-27 the dialog
+        # opened at Qt's fallback (two thirds of the screen width) and its
+        # height was whatever the one non-scrolling tab demanded, which on a
+        # panel with the UI scale up put the OK button below the screen edge.
+        self.resize(self._initial_size(prefs))
+
+        # A typed number settles when the typing is done, here as in the dock:
+        # the tool editor rebuilt and redrew its tool on every digit otherwise.
+        for box in self.findChildren(QAbstractSpinBox):
+            box.setKeyboardTracking(False)
+
+    @staticmethod
+    def _scrolled(inner: QWidget) -> QScrollArea:
+        """Wrap a tab's column so no tab dictates the dialog's minimum size."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _initial_size(self, prefs: dict) -> QSize:
+        """The remembered size (`prefs_dialog_size`), else the widest and tallest
+        tab content plus the scroll bar and the chrome; either way no more than
+        80 % of the screen the dialog will show on, and never under the
+        minimums."""
+        avail = _available_screen(self)
+        max_w, max_h = int(avail.width() * 0.8), int(avail.height() * 0.8)
+        floor_w, floor_h = self.minimumWidth(), self.minimumHeight()
+        saved = prefs.get("prefs_dialog_size")
+        if (isinstance(saved, (list, tuple)) and len(saved) == 2
+                and all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+                        for v in saved)):
+            return QSize(max(min(int(saved[0]), max_w), floor_w),
+                         max(min(int(saved[1]), max_h), floor_h))
+        w = h = 0
+        for i in range(self._tabs.count()):
+            page = self._tabs.widget(i)
+            inner = page.widget() if isinstance(page, QScrollArea) else page
+            hint = inner.sizeHint()
+            w, h = max(w, hint.width()), max(h, hint.height())
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        chrome = self._tabs.tabBar().sizeHint().height() + 72     # tab bar + OK row
+        return QSize(max(min(w + bar + 8, max_w), floor_w),
+                     max(min(h + chrome, max_h), floor_h))
 
     # ── Appearance tab (viewport preset / 3D light rig / overlays) ────────
 
@@ -2528,9 +2676,11 @@ class PrefsDialog(QDialog):
         col = QVBoxLayout(outer)
         col.setContentsMargins(16, 16, 16, 8)
         col.setSpacing(8)
-        col.addWidget(QLabel(
+        hint = QLabel(
             "Rebind keyboard shortcuts. Click a cell and press the new combination; "
-            "↺ resets one binding."))
+            "↺ resets one binding.")
+        hint.setWordWrap(True)          # unwrapped, this line set the dialog's width
+        col.addWidget(hint)
 
         eff = effective_shortcuts(self._action_specs, self._hotkey_overrides)
         table = QTableWidget(len(self._action_specs), 3)
@@ -2571,7 +2721,7 @@ class PrefsDialog(QDialog):
         reset_all.clicked.connect(self._reset_all_hotkeys)
         col.addWidget(reset_all, 0, Qt.AlignmentFlag.AlignLeft)
 
-        tabs.addTab(outer, "Hotkeys")
+        tabs.addTab(self._scrolled(outer), "Hotkeys")
         self._check_hotkey_conflicts()
 
     def _check_hotkey_conflicts(self) -> dict:
@@ -2629,9 +2779,11 @@ class PrefsDialog(QDialog):
         col = QVBoxLayout(outer)
         col.setContentsMargins(16, 16, 16, 8)
         col.setSpacing(8)
-        col.addWidget(QLabel(
+        hint = QLabel(
             "Choose which buttons appear on the toolbar and their order. Check to show; "
-            "use ▲ / ▼ to reorder. Dividers between groups are added automatically."))
+            "use ▲ / ▼ to reorder. Dividers between groups are added automatically.")
+        hint.setWordWrap(True)          # unwrapped, this line set the dialog's width
+        col.addWidget(hint)
 
         self._toolbar_list = QListWidget()
         for key in ordered:
@@ -2657,7 +2809,7 @@ class PrefsDialog(QDialog):
         row.addWidget(reset)
         col.addLayout(row)
 
-        tabs.addTab(outer, "Toolbar")
+        tabs.addTab(self._scrolled(outer), "Toolbar")
 
     def _move_toolbar_item(self, delta: int) -> None:
         lw = self._toolbar_list
@@ -2788,7 +2940,7 @@ class PrefsDialog(QDialog):
         col = QVBoxLayout(outer)
         col.setContentsMargins(16, 16, 16, 8)
         col.setSpacing(8)
-        tabs.addTab(outer, "Tools")
+        tabs.addTab(self._scrolled(outer), "Tools")
 
         hint = QLabel("Your tool library. Add, edit, or remove tools here — no file "
                       "editing needed. Shipped tools can be reset; share a set with "
@@ -3061,6 +3213,8 @@ class PrefsDialog(QDialog):
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
             "last_output_dir": self._out_dir.text(),
+            # Parts tab: the shop defaults, sparse against the schema.
+            "part_defaults": self._parts_page.to_prefs(),
             # Appearance tab (viewport preset / 3D light rig / path palette)
             "viewport": {
                 "preset": self._vp_choices[self._vp_combo.currentIndex()][0],
@@ -3086,6 +3240,8 @@ class PrefsDialog(QDialog):
             "layer_colors": {k: dict(v) for k, v in self._layer_colors.items()
                              if (v.get("light") or v.get("dark"))},
         }
+        for key, cb in self._prompt_checks.items():   # General ▸ Prompts
+            out[key] = cb.isChecked()
         if self._hotkey_rows:                     # M7.15 — only genuine overrides
             out["hotkeys"] = self.hotkey_overrides()
         if self._toolbar_list is not None:        # M7.15 — [] = default toolbar
@@ -3112,6 +3268,11 @@ class MainWindow(QMainWindow):
         # Persistent preferences (~/.guildmodel/prefs.json — GuildDraw pattern)
         self._prefs = prefs_mod.load()
         self._dark_mode = bool(self._prefs["dark_mode"])
+        # Tooltips: wrapped to a readable width app-wide, and off altogether
+        # when the maker says so — the ? at the end of the toolbar (gui/tooltips).
+        self._tooltip_filter = TooltipFilter(
+            enabled=bool(self._prefs.get("tooltips", True)), parent=self)
+        QApplication.instance().installEventFilter(self._tooltip_filter)
         # Appearance prefs go into the theme module before any surface is
         # built, so the first paint already honors them.
         _apply_appearance_prefs(self._prefs)
@@ -3213,6 +3374,8 @@ class MainWindow(QMainWindow):
         # Set once the maker has answered the "make this the default bed?" prompt for
         # the current bed state; reset on any bed change so a genuinely new bed re-asks.
         self._bed_prompt_answered = False
+        self._part_defaults_offered = set()  # keys of the part-defaults lines asked about
+        self._tool_feeds_offered = None      # signature of the last tool-feeds offer
         self._nest = None                 # core.cam.layout.BedNest (M7.6) once nested
         self._nest_specs = None           # build specs behind the nest (M7.7 bed sim)
         self._nest_thread = None
@@ -3593,7 +3756,9 @@ class MainWindow(QMainWindow):
         v.addWidget(size_title)
         size_row = QHBoxLayout()
         self._bed_width_spin = QDoubleSpinBox()
+        self._bed_width_spin.setKeyboardTracking(False)   # settles on Enter or a click away
         self._bed_height_spin = QDoubleSpinBox()
+        self._bed_height_spin.setKeyboardTracking(False)   # settles on Enter or a click away
         for sp, suffix in ((self._bed_width_spin, " mm W"), (self._bed_height_spin, " mm H")):
             sp.setRange(1.0, 5000.0)
             sp.setDecimals(1)
@@ -3647,6 +3812,7 @@ class MainWindow(QMainWindow):
         hd_row = QHBoxLayout()
         hd_row.addWidget(QLabel("Hold-down height:"))
         self._bed_holddown_spin = QDoubleSpinBox()
+        self._bed_holddown_spin.setKeyboardTracking(False)   # settles on Enter or a click away
         self._bed_holddown_spin.setRange(0.0, 80.0)
         self._bed_holddown_spin.setSingleStep(0.5)
         self._bed_holddown_spin.setDecimals(1)
@@ -3716,6 +3882,7 @@ class MainWindow(QMainWindow):
         ang_row = QHBoxLayout()
         ang_row.addWidget(QLabel("Angle:"))
         self._bed_rot_spin = QDoubleSpinBox()
+        self._bed_rot_spin.setKeyboardTracking(False)   # settles on Enter or a click away
         self._bed_rot_spin.setRange(0.0, 359.9)
         self._bed_rot_spin.setDecimals(1)
         self._bed_rot_spin.setSingleStep(5.0)
@@ -3989,6 +4156,40 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.append_log("[worktable] could not write the default bed:\n"
                                 + traceback.format_exc())
+
+    def _maybe_prompt_part_defaults(self) -> None:
+        """On an explicit Save, offer to adopt this project's part setup — each
+        part's program zero and stock, the temples' snap to blank end and stock
+        side — as the shop defaults (Preferences ▸ Parts), when it differs from
+        them.
+
+        One checkbox per departure (`PartDefaultsOffer`), and once per line:
+        every line shown is remembered for the session, adopted or left, so
+        saving again asks nothing and a further change asks about that change
+        alone. "Don't ask again" clears `prompt_set_part_defaults`, which
+        Preferences ▸ General ▸ Prompts turns back on. Not asked on autosave or
+        on the silent save after a worktable program — those are not the maker
+        saving their work."""
+        if not self._prefs.get("prompt_set_part_defaults", True):
+            return
+        offered = getattr(self, "_part_defaults_offered", None) or set()
+        deps = [d for d in part_defaults_mod.departures(self._workspaces, self._prefs)
+                if d.key() not in offered]
+        if not deps:
+            return
+        from guildmodel.gui.widgets.part_defaults_page import PartDefaultsOffer
+        dlg = PartDefaultsOffer(deps, self)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        self._part_defaults_offered = offered | {d.key() for d in deps}
+        if dlg.dont_ask.isChecked():
+            self._prefs["prompt_set_part_defaults"] = False
+        chosen = dlg.chosen() if accepted else []
+        if chosen:
+            part_defaults_mod.adopt(self._prefs, chosen)
+            self.append_log("[parts] Defaults updated: "
+                            + "; ".join(d.text() for d in chosen))
+            self.status_lbl.setText("Part defaults updated")
+        prefs_mod.save(self._prefs)
 
     def _on_bed_size_changed(self, _val: float = 0.0) -> None:
         """Bed work-envelope W/H edited — resize the worktable in place (M7.4)."""
@@ -4330,6 +4531,7 @@ class MainWindow(QMainWindow):
         — on the posting grid, under the posting machine limits — so this is a fast
         post (no relief rebuild). Per-component tabs still Generate each part on its
         own — this is the bed-wide output."""
+        self._commit_typed_value()
         if self._nest is None or not self._nest.placements:
             QMessageBox.information(
                 self, "Nest first",
@@ -4371,7 +4573,7 @@ class MainWindow(QMainWindow):
             tool_settings, ts_warns = build_tool_settings(
                 bed.ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
                 default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
-                machine=machine)
+                machine=machine, tool_feeds=cam.tool_feeds)
             for w in ts_warns:
                 self.append_log(f"[gcode] tool: {w}")
 
@@ -4422,7 +4624,8 @@ class MainWindow(QMainWindow):
             report = estimate_program(text, MachineDynamics.from_profile(machine),
                                       tool_change_seconds=machine.tool_change_seconds)
             self.append_log("[gcode] Estimated cut time —\n" + format_report(report))
-            rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm)
+            rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
+                                tool_settings=tool_settings)
         except Exception:
             self.append_log("[gcode ERROR]\n" + traceback.format_exc())
             QMessageBox.critical(self, "Worktable program failed",
@@ -4700,6 +4903,13 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(20, 20))
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, tb)
         self._toolbar = tb
+        # The tooltip switch (2026-09-27): a ? at the far end of the toolbar,
+        # outside the customizable set so it is always where it was.
+        self._act_tooltips = QAction("Tooltips", self)
+        self._act_tooltips.setCheckable(True)
+        self._act_tooltips.setChecked(bool(self._prefs.get("tooltips", True)))
+        self._act_tooltips.toggled.connect(self._on_tooltips_toggled)
+        self._on_tooltips_toggled(self._act_tooltips.isChecked(), announce=False)
         # A horizontal toolbar's separators are vertical (thickness = width); a vertical
         # toolbar's are horizontal (thickness = height). One static QSS rule can't serve
         # both, so we restyle live whenever the toolbar is re-docked (restoreState may
@@ -4897,6 +5107,7 @@ class MainWindow(QMainWindow):
         # (action, icon-name) for the runtime recolor hook (text fallback if
         # the SVG is missing). op-fit / view-sidebar are reused from GuildDraw.
         self._icon_actions = [
+            (self._act_tooltips, "toggle-tooltips"),  # the ? at the toolbar's end
             (self._act_open_model, "op-open-dxf"),   # toolbar: open a .gdraw model
             (self._act_open, "op-open-dxf"),         # File menu: open a DXF
             (self._act_build, "op-build-3d"),
@@ -4963,6 +5174,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._arrange_toolpath_dock)
 
     def _arrange_toolpath_dock(self) -> None:
+        # Deferred like `_arrange_log_dock`, and guarded like it: the zero
+        # timer can fire after the window is gone (2026-09-27, caught by a test
+        # that pumped events after an earlier test's window had closed).
+        import shiboken6
+        if not shiboken6.isValid(self) or not shiboken6.isValid(self._toolpath_dock):
+            return
         if self._toolpath_dock.isVisible() and not self._toolpath_dock.isFloating():
             self.tabifyDockWidget(self._log_dock, self._toolpath_dock)
             self._toolpath_dock.raise_()
@@ -4973,6 +5190,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._arrange_inspector_dock)
 
     def _arrange_inspector_dock(self) -> None:
+        import shiboken6
+        if not shiboken6.isValid(self) or not shiboken6.isValid(self._inspector_dock):
+            return
         if self._inspector_dock.isVisible() and not self._inspector_dock.isFloating():
             self.splitDockWidget(self._log_dock, self._inspector_dock,
                                  Qt.Orientation.Horizontal)
@@ -5001,8 +5221,30 @@ class MainWindow(QMainWindow):
                 tb.addWidget(sep)
             tb.addAction(act)
             prev_group = spec.group
+        # The tooltip switch sits at the far end, past a spacer that takes the
+        # rest of the bar (the right on a top toolbar, the bottom on the left
+        # one), outside the customizable set; its own tooltip shows even when
+        # tooltips are off, or nobody could find out what it does.
+        spacer = QWidget(tb)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tb.addWidget(spacer)
+        tb.addAction(self._act_tooltips)
+        self._tooltip_filter.set_exempt([tb.widgetForAction(self._act_tooltips)])
         self._fit_toolbar_button_styles()
         self._style_toolbar_separators()
+
+    def _on_tooltips_toggled(self, on: bool, announce: bool = True) -> None:
+        """The ? button: tooltips on or off, app-wide, remembered."""
+        self._tooltip_filter.enabled = bool(on)
+        self._act_tooltips.setToolTip(
+            "Tooltips are on \u2014 click to hide them everywhere" if on
+            else "Tooltips are off \u2014 click to show them again")
+        if self._prefs.get("tooltips") != bool(on):
+            self._prefs["tooltips"] = bool(on)
+            prefs_mod.save(self._prefs)
+        if announce and getattr(self, "status_lbl", None) is not None:
+            self.status_lbl.setText(
+                "Tooltips on" if on else "Tooltips off \u2014 the ? button turns them back on")
 
     def _fit_toolbar_button_styles(self) -> None:
         """Icon-only where the action has an icon, text-only where it doesn't (so a
@@ -5522,10 +5764,26 @@ class MainWindow(QMainWindow):
             self.status_lbl.setText(f"Project saved — {path.name}")
         return True
 
+    @staticmethod
+    def _commit_typed_value() -> None:
+        """Apply a number the maker typed but has not yet committed.
+
+        A spin box applies on Enter, Tab or a click away (2026-09-27), and a
+        toolbar button and a keyboard shortcut are neither — a toolbar's
+        buttons take no focus — so the field read 1500 while `value()` still
+        said 300, and Ctrl+G posted the old feed. Every action that reads the
+        panel calls this first: Generate, Build, Save, Export, the handoff.
+        Not autosave, which must never touch what is being typed.
+        """
+        w = QApplication.focusWidget()
+        if isinstance(w, QAbstractSpinBox):
+            w.interpretText()
+
     def _on_save_project(self) -> None:
         """Save (Ctrl+S): write straight back to the open .gmodel — no overwrite
         prompt — and only fall through to Save As when the project has never been
         saved (mirrors GuildDraw's plain Save)."""
+        self._commit_typed_value()
         if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
             QMessageBox.warning(self, "No design",
                                 "Open a drawing (.gdraw) or import a DXF before saving a project.")
@@ -5533,11 +5791,13 @@ class MainWindow(QMainWindow):
         if self._project_path is not None:
             if self._save_gmodel_to(self._project_path):
                 self._maybe_prompt_default_bed()
+                self._maybe_prompt_part_defaults()
             return
         self._on_save_project_as()
 
     def _on_save_project_as(self) -> None:
         """Save As…: always prompt for a new .gmodel path, then save there."""
+        self._commit_typed_value()
         if self._source_dxf_bytes is None and self._source_gdraw_bytes is None:
             QMessageBox.warning(self, "No design",
                                 "Open a drawing (.gdraw) or import a DXF before saving a project.")
@@ -5555,6 +5815,7 @@ class MainWindow(QMainWindow):
             self._prefs["last_output_dir"] = str(Path(path_str).parent)
             prefs_mod.save(self._prefs)
             self._maybe_prompt_default_bed()
+            self._maybe_prompt_part_defaults()
 
     def _on_open_project(self) -> None:
         if not self._confirm_discard():
@@ -5590,6 +5851,8 @@ class MainWindow(QMainWindow):
         self._wt_undo.clear()                     # a fresh project starts a clean history
         self._wt_redo.clear()
         self._bed_prompt_answered = False
+        self._part_defaults_offered = set()  # a reopened project is a fresh offer
+        self._tool_feeds_offered = None
         self._refresh_wt_undo_buttons()
         self._last_programs = dict(bundle.programs)
         self._last_setup = bundle.setup
@@ -5646,7 +5909,11 @@ class MainWindow(QMainWindow):
     def _open_preferences(self) -> None:
         current = {**self._prefs, "dark_mode": self._dark_mode}
         dlg = PrefsDialog(current, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        # The size the maker left it at is theirs to keep, Cancel or OK.
+        self._prefs["prefs_dialog_size"] = [int(dlg.width()), int(dlg.height())]
+        if not accepted:
+            prefs_mod.save(self._prefs)
             return
         p = dlg.to_prefs()
         old_preview_res = self._prefs["preview_resolution_mm"]
@@ -5717,6 +5984,7 @@ class MainWindow(QMainWindow):
         self.params.stock_changed.connect(self._on_stock_changed)
         self.params.zone_hovered.connect(self._on_zone_hover)
         self.params.cam_changed.connect(self._on_cam_changed)
+        self.params.temple_apply_both.connect(self._on_apply_temple_to_both)
         # Any user param edit means unsaved work (suppressed during restores).
         self.params.castle_changed.connect(self._mark_dirty)
         self.params.stock_changed.connect(self._mark_dirty)
@@ -6019,6 +6287,61 @@ class MainWindow(QMainWindow):
                          "The cutting bed — import a bed DXF, tag role zones + keep-outs")
         tb.blockSignals(False)
         tb.setVisible(True)
+        # Apply to both temples needs a second temple to copy to.
+        n_temples = len(self._temple_workspaces())
+        self.params.set_temple_apply_both_enabled(
+            n_temples >= 2,
+            "This project has one temple; there is no other temple to copy to."
+            if n_temples < 2 else "")
+
+    def _temple_workspaces(self) -> list:
+        """The enabled temple workspaces, in tab order."""
+        from guildmodel.core.project.schema import ComponentKind
+        return [ws for ws in self._workspaces
+                if ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT)
+                and ws.enabled]
+
+    def _on_apply_temple_to_both(self) -> None:
+        """Temple tab ▸ Apply to both temples (2026-09-27): copy the tab's settings
+        — blank, snap and stock side, hinge pocket depth and angle, engraving,
+        tools, onion skin, hand allowance, holding — onto the other temple, so both
+        cut with the same tools and depths. Each temple keeps its own fixture
+        zone, program zero (Machine tab) and per-part cut settings (Cut tab).
+
+        The copied-to temple's model and program no longer match its settings, so
+        its mesh cache is dropped and its stored program marked stale, exactly as
+        an edit on its own tab would; the next visit shows it unbuilt rather than
+        showing the old blank as if it were current."""
+        from guildmodel.core.project.schema import component_fixture_zone
+        src = self.params.temple_params()
+        self._sync_active_workspace()          # the active temple already has the tab
+        active = (self._workspaces[self._active_ws]
+                  if 0 <= self._active_ws < len(self._workspaces) else None)
+        others = [ws for ws in self._temple_workspaces() if ws is not active]
+        if not others:
+            self.status_lbl.setText("No other temple in this project")
+            return
+        changed = []
+        for ws in others:
+            zone = ((ws.temple_params.fixture_zone if ws.temple_params is not None else "")
+                    or component_fixture_zone(ws.kind))
+            new = src.model_copy(update={"fixture_zone": zone})
+            if ws.temple_params is not None and new.model_dump() == ws.temple_params.model_dump():
+                continue
+            ws.temple_params = new
+            ws.mesh_built = False
+            ws.stage_cache = {}
+            ws.edge_cache = {}
+            ws.core_guide = None
+            ws.program_stored = False
+            changed.append(ws.label)
+        if not changed:
+            self.status_lbl.setText("Both temples already match")
+            return
+        self._mark_dirty()
+        self.append_log("[temple] Applied the Temple tab to " + ", ".join(changed)
+                        + " (fixture zone, program zero and cut settings kept per temple).")
+        self.status_lbl.setText("Temple settings applied to " + ", ".join(changed))
 
     def _on_component_tab_changed(self, index: int) -> None:
         if index == self._worktable_tab_index:
@@ -6279,6 +6602,14 @@ class MainWindow(QMainWindow):
         if not from_project:
             self._project_path = None
         self._clear_nest()                 # the previous file's bed nest / sim is stale
+        # Every part starts from the shop's own defaults (Preferences ▸ Parts):
+        # its program zero, the temples' blank-end snap and stock side, blank
+        # sizes, the block's hole pattern, tools. A reopened project overlays its
+        # saved values right after this (_apply_components_to_workspaces), so
+        # what a project saved is what it shows.
+        part_defaults_mod.seed_workspaces(workspaces, self._prefs)
+        self._part_defaults_offered = set()
+        self._tool_feeds_offered = None
         self._inject_gdraw_engraving(workspaces)
         self._design_token += 1            # any build in flight is for the design we are leaving
         self._workspaces = workspaces
@@ -6478,6 +6809,23 @@ class MainWindow(QMainWindow):
         if ws.is_temple:
             ws.kind = ComponentKind.TEMPLE_RIGHT
         ws.label = component_label(ws.kind)
+        if not self._import_from_project:
+            # A fresh DXF starts from the shop defaults too (Preferences ▸ Parts).
+            # A reopened project restored its own zero and params into the panel
+            # before this import, and None here leaves the panel as it is.
+            self._part_defaults_offered = set()
+            self._tool_feeds_offered = None
+            ws.program_zero = part_defaults_mod.default_program_zero(self._prefs, ws.kind)
+            if ws.is_temple:
+                ws.temple_params = part_defaults_mod.default_params(self._prefs, ws.kind)
+            else:
+                # The Model tab keeps its state across DXFs in a session; only the
+                # stock — a shop constant — is re-seeded, and only when a default
+                # for it is set, so a maker who set none sees no change.
+                stock = part_defaults_mod.param_overrides(self._prefs, "frame_front")
+                if stock:
+                    ws.castle_params = part_defaults_mod.with_overrides(
+                        self.params.castle_params(), "frame_front", stock)
         if self._import_from_project:
             self._seed_workspace_artifacts(ws, None)
             self._pending_artifacts = None
@@ -6618,6 +6966,7 @@ class MainWindow(QMainWindow):
                 if ws.enabled and self._workspace_buildable(ws)]
 
     def _on_build_3d(self) -> None:
+        self._commit_typed_value()
         targets = self._buildable_workspaces()
         if not targets:
             self.append_log(
@@ -7769,6 +8118,7 @@ class MainWindow(QMainWindow):
         self._update_view_toggles()
 
     def _on_generate(self) -> None:
+        self._commit_typed_value()
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
         if self._outline_poly is None:
@@ -7781,6 +8131,7 @@ class MainWindow(QMainWindow):
 
         params = self._collect_gcode_params()
         self._maybe_write_back_material()
+        self._maybe_write_back_tool_feeds()
 
         self._act_gcode.setEnabled(False)
         self.append_log("[gcode] Generating — the program is stored in the project.")
@@ -7816,6 +8167,7 @@ class MainWindow(QMainWindow):
     def _on_generate_block(self) -> None:
         """Generate the base-curve forming block from the loaded frame's lens
         interior (BUILDPLAN M6.4) — its own program, folded into the .gmodel."""
+        self._commit_typed_value()
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
         if self._lens_od is None:
@@ -7827,11 +8179,17 @@ class MainWindow(QMainWindow):
         self._act_block.setEnabled(False)
         self.append_log("[gcode] Generating the base-curve forming block from the lens interior.")
 
+        # The block's own CAM from whichever tab is open: its overrides, not the
+        # open tab's, and its own material's feeds, not the project material's
+        # Cut row (`cam_params_for`).
+        block = self.params.block_params()
         worker = GCodeWorker(
             outline=self._outline_poly, castle=self.params.castle_params(),
-            params=self._collect_gcode_params(), cam_params=self.params.effective_cam_params())
+            params=self._collect_gcode_params(),
+            cam_params=self.params.cam_params_for(
+                block.material, self._block_component_overrides()))
         worker.block_lens = self._lens_od
-        worker.block = self.params.block_params()
+        worker.block = block
         worker.is_block = True
         worker.kernel = self._model_kernel()
         self._gcode_worker = worker
@@ -7867,6 +8225,7 @@ class MainWindow(QMainWindow):
 
     def _on_generate_worktable(self) -> None:
         """Cut the frame front + its base-curve block in one bed program (M6.5)."""
+        self._commit_typed_value()
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
         if not (self._partition is not None and self._partition.classified
@@ -7934,16 +8293,93 @@ class MainWindow(QMainWindow):
             "contour_stepdown_mm": "stepdown", "rough_axial_stock_mm": "rough stock",
         }
         what = ", ".join(labels.get(k, k) for k in changed)
-        resp = QMessageBox.question(
-            self, "Update material defaults?",
-            f"You changed {what} from the “{name}” defaults.\n\n"
-            f"Save these as the new defaults for {name}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        if not self._prefs.get("prompt_material_writeback", True):
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Update material defaults?")
+        box.setText(f"You changed {what} from the “{name}” defaults.")
+        box.setInformativeText(f"Save these as the new defaults for {name}?")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        cb = QCheckBox("Don't ask again")
+        box.setCheckBox(cb)
+        resp = box.exec()
+        if cb.isChecked():
+            # Turned back on under Preferences ▸ General ▸ Prompts; the Materials
+            # tab still edits the defaults by hand.
+            self._prefs["prompt_material_writeback"] = False
+            prefs_mod.save(self._prefs)
         if resp == QMessageBox.StandardButton.Yes:
             material_store.save_override(name, values)
             self.append_log(f"[material] Saved new {name} defaults: {what}.")
+
+    def _maybe_write_back_tool_feeds(self) -> None:
+        """On Generate, offer to save this project's per-tool feeds — the Cut
+        tab's rows — to the tool library where they differ from it, for the
+        tools this component's program uses (2026-09-27).
+
+        Once per distinct set of departures: No, and generating again with the
+        same values, asks nothing more. "Don't ask again" clears
+        `prompt_tool_feeds_writeback`, which Preferences ▸ General ▸ Prompts
+        turns back on. The project keeps its own values either way, so it still
+        describes itself on a machine whose library never saw them."""
+        if not self._prefs.get("prompt_tool_feeds_writeback", True):
+            return
+        from guildmodel.gui import tool_store
+        cam = self.params.cam_params()
+        if not cam.tool_feeds:
+            return
+        deps = {}
+        for name, _ops in self.params.tools_for_active_component():
+            if name in cam.tool_feeds:
+                d = tool_store.feed_departures(name, cam.tool_feeds[name])
+                if d:
+                    deps[name] = d
+        if not deps:
+            return
+        key = tuple(sorted((name, tuple(sorted(vals.items()))) for name, vals in deps.items()))
+        if key == getattr(self, "_tool_feeds_offered", None):
+            return
+        labels = {"feed_rate_mmpm": "feed", "plunge_rate_mmpm": "plunge",
+                  "spindle_rpm": "spindle"}
+        lines = ["\u2022 " + name + ": "
+                 + ", ".join(f"{labels[f]} {v:g}" for f, v in vals.items())
+                 for name, vals in deps.items()]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Update tool library?")
+        box.setText("This project's feeds for "
+                    + (f"{len(deps)} tools" if len(deps) > 1 else "one tool")
+                    + " differ from your tool library.")
+        box.setInformativeText(
+            "\n".join(lines)
+            + "\n\nSave them as the library's own feeds for "
+            + ("these tools" if len(deps) > 1 else "this tool")
+            + "? (Preferences \u25b8 Tools)")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        cb = QCheckBox("Don't ask again")
+        box.setCheckBox(cb)
+        resp = box.exec()
+        self._tool_feeds_offered = key
+        if cb.isChecked():
+            self._prefs["prompt_tool_feeds_writeback"] = False
+            prefs_mod.save(self._prefs)
+        if resp == QMessageBox.StandardButton.Yes:
+            for name, vals in deps.items():
+                try:
+                    tool_store.save_feeds(name, vals)
+                    self.append_log(f"[tools] {name}: library feeds updated ("
+                                    + ", ".join(f"{labels[f]} {v:g}" for f, v in vals.items())
+                                    + ").")
+                except Exception:
+                    self.append_log(f"[tools] could not update {name}:\n"
+                                    + traceback.format_exc())
+            self.params.refresh_tool_lists()    # the rows and combos re-read the library
+            self.status_lbl.setText("Tool library updated")
 
     # -------------------------------------------------- toolpath overlay (M7.11)
 
@@ -8133,6 +8569,7 @@ class MainWindow(QMainWindow):
         .gmodel travels whole — GuildSend reads it natively: programs, setup
         sheet, tools, material, and the tagged worktable (its M7.2 bundle
         path), so nothing is lost to a loose .nc export."""
+        self._commit_typed_value()
         if not self._last_programs:
             QMessageBox.information(
                 self, "Open in GuildSend",
@@ -8195,6 +8632,7 @@ class MainWindow(QMainWindow):
         """Write the generated program(s) to standalone .nc file(s) on demand
         (the program lives in the project by default; this is the opt-in loose
         export, mirroring Export STL)."""
+        self._commit_typed_value()
         if not self._last_programs:
             QMessageBox.information(
                 self, "Export G-code",
@@ -8314,6 +8752,7 @@ class MainWindow(QMainWindow):
         return out
 
     def _on_export_stl(self) -> None:
+        self._commit_typed_value()
         i = self._active_ws
         ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
         if ws is None or not self._workspace_buildable(ws):
@@ -8342,6 +8781,7 @@ class MainWindow(QMainWindow):
         `_export_filenames`, which is what keeps a drawing with four Base Curve R
         components from writing one file and discarding three builds.
         """
+        self._commit_typed_value()
         targets = self._buildable_workspaces()
         if not targets:
             QMessageBox.information(
@@ -8384,6 +8824,7 @@ class MainWindow(QMainWindow):
     def _on_export_formed_stl(self) -> None:
         """File ▸ Export Formed STL… (M18): the active front after forming,
         with the groove, as one closed solid a slicer can print."""
+        self._commit_typed_value()
         i = self._active_ws
         ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
         if ws is None or not ws.castle_ready:

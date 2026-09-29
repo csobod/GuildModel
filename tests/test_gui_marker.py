@@ -80,7 +80,7 @@ def test_every_mainwindow_test_carries_the_gui_marker():
 
 def test_the_marker_is_not_over_applied():
     """The other half: a `gui` mark on a test that never builds a window quietly
-    drops it out of the gate. 39 tests need it, out of a suite of ~1,310 — if
+    drops it out of the gate. 47 tests need it, out of a suite of ~1,360 — if
     that count climbs on a change that added no window tests, something is being
     excused rather than marked. (32 since 2026-09-16: Export STL gained a window
     test when it stopped being frame-front-only; 37 since M18's five.)"""
@@ -101,5 +101,15 @@ def test_the_marker_is_not_over_applied():
                     "build a MainWindow — it belongs in the gating run")
     # 32 through v1.7.0; M18 (the Forming view) added five in
     # `test_forming_gui_m18`; the 2026-09-26 bug hunt two in
-    # `test_bug_hunt_v180_gui` (a reopened project's programs, Cancel).
-    assert marked == 39, f"{marked} tests marked `gui`, expected 39"
+    # `test_bug_hunt_v180_gui` (a reopened project's programs, Cancel); the
+    # 2026-09-27 part defaults five in `test_part_defaults` (a fresh drawing
+    # seeded, the Save offer, Save itself committing a typed number, Don't ask
+    # again, the material write-back), one in
+    # `test_temple_apply_both` (the Temple tab onto the other temple), one in
+    # `test_tool_feeds_writeback` (the library offer on Generate), one in
+    # `test_dialog_sizing` (Preferences opens within the screen) and one in
+    # `test_tooltips_and_typing` (the ? switch at the toolbar's end); the
+    # 2026-09-28 checkbox offer one more in `test_part_defaults` (only the
+    # checked lines adopted, each asked once); the 2026-09-29 release check one
+    # in `test_block_material_feeds` (the block posted from the front's tab).
+    assert marked == 50, f"{marked} tests marked `gui`, expected 50"

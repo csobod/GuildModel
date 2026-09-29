@@ -79,8 +79,10 @@ def test_params_panel_chip_readout(tmp_path, monkeypatch):
     from guildmodel.gui.widgets.params_panel import ParamsPanel
 
     p = ParamsPanel()
-    # default flat_3175 (1 flute) @ acetate (1200 / 10000) → 0.120 mm/tooth, in range (M12.3)
-    assert "mm/tooth" in p._chip_load_lbl.text()
-    assert "0.120" in p._chip_load_lbl.text()
-    assert "m/min" in p._surface_speed_lbl.text()
-    assert "within" in p._chip_status_lbl.text().lower()
+    # default flat_3175 (1 flute) @ acetate (1200 / 10000) → 0.120 mm/tooth, in range
+    # (M12.3). Since 2026-09-27 the read-out sits on the tool's own Feeds & Speeds row.
+    row = p.tool_feed_rows()["flat_3175"]
+    assert "mm/tooth" in row.chip.text()
+    assert "0.120" in row.chip.text()
+    assert "m/min" in row.chip.text()
+    assert "within" in row.chip.text().lower()

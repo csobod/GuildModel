@@ -7,7 +7,8 @@
 # carry feed_rate_mmpm / plunge_rate_mmpm / spindle_rpm / max_doc_mm. When set,
 # they override the material preset for any op assigned that tool (a small tool
 # wants gentler feeds than the bulk tool); when absent the material supplies
-# them. All are clamped to the active machine profile at post time.
+# them. A project may set its own per tool on top (the Cut tab's Feeds & Speeds
+# rows, 2026-09-27). All are clamped to the active machine profile at post time.
 
 ball_1mm:
   display_name: "1 mm Ball Nose"

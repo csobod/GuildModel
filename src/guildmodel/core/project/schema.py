@@ -576,6 +576,23 @@ class ProgramZero(BaseModel):
         return f"Stock blank {corner}, {self.z_ref} face"
 
 
+class ToolFeeds(BaseModel):
+    """Feeds and speed a project sets for one tool (2026-09-27). None = inherit.
+
+    The Cut tab's material row gives every tool its feeds; a tool in the library
+    may carry its own (an engraving bit's slender tip wants a gentler feed than
+    the bulk end mill, and `tools.yaml` says so); this is the project's word on
+    top of both — the Cut tab's per-tool rows — resolved field by field by
+    `core.cam.feeds.resolve_tool_feeds` and clamped to the machine at post.
+    """
+    feed_rate_mmpm: float | None = Field(None, gt=0)
+    plunge_rate_mmpm: float | None = Field(None, gt=0)
+    spindle_rpm: int | None = Field(None, gt=0)
+
+    def is_empty(self) -> bool:
+        return not self.model_dump(exclude_none=True)
+
+
 class CastleCamParams(BaseModel):
     """Operation parameters for the five-op posterior program (BUILDPLAN M4.8).
 
@@ -737,6 +754,11 @@ class CastleCamParams(BaseModel):
     feed_rate_mmpm: float | None = None
     plunge_rate_mmpm: float | None = None
     spindle_rpm: int | None = None
+    # Per-tool feeds this project sets (2026-09-27): tool name -> ToolFeeds. The
+    # Cut tab shows one row per tool the active component uses and writes here
+    # when a row departs from the tool's library feeds or the material's. Empty
+    # = every tool inherits, which is what every earlier project has.
+    tool_feeds: dict[str, ToolFeeds] = Field(default_factory=dict)
     safe_z_clearance_mm: float = Field(5.0, gt=0)   # rapid clearance above the tallest obstacle
     # Height of the work-holding screws / clamps above the table (z = 0). Single-part
     # rapids retract above the TALLER of the stock and this, so travels clear the

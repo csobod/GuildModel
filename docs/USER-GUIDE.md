@@ -167,7 +167,9 @@ form cutter in the tool library.
 
 ### Stock and Build 3D
 
-The **Stock** tab sets the blank dimensions and the pad block.
+The **Stock** tab sets the blank dimensions and the pad block. They start
+from your defaults in Preferences ▸ Parts (§8); save a project on a different
+stock and GuildModel offers, once, to make it the default.
 
 **Build 3D** builds every loaded component's model in one pass, and each tab
 caches its own model. The view strip carries:
@@ -295,33 +297,62 @@ A row with a shipped label replaces it; `{_deleted: true}` hides one.
 
 **Temple.** The outline extruded on the blank, with hinge blind-pockets from
 the `HINGE` layer and engraving grooves from `ENGRAVING`. The hinge end snaps
-to the 170×30 blank edge. The injected-core bar shown in 3D is a visual guide
-only. Program: Hinge Pockets → Engraving → Holes → Temple Profile. The Holes
-operation appears only when the drawing has decorative openings in the outline.
+to the 170×30 blank edge; the snap, the stock side and the blank size start
+from your defaults in Preferences ▸ Parts (§8). The injected-core bar shown in
+3D is a visual guide only. Program: the hinge pockets and the engraving while
+the blank is rigid — whichever tool has the least work first, so the operator
+loads it, starts, and swaps once — then Holes, then the Temple Profile that
+releases the part. The Holes operation appears only when the drawing has
+decorative openings in the outline.
 
 The Temple tab sets the **Hinge pocket depth** and the **Hinge pocket angle**.
 The angle tilts the pocket floor along the temple to offset splay built into
 a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
 positive angle makes the posterior edge deeper.
 
+**Apply to both temples**, at the foot of the Temple tab, copies the tab onto
+the other temple — blank, snap and stock side, hinge pocket depth and angle,
+engraving, tools, onion skin, hand allowance and holding — so both cut with
+the same tools and depths. Each temple keeps its own program zero (Machine
+tab) and cut settings (Cut tab). The copied-to temple needs a rebuild and a
+new program, and its tab shows the copied values on the next visit.
+
 **Base-curve block.** The heat-forming template: the lens shape cut from a
 70×70 acetal blank, with three M4 through-holes that double as the fixture's
-mounting screws. Program: Drill Holes → Block Profile.
+mounting screws. The blank size and the hole pattern start from Preferences ▸
+Parts. Program: Drill Holes → Block Profile.
 
 ## 4. Cut settings
 
 The **Cut** tab is the everyday surface. Pick the **material** — acetate,
 acetal and the rest — and its feeds, speeds, stepover and stepdown seed
-themselves. A **chip-load** read-out shows green / amber / red against the
-material's window, so you can see a bad feed-rpm-tool combination before you
-cut. Tune the values away from the defaults, and GuildModel offers to save them
-back as your new defaults.
+themselves. Tune the material row away from the defaults, and GuildModel
+offers to save them back as your new defaults; *Don't ask again* on that box
+silences the offer, and Preferences ▸ General turns it back on.
+
+**Feeds & Speeds, per tool.** Under the material row, one row per tool the
+open component's program uses — a temple with engraving shows the engraving
+bit, the hinge-pocket end mill and the profile tool. Each row shows what that
+tool will actually cut at and where the numbers come from: *material* (the row
+above), *tool library* (the tool's own feeds in Preferences ▸ Tools — the
+shipped engraving bit runs at 300 mm/min and 14000 RPM, which its slender tip
+needs) or *this project* (a value you typed here). Type into a row to set it
+for this project; *Reset* gives the tool back to its library feeds or the
+material's. A **chip-load** read-out on every row shows green / amber / red
+against the material's window, so a bad feed-rpm-tool combination is visible
+before you cut. The rows follow the tool choices on the Temple, Base Curve and
+Machine tabs, and everything is clamped to the machine profile at post time.
+Generate a program whose per-tool feeds differ from the tool library and
+GuildModel offers, once, to save them to the library; the project keeps its
+own values either way.
 
 The **Machine** tab is setup. It holds:
 
 - the machine profile — Guild CNC, Nomad 3, Shapeoko or generic GRBL
-- **program zero** — center/center/bottom by default. The datum crosshair shows
-  on the 2D canvas.
+- **program zero** — each part keeps its own, starting from the default for
+  its kind of part in Preferences ▸ Parts (shipped as center/center/bottom).
+  The datum crosshair shows on the 2D canvas. Save a project whose zero differs
+  from the default and GuildModel offers, once, to adopt it.
 - the per-operation tool assignments, for multi-tool jobs
 - the cut strategy
 - the no-`SCULPT` profile fallback
@@ -423,7 +454,20 @@ that any sender can run.
 **Settings ▸ Preferences… (Ctrl+,)** — the same shortcut across the Guild apps.
 
 - **General** — the log panel on startup, the 3D preview and STL export
-  resolution, and the default output folder.
+  resolution, the default output folder, and the **Prompts**: the four offers
+  GuildModel makes — the default bed, the part defaults, the material
+  write-back, the tool-library write-back — each of which has a *Don't ask
+  again* on the box and a switch here to turn it back on.
+- **Parts** — what a newly opened drawing or DXF starts from, for each kind of
+  part: the program zero, the temples' snap to blank end and stock side, the
+  blank sizes and pad block, the base-curve block's mounting-hole pattern, and
+  each part's tools. A project keeps its own values. Save one whose program
+  zero, stock or temple alignment differs and GuildModel offers to make that
+  the default, provided every part of that kind agrees. Each difference is a
+  line with its own checkbox; clear the ones that belong to this job only, and
+  Yes adopts the rest. The stock is one line per kind of part and is adopted
+  whole. GuildModel asks about each line once; a further change asks about
+  that change alone. The hole pattern and the tools are set here only.
 - **Appearance** — dark mode; the viewport presets (Parchment, Dimmed,
   Blueprint, Matte Dark, Plain White, or a custom canvas color) that pin the
   canvas and 3D backdrop in both UI modes; the 3D light rig (Studio /
@@ -436,8 +480,14 @@ that any sender can run.
 - **Hotkeys** — rebind any listed action. GuildModel flags conflicts.
 - **Toolbar** — choose and order the toolbar buttons.
 
-Your preferences, window layout and recent files persist in
-`~/.guildmodel/prefs.json`. The material, tool and frame-style overrides live
+The **?** button at the far end of the toolbar turns tooltips off everywhere,
+and back on; GuildModel remembers the choice. Tooltips wrap to a readable
+width. A number you type into any field applies when you press Enter, Tab or
+click away; the sliders update live while they move.
+
+The Preferences window opens sized to its content within your screen and
+remembers the size you leave it at. Your preferences, window layout and recent
+files persist in `~/.guildmodel/prefs.json`. The material, tool and frame-style overrides live
 beside it, and so do your presses (`presses.yaml`, §2).
 
 ## 9. Files and data safety

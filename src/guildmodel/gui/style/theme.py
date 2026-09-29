@@ -145,7 +145,7 @@ QTextEdit {
     border-radius: 3px;
 }
 QScrollArea { border: none; }
-QToolTip { background-color: #fce9c2; color: #1f1f1f; border: 1px solid #1f1f1f; }
+QToolTip { background-color: #fce9c2; color: #1f1f1f; border: 1px solid #1f1f1f; padding: 4px 6px; }
 QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */
@@ -309,7 +309,7 @@ QTextEdit {
     border-radius: 3px;
 }
 QScrollArea { border: none; }
-QToolTip { background-color: #2a2a2a; color: #d4cfc0; border: 1px solid #554433; }
+QToolTip { background-color: #2a2a2a; color: #d4cfc0; border: 1px solid #554433; padding: 4px 6px; }
 QCheckBox { spacing: 5px; }
 
 /* ---- GuildModel named chrome ---- */

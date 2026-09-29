@@ -32,7 +32,16 @@ and exports the front as it will be after the press and the bench.
 > **Export All STL** adds it whenever a project's forming is not flat. Nothing
 > a machine cuts changes: the CAM cannot import the forming code, the posted
 > program is byte-identical with forming on and off, and the readiness dot
-> never reads a forming value. The pre-release bug hunt also fixed a reopened
+> never reads a forming value. **Preferences ▸ Parts** holds the defaults every
+> new drawing starts from — each kind of part's program zero, the temples'
+> blank-end snap and stock side, blank sizes, the block's hole pattern and the
+> tools — and saving a project that zeroes, aligns or stocks differently
+> offers, once, to adopt it; every such offer has a *Don't ask again*. The Cut tab's
+> **Feeds & Speeds** group shows one row per tool the open component's program
+> uses, what that tool will cut at and where the number comes from, and a
+> temple's program now runs its briefest tool first, so the engraving bit goes
+> in before the end mill and the operator swaps once; temple programs change
+> order, so re-post them. The pre-release bug hunt also fixed a reopened
 > project losing its stored program, saved every component's program rather
 > than the active tab's, and made the Cancel button stop a build; the rest of
 > the notes are in `CHANGELOG.md`.

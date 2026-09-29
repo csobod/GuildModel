@@ -7,6 +7,7 @@ defaults so future versions that add new keys always have a valid value,
 and save() is silent on write errors.
 """
 
+import copy
 import json
 import pathlib
 
@@ -60,12 +61,35 @@ DEFAULTS: dict = {
         "major_color":    "",    # "" = follow the minor color
         "major_width_px": 1.0,
     },
+    # Tooltips on or off, app-wide — the ? at the end of the toolbar (2026-09-27).
+    "tooltips":              True,
     # Show the bottom log dock on startup (toggle the button to change it for
     # the session; this pref sets the default) — M4.6
     "show_log_on_start":     False,
     # Ask, when saving / exporting a changed worktable, whether to make it the
     # default bed. The "Don't ask again" checkbox in that prompt sets this False.
+    # Every prompt_* key is a checkbox under Preferences ▸ General ▸ Prompts, so a
+    # silenced offer can be turned back on.
     "prompt_set_default_bed": True,
+    # Ask, on Save, whether a project's part setup that differs from the shop
+    # defaults — the program zero and stock per kind of part, the temples'
+    # blank-end snap and stock side — should become the defaults
+    # (Preferences ▸ Parts).
+    "prompt_set_part_defaults": True,
+    # Ask, on Generate, whether cut settings tuned away from the material's
+    # defaults should be saved back to the material (Preferences ▸ Materials).
+    "prompt_material_writeback": True,
+    # Ask, on Generate, whether a project's per-tool feeds (the Cut tab's rows)
+    # that differ from the tool library should be saved to it (Preferences ▸ Tools).
+    "prompt_tool_feeds_writeback": True,
+    # Shop defaults per kind of part — Preferences ▸ Parts (2026-09-27). Each
+    # group holds an optional "program_zero" (a ProgramZero dump) and an optional
+    # sparse "params" dict of that kind's fields; absent = the schema default. A
+    # freshly opened drawing or DXF starts every part from these
+    # (gui/part_defaults.py); a reopened project's saved values win. Sparse on
+    # purpose: a shipped default that moves later still reaches a maker who
+    # never set that field (the PREFS_VERSION concern above).
+    "part_defaults": {"frame_front": {}, "temple": {}, "base_curve": {}},
     # Recently opened files (most recent first)
     "recent_files":          [],
     # Which kernel builds the frame front's 3D model — one of
@@ -100,6 +124,9 @@ DEFAULTS: dict = {
     "export_resolution_mm":  0.15,
     # Last folder used for G-code / STL output ("" = system default)
     "last_output_dir":       "",
+    # The Preferences window's last size, [w, h] px; [] = size it to its content
+    # within the screen (2026-09-27). Clamped to the screen on the way back in.
+    "prefs_dialog_size":     [],
     # Main-window geometry + dock/toolbar state (base64 QByteArray strings;
     # "" = first run, fall back to the coded default layout) — M4.6 Part A.5
     "main_window_geometry":  "",
@@ -177,11 +204,16 @@ def _migrate_kernel_flip(data: dict, merged: dict) -> None:
 
 
 def load() -> dict:
-    """Return prefs dict, merged with DEFAULTS so all keys are present."""
+    """Return prefs dict, merged with DEFAULTS so all keys are present.
+
+    The result is the caller's to mutate, so it never shares a nested dict with
+    `DEFAULTS`: a shallow copy did, and the first code to update a nested pref in
+    place (`part_defaults.adopt`, 2026-09-27) wrote its value into the module's
+    defaults, where every later `load()` in the process read it back."""
     try:
         if _FILE.exists():
             data = json.loads(_FILE.read_text(encoding="utf-8"))
-            merged = {**DEFAULTS, **data}
+            merged = {**copy.deepcopy(DEFAULTS), **data}
             _migrate_model_kernel(data, merged)
             _migrate_kernel_flip(data, merged)
             merged["prefs_version"] = PREFS_VERSION
@@ -190,16 +222,16 @@ def load() -> dict:
             # here — a missing entry means old files silently clobber new
             # defaults. ("toolbar" is a list, not a dict — excluded.)
             for key in ("viewport", "render3d", "grid", "layer_colors",
-                        "cam_params", "hotkeys"):
+                        "cam_params", "hotkeys", "part_defaults"):
                 if isinstance(data.get(key), dict):
-                    merged[key] = {**DEFAULTS[key], **data[key]}
+                    merged[key] = {**copy.deepcopy(DEFAULTS[key]), **data[key]}
                 else:
-                    merged[key] = dict(DEFAULTS[key])
+                    merged[key] = copy.deepcopy(DEFAULTS[key])
             _retire_m124_stepdown(merged["cam_params"])
             return merged
     except Exception:
         pass
-    return dict(DEFAULTS)
+    return copy.deepcopy(DEFAULTS)
 
 
 def save(prefs: dict) -> None:

@@ -146,6 +146,26 @@ class CamOp:
 # callers keep importing it from cam.castle_ops.
 _DEFAULT_CAM = CastleCamParams()
 
+# What must precede what in the front's program (`cam.sequence`, 2026-09-27).
+# The relief is a chain — the pockets into the flat blank, rough before fine
+# before the features that finish it, then the inside through-cuts, the groove
+# in the eyewire wall, and the perimeter that releases the part — so every tier
+# holds one op and the least-work-first rule has nothing to trade. Wired for
+# uniformity with the temple; a front posts unchanged whatever its tools. (The
+# pockets shared a tier with the roughing at first; with the hinge tool also on
+# the fine relief that tool outweighed the rough one and the pockets moved after
+# the roughing, which the release notes had promised would not happen.)
+CASTLE_OP_TIERS: tuple[frozenset[str], ...] = (
+    frozenset({"Hinge Pockets"}),
+    frozenset({"Rough Relief"}),
+    frozenset({"Fine Relief"}),
+    frozenset({"Features"}),
+    frozenset({"Eyewires"}),
+    frozenset({"Holes"}),
+    frozenset({"Lens Groove"}),
+    frozenset({"Perimeter"}),
+)
+
 
 def resolve_tool(name: str, tools_cfg: dict, default: dict | None = None) -> dict:
     """A normalized tool dict for `name` from a tools.yaml mapping.
@@ -1594,7 +1614,8 @@ def generate_castle_program(
     )
     op5.tool = perimeter_tool
     ops.append(op5)
-    return params.enabled_ops(ops)
+    from .sequence import order_by_tool_work
+    return order_by_tool_work(params.enabled_ops(ops), CASTLE_OP_TIERS)
 
 
 # Strategy descriptions for the in-app setup sheet, keyed by op name.
@@ -1616,12 +1637,14 @@ _OP_STRATEGIES = {
 
 def op_summaries(
     ops: list[CamOp], feed_rate_mmpm: float | None = None,
+    tool_settings: dict | None = None,
 ) -> list[dict]:
     """Setup-sheet rows for the op-summary dialog (BUILDPLAN M4.6).
 
     Each row: name, strategy, paths, floor_z_mm, cut_length_mm, and
-    est_minutes when a feed rate is given (cutting only — rapids excluded,
-    so it is a lower bound).
+    est_minutes when a feed rate is known (cutting only — rapids excluded, so
+    it is a lower bound). With `tool_settings` each op is timed at its own
+    tool's feed (2026-09-27); `feed_rate_mmpm` covers the rest.
     """
     rows: list[dict] = []
     for op in ops:
@@ -1634,8 +1657,17 @@ def op_summaries(
             "floor_z_mm": floor_z,
             "cut_length_mm": length,
         }
-        if feed_rate_mmpm:
-            row["est_minutes"] = length / feed_rate_mmpm
+        feed = feed_rate_mmpm
+        ts = (tool_settings or {}).get(op.tool_name) if op.tool_name else None
+        if ts is not None and getattr(ts, "feed_rate_mmpm", 0):
+            feed = ts.feed_rate_mmpm
+        # A bed op carries its own component's feeds (`stamp_cut_settings`):
+        # a block in acetal is timed at acetal's feed, not the frame's.
+        cut = getattr(op, "cut", None)
+        if cut is not None and getattr(cut, "feed_rate_mmpm", 0):
+            feed = cut.feed_rate_mmpm
+        if feed:
+            row["est_minutes"] = length / feed
         rows.append(row)
     return rows
 
@@ -1662,14 +1694,18 @@ def build_tool_settings(
     default_plunge: float,
     default_spindle: float,
     machine=None,
+    tool_feeds: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """Assemble a name → ToolSetting map for a multi-tool program (M6.1).
 
-    Each distinct tool (in machining order) gets a Tn number; its feeds come from
-    the tool's own tools.yaml override when present, else the supplied defaults
-    (material/CAM), clamped to the machine profile. Returns (settings, warnings).
+    Each distinct tool (in machining order) gets a Tn number; its feeds resolve
+    through `feeds.resolve_tool_feeds` — the project's per-tool setting
+    (`tool_feeds`, `CastleCamParams.tool_feeds`), else the tool's own tools.yaml
+    feeds, else the supplied defaults (material/CAM) — then clamp to the machine
+    profile. Returns (settings, warnings).
     """
     from ..post.grbl import ToolSetting
+    from .feeds import resolve_tool_feeds
 
     settings: dict[str, ToolSetting] = {}
     warnings: list[str] = []
@@ -1689,9 +1725,12 @@ def build_tool_settings(
                 number += 1
             n = number
         used.add(n)
-        feed = t.get("feed_rate_mmpm") or default_feed
-        plunge = t.get("plunge_rate_mmpm") or default_plunge
-        spindle = t.get("spindle_rpm") or default_spindle
+        resolved = resolve_tool_feeds(
+            t, default_feed=default_feed, default_plunge=default_plunge,
+            default_spindle=default_spindle, override=(tool_feeds or {}).get(nm))
+        feed = resolved.feed_rate_mmpm
+        plunge = resolved.plunge_rate_mmpm
+        spindle = float(resolved.spindle_rpm)
         if machine is not None:
             if feed > machine.max_feed_mmpm:
                 warnings.append(f"{nm}: feed {feed:.0f} > machine max "
@@ -1731,7 +1770,7 @@ def stamp_cut_settings(ops: list[CamOp], tools_cfg: dict, cam, clamp, *,
     settings, warnings = build_tool_settings(
         ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
         default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
-        machine=machine)
+        machine=machine, tool_feeds=getattr(cam, "tool_feeds", None))
     for op in ops:
         ts = settings.get(op.tool_name) if op.tool_name else None
         op.cut = OpCut(

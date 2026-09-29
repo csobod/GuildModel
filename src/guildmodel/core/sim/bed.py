@@ -111,9 +111,14 @@ def simulate_component(
         top_z, peck = b.blank_thickness_mm, b.peck_depth_mm
         fallback, init_z = resolve_tool(b.profile_tool, tools_cfg), b.blank_thickness_mm
 
+    # The component's own feeds (its clamp: the Cut tab's material row, else the
+    # preset) and its per-tool settings, as the posting paths resolve them.
     tool_settings, _ = build_tool_settings(
-        ops, tools_cfg, default_feed=mat["feed_rate_mmpm"],
-        default_plunge=mat["plunge_rate_mmpm"], default_spindle=mat["spindle_rpm"])
+        ops, tools_cfg,
+        default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+        default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+        default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+        tool_feeds=getattr(cam, "tool_feeds", None))
     first = tool_settings[ops[0].tool_name]
     post = GRBLPost(
         job_name="sim", material=material_name,
