@@ -365,6 +365,26 @@ part cut from another material was given them anyway.
   byte-identical with v1.7.0, and the worktable differs only in the block's
   feeds and its spindle line, as noted under *Found at release*.
 
+### Fixed after publication (2026-09-30)
+
+- **A slider clicked into place stayed "down".** A click on a slider's
+  groove jumps the handle there on every platform. The jump handled the press
+  itself and never passed it to Qt, and Qt follows a drag, and takes the
+  release, only for a press it saw land on the handle; so the release of a
+  groove click was ignored, the slider never reported the value as settled,
+  and every later change to it (an arrow key, a wheel notch, the next click on
+  the groove) was reported as a drag still in progress. In the Forming view, a
+  crease-layout handle clicked into place left the drag's uncut base on
+  screen, streaked at the bridge with its creases missing, until the castle
+  was rebuilt, and a project saved afterward carried the handle's previous
+  value. On the Model tab, a slider clicked into place rebuilt the mesh but
+  never invalidated the stored program, marked the project changed or logged
+  the build. Dragging the handle recovered it. Since 1.5.0; the Forming view
+  made it visible. The jump now hands Qt the press at the handle, and the
+  release settles the value once, as a drag's does
+  (`tests/test_param_slider_mn4.py`). The 1.8.0 downloads were rebuilt with
+  this fix on 2026-09-30.
+
 ### Fixed in the pre-release bug hunt (2026-09-26)
 
 Seven read-only reviews over the whole program, one slice each, before the

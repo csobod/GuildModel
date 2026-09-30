@@ -47,6 +47,7 @@ Forming never changes a program, and older projects open flat.
 - The Preferences window fits the screen and remembers its size.
 - Tooltips wrap to a readable width, and the **?** button at the end of the toolbar turns them off and on.
 - Checkboxes are drawn in the app's own colors, so an unchecked box is clear in dark mode.
+- A slider clicked into place, rather than dragged, settles like any other edit. Before, the Forming view could keep a drag's rough preview on screen until the next rebuild, and a changed Model slider could leave a stale program marked ready. (Fixed in the downloads rebuilt on 2026-09-30.)
 
 The full list is in [CHANGELOG.md](CHANGELOG.md).
 

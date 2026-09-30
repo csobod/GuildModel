@@ -185,6 +185,48 @@ def test_a_click_on_the_groove_jumps_there_on_every_platform(slider):
     assert slider.slider.isSliderDown(), "a jump starts a drag, so it can be dragged on"
 
 
+def test_a_click_on_the_groove_settles_when_the_button_comes_up(slider):
+    """The jump used to swallow the press. Qt follows a drag, and takes the
+    release, only for a press it saw land on the handle, so the release of a
+    groove click was ignored: `sliderReleased` never came, the slider stayed
+    down, and every later tick (a wheel notch, an arrow key, the next groove
+    click) reported as `sliding` and never settled. In the Forming view that
+    kept a crease-layout drag's uncut base on screen, fuzzy at the bridge,
+    until the castle was rebuilt; on the Model tab a slider clicked into
+    place rebuilt the mesh but never invalidated the program or marked the
+    project dirty. Seen the day 1.8.0 was published (2026-09-30)."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    slider.resize(240, 28)
+    slider.slider.resize(200, 28)
+    slider.setValue(1.0)
+    live, committed, released = [], [], []
+    slider.sliding.connect(live.append)
+    slider.valueChanged.connect(committed.append)
+    slider.released.connect(lambda: released.append(True))
+
+    x = slider.slider.width() - 6
+    slider.slider.mousePressEvent(QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(x, 14), QPointF(x, 14),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier))
+    assert len(live) == 1 and committed == [], "the jump is live, not settled"
+    slider.slider.mouseReleaseEvent(QMouseEvent(
+        QEvent.Type.MouseButtonRelease, QPointF(x, 14), QPointF(x, 14),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier))
+
+    assert committed == [live[-1]], "the jump settles once, when the button comes up"
+    assert released == [True]
+    assert not slider.slider.isSliderDown()
+
+    # and the slider is free again: an arrow key or a wheel notch settles at once
+    slider.slider.setValue(30)
+    assert live == live[:1]
+    assert committed[-1] == pytest.approx(3.0)
+
+
 def test_an_unfocused_wheel_goes_to_the_scrolling_panel(slider):
     """Both children live in a scroll area, and Qt's default focus policy for a
     slider and a spin box is WheelFocus — one unlucky scroll down the Model tab

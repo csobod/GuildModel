@@ -42,6 +42,7 @@ desktops:
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout,
                                QLabel, QSizePolicy, QSlider, QStyle,
                                QStyleOptionSlider, QWidget)
@@ -72,13 +73,15 @@ class _JumpSlider(QSlider):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-    def _handle_holds(self, pos) -> bool:
+    def _handle_rect(self):
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
-        rect = self.style().subControlRect(
+        return self.style().subControlRect(
             QStyle.ComplexControl.CC_Slider, opt,
             QStyle.SubControl.SC_SliderHandle, self)
-        return rect.contains(pos)
+
+    def _handle_holds(self, pos) -> bool:
+        return self._handle_rect().contains(pos)
 
     def _value_at(self, x: int) -> int:
         opt = QStyleOptionSlider()
@@ -101,8 +104,20 @@ class _JumpSlider(QSlider):
                 and not self._handle_holds(event.position().toPoint())):
             self.setSliderDown(True)          # emits sliderPressed
             self.setSliderPosition(self._value_at(int(event.position().x())))
-            event.accept()
-            return
+            # Qt follows a drag, and takes the release, only for a press it
+            # saw land on the handle. The handle is under the pointer now, so
+            # hand Qt the press there. Swallowing it instead left the slider
+            # "down" for good: the release was ignored, `sliderReleased`
+            # never came, and every later tick read as part of a drag, so the
+            # value never settled. The Forming view kept a layout drag's uncut
+            # base on screen (the fuzzy bridge the maker saw), and a Model tab
+            # slider clicked into place rebuilt the mesh but never invalidated
+            # the program or marked the project dirty.
+            centre = self._handle_rect().center()
+            event = QMouseEvent(
+                event.type(), centre.toPointF(), event.scenePosition(),
+                event.globalPosition(), event.button(), event.buttons(),
+                event.modifiers())
         super().mousePressEvent(event)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
