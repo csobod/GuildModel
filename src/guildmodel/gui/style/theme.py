@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Light theme — GuildDraw QSS port (framedraft/app.py:118) + GuildModel extras
@@ -375,13 +376,57 @@ def scale_qss(qss: str, scale: float) -> str:
     return _PX_RE.sub(bump, qss)
 
 
+# Checkboxes are drawn by the stylesheet, not the platform style: the
+# platform's box took its outline from the chrome background, and on the dark
+# chrome an unchecked box all but vanished. On: filled with the ink and ticked,
+# like a checked toolbar button. GuildDraw's stylesheet carries the same rules
+# (framedraft/theme.py); keep the two in step. The tick is a file per mode, in
+# that mode's checked-button ink, because a stylesheet takes images by file.
+_ICONS = Path(__file__).resolve().parent.parent / "resources" / "icons"
+
+_INDICATOR_QSS = """
+QCheckBox::indicator, QAbstractItemView::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid %(border)s;
+    border-radius: 3px;
+    background-color: %(panel)s;
+}
+QCheckBox::indicator:hover { border-color: %(ink)s; }
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked {
+    background-color: %(ink)s;
+    border-color: %(ink)s;
+    image: url("%(tick)s");
+}
+QCheckBox::indicator:disabled {
+    background-color: %(disabled_bg)s;
+    border-color: %(disabled_border)s;
+}
+QCheckBox::indicator:checked:disabled {
+    background-color: %(disabled_ink)s;
+    border-color: %(disabled_ink)s;
+}
+"""
+
+_INDICATOR_COLORS = {
+    False: {"border": "#1f1f1f", "panel": "#fce9c2", "ink": "#1f1f1f",
+            "disabled_bg": "#f4dfae", "disabled_border": "#b89c5e",
+            "disabled_ink": "#a08c58",
+            "tick": (_ICONS / "check-light.svg").as_posix()},
+    True:  {"border": "#9a917f", "panel": "#2a2a2a", "ink": "#d4cfc0",
+            "disabled_bg": "#222222", "disabled_border": "#3a3328",
+            "disabled_ink": "#6a6558",
+            "tick": (_ICONS / "check-dark.svg").as_posix()},
+}
+
+
 def stylesheet(dark: bool, scale: float = 1.0) -> str:
     """The full application stylesheet for the requested theme.
 
     `scale` is the UI scale factor — see `gui.hidpi.ui_scale`. 1.0 is the
     authored size and the historical behavior.
     """
-    return scale_qss(QSS_DARK if dark else QSS, scale)
+    base = (QSS_DARK if dark else QSS) + _INDICATOR_QSS % _INDICATOR_COLORS[bool(dark)]
+    return scale_qss(base, scale)
 
 
 # ---------------------------------------------------------------------------

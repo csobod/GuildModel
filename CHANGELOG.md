@@ -335,6 +335,15 @@ part cut from another material was given them anyway.
   fills it, and its own override still wins. The panel, the bed and the core
   seam all read it; a temple given its own material follows it too.
 
+### Checkboxes you can see (2026-09-29)
+
+- An unchecked checkbox all but vanished on the dark chrome: the platform
+  style drew its outline from the background color. The stylesheet now draws
+  every checkbox, in the dialogs and in the list views, in both modes: a light
+  outline on the dark chrome, and, when checked, filled with the ink and
+  ticked, like a checked toolbar button. It scales with the UI. GuildDraw 1.3
+  carries the same rules.
+
 ### Fixed in the pre-release bug hunt (2026-09-26)
 
 Seven read-only reviews over the whole program, one slice each, before the

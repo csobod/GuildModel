@@ -45,6 +45,7 @@ Forming never changes a program, and older projects open flat.
 - Quit and Preferences shortcuts can no longer be taken by another action.
 - The Preferences window fits the screen and remembers its size.
 - Tooltips wrap to a readable width, and the **?** button at the end of the toolbar turns them off and on.
+- Checkboxes are drawn in the app's own colors, so an unchecked box is clear in dark mode.
 
 The full list is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -64,7 +65,7 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 
 **First launch** (the builds are not signed): on Windows, SmartScreen asks once; click *More info ▸ Run anyway*. On macOS, **right-click the app ▸ Open ▸ Open** once.
 
-Pair it with [GuildDraw 1.2.0](https://github.com/csobod/GuildDraw/releases/tag/v1.2.0) to draw the frame in the first place.
+Pair it with [GuildDraw 1.3.0](https://github.com/csobod/GuildDraw/releases/tag/v1.3.0) to draw the frame in the first place.
 
 ## Learning GuildModel
 
