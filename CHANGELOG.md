@@ -344,6 +344,27 @@ part cut from another material was given them anyway.
   ticked, like a checked toolbar button. It scales with the UI. GuildDraw 1.3
   carries the same rules.
 
+### The cut simulation's memory (2026-09-30)
+
+- **Simulating a cut no longer needs memory in proportion to the path.** The
+  simulation stamps the tool's footprint at every position along a path, and
+  it built the whole (positions x footprint cells) table for a path in one
+  piece: about fifty bytes an element. A 1 mm tool on a 0.02 mm grid has a
+  footprint of 7,854 cells, and one 50,000-position pocket path asked for
+  15 GB. That is the hinge pocket finishing test, and on 2026-09-29 it took
+  the maker's machine down in the middle of the suite. The stamping now runs
+  in batches of two million elements, about 100 MB. A minimum is the same
+  taken in parts, so the simulated floor is identical bit for bit
+  (`tests/test_toolsim_memory.py` checks it against a position-at-a-time
+  reference for every tool type). That test now peaks at 0.2 GB and runs in
+  half the time.
+- The suite collects garbage after every test. The meshes and solids the tests
+  build sit in reference cycles, and the run held about 6 GB by its end; the
+  24 forming fixture tests alone went from 3.4 GB to 0.45 GB.
+- Checked before the tag, again: the gabriel front, block and temple post
+  byte-identical with v1.7.0, and the worktable differs only in the block's
+  feeds and its spindle line, as noted under *Found at release*.
+
 ### Fixed in the pre-release bug hunt (2026-09-26)
 
 Seven read-only reviews over the whole program, one slice each, before the

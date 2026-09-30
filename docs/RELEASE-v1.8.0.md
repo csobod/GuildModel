@@ -33,6 +33,7 @@ Forming never changes a program, and older projects open flat.
 - A tabbed release pass ramps in instead of plunging.
 - A frame with no SCULPT cuts gets its whole profile cut.
 - A hole too small for the tool is reported instead of skipped silently.
+- The cut simulation works in batches, so a long path at a fine resolution no longer needs gigabytes of memory.
 
 **Projects**
 - A reopened project keeps its stored program, and Save keeps every component's program, not only the open tab's.

@@ -111,6 +111,23 @@ def _destroy_windows():
     app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+@pytest.fixture(autouse=True)
+def _collect_garbage():
+    """Collect reference cycles after every test.
+
+    The meshes, solids and height fields these tests build sit in cycles, so
+    nothing frees them until the collector's oldest generation happens to
+    run, and a handful of large arrays never trips its object-count
+    thresholds. Measured 2026-09-30: the 24 forming fixture tests alone ended
+    at 3.4 GB resident without this and 452 MB with it, in the same 64 s; the
+    whole run sat near 6 GB. macos-14 runners have 7.
+    """
+    yield
+    import gc
+
+    gc.collect()
+
+
 # ---------------------------------------------------------------- the clock
 
 class _FrozenDatetime(datetime.datetime):

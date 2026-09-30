@@ -93,25 +93,39 @@ def densify(path: list[Point3], spacing: float) -> np.ndarray:
     return np.asarray(out)
 
 
+#: Most (tool positions x kernel cells) stamped in one batch: about 100 MB of
+#: temporaries. See `_stamp_points`.
+_STAMP_BUDGET = 2_000_000
+
+
 def _stamp_points(floor, P, kernel, origin, resolution, shape) -> None:
     """Stamp pre-densified tool positions ``P`` (N×3) into ``floor`` (in place,
     min-Z). The per-position kernel disc/profile is broadcast and ``np.minimum``-
     reduced. Shared by `_stamp_path` and the M7.12.1 removal playback (which stamps
     sub-path batches for fine-grained frames)."""
     P = np.asarray(P, dtype=np.float64)
-    if P.size == 0:
-        return
     di, dj, dz = kernel
+    if P.size == 0 or di.size == 0:
+        return
     ox, oy = origin
     rows, cols = shape
     ci = np.round((P[:, 0] - ox) / resolution).astype(np.intp)
     ri = np.round((P[:, 1] - oy) / resolution).astype(np.intp)
     z = P[:, 2]
-    cc = (ci[:, None] + di[None, :]).ravel()
-    rr = (ri[:, None] + dj[None, :]).ravel()
-    zz = (z[:, None] + dz[None, :]).ravel()
-    ok = (cc >= 0) & (cc < cols) & (rr >= 0) & (rr < rows)
-    np.minimum.at(floor, (rr[ok], cc[ok]), zz[ok])
+    # In batches: the broadcast is (positions x kernel cells), at about fifty
+    # bytes an element across its index, height and mask temporaries. A whole
+    # path at once was unbounded: a 1 mm tool on a 0.02 mm grid is 7,854 cells,
+    # and one pocket path of 50,000 positions asked for 15 GB (2026-09-30: it
+    # took the maker's machine down mid-suite). A minimum is the same taken in
+    # parts, so the floor is identical bit for bit.
+    step = max(1, _STAMP_BUDGET // di.size)
+    for s in range(0, len(z), step):
+        e = s + step
+        cc = (ci[s:e, None] + di[None, :]).ravel()
+        rr = (ri[s:e, None] + dj[None, :]).ravel()
+        zz = (z[s:e, None] + dz[None, :]).ravel()
+        ok = (cc >= 0) & (cc < cols) & (rr >= 0) & (rr < rows)
+        np.minimum.at(floor, (rr[ok], cc[ok]), zz[ok])
 
 
 def _stamp_path(floor, path, kernel, origin, resolution, shape, spacing) -> None:
