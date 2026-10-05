@@ -26,6 +26,8 @@ The full account is in [CHANGELOG.md](CHANGELOG.md).
 | `GuildModel-1.8.1-macos-arm64.dmg` / `.zip` | **Mac (Apple Silicon, M1 and later).** Drag to Applications. |
 | `GuildModel-1.8.1-macos-x86_64.dmg` / `.zip` | Mac (Intel). |
 
+The Mac builds need **macOS 13 Ventura or later** (the Qt they are built on sets that floor); Windows builds need Windows 10 or later, 64-bit.
+
 **First launch** (the builds are not signed): on Windows, SmartScreen asks once; click *More info ▸ Run anyway*. On macOS, **right-click the app ▸ Open ▸ Open** once.
 
 Pair it with [GuildDraw 1.3.1](https://github.com/csobod/GuildDraw/releases/tag/v1.3.1), which now imports SVG, so a logo can be drawn in any editor and placed on the temple at the size you choose.
