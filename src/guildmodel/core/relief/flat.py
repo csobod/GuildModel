@@ -182,6 +182,19 @@ def place_temple_on_blank(
     return outline, hinge_polys, engraving
 
 
+def place_temple_curves(
+    curves: list, outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
+    *, stock_side: str = "right", snap: bool = True,
+) -> list:
+    """Carry any further polylines through the same rigid placement
+    :func:`place_temple_on_blank` gives the temple — the drawn ENGRAVING
+    graphics ride beside the text contours, and both must land where the
+    outline does. ``outline`` and ``hinge_polys`` are the *unplaced* ones the
+    transform is derived from."""
+    return place_temple_on_blank(outline, hinge_polys, curves, blank_length,
+                                 stock_side=stock_side, snap=snap)[2]
+
+
 def temple_core_guide(
     outline: Polygon, hinge_polys: list[Polygon], temple: TempleParams,
 ) -> Polygon:
@@ -206,13 +219,31 @@ def build_temple_relief(
     hinge_polys: list[Polygon] = (),
     engraving_curves: list = (),
     *,
+    graphic_curves: list = (),
     resolution: float = PREVIEW_RES_MM,
     engrave_tool_radius: float = 0.25,
     progress: Optional[ProgressFn] = None,
 ) -> FlatRelief:
     """A temple solid: extrude the outline to the blank thickness, carve the HINGE
     pockets (1 mm default) and the ENGRAVING grooves (0.3 mm default). The geometry
-    is taken as-drawn; the GUI applies the blank-end snap before calling this."""
+    is taken as-drawn; the GUI applies the blank-end snap before calling this.
+
+    Two kinds of engraving, cut with the same bit to the same depth:
+
+    * ``engraving_curves`` — text: glyph outlines (or strokes) that
+      ``temple.engrave_centerline`` reduces to one line down each stroke. A
+      DXF, which cannot tell text from drawing, hands everything in here.
+    * ``graphic_curves`` — what the maker drew on the ENGRAVING layer. An open
+      curve is a stroke, grooved as drawn. A closed curve is a filled shape:
+      the closed curves combine even-odd into regions, so a closed curve
+      inside another is an island (an "O" is two circles, a disc is one), and
+      each region is carved flat to the engraving depth — never skeletonized
+      (2026-10-05: the medial axis of a six-armed logo is a forked stick
+      figure, not the logo). The program fills the same regions
+      (`cam.temple_ops.graphic_engraving_curves`).
+    """
+    from ..cam.engrave_centerline import even_odd_regions, is_closed_curve
+
     thickness = temple.blank_thickness_mm
     pockets = [(p, floor) for p, floor
                in temple_pocket_floors(hinge_polys, temple, outline)
@@ -224,11 +255,15 @@ def build_temple_relief(
     if engraving_curves and temple.engrave_centerline:   # match the program (M11 #7)
         from ..cam.engrave_centerline import engraving_centerlines
         engraving_curves = engraving_centerlines(engraving_curves)
-    for curve in engraving_curves:
+    strokes = [c for c in graphic_curves if not is_closed_curve(c)]
+    shapes = [c for c in graphic_curves if is_closed_curve(c)]
+    for curve in list(engraving_curves) + strokes:
         if len(curve) >= 2:
             g = LineString([(float(x), float(y)) for x, y in curve]).buffer(r)
             if not g.is_empty:
                 grooves.append((g, groove_floor))
+    for region in even_odd_regions(shapes):
+        grooves.append((region, groove_floor))
 
     return _build_flat_relief(outline, thickness, resolution,
                               pockets=pockets, grooves=grooves, progress=progress)

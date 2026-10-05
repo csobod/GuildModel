@@ -61,6 +61,13 @@ class ComponentWorkspace:
     partition: object = None
     hinge_polys: list = field(default_factory=list)
     engraving_curves: list = field(default_factory=list)
+    # The glyph contours the GUI outlined from ``texts`` (fonts need Qt, so the
+    # pure derive cannot make them). Kept apart from ``engraving_curves`` — what
+    # the maker DREW on the ENGRAVING layer — because the two are engraved
+    # differently: text as stroke centerlines, a drawn closed curve as a filled
+    # shape and a drawn open curve as a stroke (2026-10-05).
+    # ``derive_workspace`` never touches this.
+    engraving_text: list = field(default_factory=list)
     is_temple: bool = False
     # The SCULPT cuts yielded fully-named castle zones, so the castle relief can
     # look a height up for each one — not necessarily the *standard* 9-zone
@@ -84,6 +91,33 @@ class ComponentWorkspace:
     core_guide: object = None        # temple injected-core bar bounds (3D marker)
     last_programs: dict = field(default_factory=dict)
     last_setup: object = None
+
+    def engraving_split(self) -> tuple[list, list]:
+        """``(text, graphics)`` — the two engraving arguments a temple build takes.
+
+        A drawing opened from a ``.gdraw`` keeps its text as text objects, so
+        whatever sits on its ENGRAVING layer was drawn by hand — a logo, a mark —
+        and is cut as drawn, closed shapes filled (``graphics``); the glyph contours the GUI
+        outlined from those text objects are the ``text`` the centerline option
+        acts on. A DXF cannot tell the two apart (GuildDraw outlines its text
+        into plain closed splines at export), so every ENGRAVING curve of a DXF
+        is offered as ``text`` and the option sorts them, exactly as before 1.8.1.
+        """
+        if self.source_workspace:
+            return list(self.engraving_text), list(self.engraving_curves)
+        return list(self.engraving_curves) + list(self.engraving_text), []
+
+    def display_layers(self) -> dict:
+        """The layers as the 2D canvas shows them: the authored geometry, plus
+        the glyph contours outlined from the text objects on ENGRAVING. The
+        authored ``layers`` stay as read, so a re-derive cannot mistake a glyph
+        for a drawn curve."""
+        if not self.engraving_text:
+            return self.layers
+        shown = dict(self.layers)
+        shown["ENGRAVING"] = (list(self.layers.get("ENGRAVING", []))
+                              + list(self.engraving_text))
+        return shown
     last_machine: object = None
     last_report: object = None
     program_stored: bool = False

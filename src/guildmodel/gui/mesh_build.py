@@ -203,16 +203,21 @@ def _build_formed(spec, resolution, kernel, progress):
 def _build_temple(spec, resolution, progress):
     from guildmodel.core.relief.castle import build_castle_mesh
     from guildmodel.core.relief.flat import (
-        build_temple_relief, place_temple_on_blank, temple_core_guide)
+        build_temple_relief, place_temple_curves, place_temple_on_blank,
+        temple_core_guide)
 
     temple = spec["temple"]
     outline, hinge, eng = place_temple_on_blank(
         spec["outline"], spec["hinge"], spec["engraving"],
         temple.blank_length_mm, stock_side=temple.stock_side,
         snap=temple.snap_to_blank_end)
+    gfx = place_temple_curves(
+        spec.get("graphics", ()), spec["outline"], spec["hinge"],
+        temple.blank_length_mm, stock_side=temple.stock_side,
+        snap=temple.snap_to_blank_end)
     relief = build_temple_relief(
-        outline, temple, hinge, eng,
-        resolution=temple_preview_res(resolution, eng), progress=progress)
+        outline, temple, hinge, eng, graphic_curves=gfx,
+        resolution=temple_preview_res(resolution, eng or gfx), progress=progress)
     guide = temple_core_guide(outline, hinge, temple).bounds
     return build_castle_mesh(relief, progress=progress), None, guide
 

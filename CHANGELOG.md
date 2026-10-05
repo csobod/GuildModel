@@ -3,6 +3,64 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
+## v1.8.1 — a drawn logo is engraved as a filled shape
+
+A maker drew a six-armed logo on a temple's ENGRAVING layer as one closed
+spline, beside the hinge pocket and a line of text. GuildModel showed the logo
+as a forked stick figure with a cluster of spurs, in the 3D model, the cut
+simulation and the posted program alike (2026-10-05).
+
+### The finding
+
+Every closed ENGRAVING curve went through the text-stroke centerline (M11 #7:
+the medial axis built for glyph outlines, so an "O" is cut once down the
+middle of its ring rather than twice along its edges). A `.gdraw` keeps its
+engraving text as text objects, and the GUI outlines them into glyph contours
+when the file opens; those contours were merged into the same list as the
+curves the maker drew, so by the time the relief and the CAM saw them a drawn
+logo and an outlined "G" looked alike, and both were skeletonized. The
+skeleton of a stroke is its center line. The skeleton of a logo is a stick
+figure.
+
+A second, smaller finding on the same file: the drawn spline's seam crossed
+itself. The logo had been traced from a DXF whose closed polyline repeated its
+first vertex, with the vertex before it a few microns short of the start;
+GuildDraw's Rebuild fitted that hairline as a node sitting on its neighbor.
+The centerline's even-odd fill had papered over the self-intersection with a
+`buffer(0)`, and the as-drawn trace does not care. GuildDraw 1.3.1 closes the
+hairline at its source, in DXF import, in Rebuild and in the new SVG import.
+
+### What changed
+
+- `ComponentWorkspace.engraving_text` holds the glyph contours outlined from
+  the drawing's text objects; `engraving_curves` stays what sits on the layer.
+  `engraving_split()` hands every build `(text, graphics)`: for a `.gdraw`, the
+  outlined text and the drawn curves; for a DXF, which cannot tell the two
+  apart (GuildDraw outlines its text into plain closed splines at export),
+  everything as text and no graphics, so a DXF temple's program is unchanged.
+  `display_layers()` gives the 2D canvas both; the authored layer stays as
+  read, so a re-derive cannot mistake a glyph for a drawn curve.
+- `build_temple_relief` and `generate_temple_program` take `graphic_curves`,
+  cut with the same bit at the same depth in the one Engraving op. A drawn
+  **open** curve is a stroke, traced as drawn. A drawn **closed** curve is a
+  filled shape: the closed curves combine even-odd into regions
+  (`engrave_centerline.even_odd_regions`, the rule that already gave an "O"
+  its counter), so a closed curve inside another is an island — an "O" is two
+  circles, a disc is one — and each region is cleared with inward rings a tool
+  radius in from its edge and 40 % of the bit's diameter apart
+  (`pocketing.fill_rings`, hole-aware; `temple_ops.graphic_engraving_curves`).
+  The relief carves the same regions flat, so the model, the simulation and
+  the program agree; a region the bit cannot enter is left, as a hinge pocket
+  too small for its end mill is, and the simulation reports it as uncut.
+  `place_temple_curves` carries the graphics through the blank snap with the
+  outline; the nest and the bed simulation pass them too.
+- The Temple tab's option reads *Engrave text as stroke centerlines*, and its
+  tooltip states the drawn-curve rule and the DXF exception.
+- Programs: a temple whose ENGRAVING layer carries only text, or open strokes
+  beside its text, posts byte-identically to 1.8.0 (the drawn curves keep
+  their place at the head of the op). One with a drawn closed curve now fills
+  it; re-post that temple.
+
 ## v1.8.0 — the front as it will be worn (M18)
 
 The most-requested feature of the season: the frame front as it will be

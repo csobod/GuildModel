@@ -13,12 +13,25 @@ for the Guild CNC fixture.
 
 ## Status
 
-**v1.8.0.** GuildModel builds the posterior castle relief and the
+**v1.8.1.** GuildModel builds the posterior castle relief and the
 five-operation single-tool GRBL program for a frame front, its temples, and
 per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
 maker's guide (`docs/USER-GUIDE.md`), an optional lens bevel groove (drageoir
 V-groove in each eyewire wall, off by default), and a Forming view that shows
 and exports the front as it will be after the press and the bench.
+
+> **New in v1.8.1 — a drawn logo is engraved as a filled shape.** A closed
+> curve drawn on a temple's ENGRAVING layer, a logo or a mark, was treated as
+> text and reduced to the center line of its strokes, which turned a six-armed
+> logo into a forked stick figure in the model, the simulation and the
+> program. Text is still engraved as stroke centerlines (the Temple tab's
+> option now says so: *Engrave text as stroke centerlines*). A closed curve
+> the maker drew is cut out as a filled shape to the engraving depth; a closed
+> curve inside it is left standing, so an O is two circles and a disc is one;
+> an open curve is traced as a stroke. All with the same bit at the same
+> depth. Over a DXF, which cannot tell text from drawing, the option applies
+> to every closed curve as before. Every program for a temple without a drawn
+> closed curve on ENGRAVING is byte-identical to 1.8.0.
 
 > **New in v1.8.0 — the front as it will be worn.** **View ▸ Forming (F)**
 > bends the frame front the way the press and the bench will: the base curve

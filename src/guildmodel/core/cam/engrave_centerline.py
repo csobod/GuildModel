@@ -35,16 +35,18 @@ _CLOSE_TOL = 1e-6
 _SNAP = 6              # decimals used to weld shared Voronoi-ridge endpoints
 
 
-def _is_closed(curve: Curve) -> bool:
+def is_closed_curve(curve: Curve) -> bool:
+    """A ring: at least four points, the last on the first."""
     if len(curve) < 4:
         return False
     (x0, y0), (xn, yn) = curve[0], curve[-1]
     return abs(x0 - xn) <= _CLOSE_TOL and abs(y0 - yn) <= _CLOSE_TOL
 
 
-def _even_odd_fill(rings: list[Curve]) -> list[Polygon]:
-    """The filled ink regions: even-odd combination of the closed glyph rings, so a
-    counter (an "O"'s inner ring) becomes a hole rather than more ink."""
+def even_odd_regions(rings: list[Curve]) -> list[Polygon]:
+    """The filled ink regions: even-odd combination of the closed rings, so a
+    counter (an "O"'s inner ring) becomes a hole rather than more ink. The same
+    rule fills a drawn graphic: one circle is a disc, two nested circles a ring."""
     polys = []
     for r in rings:
         p = Polygon(r)
@@ -174,11 +176,11 @@ def engraving_centerlines(
     out: list[Curve] = []
     for c in curves:
         c = [(float(x), float(y)) for x, y in c]
-        (closed if _is_closed(c) else out).append(c)
+        (closed if is_closed_curve(c) else out).append(c)
     if not closed:
         return out
 
-    for poly in _even_odd_fill(closed):
+    for poly in even_odd_regions(closed):
         try:
             segs = _medial_segments(poly, spacing)
             lines = _merge(segs)                      # segments → branches

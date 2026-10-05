@@ -1,4 +1,4 @@
-# GuildModel User Guide (v1.8.0)
+# GuildModel User Guide (v1.8.1)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -296,7 +296,18 @@ A row with a shipped label replaces it; `{_deleted: true}` hides one.
 ## 3. Temples and base-curve blocks
 
 **Temple.** The outline extruded on the blank, with hinge blind-pockets from
-the `HINGE` layer and engraving grooves from `ENGRAVING`. The hinge end snaps
+the `HINGE` layer and engraving grooves from `ENGRAVING`. Two kinds of
+engraving share the layer and are told apart when a `.gdraw` opens: text,
+which is engraved as one line down each stroke while *Engrave text as stroke
+centerlines* (Temple tab) is on, and a curve you drew on the layer. A drawn
+closed curve is a filled shape, cleared to the engraving depth with the
+engrave tool; a closed curve drawn inside another is an island and keeps its
+material, so an O is two circles and a filled disc is one. A drawn open curve
+is a stroke, traced as drawn. A shape too small for the bit to enter is left
+and the simulation reports it; a small flat end mill set as the engrave tool
+fills a logo more cleanly than a V-bit. Over a DXF, which cannot tell text
+from drawing, the option applies to every closed curve; turn it off for a
+DXF temple that carries a logo. The hinge end snaps
 to the 170×30 blank edge; the snap, the stock side and the blank size start
 from your defaults in Preferences ▸ Parts (§8). The injected-core bar shown in
 3D is a visual guide only. Program: the hinge pockets and the engraving while

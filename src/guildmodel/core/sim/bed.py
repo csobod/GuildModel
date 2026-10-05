@@ -83,7 +83,8 @@ def simulate_component(
         top_z, peck, fallback = castle.stock.total_pad_height_mm, 1.5, tool
         init_z = top_z + 1.0
     elif mode == "temple":
-        from ..relief.flat import build_temple_relief, place_temple_on_blank
+        from ..relief.flat import (
+            build_temple_relief, place_temple_curves, place_temple_on_blank)
         from ..cam.temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
         t = spec["temple"]
         # Snap onto the blank FIRST (M11 stock-side), matching the generators the
@@ -92,10 +93,14 @@ def simulate_component(
         outline, hinge, engraving = place_temple_on_blank(
             spec["outline"], spec["hinge"], spec["engraving"], t.blank_length_mm,
             stock_side=t.stock_side, snap=t.snap_to_blank_end)
+        graphics = place_temple_curves(
+            spec.get("graphics", ()), spec["outline"], spec["hinge"],
+            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end)
         relief = build_temple_relief(outline, t, hinge, engraving,
+                                     graphic_curves=graphics,
                                      resolution=resolution, progress=progress)
         ops = generate_temple_program(outline, engraving, t, tools_cfg, cam,
-                                      hinge_polys=hinge)
+                                      hinge_polys=hinge, graphic_curves=graphics)
         contour_names, drill_names = set(TEMPLE_CONTOUR_OPS), set()
         top_z, peck = t.blank_thickness_mm, 1.5
         fallback, init_z = resolve_tool(t.profile_tool, tools_cfg), t.blank_thickness_mm

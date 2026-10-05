@@ -47,6 +47,45 @@ TEMPLE_OP_TIERS: tuple[frozenset[str], ...] = (
 )
 
 
+#: Stepover for filling a drawn graphic, as a fraction of the engraving tool's
+#: nominal diameter: 40 % is the finishing figure for a small cutter, and the
+#: nominal diameter is what the relief grooves assume for the same bit.
+ENGRAVE_FILL_STEPOVER_FRACTION = 0.4
+
+
+def engrave_fill_stepover(tool: dict) -> float:
+    """The inward step between fill rings for `tool` (mm)."""
+    dia = float(tool.get("diameter_mm") or 2.0 * float(tool.get("radius_mm", 0.25)))
+    return max(0.02, ENGRAVE_FILL_STEPOVER_FRACTION * dia)
+
+
+def graphic_engraving_curves(
+    graphic_curves: list[list[tuple[float, float]]],
+    tool_radius_mm: float,
+    stepover_mm: float,
+) -> list[list[tuple[float, float]]]:
+    """What the Engraving op cuts for the curves a maker DREW on ENGRAVING.
+
+    An open curve is a stroke and is traced as drawn. A closed curve is a filled
+    shape: the closed curves are combined even-odd into regions (a closed curve
+    inside another is an island — an "O" is two circles, a disc is one) and each
+    region is cleared with inward rings a tool radius in from its edge and
+    `stepover_mm` apart (`pocketing.fill_rings`). The relief fills the same
+    regions, so the model, the simulation and the program agree. A region the
+    tool cannot enter yields nothing — like a hinge pocket too small for its
+    end mill — and the simulation reports it as uncut."""
+    from .engrave_centerline import even_odd_regions, is_closed_curve
+    from .pocketing import fill_rings
+    out: list[list[tuple[float, float]]] = []
+    rings: list[list[tuple[float, float]]] = []
+    for c in graphic_curves:
+        c = [(float(x), float(y)) for x, y in c]
+        (rings if is_closed_curve(c) else out).append(c)
+    for region in even_odd_regions(rings):
+        out.extend(fill_rings(region, tool_radius_mm, stepover_mm))
+    return out
+
+
 def engrave_op(
     engraving_curves: list[list[tuple[float, float]]],
     depth_z: float,
@@ -208,6 +247,7 @@ def generate_temple_program(
     tools_cfg: dict,
     params: CastleCamParams | None = None,
     hinge_polys: list[Polygon] = (),
+    graphic_curves: list[list[tuple[float, float]]] = (),
 ) -> list[CamOp]:
     """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), then
     profile-cut the temple outline.
@@ -217,6 +257,13 @@ def generate_temple_program(
     from `tools_cfg`) — when they differ the post emits a tool change between ops.
     `hinge_polys` defaults to empty, so a temple with no HINGE geometry posts the
     historical engrave→profile program unchanged.
+
+    `engraving_curves` is the text — glyph outlines the centerline option reduces
+    to one line per stroke (a DXF hands everything in here). `graphic_curves` is
+    what the maker drew on the ENGRAVING layer: an open curve is traced as a
+    stroke, a closed curve is cut out as a filled shape with a closed curve inside
+    it left standing (`graphic_engraving_curves`), whatever the option says. Both
+    go into the one Engraving op, with the one bit, at the one depth.
     """
     params = params or CastleCamParams()
     profile_tool = resolve_tool(temple.profile_tool, tools_cfg)
@@ -231,6 +278,11 @@ def generate_temple_program(
     if engraving_curves and temple.engrave_centerline:
         from .engrave_centerline import engraving_centerlines
         engraving_curves = engraving_centerlines(engraving_curves)
+    # Drawn curves first, as the merged list always had them: a temple whose
+    # layer carries open strokes beside its text posts byte-identically to 1.8.0.
+    graphics = graphic_engraving_curves(
+        graphic_curves, engrave_tool["radius_mm"], engrave_fill_stepover(engrave_tool))
+    engraving_curves = graphics + list(engraving_curves)
 
     ops: list[CamOp] = []
     if hinges:

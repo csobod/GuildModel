@@ -1545,10 +1545,15 @@ class ParamsPanel(QTabWidget):
         self.temple_engrave_tool.setCurrentText(d.engrave_tool)
         self.temple_engrave_tool.setToolTip("Bit for the ENGRAVING grooves.")
         form.addRow("Engrave tool:", self.temple_engrave_tool)
-        self.temple_engrave_centerline = QCheckBox("Engrave stroke centerlines")
+        self.temple_engrave_centerline = QCheckBox("Engrave text as stroke centerlines")
         self.temple_engrave_centerline.setChecked(d.engrave_centerline)
         self.temple_engrave_centerline.setToolTip(
-            "Engrave one center line per stroke instead of tracing the outlines.")
+            "Engrave text as one center line down each stroke instead of tracing "
+            "the glyph outlines. A curve drawn on the ENGRAVING layer is not "
+            "text: a closed curve is cut out as a filled shape to the engraving "
+            "depth, a closed curve inside it is left standing, and an open curve "
+            "is traced as a stroke. Over a DXF, which cannot tell text from "
+            "drawing, this option applies to every closed curve.")
         self.temple_engrave_centerline.toggled.connect(self.cam_changed)
         form.addRow("", self.temple_engrave_centerline)
         self.temple_hinge_depth = _slider(d.hinge_pocket_depth_mm, 0.0, 3.0,

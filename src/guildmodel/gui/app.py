@@ -270,11 +270,12 @@ class FlatMeshWorker(_ProgressWorker):
     error = Signal(str)
 
     def __init__(self, mode: str, *, outline=None, temple=None, hinge_polys=(),
-                 engraving=(), lens=None, block=None, resolution: float = 0.3) -> None:
+                 engraving=(), graphics=(), lens=None, block=None,
+                 resolution: float = 0.3) -> None:
         super().__init__()
         self.spec = {"mode": mode, "outline": outline, "temple": temple,
                      "hinge": list(hinge_polys), "engraving": list(engraving),
-                     "lens": lens, "block": block}
+                     "graphics": list(graphics), "lens": lens, "block": block}
         self.resolution = resolution
 
     def run(self) -> None:
@@ -484,7 +485,7 @@ class GCodeWorker(_ProgressWorker):
     def __init__(
         self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
-        engraving=(), temple=None, is_temple=False,
+        engraving=(), temple=None, is_temple=False, graphics=(),
     ) -> None:
         super().__init__()
         self.outline = outline
@@ -493,7 +494,8 @@ class GCodeWorker(_ProgressWorker):
         self.cam_params = cam_params
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
-        self.engraving = list(engraving)     # ENGRAVING curves (M6.3 temples)
+        self.engraving = list(engraving)     # ENGRAVING text contours (M6.3 temples)
+        self.graphics = list(graphics)       # ENGRAVING curves drawn by hand (engraved as drawn)
         self.temple = temple                 # TempleParams | None
         self.is_temple = is_temple
         self.block_lens = None               # a LENS interior (M6.4 base-curve block)
@@ -814,13 +816,17 @@ class GCodeWorker(_ProgressWorker):
         for w in clamp.warnings:
             self.progress.emit(f"[gcode] machine: {w}")
 
-        from guildmodel.core.relief.flat import place_temple_on_blank
+        from guildmodel.core.relief.flat import place_temple_curves, place_temple_on_blank
         outline, hinge_polys, engraving = place_temple_on_blank(
             self.outline, self.hinge_polys, self.engraving, temple.blank_length_mm,
             stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
+        graphics = place_temple_curves(
+            self.graphics, self.outline, self.hinge_polys, temple.blank_length_mm,
+            stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
         ops = require_ops(
             generate_temple_program(outline, engraving, temple, tools_cfg, cam,
-                                    hinge_polys=hinge_polys), "This temple")
+                                    hinge_polys=hinge_polys, graphic_curves=graphics),
+            "This temple")
         from guildmodel.core.cam.castle_ops import op_notes
         for w in op_notes(ops):
             self.progress.emit(f"[gcode] ⚠ {w}")
@@ -1556,7 +1562,7 @@ class FlatSimWorker(_ProgressWorker):
     error = Signal(str)
 
     def __init__(self, mode: str, *, outline=None, temple=None, hinge_polys=(),
-                 engraving=(), lens=None, block=None, cam_params=None,
+                 engraving=(), graphics=(), lens=None, block=None, cam_params=None,
                  material_name: str = "acetate", resolution: float = 0.3) -> None:
         super().__init__()
         self.mode = mode
@@ -1564,6 +1570,7 @@ class FlatSimWorker(_ProgressWorker):
         self.temple = temple
         self.hinge_polys = list(hinge_polys)
         self.engraving = list(engraving)
+        self.graphics = list(graphics)
         self.lens = lens
         self.block = block
         self.cam_params = cam_params
@@ -1616,15 +1623,20 @@ class FlatSimWorker(_ProgressWorker):
                 # now mills the HINGE pockets (BUILDPLAN M7), so the relief carves
                 # them too — model, sim, and posted G-code agree on the recess. Place
                 # the temple on its blank (M11 stock-side) first so all three agree.
-                from guildmodel.core.relief.flat import place_temple_on_blank
+                from guildmodel.core.relief.flat import (
+                    place_temple_curves, place_temple_on_blank)
                 outline, hinge_polys, engraving = place_temple_on_blank(
                     self.outline, self.hinge_polys, self.engraving, t.blank_length_mm,
                     stock_side=t.stock_side, snap=t.snap_to_blank_end)
+                graphics = place_temple_curves(
+                    self.graphics, self.outline, self.hinge_polys, t.blank_length_mm,
+                    stock_side=t.stock_side, snap=t.snap_to_blank_end)
                 relief = build_temple_relief(
-                    outline, t, hinge_polys, engraving,
+                    outline, t, hinge_polys, engraving, graphic_curves=graphics,
                     resolution=self.resolution, progress=self._progress)
                 ops = generate_temple_program(outline, engraving, t, tools_cfg, cam,
-                                              hinge_polys=hinge_polys)
+                                              hinge_polys=hinge_polys,
+                                              graphic_curves=graphics)
                 contour_names, drill_names = TEMPLE_CONTOUR_OPS, set()
                 top_z, peck = t.blank_thickness_mm, 1.5
                 fallback_tool = resolve_tool(t.profile_tool, tools_cfg)
@@ -1806,14 +1818,20 @@ class NestWorker(_ProgressWorker):
                     parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                          set(CASTLE_CONTOUR_OPS), set()))
                 elif mode == "temple":
-                    from guildmodel.core.relief.flat import place_temple_on_blank
+                    from guildmodel.core.relief.flat import (
+                        place_temple_curves, place_temple_on_blank)
                     t = spec["temple"]
                     t_outline, t_hinge, t_eng = place_temple_on_blank(
                         spec["outline"], spec["hinge"], spec["engraving"],
                         t.blank_length_mm, stock_side=t.stock_side,
                         snap=t.snap_to_blank_end)
+                    t_gfx = place_temple_curves(
+                        spec.get("graphics", ()), spec["outline"], spec["hinge"],
+                        t.blank_length_mm, stock_side=t.stock_side,
+                        snap=t.snap_to_blank_end)
                     ops = generate_temple_program(
-                        t_outline, t_eng, t, tools, cam_i, hinge_polys=t_hinge)
+                        t_outline, t_eng, t, tools, cam_i, hinge_polys=t_hinge,
+                        graphic_curves=t_gfx)
                     # A snapped temple's ops live in its blank frame: place blank
                     # center → zone center so the core end stays registered against
                     # the zone end, matching how the blank slides into its slot.
@@ -3388,7 +3406,8 @@ class MainWindow(QMainWindow):
         self._lens_os = None
         self._partition = None
         self._hinge_polys = []
-        self._engraving_curves = []      # ENGRAVING layer polylines (M6.3 temples)
+        self._engraving_curves = []      # ENGRAVING text contours (M6.3 temples)
+        self._engraving_graphics = []    # ENGRAVING curves drawn by hand — engraved as drawn
         self._is_temple = False          # outline + no lenses => temple component
 
         # .gmodel project state (M5.1): the source DXF bytes, the current project
@@ -6390,7 +6409,7 @@ class MainWindow(QMainWindow):
         self._lens_os = ws.lens_os
         self._partition = ws.partition
         self._hinge_polys = ws.hinge_polys
-        self._engraving_curves = ws.engraving_curves
+        self._engraving_curves, self._engraving_graphics = ws.engraving_split()
         self._is_temple = ws.is_temple
         self._stage = ws.stage
         self._stage_cache = ws.stage_cache
@@ -6415,7 +6434,7 @@ class MainWindow(QMainWindow):
         from guildmodel.core.project.schema import ComponentKind
 
         self._clear_toolpath_overlay()       # the overlay belonged to the old tab (M7.11)
-        self.canvas.set_layers(ws.layers)
+        self.canvas.set_layers(ws.display_layers())
         non_empty = [k for k, v in ws.layers.items() if v]
         self.params.set_file(
             ws.label,
@@ -6658,8 +6677,13 @@ class MainWindow(QMainWindow):
         (fonts need Qt). Temples only for now (the frame-front castle relief/CAM don't
         consume engraving): a temple is drawn posterior in GuildDraw, so its engraving
         lands on the interior — the same top face the hinge pocket and the temple relief
-        already cut. The glyphs go into ``ws.layers["ENGRAVING"]`` (2D canvas) and
-        ``ws.engraving_curves`` (3D relief + G-code), aligned with the outline/hinge."""
+        already cut. The glyphs go into ``ws.engraving_text``, aligned with the
+        outline/hinge; the canvas shows them beside the drawn ENGRAVING curves
+        (``ws.display_layers``) and the builds take the two apart
+        (``ws.engraving_split``): text is engraved as stroke centerlines, a drawn
+        closed curve — a logo — as a filled shape, a drawn open curve as a stroke.
+        Until 2026-10-05 the glyphs were merged into the layer, and a drawn logo
+        went through the text centerline and came out a forked stick figure."""
         from guildmodel.core.project.schema import ComponentKind
         from guildmodel.gui.text_outline import engraving_polylines_from_texts
 
@@ -6681,16 +6705,12 @@ class MainWindow(QMainWindow):
             # Y axis (temples are drawn posterior); flip the engraving to match so the
             # glyphs land on the part and read correctly on the interior face.
             polys = [[(-x, y) for x, y in poly] for poly in polys]
-            ws.layers["ENGRAVING"] = list(ws.layers.get("ENGRAVING", [])) + polys
-            # Outlined glyphs have no authored curve behind them; pad so
-            # `ws.curves` stays index-aligned with `ws.layers` as documented.
-            if ws.curves:
-                ws.curves["ENGRAVING"] = (list(ws.curves.get("ENGRAVING", []))
-                                          + [None] * len(polys))
-            ws.engraving_curves = list(ws.layers["ENGRAVING"])
+            ws.engraving_text = list(polys)
+            drawn = (f"; {len(ws.engraving_curves)} drawn curve(s) on ENGRAVING "
+                     f"cut as drawn (closed shapes filled)" if ws.engraving_curves else "")
             self.append_log(
                 f"[engraving] {ws.label}: outlined {len(polys)} glyph contour(s) "
-                f"from {len(texts)} text object(s).")
+                f"from {len(texts)} text object(s){drawn}.")
 
     def _apply_components_to_workspaces(self, components) -> None:
         """Overlay saved per-component params (from a reopened .gmodel) onto the
@@ -6836,9 +6856,11 @@ class MainWindow(QMainWindow):
         self._populate_component_tabs()
 
         if ws.is_temple:
+            text, graphics = ws.engraving_split()
+            drawn = f" ({len(graphics)} drawn as graphics)" if graphics else ""
             self.append_log(
                 f"[temple] Temple component: outline + "
-                f"{len(ws.engraving_curves)} engraving curve(s) — "
+                f"{len(text) + len(graphics)} engraving curve(s){drawn} — "
                 f"engrave + profile program on Generate G-code."
             )
         self._log_outline_holes(ws)
@@ -6992,11 +7014,12 @@ class MainWindow(QMainWindow):
                     "hinge": list(ws.hinge_polys), "stage": ws.stage,
                     "cam_overrides": ws.cam_overrides}
         if ws.is_temple:
+            text, graphics = ws.engraving_split()
             return {"index": i, "mode": "temple", "kind": kind, "label": ws.label,
                     "outline": ws.outline_poly,
                     "temple": ws.temple_params or self.params.temple_params(),
                     "hinge": list(ws.hinge_polys),
-                    "engraving": list(ws.engraving_curves),
+                    "engraving": text, "graphics": graphics,
                     "cam_overrides": ws.cam_overrides}
         if not self._is_block_workspace(ws):
             # Every caller draws its targets from `_buildable_workspaces`, so
@@ -7429,7 +7452,8 @@ class MainWindow(QMainWindow):
             self._mesh_worker = FlatMeshWorker(
                 "temple", outline=self._outline_poly,
                 temple=self.params.temple_params(), hinge_polys=self._hinge_polys,
-                engraving=self._engraving_curves, resolution=res)
+                engraving=self._engraving_curves, graphics=self._engraving_graphics,
+                resolution=res)
         else:
             self._mesh_worker = FlatMeshWorker(
                 "block", lens=self._lens_od, block=self.params.block_params(),
@@ -8049,6 +8073,7 @@ class MainWindow(QMainWindow):
             self._sim_worker = FlatSimWorker(
                 "temple", outline=self._outline_poly, temple=self.params.temple_params(),
                 hinge_polys=self._hinge_polys, engraving=self._engraving_curves,
+                graphics=self._engraving_graphics,
                 cam_params=cam, material_name=mat, resolution=res)
         elif mode == "block":
             self._sim_worker = FlatSimWorker(
@@ -8144,6 +8169,7 @@ class MainWindow(QMainWindow):
             hinge_polys=self._hinge_polys,
             cam_params=self.params.effective_cam_params(),   # per-component CAM (M16)
             engraving=self._engraving_curves,
+            graphics=self._engraving_graphics,
             temple=self.params.temple_params(),
             is_temple=self._is_temple,
         )

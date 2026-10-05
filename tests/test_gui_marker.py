@@ -111,5 +111,7 @@ def test_the_marker_is_not_over_applied():
     # `test_tooltips_and_typing` (the ? switch at the toolbar's end); the
     # 2026-09-28 checkbox offer one more in `test_part_defaults` (only the
     # checked lines adopted, each asked once); the 2026-09-29 release check one
-    # in `test_block_material_feeds` (the block posted from the front's tab).
-    assert marked == 50, f"{marked} tests marked `gui`, expected 50"
+    # in `test_block_material_feeds` (the block posted from the front's tab);
+    # v1.8.1 one in `test_engraving_graphics_v181` (a drawn logo and the text
+    # objects kept apart from the moment a .gdraw opens).
+    assert marked == 51, f"{marked} tests marked `gui`, expected 51"

@@ -60,6 +60,11 @@ src/guildmodel/assets/_iconcache/
 /*.jpg
 /*.jpeg
 /*.png
+# A maker's temple logo (the Kasey design, 2026-10-05): the SVG as drawn and
+# the DXF it was imported through. Customer artwork, kept for the engraving
+# investigation; the drawing itself is covered by *.gdraw below.
+/KaseyTempleIcon.svg
+/KaseyTempleIcon.dxf
 
 # **Drawings are never committed, anywhere in the tree.** The designs are the
 # maker's own product line — sold, not sample data — so a .gdraw is not ours to
@@ -91,6 +96,10 @@ src/guildmodel/assets/_iconcache/
 /BUILDPLAN-NEW.md
 /BREP-REWRITE-REPORT.md
 /FINE-RELIEF-SAWTOOTH.md
+# Superseded plans and the research written for the live one (2026-10-05), and
+# the maker's own planning notes the live plan was written from.
+/BUILDPLAN-archive/
+/GuildModel Plans.txt
 
 # One-shot investigations: each was written to answer a single question, all of
 # them already answered and recorded. Not build tooling — scripts/ keeps

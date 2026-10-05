@@ -33,6 +33,45 @@ def pocket_paths(
     return passes
 
 
+def fill_rings(
+    region: Polygon,
+    tool_radius_mm: float,
+    stepover_mm: float,
+) -> list[list[tuple[float, float]]]:
+    """Closed rings (mm) that clear `region` flat, holes respected: the tool
+    center walks the boundary a tool radius in, then every `stepover_mm` further
+    inward until nothing is left, and each hole is stood off the same way. An
+    engraved logo drawn as a closed curve is filled with these (2026-10-05); a
+    closed curve drawn inside it is an island and keeps its material. A region
+    the tool cannot enter yields no rings."""
+    from shapely.geometry.polygon import orient
+    if region.is_empty or region.area <= 0:
+        return []
+    region = orient(region, sign=1.0)            # exterior CCW, holes CW: pyclipper's hole rule
+    paths = [[[int(x * _SCALE), int(y * _SCALE)] for x, y in ring.coords[:-1]]
+             for ring in (region.exterior, *region.interiors)]
+    paths = [p for p in paths if len(p) >= 3]
+    if not paths:
+        return []
+    if stepover_mm <= 0.0:
+        stepover_mm = max(tool_radius_mm, 0.1)
+    offset_px = int(tool_radius_mm * _SCALE)
+    step_px = max(1, int(stepover_mm * _SCALE))
+    rings: list[list[tuple[float, float]]] = []
+    offset = offset_px
+    while True:
+        pco = pyclipper.PyclipperOffset()
+        pco.AddPaths(paths, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+        shrunk = pco.Execute(-offset)
+        if not shrunk:
+            break
+        for contour in shrunk:
+            if len(contour) >= 3:
+                rings.append([(p[0] / _SCALE, p[1] / _SCALE) for p in list(contour) + [contour[0]]])
+        offset += step_px
+    return rings
+
+
 def _inward_offsets(
     scaled_poly: list[list[int]],
     tool_radius_mm: float,
