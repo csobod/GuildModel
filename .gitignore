@@ -21,89 +21,57 @@ Thumbs.db
 *.bak
 *.log
 
-# Diagnostic / troubleshooting scratch — kept local, not committed. The few
-# reference-geometry files the test suite needs are vendored under
-# tests/fixtures/ instead (see that folder). Leading slash anchors each to the
-# repo root so they can't match e.g. tests/fixtures/demo/.
-/Demo Project/
-/Demo Project 2/
-/Demo Project 3/
-/Screenshots/
-/demo/
-
-# Icon/render scratch
-assets_preview/
-src/guildmodel/assets/_iconcache/
-
 # Local Claude Code settings (per-machine, not shared)
 .claude/settings.local.json
 
-# Internal design/planning references — kept local, not published. Working notes
-# (teardowns, cross-app integration planning) and scratch reference geometry the
-# app and test suite do not depend on (tests vendor their own fixtures under
-# tests/fixtures/). Leading slash anchors each to the repo root.
-/DEMO_PROJECT_TEARDOWN.md
-/OLGA_TEARDOWN_AND_PLAN.md
-/INTEGRATION_NOTES.md
-/INCIDENT-*.md
-/Current Development.png
-/cnc_bed.dxf
-/cnc_bed.svg
-/frame_illustration.dxf
-/frame_illustration.svg
-/hinge_th-23_front.dxf
-
-# Maker correspondence and the frames that came with it, and reference photos
-# dropped at the root while a design is discussed (never the app's own images,
-# which live under docs/ and src/).
-/Bug Report *.txt
-/*.jpg
-/*.jpeg
-/*.png
-# A maker's temple logo (the Kasey design, 2026-10-05): the SVG as drawn and
-# the DXF it was imported through. Customer artwork, kept for the engraving
-# investigation; the drawing itself is covered by *.gdraw below.
-/KaseyTempleIcon.svg
-/KaseyTempleIcon.dxf
-
 # **Drawings are never committed, anywhere in the tree.** The designs are the
 # maker's own product line — sold, not sample data — so a .gdraw is not ours to
-# publish whatever folder it is sitting in. These patterns are deliberately
-# *not* root-anchored: the earlier `/*.gdraw` only ever covered the repo root,
-# which is how three drawings were nearly vendored under tests/fixtures/ as
-# unpacked SVGs, a path no root-anchored rule can reach.
+# publish whatever folder it is sitting in. Not root-anchored on purpose: a
+# root-anchored rule once let three drawings reach tests/fixtures/ as unpacked
+# SVGs. tests/test_no_drawings_committed.py fails if one lands in the index.
 #
-# Testing against real drawings is still supported and still worth doing — it
-# is what found this season's silent defects — but by pointing the suite at a
-# corpus on disk rather than by copying one in. See tests/test_frame_corpus.py
-# and its GUILDMODEL_FRAME_CORPUS variable. tests/test_no_drawings_committed.py
-# fails if one lands in the index anyway.
+# Testing against real drawings is still done, by pointing the suite at a
+# corpus on disk rather than copying one in: GUILDMODEL_FRAME_CORPUS, or the
+# local tests/corpus/ folder, which holds copies of a few library designs
+# chosen for the limits they test (see tests/test_frame_corpus.py).
 *.gdraw
 *.gdraw.bak
 *.gmodel
+/tests/corpus/
 
-# Programs a maker sent us to look at, and programs posted at the root for a
-# hand-check. Customer material — it belongs in the investigation, not the
-# history. The suite's own reference program lives under tests/fixtures/, which
-# this root-anchored pattern leaves alone.
+# Whatever lands at the root while something is looked at — a maker's bug
+# report and the files that came with it, a program posted for a hand-check,
+# reference photos, a teardown or incident note, the maker's planning notes —
+# stays local. The app's own images live under docs/ and src/, and the suite's
+# reference program under tests/fixtures/, which these root-anchored rules
+# leave alone. What was cleared out on 2026-10-15 sits in the dated attic
+# beside the repos.
+/*.md
+!/README.md
+!/CHANGELOG.md
+/*.txt
+!/requirements*.txt
 /*.nc
+/*.dxf
+/*.svg
+/*.stl
+/*.png
+/*.jpg
+/*.jpeg
+/Demo Project*/
+/Screenshots/
+/demo/
+/assets_preview/
+src/guildmodel/assets/_iconcache/
 
-# The engineering record: milestone history, the B-Rep evaluation, and the
-# planning notes they were written against. Kept local from v1.5.0 — they are
-# working documents rather than published ones, and source docstrings still
-# cite them by name for anyone who has the tree.
-/BUILDPLAN.md
-/BUILDPLAN-NEW.md
-/BREP-REWRITE-REPORT.md
-/FINE-RELIEF-SAWTOOTH.md
-# Superseded plans and the research written for the live one (2026-10-05), and
-# the maker's own planning notes the live plan was written from.
+# The engineering record: the live plan (/*.md above), its archive and the
+# research written for it. Working documents, kept local from v1.5.0; source
+# docstrings still cite them by name for anyone who has the tree.
 /BUILDPLAN-archive/
-/GuildModel Plans.txt
 
-# One-shot investigations: each was written to answer a single question, all of
-# them already answered and recorded. Not build tooling — scripts/ keeps
-# build_release*, make_icon and dxf_to_stl, which are.
+# One-shot investigations, each written to answer a single question. Not build
+# tooling — scripts/ keeps build_release*, make_icon and dxf_to_stl, which are.
+# probe_release_compare.py, the release check, is the one that stays in use.
 /scripts/probe_*.py
 /scripts/spike_*.py
 /scripts/bench_*.py

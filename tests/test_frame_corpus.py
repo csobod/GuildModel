@@ -21,8 +21,14 @@ Point it at a folder of `.gdraw` files::
 
     GUILDMODEL_FRAME_CORPUS="/path/to/drawings" pytest tests/test_frame_corpus.py
 
-Skipped, and silent, when that is unset. Nothing here names a drawing: the
-names in a failure message come off the filesystem at the moment it fails.
+With the variable unset it reads the local, gitignored ``tests/corpus/`` folder
+when one exists: copies of a few library designs chosen for the limits they
+test (an asymmetric front, the largest and the smallest eye, an outline with an
+opening, four hinge lines, a populated hinge tab, the most asymmetric temple;
+its README says which and why). Set the variable to "" to skip on purpose.
+Skipped, and silent, when neither is there, which is every CI run. Nothing
+here names a drawing: the names in a failure message come off the filesystem
+at the moment it fails.
 
 **It is slow** — a B-Rep front is ~20 s and a corpus is typically dozens, so
 budget accordingly and use `GUILDMODEL_FRAME_CORPUS_MAX` to bound a smoke run.
@@ -33,8 +39,11 @@ from pathlib import Path
 
 import pytest
 
-#: Where the drawings are. Unset (the normal case, and every CI run) skips.
+#: Where the drawings are. Unset falls back to the local folder below; set to
+#: "" it skips; unset with no local folder (every CI run) skips.
 _CORPUS_ENV = "GUILDMODEL_FRAME_CORPUS"
+#: Copies of a few library designs, gitignored, chosen for the limits they test.
+_LOCAL_CORPUS = Path(__file__).parent / "corpus"
 #: Optional cap, for a smoke run over a large corpus.
 _MAX_ENV = "GUILDMODEL_FRAME_CORPUS_MAX"
 
@@ -53,6 +62,8 @@ def _drawings():
     maker cannot open. `.bak` siblings go for the same reason.
     """
     root = os.environ.get(_CORPUS_ENV)
+    if root is None and _LOCAL_CORPUS.is_dir():
+        root = str(_LOCAL_CORPUS)
     if not root or not Path(root).is_dir():
         return []
     out = [p for p in sorted(Path(root).rglob("*.gdraw"))
@@ -63,7 +74,7 @@ def _drawings():
 
 pytestmark = pytest.mark.skipif(
     not _drawings(),
-    reason=f"no corpus: set {_CORPUS_ENV} to a folder of .gdraw drawings")
+    reason=f"no corpus: set {_CORPUS_ENV} to a folder of .gdraw drawings, or fill tests/corpus/")
 
 
 def _fronts():
