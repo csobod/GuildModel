@@ -160,6 +160,20 @@ A saved project whose temple was not drawn on the origin will show it placed
 differently on reopen: the blank box in the 2D view shows where, and
 unchecking the box restores the old placement.
 
+### What posts the same, and what to re-post
+
+The release check (`scripts/probe_release_compare.py`, which now drives the
+Worktable as 1.8.2 does: Auto-place, then Generate) against v1.8.1 on the
+gabriel fixture: the frame front and the base-curve block post byte-identical
+on their own tabs. **Re-post a temple.** With *Origin from drawing* on, a
+temple drawn off the zero line is placed on its blank by the drawing's origin;
+on the fixture every move shifts 0.585 mm across the blank, and a temple drawn
+on the origin is unchanged. **Re-post the worktable program.** The temples
+carry that shift, and every part now sits in its pocket by its blank, not by
+the bounding box of its cuts, as a blank-end-snapped temple already did; the
+fixture's front moves 0.24 mm on the bed for it, and the blocks less than a
+thousandth.
+
 ## v1.8.1 — a drawn logo is engraved as a filled shape
 
 A maker drew a six-armed logo on a temple's ENGRAVING layer as one closed
