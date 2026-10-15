@@ -79,6 +79,9 @@ class ComponentGeometry:
     """
     relief: object | None = None                 # CastleRelief (kept loose to avoid the import)
     hinge_polys: list[Polygon] = field(default_factory=list)
+    # The INLAY seats (§8a), index-aligned with the part's `inlays`; a temple's
+    # are placed on its blank like the outline before they arrive here.
+    inlay_polys: list[Polygon] = field(default_factory=list)
     outline: Polygon | None = None
     engraving_curves: list[list[tuple[float, float]]] = field(default_factory=list)
     lens_outline: Polygon | None = None
@@ -130,6 +133,7 @@ def build_component_ops(
         ops = generate_castle_program(
             geometry.relief, component.castle, geometry.hinge_polys,
             tool, params=cam_params, tools_cfg=tools_cfg,
+            inlay_polys=geometry.inlay_polys,
         )
         return ComponentProgram(
             kind, component.label, component.fixture_zone(),
@@ -142,6 +146,7 @@ def build_component_ops(
         ops = generate_temple_program(
             geometry.outline, geometry.engraving_curves, component.temple,
             tools_cfg, params=cam_params, hinge_polys=geometry.hinge_polys,
+            inlay_polys=geometry.inlay_polys,
         )
         return ComponentProgram(
             kind, component.label, component.fixture_zone(),

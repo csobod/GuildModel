@@ -124,7 +124,8 @@ def _build_castle(spec, resolution, kernel, progress):
 
     relief = build_castle_stage(
         spec["partition"], spec["castle"], spec["hinge"],
-        stage=stage, resolution=resolution, progress=progress)
+        stage=stage, resolution=resolution, progress=progress,
+        inlay_polys=spec.get("inlay", ()))
     return build_castle_mesh(relief, progress=progress), None, None
 
 
@@ -134,7 +135,8 @@ def _build_castle_solid(spec, progress):
     from guildmodel.core.solid.tessellate import tessellate
 
     solid = build_castle_solid(
-        spec["partition"], spec["castle"], spec["hinge"], progress=progress)
+        spec["partition"], spec["castle"], spec["hinge"], progress=progress,
+        inlays=spec.get("inlay", ()))
     if progress is not None:
         progress("Tessellating", 0.95)
     tess = tessellate(solid)
@@ -160,7 +162,8 @@ def _build_castle_mesh(spec, progress):
                                        to_trimesh)
 
     model = build_castle_model(
-        spec["partition"], spec["castle"], spec["hinge"], progress=progress)
+        spec["partition"], spec["castle"], spec["hinge"], progress=progress,
+        inlays=spec.get("inlay", ()))
     if progress is not None:
         progress("Edges", 0.97)
     mesh = to_trimesh(model)
@@ -204,7 +207,7 @@ def _build_temple(spec, resolution, progress):
     from guildmodel.core.relief.castle import build_castle_mesh
     from guildmodel.core.relief.flat import (
         build_temple_relief, place_temple_curves, place_temple_on_blank,
-        temple_core_guide)
+        place_temple_polygons, temple_core_guide)
 
     temple = spec["temple"]
     outline, hinge, eng = place_temple_on_blank(
@@ -217,8 +220,13 @@ def _build_temple(spec, resolution, progress):
         temple.blank_length_mm, stock_side=temple.stock_side,
         snap=temple.snap_to_blank_end,
         origin_from_drawing=temple.origin_from_drawing)
+    seats = place_temple_polygons(
+        spec.get("inlay", ()), spec["outline"], spec["hinge"],
+        temple.blank_length_mm, stock_side=temple.stock_side,
+        snap=temple.snap_to_blank_end,
+        origin_from_drawing=temple.origin_from_drawing)
     relief = build_temple_relief(
-        outline, temple, hinge, eng, graphic_curves=gfx,
+        outline, temple, hinge, eng, graphic_curves=gfx, inlay_polys=seats,
         resolution=temple_preview_res(resolution, eng or gfx), progress=progress)
     guide = temple_core_guide(outline, hinge, temple).bounds
     return build_castle_mesh(relief, progress=progress), None, guide

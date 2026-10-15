@@ -69,7 +69,10 @@ class CastleRelief:
     inside: np.ndarray          # bool (rows, cols): inside body (lens holes excluded)
     zone_index: np.ndarray      # int (rows, cols): index into partition.zones, -1 outside
     partition: CastlePartition
-    pocket_polys: list[Polygon] = dc_field(default_factory=list)  # carved hinge pockets
+    pocket_polys: list[Polygon] = dc_field(default_factory=list)  # carved hinge pockets + posterior seats
+    # Seats cut into the FRONT (§8a inlays): their walls stand on the anterior
+    # surface, so the mesher conforms them on the anterior twins.
+    anterior_pocket_polys: list[Polygon] = dc_field(default_factory=list)
     # The posterior surface BEFORE the pockets are carved (M8): the relief passes
     # follow this so they sail OVER the already-cut pockets instead of re-diving to the
     # floor — the Hinge Pockets op cuts the pockets, the sim verifies the full `field`.
@@ -295,8 +298,15 @@ def build_castle_relief(
     margin: float = GRID_MARGIN_MM,
     heights: dict[str, float] | None = None,
     progress: Optional[ProgressFn] = None,
+    inlay_polys: list[Polygon] = (),
 ) -> CastleRelief:
-    """Rasterize the castle: terraces -> footing blends -> hinge pockets.
+    """Rasterize the castle: terraces -> footing blends -> hinge pockets ->
+    inlay seats.
+
+    inlay_polys: the INLAY seats, index-aligned with `castle.inlays`
+    (`geometry.inlays`). Posterior seats are carved after the surface
+    snapshot, like the hinge pockets, so the relief passes sail over them and
+    the Inlays op cuts them; anterior seats go into the anterior map.
 
     heights: optional zone-name -> height override (used for generic
     partitions / tests). Defaults to `castle.zones.for_kind` per zone, with
@@ -429,6 +439,13 @@ def build_castle_relief(
     feature_band, feature_slope = apply_posterior_features(
         z, partition, castle, inside, ox, oy, resolution, progress=progress)
 
+    # ---- Inlay seats (§8a): the one list every kernel reads, from the params.
+    from ..geometry.inlays import inlay_cuts, zone_reference
+    from ..geometry.pocket_floor import castle_pocket_floors
+    hinge_floors = castle_pocket_floors(hinge_polys, castle)
+    seats = inlay_cuts(castle.inlays, list(inlay_polys), hinge_floors,
+                       posterior_reference=zone_reference(partition, heights))
+
     # ---- Edge features + the anterior face (M17). The anterior surface only
     # exists when something actually cuts the front; otherwise `anterior` stays
     # None and every downstream reader takes the historical flat-z=0 path.
@@ -451,6 +468,15 @@ def build_castle_relief(
         if eb is not None:
             feature_band = eb if feature_band is None else (feature_band | eb)
         feature_slope = max(feature_slope, es)
+        # Anterior seats (§8a): material taken off the front, parents first,
+        # each from its reference plane. Modeled and previewed; M24 posts them.
+        for seat in seats:
+            if seat.posterior:
+                continue
+            prepare(seat.region)
+            m = contains_xy(seat.region, flat_x, flat_y).reshape(rows, cols) & inside
+            if m.any():
+                anterior[m] = np.maximum(anterior[m], seat.plane.z(Xs[m], Ys[m]))
         anterior[~inside] = 0.0
         if not anterior.any():
             anterior = None            # posterior-only edge features changed nothing here
@@ -469,6 +495,15 @@ def build_castle_relief(
         else:
             z[m] = np.minimum(z[m], floor.z(Xs[m], Ys[m]))
 
+    # ---- Posterior inlay seats (§8a): after the pockets, parents first; a
+    # seat in a hinge steps the pocket's floor and keeps its tilt.
+    posterior_seats = [seat for seat in seats if seat.posterior]
+    for seat in posterior_seats:
+        prepare(seat.region)
+        m = contains_xy(seat.region, flat_x, flat_y).reshape(rows, cols) & inside
+        if m.any():
+            z[m] = np.minimum(z[m], seat.plane.z(Xs[m], Ys[m]))
+
     z[~inside] = 0.0
     surface[~inside] = 0.0
     _report(progress, "Relief ready", 0.92)
@@ -476,7 +511,9 @@ def build_castle_relief(
     surface_field = Heightfield(z=surface, origin=(ox, oy), resolution=resolution)
     return CastleRelief(
         field=field, inside=inside, zone_index=zone_index,
-        partition=partition, pocket_polys=list(hinge_polys),
+        partition=partition,
+        pocket_polys=list(hinge_polys) + [seat.outline for seat in posterior_seats],
+        anterior_pocket_polys=[seat.outline for seat in seats if not seat.posterior],
         surface_field=surface_field,
         feature_band=feature_band, feature_max_slope_deg=feature_slope,
         groove=groove if groove_on else None,
@@ -525,6 +562,7 @@ def build_castle_stage(
     resolution: float = PREVIEW_RES_MM,
     margin: float = GRID_MARGIN_MM,
     progress: Optional[ProgressFn] = None,
+    inlay_polys: list[Polygon] = (),
 ) -> CastleRelief:
     """Build the relief up to a teaching stage.
 
@@ -562,10 +600,11 @@ def build_castle_stage(
         castle.eyewire_bezel.enabled = False
         castle.bridge_relief.enabled = False
     hinges = list(hinge_polys) if level >= 3 else []
+    seats = list(inlay_polys) if level >= 3 else []
     return build_castle_relief(
         partition, castle, hinges,
         resolution=resolution, margin=margin, heights=heights,
-        progress=progress,
+        progress=progress, inlay_polys=seats,
     )
 
 
@@ -604,20 +643,25 @@ def _snap_to_rings(xy: np.ndarray, rings: list, max_dist: float) -> np.ndarray:
     return out
 
 
-def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray) -> list[tuple[np.ndarray, object]]:
+def _pocket_wall_ids(relief: CastleRelief, vid: np.ndarray,
+                     polys=None, z=None) -> list[tuple[np.ndarray, object]]:
     """Vertex ids flanking each hinge-pocket wall, paired with the true ring.
 
     A wall pixel pair is an inside-pocket / outside-pocket 4-neighbor pair
     with a real z jump between them (pockets shallower than the local relief
     carve nothing and get no snap).
+
+    `polys` and `z` default to the posterior pockets on the posterior surface;
+    the mesher also asks for the anterior seats (§8a) on the anterior map.
     """
-    z = relief.field.z
+    z = relief.field.z if z is None else z
+    polys = relief.pocket_polys if polys is None else polys
     inside = relief.inside
     rows, cols = z.shape
     ox, oy = relief.field.origin
     res = relief.field.resolution
     out: list[tuple[np.ndarray, object]] = []
-    for poly in relief.pocket_polys:
+    for poly in polys:
         bx0, by0, bx1, by1 = poly.bounds
         c0 = max(0, int((bx0 - ox) / res) - 2)
         c1 = min(cols, int((bx1 - ox) / res) + 3)
@@ -735,13 +779,22 @@ def _conform_rim(
     verts[rim_ids, 0:2] = snapped
     verts[rim_ids + n, 0:2] = snapped
 
-    # Hinge-pocket walls: interior z discontinuities — top vertices only.
+    # Hinge-pocket and seat walls: interior z discontinuities — top vertices only.
     rim_set = set(rim_ids.tolist())
     for ids, ring in _pocket_wall_ids(relief, vid):
         ids = np.array([i for i in ids if i not in rim_set], dtype=np.int64)
         if not len(ids):
             continue
         verts[ids, 0:2] = _snap_to_rings(verts[ids, :2], [ring], max_snap)
+    # Anterior seats (§8a): the same on the front face, on the anterior twins.
+    ant_polys = getattr(relief, "anterior_pocket_polys", None)
+    ant_z = getattr(relief, "anterior", None)
+    if ant_polys and ant_z is not None:
+        for ids, ring in _pocket_wall_ids(relief, vid, ant_polys, ant_z):
+            ids = np.array([i for i in ids if i not in rim_set], dtype=np.int64)
+            if not len(ids):
+                continue
+            verts[ids + n, 0:2] = _snap_to_rings(verts[ids + n, :2], [ring], max_snap)
     return verts
 
 

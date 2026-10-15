@@ -41,7 +41,9 @@ TEMPLE_CONTOUR_OPS = {"Temple Profile", "Holes"}
 # follow; the profile releases the part last. An op not named here is a barrier
 # and keeps its place.
 TEMPLE_OP_TIERS: tuple[frozenset[str], ...] = (
-    frozenset({"Hinge Pockets", "Engraving"}),
+    # The inlay seats (§8a) want the blank rigid too, and share the hinge
+    # tool by default, so they ride in the first tier beside the pockets.
+    frozenset({"Hinge Pockets", "Engraving", "Inlays"}),
     frozenset({"Holes"}),
     frozenset({"Temple Profile"}),
 )
@@ -248,9 +250,15 @@ def generate_temple_program(
     params: CastleCamParams | None = None,
     hinge_polys: list[Polygon] = (),
     graphic_curves: list[list[tuple[float, float]]] = (),
+    inlay_polys: list[Polygon] = (),
 ) -> list[CamOp]:
-    """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), then
-    profile-cut the temple outline.
+    """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), pocket
+    the inlay seats on the hinge side (if any, §8a), then profile-cut the temple
+    outline.
+
+    `inlay_polys` are the INLAY seats, placed on the blank like the outline and
+    index-aligned with `temple.inlays`. A seat on the outer face is modeled and
+    not posted, so a temple with only those posts byte-identically.
 
     The hinge pockets and engraving are cut first while the blank is rigid; the
     profile releases the part last. Each op's tool comes from `temple` (resolved
@@ -294,6 +302,15 @@ def generate_temple_program(
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
                               params.simplify_tol_mm, top_z=top_z,
                               stepdown_mm=temple.engrave_stepdown_mm))
+    if temple.inlays and inlay_polys:
+        from ..geometry.inlays import inlay_cuts
+        from ..geometry.pocket_floor import temple_pocket_floors
+        from .inlay_ops import inlay_ops
+        seats = inlay_cuts(temple.inlays, list(inlay_polys),
+                           temple_pocket_floors(hinges, temple, outline),
+                           posterior_reference=temple.blank_thickness_mm)
+        ops += inlay_ops(seats, params, tools_cfg,
+                         resolve_tool(temple.hinge_tool, tools_cfg))
     # Decorative OUTLINE openings (normalize.assemble_outline) are inside
     # through-cuts, taken before the profile releases the part. Same tool as the
     # profile unless pinned, so they add no tool change.

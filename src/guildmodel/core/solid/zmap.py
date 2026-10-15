@@ -62,7 +62,8 @@ def solid_cam_relief(partition: CastlePartition, castle: CastleParams,
                      hinges=(), resolution: float = CUT_RES_MM,
                      margin: float = GRID_MARGIN_MM,
                      deflection: float = CAM_DEFLECTION_MM,
-                     progress: Optional[ProgressFn] = None) -> CastleRelief:
+                     progress: Optional[ProgressFn] = None,
+                     inlays=()) -> CastleRelief:
     """The complete relief the CAM posts from, built by OpenCASCADE.
 
     The mesh counterpart of this rebuilds the part up to three times and costs
@@ -71,11 +72,12 @@ def solid_cam_relief(partition: CastlePartition, castle: CastleParams,
     """
     from .build import build_castle_solid, clear_base_cache
 
-    def triangles(part, cst, hinge_polys):
+    def triangles(part, cst, hinge_polys, inlay_polys=()):
         clear_base_cache()
-        tess = tessellate(build_castle_solid(part, cst, list(hinge_polys)),
+        tess = tessellate(build_castle_solid(part, cst, list(hinge_polys),
+                                             inlays=list(inlay_polys)),
                           deflection=deflection, with_edges=False)
         return tess.vertices, tess.faces
 
     return cam_relief(triangles, partition, castle, hinges, resolution,
-                      margin, progress)
+                      margin, progress, inlays=inlays)

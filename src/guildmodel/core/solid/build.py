@@ -457,7 +457,8 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
                        hinges: list | None = None,
                        heights: dict[str, float] | None = None,
                        progress: Optional[ProgressFn] = None,
-                       return_surface: bool = False):
+                       return_surface: bool = False,
+                       inlays: list | None = None):
     """Terraces, footing blends, features and pockets — closed, or rebuilt flat.
 
     Builds with the curved terraces, checks the result actually closes, and on
@@ -488,7 +489,7 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     """
     try:
         solid = _build_castle_solid(partition, castle, hinges, heights, progress,
-                                    return_surface, curved=None)
+                                    return_surface, curved=None, inlays=inlays)
     except BooleanError:
         # The curved base can also fail outright: on the largest front in the
         # maker's library (165 mm across, 2026-10-15) the footing carve's
@@ -500,12 +501,13 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
             raise
         _report(progress, "Rebuilding without curved terraces", 0.95)
         return _build_castle_solid(partition, castle, hinges, heights,
-                                   progress, return_surface, curved=False)
+                                   progress, return_surface, curved=False,
+                                   inlays=inlays)
     check = solid[0] if return_surface else solid
     if CURVED_TERRACES and not closes(check):
         _report(progress, "Rebuilding without curved terraces", 0.95)
         flat = _build_castle_solid(partition, castle, hinges, heights, progress,
-                                   return_surface, curved=False)
+                                   return_surface, curved=False, inlays=inlays)
         if closes(flat[0] if return_surface else flat):
             return flat
         # Neither closes. Hand back the faithful one and let `verify_mesh` say
@@ -519,8 +521,10 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
                         heights: dict[str, float] | None = None,
                         progress: Optional[ProgressFn] = None,
                         return_surface: bool = False,
-                        curved: bool | None = None):
-    """Terraces, footing blends, posterior features and hinge pockets.
+                        curved: bool | None = None,
+                        inlays: list | None = None):
+    """Terraces, footing blends, posterior features, hinge pockets and inlay
+    seats (`inlays`, index-aligned with `castle.inlays`, §8a).
 
     Order mirrors the raster exactly: terraces -> footings -> posterior finishing
     features -> hinge pockets. It has to, because the bezel anchors to the
@@ -539,7 +543,7 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
 
     _report(progress, "Finishing features", 0.85)
     from .features import (apply_surface_features, hinge_pocket_cutters,
-                           independent_cutters)
+                           independent_cutters, inlay_pocket_cutters)
     # Two groups, and the split is the measured one — see `independent_cutters`.
     # The splay and the scoop read the surface each other leaves behind, so they
     # stay one-at-a-time; everything else sees the same target either way and so
@@ -548,6 +552,9 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
     solid = apply_surface_features(solid, partition, castle)
     tools = independent_cutters(solid, partition, castle, top)
     pockets = hinge_pocket_cutters(hinges or [], castle, top)
+    # The seats cut below everything too, and like the pockets they anchor on
+    # nothing, so they ride in the same pass (§8a).
+    pockets += inlay_pocket_cutters(inlays, castle, hinges, partition, h, top)
 
     if return_surface:
         # The M8 surface_field is the solid *before* the pockets, so the two

@@ -539,6 +539,7 @@ _DARK_LAYER_COLORS: dict[str, str] = {
     "#2e8040": "#58b070",   # BRIDGE
     "#8040bf": "#a878d8",   # SCULPT
     "#1a9a9a": "#40c0c0",   # ENGRAVING
+    "#a67c00": "#e0b84c",   # INLAY — GuildDraw's dark gold
     "#888888": "#777777",   # REF
 }
 

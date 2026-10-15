@@ -3,7 +3,67 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
-## Unreleased — the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
+## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
+
+### Inlays: the INLAY layer, modeled and cut (BUILDPLAN §8a, 2026-10-15)
+
+A closed curve on GuildDraw's new `INLAY` layer, on the front or a temple, is
+a **seat for a plaque, a laminate or a plate**. The drawing carries the shape
+and nothing else; GuildModel keeps one inlay per curve, with what the drawing
+does not say, and cuts it.
+
+* **One row per seat**, in an *Inlays* group on the Model tab and on the
+  Temple tab: enabled, a name, the face it is cut into, the depth (the
+  insert's thickness), a flush offset for a seat cut shallower or deeper
+  than that, step or island, the tool and the depth per pass, and the
+  minimum thickness it must leave. A seat starts at the part's **Inlay
+  depth** (1.0 mm; beside the hinge pocket depth on each tab, and a shop
+  default in Preferences ▸ Parts) and on the **visible face**: the front of a
+  frame, the outer side of a temple. Each seat then keeps its own.
+* **What a seat is relative to is read off the drawing**, never typed. A seat
+  drawn inside another seat is a step down from the parent's floor and takes
+  the parent's face. A seat drawn inside a HINGE curve is a step in the hinge
+  pocket's floor: it inherits the pocket's plane, tilt included, and sits on
+  the hinge's face. The panel shows the floor each seat measures from, and
+  the 2D canvas draws a nested seat darker.
+* **An island is left standing.** Switch a seat drawn inside another to
+  *Island* and its parent is pocketed around it: a raised monogram on a
+  plaque. The island's own depth sinks its top; 0 leaves it at the surface.
+* **All three kernels cut the same seats** from one list made of the
+  parameters (`core/geometry/inlays.py`), the way the anterior bezel's band is
+  made once and read three times: the raster carves them after its surface
+  snapshot, so the relief passes sail over them; the mesh kernel and the B-Rep
+  subtract them as prisms, trimmed by a tilted hinge floor where one is
+  inherited. The three agree to the cell on every fixture.
+* **The program.** Posterior seats are pocketed by a new **Inlays** operation
+  with the same ramped lap entry as the hinge pockets, parents first, after
+  the relief has finished the surface each seat is measured from and before
+  the eyewires open the apertures; on a temple it rides beside the hinge
+  pockets while the blank is rigid. Each seat's levels begin just above its
+  own reference plane rather than at the stock top. The hinge tool cuts them
+  unless a seat names its own tool, which posts as its own operation. The
+  operation can be skipped on the Cut tab like any other, has a row in the
+  per-operation tools, and is billed on its own in the cut-time estimate.
+* **An anterior seat is modeled and previewed, not posted.** It shows in 3D
+  on every kernel and the panel's row says *not posted*; the posted program
+  is byte for byte the one without it, as the anterior eyewire bezel has been
+  since M17. M24's flip setup cuts it on side two.
+* **Two checks.** A seat its tool cannot enter is left out and named in the
+  log and the Inspector, with a tool that fits. A seat whose floor leaves
+  less than its minimum thickness against the other face — a plaque seat on
+  the front under a hinge pocket on the back, say — is named too, in the
+  log, the Inspector and the generate summary; the setup sheet lists every
+  seat with its face, depth, floor, whether it posts and whether it keeps
+  its thickness.
+* **A re-imported drawing keeps every seat's settings.** Seats are matched
+  by their place in the containment tree and by centroid, so Reload Drawing
+  and a reopened project pair each saved inlay with its redrawn curve; a seat
+  that moved far is paired in order, a new one starts from the defaults, a
+  deleted one is dropped. *Apply to both temples* copies the inlay depth and
+  leaves the other temple's own seats alone.
+* **What does not change.** A drawing without the layer models, posts and
+  simulates exactly as before: the tests pin the posted programs
+  byte-identical. A project from 1.8 opens with no seats and the defaults.
 
 ### The Worktable, redone (BUILDPLAN M20, 2026-10-14)
 

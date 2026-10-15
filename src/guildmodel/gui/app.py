@@ -47,6 +47,7 @@ from guildmodel.gui.widgets import readiness_dot
 from guildmodel.gui.widgets.readiness_dot import ReadinessDot
 from guildmodel.gui.component_workspace import (
     ComponentWorkspace, build_workspaces_from_gdraw, derive_workspace,
+    seed_inlay_features,
 )
 
 
@@ -236,11 +237,12 @@ class MeshWorker(_ProgressWorker):
 
     def __init__(
         self, partition, castle, hinge_polys=(), stage: str = "pockets",
-        resolution: float = 0.3, kernel: str = "raster",
+        resolution: float = 0.3, kernel: str = "raster", inlay_polys=(),
     ) -> None:
         super().__init__()
         self.spec = {"mode": "castle", "partition": partition, "castle": castle,
-                     "hinge": list(hinge_polys), "stage": stage}
+                     "hinge": list(hinge_polys), "stage": stage,
+                     "inlay": list(inlay_polys)}
         self.stage_name = stage
         self.resolution = resolution
         self.kernel = kernel
@@ -271,11 +273,12 @@ class FlatMeshWorker(_ProgressWorker):
 
     def __init__(self, mode: str, *, outline=None, temple=None, hinge_polys=(),
                  engraving=(), graphics=(), lens=None, block=None,
-                 resolution: float = 0.3) -> None:
+                 resolution: float = 0.3, inlay_polys=()) -> None:
         super().__init__()
         self.spec = {"mode": mode, "outline": outline, "temple": temple,
                      "hinge": list(hinge_polys), "engraving": list(engraving),
-                     "graphics": list(graphics), "lens": lens, "block": block}
+                     "graphics": list(graphics), "lens": lens, "block": block,
+                     "inlay": list(inlay_polys)}
         self.resolution = resolution
 
     def run(self) -> None:
@@ -443,6 +446,57 @@ def _apply_appearance_prefs(prefs: dict) -> None:
     theme.set_grid(prefs.get("grid"))
 
 
+def _castle_inlay_seats(relief, castle, hinge_polys, inlay_polys, cam, tools_cfg, tool):
+    """The front's inlay seats as the program cuts them, and the Inlays op
+    groups the reach check reads (§8a). Empty without the layer."""
+    if not (castle.inlays and inlay_polys):
+        return [], []
+    from guildmodel.core.cam.castle_ops import resolve_tool
+    from guildmodel.core.cam.inlay_ops import inlay_op_groups
+    from guildmodel.core.geometry.heights import zone_heights
+    from guildmodel.core.geometry.inlays import inlay_cuts, zone_reference
+    from guildmodel.core.geometry.pocket_floor import castle_pocket_floors
+    seats = inlay_cuts(
+        castle.inlays, list(inlay_polys), castle_pocket_floors(hinge_polys, castle),
+        posterior_reference=zone_reference(
+            relief.partition, zone_heights(relief.partition, castle, None)))
+    default = resolve_tool(cam.tool_for_op("Inlays"), tools_cfg, default=tool)
+    return seats, inlay_op_groups(seats, tools_cfg, default)
+
+
+def _temple_inlay_seats(outline, temple, hinge_polys, inlay_polys, tools_cfg):
+    """A temple's inlay seats on its placed blank, and the Inlays op groups."""
+    if not (temple.inlays and inlay_polys):
+        return [], []
+    from guildmodel.core.cam.castle_ops import resolve_tool
+    from guildmodel.core.cam.inlay_ops import inlay_op_groups
+    from guildmodel.core.geometry.inlays import inlay_cuts
+    from guildmodel.core.geometry.pocket_floor import temple_pocket_floors
+    seats = inlay_cuts(temple.inlays, list(inlay_polys),
+                       temple_pocket_floors(hinge_polys, temple, outline),
+                       posterior_reference=temple.blank_thickness_mm)
+    return seats, inlay_op_groups(seats, tools_cfg,
+                                  resolve_tool(temple.hinge_tool, tools_cfg))
+
+
+def _inlay_sheet(seats, thin) -> list[dict]:
+    """The setup sheet's inlay rows: each seat, its face and depth, what it is
+    relative to, whether this program posts it, and whether its floor keeps
+    the minimum thickness (`thin` names the ones that do not)."""
+    failing = {w.seat for w in thin}
+    rows = []
+    for seat in seats:
+        f = seat.feature
+        name = f.label or f.id
+        rows.append({
+            "seat": name, "face": seat.face, "depth_mm": round(seat.depth_mm, 3),
+            "relative_to": f.relative_to, "mode": f.mode,
+            "posted": bool(seat.posterior),
+            "thickness_ok": name not in failing,
+        })
+    return rows
+
+
 def _op_overlay(ops) -> list[dict]:
     """Per-op cutting paths (design mm) for the 2D toolpath overlay (M7.11)."""
     return [{"name": op.name, "tool": op.tool_name or "",
@@ -486,6 +540,7 @@ class GCodeWorker(_ProgressWorker):
         self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
         engraving=(), temple=None, is_temple=False, graphics=(),
+        inlay_polys=(),
     ) -> None:
         super().__init__()
         self.outline = outline
@@ -494,6 +549,7 @@ class GCodeWorker(_ProgressWorker):
         self.cam_params = cam_params
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
+        self.inlay_polys = list(inlay_polys)   # the INLAY seats (§8a)
         self.engraving = list(engraving)     # ENGRAVING text contours (M6.3 temples)
         self.graphics = list(graphics)       # ENGRAVING curves drawn by hand (engraved as drawn)
         self.temple = temple                 # TempleParams | None
@@ -559,11 +615,13 @@ class GCodeWorker(_ProgressWorker):
         relief = castle_relief(
             self.partition, castle, self.hinge_polys, kernel=self.kernel,
             resolution=CUT_RES_MM, progress=self._progress,
+            inlays=self.inlay_polys,
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
         ops = require_ops(generate_castle_program(
             relief, castle, self.hinge_polys, tool, params=cam,
             progress=self._progress, tools_cfg=tools_cfg,
+            inlay_polys=self.inlay_polys,
         ), "The frame front")
         for op in ops:
             zmin, zmax = op.z_range()
@@ -579,16 +637,26 @@ class GCodeWorker(_ProgressWorker):
             depth_reach_warnings, feature_reach_warnings, relief_tool_warnings,
             unmachined_top_warnings,
         )
-        reach = analyze_program_reach(ops, self.hinge_polys, tools_cfg)
+        # The inlay seats (§8a): a seat its tool cannot enter is named with
+        # one that fits; a seat too near the other face is named too, and an
+        # anterior seat is said to be modeled and not posted.
+        from guildmodel.core.cam.inlay_ops import (
+            anterior_inlay_notes, inlay_thickness_warnings)
+        seats, groups = _castle_inlay_seats(relief, castle, self.hinge_polys,
+                                            self.inlay_polys, cam, tools_cfg, tool)
+        reach = analyze_program_reach(ops, self.hinge_polys, tools_cfg,
+                                      inlay_groups=groups)
         reach = list(reach) + depth_reach_warnings(ops, self.castle.stock.total_pad_height_mm)
         reach += feature_reach_warnings(self.castle, ops, tools_cfg)
         # A ball on a terrace op posts a Z-heavy program the guard will flag;
         # say why here, before the export hold's dialog does (M-Z5).
         reach += relief_tool_warnings(ops)
+        thin = inlay_thickness_warnings(relief, seats)
+        reach += thin
         for r in reach:
             self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
         from guildmodel.core.cam.castle_ops import op_notes
-        for w in op_notes(ops):
+        for w in op_notes(ops) + anterior_inlay_notes(seats):
             self.progress.emit(f"[gcode] ⚠ {w}")
 
         # A zone standing at the stock top keeps an uncut cap — raw blank
@@ -637,7 +705,9 @@ class GCodeWorker(_ProgressWorker):
         for w in ts_warns:
             self.progress.emit(f"[gcode] tool: {w}")
         tool_settings = None
-        if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
+        # ...or a seat on its own tool (§8a): the ops say what they carry.
+        if (cam.is_multi_tool() or getattr(relief, "groove", None) is not None
+                or len({op.tool_name for op in ops if op.tool_name}) > 1):
             tool_settings = resolved
             n_changes = count_tool_changes(ops)
             tools_list = ", ".join(f"T{s.number} {n}" for n, s in tool_settings.items())
@@ -728,6 +798,9 @@ class GCodeWorker(_ProgressWorker):
                         f"{report.total_seconds / 60:.1f} min incl. changes")
         if reach:
             summary += f"\n\n⚠ {len(reach)} tool-reach warning(s) — see log."
+        if thin:
+            summary += ("\n⚠ " + ", ".join(f"seat '{w.seat}'" for w in thin)
+                        + " too close to the other face — see the Inspector.")
         if violations:
             summary += f"\n⚠ {len(violations)} fixture clearance warning(s) — see log."
         if machine_warnings:
@@ -752,6 +825,7 @@ class GCodeWorker(_ProgressWorker):
             "onion_skin_mm": castle.onion_skin_mm,
             "hand_finishing_allowance_mm": castle.hand_finishing_allowance_mm,
             "flip_axis_x_mm": flip,
+            "inlays": _inlay_sheet(seats, thin),
             "program_zero": cam.program_zero.label(),
             "program_zero_mode": cam.program_zero.mode,
             "work_offset_mm": [round(v, 3) for v in work_offset],
@@ -824,13 +898,39 @@ class GCodeWorker(_ProgressWorker):
             self.graphics, self.outline, self.hinge_polys, temple.blank_length_mm,
             stock_side=temple.stock_side, snap=temple.snap_to_blank_end,
             origin_from_drawing=temple.origin_from_drawing)
+        from guildmodel.core.relief.flat import place_temple_polygons
+        seats_xy = place_temple_polygons(
+            self.inlay_polys, self.outline, self.hinge_polys, temple.blank_length_mm,
+            stock_side=temple.stock_side, snap=temple.snap_to_blank_end,
+            origin_from_drawing=temple.origin_from_drawing)
         ops = require_ops(
             generate_temple_program(outline, engraving, temple, tools_cfg, cam,
-                                    hinge_polys=hinge_polys, graphic_curves=graphics),
+                                    hinge_polys=hinge_polys, graphic_curves=graphics,
+                                    inlay_polys=seats_xy),
             "This temple")
-        from guildmodel.core.cam.castle_ops import op_notes
-        for w in op_notes(ops):
+        from guildmodel.core.cam.castle_ops import analyze_program_reach, op_notes
+        from guildmodel.core.cam.inlay_ops import (
+            anterior_inlay_notes, inlay_thickness_warnings)
+        seats, groups = _temple_inlay_seats(outline, temple, hinge_polys, seats_xy,
+                                            tools_cfg)
+        reach = list(analyze_program_reach(ops, hinge_polys, tools_cfg,
+                                           inlay_groups=groups))
+        thin = []
+        if seats:
+            # The thickness check reads the relief the program is cut from;
+            # a temple's is a flat part and costs well under a second.
+            from guildmodel.core.relief.castle import CUT_RES_MM
+            from guildmodel.core.relief.flat import build_temple_relief
+            t_relief = build_temple_relief(
+                outline, temple, hinge_polys, engraving, graphic_curves=graphics,
+                inlay_polys=seats_xy, resolution=CUT_RES_MM)
+            thin = inlay_thickness_warnings(t_relief, seats)
+            reach += thin
+        for r in reach:
+            self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
+        for w in op_notes(ops) + anterior_inlay_notes(seats):
             self.progress.emit(f"[gcode] ⚠ {w}")
+        self.reach_warnings = list(reach)                 # M7.14 inspector inputs
         for op in ops:
             zmin, zmax = op.z_range()
             self.progress.emit(
@@ -925,6 +1025,11 @@ class GCodeWorker(_ProgressWorker):
                     f"\nProgram zero: {cam.program_zero.label()}"
                     f"\nTools: {len(tool_settings)} ({n_changes} change) — "
                     f"{report.total_seconds / 60:.1f} min incl. changes")
+        if reach:
+            summary += f"\n\n⚠ {len(reach)} tool-reach warning(s) — see log."
+        if thin:
+            summary += ("\n⚠ " + ", ".join(f"seat '{w.seat}'" for w in thin)
+                        + " too close to the other face — see the Inspector.")
         if violations:
             summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
         if machine_warnings:
@@ -939,6 +1044,7 @@ class GCodeWorker(_ProgressWorker):
             "engrave_tool": temple.engrave_tool,
             "profile_tool": temple.profile_tool,
             "engrave_depth_mm": temple.engrave_depth_mm,
+            "inlays": _inlay_sheet(seats, thin),
             "onion_skin_mm": temple.onion_skin_mm,
             "program_zero": cam.program_zero.label(),
             "work_offset_mm": [round(v, 3) for v in work_offset],
@@ -1395,12 +1501,15 @@ class FlatSimWorker(_ProgressWorker):
 
     def __init__(self, mode: str, *, outline=None, temple=None, hinge_polys=(),
                  engraving=(), graphics=(), lens=None, block=None, cam_params=None,
-                 material_name: str = "acetate", resolution: float = 0.3) -> None:
+                 material_name: str = "acetate", resolution: float = 0.3,
+                 inlay_polys=(), program_text: str | None = None) -> None:
         super().__init__()
         self.mode = mode
+        self.program_text = program_text       # the stored program, when fresh (M21)
         self.outline = outline
         self.temple = temple
         self.hinge_polys = list(hinge_polys)
+        self.inlay_polys = list(inlay_polys)
         self.engraving = list(engraving)
         self.graphics = list(graphics)
         self.lens = lens
@@ -1456,7 +1565,8 @@ class FlatSimWorker(_ProgressWorker):
                 # them too — model, sim, and posted G-code agree on the recess. Place
                 # the temple on its blank (M11 stock-side) first so all three agree.
                 from guildmodel.core.relief.flat import (
-                    place_temple_curves, place_temple_on_blank)
+                    place_temple_curves, place_temple_on_blank,
+                    place_temple_polygons)
                 outline, hinge_polys, engraving = place_temple_on_blank(
                     self.outline, self.hinge_polys, self.engraving, t.blank_length_mm,
                     stock_side=t.stock_side, snap=t.snap_to_blank_end,
@@ -1465,12 +1575,18 @@ class FlatSimWorker(_ProgressWorker):
                     self.graphics, self.outline, self.hinge_polys, t.blank_length_mm,
                     stock_side=t.stock_side, snap=t.snap_to_blank_end,
                     origin_from_drawing=t.origin_from_drawing)
+                seats = place_temple_polygons(
+                    self.inlay_polys, self.outline, self.hinge_polys, t.blank_length_mm,
+                    stock_side=t.stock_side, snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
                 relief = build_temple_relief(
                     outline, t, hinge_polys, engraving, graphic_curves=graphics,
-                    resolution=self.resolution, progress=self._progress)
+                    inlay_polys=seats, resolution=self.resolution,
+                    progress=self._progress)
                 ops = generate_temple_program(outline, engraving, t, tools_cfg, cam,
                                               hinge_polys=hinge_polys,
-                                              graphic_curves=graphics)
+                                              graphic_curves=graphics,
+                                              inlay_polys=seats)
                 contour_names, drill_names = TEMPLE_CONTOUR_OPS, set()
                 top_z, peck = t.blank_thickness_mm, 1.5
                 blank_length, blank_width = t.blank_length_mm, t.blank_width_mm
@@ -1656,16 +1772,19 @@ class PartsWorker(_ProgressWorker):
                 relief = castle_relief(
                     spec["partition"], spec["castle"], spec["hinge"],
                     kernel=self.kernel, resolution=CUT_RES_MM,
-                    progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n))
+                    progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n),
+                    inlays=spec.get("inlay", ()))
                 ops = generate_castle_program(
                     relief, spec["castle"], spec["hinge"], default_tool,
-                    params=cam_i, tools_cfg=tools)
+                    params=cam_i, tools_cfg=tools,
+                    inlay_polys=spec.get("inlay", ()))
                 parts.append(BedPart(spec["kind"], spec["label"], "", ops,
                                      set(CASTLE_CONTOUR_OPS), set(), component_id=cid,
                                      relief=relief))
             elif mode == "temple":
                 from guildmodel.core.relief.flat import (
-                    place_temple_curves, place_temple_on_blank)
+                    place_temple_curves, place_temple_on_blank,
+                    place_temple_polygons)
                 t = spec["temple"]
                 t_outline, t_hinge, t_eng = place_temple_on_blank(
                     spec["outline"], spec["hinge"], spec["engraving"],
@@ -1677,9 +1796,14 @@ class PartsWorker(_ProgressWorker):
                     t.blank_length_mm, stock_side=t.stock_side,
                     snap=t.snap_to_blank_end,
                     origin_from_drawing=t.origin_from_drawing)
+                t_seats = place_temple_polygons(
+                    spec.get("inlay", ()), spec["outline"], spec["hinge"],
+                    t.blank_length_mm, stock_side=t.stock_side,
+                    snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
                 ops = generate_temple_program(
                     t_outline, t_eng, t, tools, cam_i, hinge_polys=t_hinge,
-                    graphic_curves=t_gfx)
+                    graphic_curves=t_gfx, inlay_polys=t_seats)
                 # A snapped temple's ops live in its blank frame: place blank
                 # center → zone center so the core end stays registered against
                 # the zone end, matching how the blank slides into its slot.
@@ -3329,6 +3453,7 @@ class MainWindow(QMainWindow):
         self._lens_os = None
         self._partition = None
         self._hinge_polys = []
+        self._inlay_polys = []          # the INLAY seats (§8a), containment order
         self._engraving_curves = []      # ENGRAVING text contours (M6.3 temples)
         self._engraving_graphics = []    # ENGRAVING curves drawn by hand — engraved as drawn
         self._is_temple = False          # outline + no lenses => temple component
@@ -7220,7 +7345,10 @@ class MainWindow(QMainWindow):
         for ws in others:
             zone = ((ws.temple_params.fixture_zone if ws.temple_params is not None else "")
                     or component_fixture_zone(ws.kind))
-            new = src.model_copy(update={"fixture_zone": zone})
+            # The other temple keeps its own seats: they are its drawing's (§8a).
+            new = src.model_copy(update={
+                "fixture_zone": zone,
+                "inlays": list(ws.temple_params.inlays) if ws.temple_params is not None else []})
             if ws.temple_params is not None and new.model_dump() == ws.temple_params.model_dump():
                 continue
             ws.temple_params = new
@@ -7340,6 +7468,7 @@ class MainWindow(QMainWindow):
         self._lens_os = ws.lens_os
         self._partition = ws.partition
         self._hinge_polys = ws.hinge_polys
+        self._inlay_polys = ws.inlay_polys
         self._engraving_curves, self._engraving_graphics = ws.engraving_split()
         self._is_temple = ws.is_temple
         self._stage = ws.stage
@@ -7408,6 +7537,9 @@ class MainWindow(QMainWindow):
             if ws.program_zero is not None:          # restore this part's G54 datum (M11)
                 self.params._set_program_zero(ws.program_zero)
             self.params.set_cam_overrides(ws.cam_overrides)   # this part's CAM (M16)
+            # This part's seats (§8a): the dock's rows follow the drawing's
+            # INLAY curves, each feature matched to its seat.
+            self.params.set_inlay_geometry(ws.inlay_polys, ws.hinge_polys)
             if ws.kind == ComponentKind.FRAME_FRONT:
                 # This front's forming into the panel (M18); a drawing that
                 # carries none is flat, with the press combo one click away.
@@ -7692,6 +7824,7 @@ class MainWindow(QMainWindow):
             ws.forming = self._merge_saved_forming(ws.forming, comp.forming)   # M18
             field = component_param_field(ws.kind)
             setattr(ws, ws_attr[field], getattr(comp, field))
+            seed_inlay_features(ws)                     # the saved seats follow the drawing (§8a)
             self._seed_workspace_artifacts(ws, comp)
         self._pending_artifacts = None
         self._pending_component_artifacts = {}
@@ -7988,6 +8121,7 @@ class MainWindow(QMainWindow):
                     "partition": ws.partition,
                     "castle": ws.castle_params or self.params.castle_params(),
                     "hinge": list(ws.hinge_polys), "stage": ws.stage,
+                    "inlay": list(ws.inlay_polys),
                     "cam_overrides": ws.cam_overrides}
         if ws.is_temple:
             text, graphics = ws.engraving_split()
@@ -7995,6 +8129,7 @@ class MainWindow(QMainWindow):
                     "outline": ws.outline_poly,
                     "temple": ws.temple_params or self.params.temple_params(),
                     "hinge": list(ws.hinge_polys),
+                    "inlay": list(ws.inlay_polys),
                     "engraving": text, "graphics": graphics,
                     "cam_overrides": ws.cam_overrides}
         if not self._is_block_workspace(ws):
@@ -8401,7 +8536,7 @@ class MainWindow(QMainWindow):
             self._partition, self.params.castle_params(),
             hinge_polys=self._hinge_polys, stage=self._stage,
             resolution=self._prefs["preview_resolution_mm"],
-            kernel=self._model_kernel(),
+            kernel=self._model_kernel(), inlay_polys=self._inlay_polys,
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -8439,7 +8574,7 @@ class MainWindow(QMainWindow):
                 "temple", outline=self._outline_poly,
                 temple=self.params.temple_params(), hinge_polys=self._hinge_polys,
                 engraving=self._engraving_curves, graphics=self._engraving_graphics,
-                resolution=res)
+                resolution=res, inlay_polys=self._inlay_polys)
         else:
             self._mesh_worker = FlatMeshWorker(
                 "block", lens=self._lens_od, block=self.params.block_params(),
@@ -8860,7 +8995,7 @@ class MainWindow(QMainWindow):
         self._formed_worker = MeshWorker(
             self._partition, castle, hinge_polys=self._hinge_polys,
             stage="pockets", resolution=self._prefs["preview_resolution_mm"],
-            kernel=self._model_kernel())
+            kernel=self._model_kernel(), inlay_polys=self._inlay_polys)
         self._formed_thread = QThread()
         self._formed_worker.moveToThread(self._formed_thread)
         self._formed_thread.started.connect(self._formed_worker.run)
@@ -9153,6 +9288,7 @@ class MainWindow(QMainWindow):
             params=params,
             partition=self._partition,
             hinge_polys=self._hinge_polys,
+            inlay_polys=self._inlay_polys,                   # the seats (§8a)
             cam_params=self.params.effective_cam_params(),   # per-component CAM (M16)
             engraving=self._engraving_curves,
             graphics=self._engraving_graphics,

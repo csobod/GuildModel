@@ -41,11 +41,39 @@ from .heightfield import Heightfield
 @dataclass
 class FlatRelief:
     """A flat-part relief, duck-compatible with what `build_castle_mesh` reads:
-    `field`, `inside`, `partition.body`, `pocket_polys`."""
+    `field`, `inside`, `partition.body`, `pocket_polys`, and since §8a the
+    anterior map and its seat outlines (`anterior`, `anterior_pocket_polys`)."""
     field: Heightfield
     inside: np.ndarray
     partition: CastlePartition
     pocket_polys: list = dc_field(default_factory=list)
+    # Material taken off the OUTER face (z = 0) by an anterior inlay seat
+    # (§8a), on `field`'s grid; None when nothing cuts that face, which is
+    # every temple without an INLAY curve and the fast path the mesher keeps.
+    anterior: "np.ndarray | None" = None
+    anterior_pocket_polys: list = dc_field(default_factory=list)
+
+    @property
+    def anterior_z(self) -> np.ndarray:
+        if self.anterior is None:
+            return np.zeros_like(self.field.z)
+        return self.anterior
+
+    def thickness(self) -> np.ndarray:
+        """Remaining material at each cell."""
+        return self.field.z - self.anterior_z
+
+    @property
+    def Xs(self) -> np.ndarray:
+        cols = self.field.z.shape[1]
+        xs = self.field.origin[0] + np.arange(cols) * self.field.resolution
+        return np.broadcast_to(xs, self.field.z.shape)
+
+    @property
+    def Ys(self) -> np.ndarray:
+        rows = self.field.z.shape[0]
+        ys = self.field.origin[1] + np.arange(rows) * self.field.resolution
+        return np.broadcast_to(ys[:, None], self.field.z.shape)
 
 
 # ------------------------------------------------------------------ core builder
@@ -57,13 +85,16 @@ def _build_flat_relief(
     *,
     pockets: list[tuple[Polygon, "float | PocketFloor"]] = (),
     grooves: list[tuple[Polygon, float]] = (),
+    anterior_pockets: list[tuple[Polygon, "float | PocketFloor"]] = (),
     margin: float = GRID_MARGIN_MM,
     progress: Optional[ProgressFn] = None,
 ) -> FlatRelief:
     """Rasterize a flat part: thickness inside `body`, with `pockets` / `grooves`
     carved down (min). `body`'s interior rings become through-holes (excluded from
     the mask). `pockets` (blind, walled) are returned for rim conforming; `grooves`
-    (shallow scribes) are just z-depressions.
+    (shallow scribes) are just z-depressions. `anterior_pockets` are cut up into
+    the outer face (max into the anterior map) — the §8a inlay seats on the
+    visible side of a temple.
     """
     _report(progress, "Rasterizing part", 0.10)
     minx, miny, maxx, maxy = body.bounds
@@ -98,11 +129,31 @@ def _build_flat_relief(
         m = contains_xy(poly, fx, fy).reshape(rows, cols) & inside
         z[m] = np.minimum(z[m], float(floor_z))
 
+    anterior = None
+    anterior_polys: list[Polygon] = []
+    for poly, ceiling in anterior_pockets:
+        if poly is None or poly.is_empty:
+            continue
+        if anterior is None:
+            anterior = np.zeros_like(z)
+        prepare(poly)
+        m = contains_xy(poly, fx, fy).reshape(rows, cols) & inside
+        if isinstance(ceiling, PocketFloor):
+            anterior[m] = np.maximum(anterior[m], ceiling.z(Xs[m], Ys[m]))
+        else:
+            anterior[m] = np.maximum(anterior[m], float(ceiling))
+        anterior_polys.append(poly)
+    if anterior is not None:
+        anterior[~inside] = 0.0
+        if not anterior.any():
+            anterior = None
+
     z[~inside] = 0.0
     _report(progress, "Relief ready", 0.55)
     field = Heightfield(z=z, origin=(ox, oy), resolution=resolution)
     return FlatRelief(field=field, inside=inside,
-                      partition=CastlePartition(body=body), pocket_polys=pocket_polys)
+                      partition=CastlePartition(body=body), pocket_polys=pocket_polys,
+                      anterior=anterior, anterior_pocket_polys=anterior_polys)
 
 
 # ------------------------------------------------------------------ temple
@@ -214,6 +265,29 @@ def place_temple_curves(
                                  origin_from_drawing=origin_from_drawing)[2]
 
 
+def place_temple_polygons(
+    polys: list[Polygon], outline: Polygon, hinge_polys: list[Polygon],
+    blank_length: float, *, stock_side: str = "right", snap: bool = True,
+    origin_from_drawing: bool = True,
+) -> list[Polygon]:
+    """Carry closed regions — the INLAY seats (§8a) — through the same rigid
+    placement :func:`place_temple_on_blank` gives the temple, order kept, so a
+    seat and the feature it is paired with stay index-aligned. ``outline`` and
+    ``hinge_polys`` are the *unplaced* ones the transform is derived from."""
+    from shapely.affinity import scale, translate as _translate
+    if not snap:
+        return list(polys)
+    flipped, dx, dy = temple_snap_transform(
+        outline, hinge_polys, blank_length, stock_side=stock_side, snap=True,
+        origin_from_drawing=origin_from_drawing)
+    out = []
+    for p in polys:
+        if flipped:
+            p = scale(p, xfact=-1.0, yfact=-1.0, origin=(0, 0))
+        out.append(_translate(p, dx, dy))
+    return out
+
+
 def temple_core_guide(
     outline: Polygon, hinge_polys: list[Polygon], temple: TempleParams,
 ) -> Polygon:
@@ -247,13 +321,16 @@ def build_temple_relief(
     engraving_curves: list = (),
     *,
     graphic_curves: list = (),
+    inlay_polys: list = (),
     resolution: float = PREVIEW_RES_MM,
     engrave_tool_radius: float = 0.25,
     progress: Optional[ProgressFn] = None,
 ) -> FlatRelief:
     """A temple solid: extrude the outline to the blank thickness, carve the HINGE
-    pockets (1 mm default) and the ENGRAVING grooves (0.3 mm default). The geometry
-    is taken as-drawn; the GUI applies the blank-end snap before calling this.
+    pockets (1 mm default), the ENGRAVING grooves (0.3 mm default) and the inlay
+    seats (§8a; ``inlay_polys`` index-aligned with ``temple.inlays``, placed on
+    the blank like the outline). The geometry is taken as-drawn; the GUI applies
+    the blank-end snap before calling this.
 
     Two kinds of engraving, cut with the same bit to the same depth:
 
@@ -292,8 +369,20 @@ def build_temple_relief(
     for region in even_odd_regions(shapes):
         grooves.append((region, groove_floor))
 
+    # Inlay seats (§8a): the one cut list, from the params. A seat on the
+    # inner (hinge) face is a pocket like the hinge's; one on the outer face
+    # goes into the anterior map, modeled until M24 posts it.
+    from ..geometry.inlays import inlay_cuts
+    seats = inlay_cuts(temple.inlays, list(inlay_polys),
+                       temple_pocket_floors(hinge_polys, temple, outline),
+                       posterior_reference=thickness)
+    pockets += [(seat.region, seat.plane) for seat in seats if seat.posterior]
+    anterior_pockets = [(seat.region, seat.plane) for seat in seats
+                        if not seat.posterior]
+
     return _build_flat_relief(outline, thickness, resolution,
-                              pockets=pockets, grooves=grooves, progress=progress)
+                              pockets=pockets, grooves=grooves,
+                              anterior_pockets=anterior_pockets, progress=progress)
 
 
 # ------------------------------------------------------------------ base-curve block

@@ -196,6 +196,11 @@ class PartDefaultsPage(QWidget):
         form.addRow("Pad block thickness:", self.front_pad_thickness)
         self.front_pad.toggled.connect(self._sync_pad_enabled)
         self._sync_pad_enabled(st.use_pad_block)
+        self.front_inlay_depth = _spin(cp.inlay_depth_mm, 0.0, 6.0, 0.05, 2)
+        self.front_inlay_depth.setToolTip(
+            "The depth a new inlay seat starts at — a plaque's thickness. Each seat "
+            "keeps its own depth afterward.")
+        form.addRow("Inlay depth:", self.front_inlay_depth)
         self._reset_row(form, lambda: self._set_front(CastleParams(), ProgramZero()))
         lay.addWidget(grp)
 
@@ -215,6 +220,7 @@ class PartDefaultsPage(QWidget):
         _set(self.front_pad_length, st.pad_block_length_mm)
         _set(self.front_pad_width, st.pad_block_width_mm)
         _set(self.front_pad_thickness, st.pad_block_thickness_mm)
+        _set(self.front_inlay_depth, cp.inlay_depth_mm)
 
     def _build_temple(self, lay: QVBoxLayout, prefs: dict, tools: list[str]) -> None:
         t = part_defaults.default_params(prefs, "temple_right")
@@ -263,6 +269,11 @@ class PartDefaultsPage(QWidget):
         form.addRow("Engrave tool:", self.temple_engrave_tool)
         form.addRow("Hinge tool:", self.temple_hinge_tool)
         form.addRow("Profile tool:", self.temple_profile_tool)
+        self.temple_inlay_depth = _spin(t.inlay_depth_mm, 0.0, 6.0, 0.05, 2)
+        self.temple_inlay_depth.setToolTip(
+            "The depth a new inlay seat starts at on a temple. Each seat keeps "
+            "its own depth afterward.")
+        form.addRow("Inlay depth:", self.temple_inlay_depth)
         self._reset_row(form, lambda: self._set_temple(
             part_defaults.schema_default("temple_right"), ProgramZero()))
         lay.addWidget(grp)
@@ -279,6 +290,7 @@ class PartDefaultsPage(QWidget):
         _set_text(self.temple_engrave_tool, t.engrave_tool)
         _set_text(self.temple_hinge_tool, t.hinge_tool)
         _set_text(self.temple_profile_tool, t.profile_tool)
+        _set(self.temple_inlay_depth, t.inlay_depth_mm)
 
     def _build_block(self, lay: QVBoxLayout, prefs: dict, tools: list[str]) -> None:
         b = part_defaults.default_params(prefs, "base_curve_right")
@@ -341,6 +353,7 @@ class PartDefaultsPage(QWidget):
         base = part_defaults.schema_default("frame_front")
         return base.model_copy(update={
             "origin_from_drawing": self.front_origin.isChecked(),
+            "inlay_depth_mm": self.front_inlay_depth.value(),
             "stock": StockDefinition(
             blank_length_mm=self.front_blank_length.value(),
             blank_width_mm=self.front_blank_width.value(),
@@ -363,6 +376,7 @@ class PartDefaultsPage(QWidget):
             engrave_tool=self.temple_engrave_tool.currentText(),
             hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
+            inlay_depth_mm=self.temple_inlay_depth.value(),
         ))
 
     def block_params(self) -> BaseCurveBlockParams:

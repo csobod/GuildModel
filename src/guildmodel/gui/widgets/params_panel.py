@@ -48,6 +48,8 @@ from guildmodel.core.cam.feeds import (
 from guildmodel.core.layers import LAYER_STYLES
 from guildmodel.gui.style import theme
 from guildmodel.gui import material_store
+from guildmodel.gui.widgets.collapsible import CollapsibleBox
+from guildmodel.gui.widgets.inlays_group import InlaysGroup
 from guildmodel.gui.widgets.param_slider import ParamSlider
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
@@ -505,6 +507,12 @@ class ParamsPanel(QTabWidget):
         self._build_castle_group(lay)
         self._build_posterior_finishing_group(lay)
         self._build_edge_features_group(lay)      # partial-span chamfers/fillets (M17)
+        # The seats the drawing carries on its INLAY layer (§8a): one row per
+        # curve, the derived facts shown; the depth a new one starts at is the
+        # Model Properties' inlay depth.
+        self.inlays_front = InlaysGroup("front", _tool_names())
+        self.inlays_front.changed.connect(self.castle_changed)
+        self._fold_inlays("Inlays  (seats for plaques && plates)", lay, self.inlays_front)
         self._build_zones_group(lay)
 
     # ------------------------------------------------- edge features (M17)
@@ -921,6 +929,12 @@ class ParamsPanel(QTabWidget):
             "The superior edge stays at the pocket depth; a positive angle makes\n"
             "the inferior edge deeper, and a negative angle makes it shallower."
         )
+        self.inlay_depth = _slider(1.0, 0.0, 6.0, step=0.05, decimals=2)
+        towers.addRow("Inlay depth:", self.inlay_depth)
+        self.inlay_depth.setToolTip(
+            "The depth a seat starts at when its INLAY curve first arrives from the "
+            "drawing — a plaque's thickness. Each seat then keeps its own depth in "
+            "the Inlays list below. The shop default is in Preferences ▸ Parts.")
         glay.addLayout(towers)
 
         # --- Walls: the eyewires spanning between the towers ---
@@ -1330,7 +1344,7 @@ class ParamsPanel(QTabWidget):
     def _castle_spinboxes(self) -> list[Numeric]:
         boxes = [
             self.zone_endpiece, self.zone_bridge, self.zone_nosepad,
-            self.hinge_pocket_depth, self.hinge_pocket_angle,
+            self.hinge_pocket_depth, self.hinge_pocket_angle, self.inlay_depth,
             self.zone_eyewire_superior, self.zone_eyewire_inferior,
         ]
         for ext_sb, int_sb in self.footing_spins.values():
@@ -1636,6 +1650,12 @@ class ParamsPanel(QTabWidget):
         form.addRow("Hinge pocket angle:", self.temple_hinge_angle)
         for w in (self.temple_hinge_depth, self.temple_hinge_angle):
             w.valueChanged.connect(self._refresh_temple_limits)
+        self.temple_inlay_depth = _spinbox(d.inlay_depth_mm, 0.0, 6.0, step=0.05, decimals=2)
+        self.temple_inlay_depth.setToolTip(
+            "The depth a seat starts at when its INLAY curve first arrives from the "
+            "drawing. Each seat then keeps its own depth in the Inlays list below. "
+            "The shop default is in Preferences ▸ Parts.")
+        form.addRow("Inlay depth:", self.temple_inlay_depth)
         self.temple_hinge_tool = QComboBox()
         self.temple_hinge_tool.addItems(_tool_names())
         self.temple_hinge_tool.setCurrentText(d.hinge_tool)
@@ -1654,8 +1674,8 @@ class ParamsPanel(QTabWidget):
         for w in (self.temple_blank_length, self.temple_blank_width,
                   self.temple_blank_thickness, self.temple_engrave_depth,
                   self.temple_engrave_stepdown, self.temple_hinge_depth,
-                  self.temple_hinge_angle, self.temple_core_width,
-                  self.temple_core_length,
+                  self.temple_hinge_angle, self.temple_inlay_depth,
+                  self.temple_core_width, self.temple_core_length,
                   self.temple_onion, self.temple_allowance):
             w.valueChanged.connect(self.cam_changed)
         self.temple_blank_thickness.valueChanged.connect(self._refresh_temple_limits)
@@ -1670,22 +1690,26 @@ class ParamsPanel(QTabWidget):
         self.temple_apply_both_btn = QPushButton("Apply to both temples")
         self.temple_apply_both_btn.setToolTip(
             "Copy this tab's settings to the other temple — blank, snap, stock side "
-            "and origin, hinge pocket depth and angle, engraving, tools, onion skin, hand "
-            "allowance and holding.\nEach temple keeps its own program zero "
-            "(Machine tab) and cut settings (Cut tab).")
+            "and origin, hinge pocket depth and angle, inlay depth, engraving, tools, "
+            "onion skin, hand allowance and holding; the other temple keeps its own "
+            "seats.\nEach temple keeps its own program zero (Machine tab) and cut "
+            "settings (Cut tab).")
         self.temple_apply_both_btn.setEnabled(False)
         self.temple_apply_both_btn.clicked.connect(self.temple_apply_both)
         row = QHBoxLayout()
         row.addStretch()
         row.addWidget(self.temple_apply_both_btn)
         form.addRow("", row)
-        lay.addWidget(grp)
+        # This temple's seats (§8a): the drawing's INLAY curves, one row each.
+        self.inlays_temple = InlaysGroup("temple", _tool_names())
+        self.inlays_temple.changed.connect(self.cam_changed)
+        self._fold_inlays("Inlays  (seats on this temple)", lay, self.inlays_temple)
 
     # ------------------------------------------------------------------ Base Curve tab
 
     def _build_block_tab(self, lay: QVBoxLayout) -> None:
         d = BaseCurveBlockParams()
-        grp = QGroupBox("Base-Curve Holding Block")
+        grp = self._fold("Base-Curve Holding Block", lay)
         grp.setToolTip("Acetal block: the lens shape cut free, with M4 mounting holes.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -1819,6 +1843,18 @@ class ParamsPanel(QTabWidget):
         self._refresh_limits()
         self._refresh_temple_limits()
 
+    def set_inlay_geometry(self, polys, hinges) -> None:
+        """The active component's INLAY seats (§8a), in containment order, with
+        the HINGE polygons they may sit in: the Inlays group of the active kind
+        reconciles its rows to them, so the list is always the drawing's."""
+        kind = getattr(self, "_component_kind", ComponentKind.FRAME_FRONT)
+        if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
+            self.inlays_temple.set_geometry(
+                polys, hinges, default_depth_mm=self.temple_inlay_depth.value())
+        elif kind == ComponentKind.FRAME_FRONT:
+            self.inlays_front.set_geometry(
+                polys, hinges, default_depth_mm=self.inlay_depth.value())
+
     def set_zones(self, partition) -> None:
         """Populate the zone inspector from a CastlePartition (or None)."""
         self._partition = partition
@@ -1917,8 +1953,13 @@ class ParamsPanel(QTabWidget):
         pairs: list[tuple[str, str]] = []
         if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
             pairs = [(self.temple_engrave_tool.currentText(), "Engraving"),
-                     (self.temple_hinge_tool.currentText(), "Hinge Pockets"),
-                     (self.temple_profile_tool.currentText(), "Temple Profile")]
+                     (self.temple_hinge_tool.currentText(), "Hinge Pockets")]
+            # The seats on the hinge side post as Inlays, on the hinge tool
+            # unless a seat names its own (§8a).
+            for f in self.inlays_temple.features():
+                if f.enabled and f.face == "posterior":
+                    pairs.append((f.tool or self.temple_hinge_tool.currentText(), "Inlays"))
+            pairs.append((self.temple_profile_tool.currentText(), "Temple Profile"))
         elif kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
             pairs = [(self.block_drill_tool.currentText(), "Drill Holes"),
                      (self.block_profile_tool.currentText(), "Block Profile")]
@@ -1929,6 +1970,9 @@ class ParamsPanel(QTabWidget):
             # Features default to the fine tool, not the global one (castle_ops).
             pairs.append((cam.op_tools.get("Features") or cam.tool_for_op("Fine Relief"),
                           "Features"))
+            for f in self.inlays_front.features():
+                if f.enabled and f.face == "posterior":
+                    pairs.append((f.tool or cam.tool_for_op("Inlays"), "Inlays"))
             if "Holes" in cam.op_tools:
                 pairs.append((cam.op_tools["Holes"], "Holes"))
             if getattr(self, "groove_enable", None) is not None and self.groove_enable.isChecked():
@@ -2125,7 +2169,7 @@ class ParamsPanel(QTabWidget):
         # multi-tool — the same reasoning that keeps "Lens Groove" out). It gets
         # a selector regardless, because picking a ball for the features and an
         # end mill for everything else is the everyday multi-tool job.
-        for op in (*POSTERIOR_OPS, "Features"):
+        for op in (*POSTERIOR_OPS, "Features", "Inlays"):
             cb = QComboBox()
             cb.addItem(_SAME_AS_GLOBAL)
             cb.addItems(names)
@@ -2140,7 +2184,10 @@ class ParamsPanel(QTabWidget):
             "relief, edge features). '(same as Tool)' follows Fine Relief — the "
             "tool these were cut with before they became their own operation. "
             "A ball is what finishes a chamfer toe or a scoop trough.")
-        lay.addWidget(grp)
+        self.op_tool_combos["Inlays"].setToolTip(
+            "The end mill that pockets the inlay seats (the plaque and plate seats "
+            "drawn on the INLAY layer). A seat may name its own tool in the Inlays "
+            "list on the Model tab and then posts as its own Inlays operation.")
 
     def refresh_tool_lists(self) -> None:
         """Repopulate every tool combo from the (possibly edited) library, keeping
@@ -2168,13 +2215,16 @@ class ParamsPanel(QTabWidget):
             cb = getattr(self, attr, None)
             if cb is not None:
                 _repop(cb)
+        for grp in (getattr(self, "inlays_front", None), getattr(self, "inlays_temple", None)):
+            if grp is not None:
+                grp.set_tool_names(names)
         self._refresh_tool_feed_rows()      # a tool's flutes/Ø/feeds may have changed
 
     def _build_material_group(self, lay: QVBoxLayout) -> None:
         """The everyday cut choices: the material (which drives the feeds & speeds)
         and the two hand-finishing allowances. Leads the Cut tab (BUILDPLAN UX pass —
         the maker picks a material first)."""
-        grp = QGroupBox("Material && Allowances")
+        grp = self._fold("Material && Allowances", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2477,9 +2527,9 @@ class ParamsPanel(QTabWidget):
     # never appears in the program, and its checkbox is harmless.
     _KIND_OPS: dict = {
         "frame_front": ("Hinge Pockets", "Rough Relief", "Fine Relief",
-                        "Features", "Eyewires", "Holes", "Lens Groove",
+                        "Features", "Inlays", "Eyewires", "Holes", "Lens Groove",
                         "Perimeter"),
-        "temple": ("Hinge Pockets", "Engraving", "Holes", "Temple Profile"),
+        "temple": ("Hinge Pockets", "Engraving", "Inlays", "Holes", "Temple Profile"),
         "block": ("Drill Holes", "Block Profile"),
     }
     # Ops that release the part from the blank — switching one off is a deliberate
@@ -2773,6 +2823,8 @@ class ParamsPanel(QTabWidget):
             footing=footing,
             hinge_pocket_depth_mm=self.hinge_pocket_depth.value(),
             hinge_pocket_angle_deg=self.hinge_pocket_angle.value(),
+            inlay_depth_mm=self.inlay_depth.value(),
+            inlays=self.inlays_front.features(),
             stock=self.stock_definition(),
             origin_from_drawing=self.front_origin_from_drawing.isChecked(),
             onion_skin_mm=self.onion_skin.value(),
@@ -2832,6 +2884,7 @@ class ParamsPanel(QTabWidget):
             (self.zone_eyewire_inferior, z.eyewire_inferior_mm),
             (self.hinge_pocket_depth, c.hinge_pocket_depth_mm),
             (self.hinge_pocket_angle, c.hinge_pocket_angle_deg),
+            (self.inlay_depth, c.inlay_depth_mm),
             (self.onion_skin, c.onion_skin_mm),
             (self.hand_allowance, c.hand_finishing_allowance_mm),
             (self.blank_length, c.stock.blank_length_mm),
@@ -2907,6 +2960,7 @@ class ParamsPanel(QTabWidget):
         self.bezel_face.blockSignals(False)
         self._on_bezel_toggled()
         self.set_edge_features(c.edge_features)          # M17 chamfers / fillets
+        self.inlays_front.set_features(c.inlays)         # §8a seats
         self.set_holding_params(c.holding)
         self._update_passes_readout()  # the restored stock drives the pass count
         # The pocket depth and angle bound each other, so a reopened tilted
@@ -3015,6 +3069,8 @@ class ParamsPanel(QTabWidget):
             blank_thickness_mm=self.temple_blank_thickness.value(),
             hinge_pocket_depth_mm=self.temple_hinge_depth.value(),
             hinge_pocket_angle_deg=self.temple_hinge_angle.value(),
+            inlay_depth_mm=self.temple_inlay_depth.value(),
+            inlays=self.inlays_temple.features(),
             engrave_depth_mm=self.temple_engrave_depth.value(),
             engrave_stepdown_mm=self.temple_engrave_stepdown.value(),
             engrave_tool=self.temple_engrave_tool.currentText(),
@@ -3041,9 +3097,10 @@ class ParamsPanel(QTabWidget):
         elif on:
             btn.setToolTip(
                 "Copy this tab's settings to the other temple — blank, snap, stock side "
-                "and origin, hinge pocket depth and angle, engraving, tools, onion skin, hand "
-                "allowance and holding.\nEach temple keeps its own program zero "
-                "(Machine tab) and cut settings (Cut tab).")
+                "and origin, hinge pocket depth and angle, inlay depth, engraving, tools, "
+                "onion skin, hand allowance and holding; the other temple keeps its own "
+                "seats.\nEach temple keeps its own program zero (Machine tab) and cut "
+                "settings (Cut tab).")
 
     def set_temple_params(self, t: TempleParams) -> None:
         """Restore the Temple tab from a TempleParams (component activation)."""
@@ -3056,6 +3113,7 @@ class ParamsPanel(QTabWidget):
             (self.temple_engrave_stepdown, t.engrave_stepdown_mm),
             (self.temple_hinge_depth, t.hinge_pocket_depth_mm),
             (self.temple_hinge_angle, t.hinge_pocket_angle_deg),
+            (self.temple_inlay_depth, t.inlay_depth_mm),
             (self.temple_onion, t.onion_skin_mm),
             (self.temple_allowance, t.hand_finishing_allowance_mm),
             (self.temple_core_width, t.core_guide_width_mm),
@@ -3063,6 +3121,7 @@ class ParamsPanel(QTabWidget):
         ):
             sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
         self.set_holding_params(t.holding)
+        self.inlays_temple.set_features(t.inlays)        # §8a seats
         self._update_passes_readout()        # the temple blank drives the pass count
         for cb, val in ((self.temple_engrave_tool, t.engrave_tool),
                         (self.temple_hinge_tool, t.hinge_tool),

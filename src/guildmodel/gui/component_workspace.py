@@ -69,6 +69,10 @@ class ComponentWorkspace:
     lens_os: object = None
     partition: object = None
     hinge_polys: list = field(default_factory=list)
+    # The INLAY seats (§8a) as polygons, in the canonical containment order
+    # `geometry.inlays.ordered` gives, and index-aligned with the part's
+    # `inlays` features once `seed_inlay_features` has reconciled them.
+    inlay_polys: list = field(default_factory=list)
     engraving_curves: list = field(default_factory=list)
     # The glyph contours the GUI outlined from ``texts`` (fonts need Qt, so the
     # pure derive cannot make them). Kept apart from ``engraving_curves`` — what
@@ -202,6 +206,10 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
         p for p in (points_to_polygon(c) for c in layers.get("HINGE", []) if len(c) >= 3)
         if p.is_valid and p.area > 0.5
     ]
+    # The seats (§8a), parents first; their features follow on the params.
+    from guildmodel.core.geometry.inlays import ordered, polygons_from_curves
+    ws.inlay_polys = ordered(polygons_from_curves(layers.get("INLAY", [])),
+                             ws.hinge_polys)
 
     sculpt = layers.get("SCULPT", [])
     if ws.outline_poly is not None and len(valid_lens) >= 2 and sculpt:
@@ -224,7 +232,25 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
             ws.boxing = measure_from_polygon(valid_lens[0], valid_lens[1])
         except Exception:
             ws.boxing = None
+    seed_inlay_features(ws)
     return ws
+
+
+def seed_inlay_features(ws: ComponentWorkspace) -> None:
+    """One `InlayFeature` per seat on the part's params, matched to the drawing
+    (§8a): a fresh drawing's seats start from the part's inlay depth and the
+    visible face; a reopened or reloaded project's seats keep their settings,
+    paired by containment order and centroid (`geometry.inlays.reconcile`).
+    A workspace with no params yet (a plain DXF front) is left to the dock,
+    which reconciles its own list when the geometry reaches it."""
+    from guildmodel.core.geometry.inlays import reconcile
+
+    params = (ws.castle_params if ws.kind == ComponentKind.FRAME_FRONT
+              else ws.temple_params if ws.is_temple else None)
+    if params is None or not hasattr(params, "inlays"):
+        return
+    params.inlays = reconcile(params.inlays, ws.inlay_polys, ws.hinge_polys,
+                              default_depth_mm=params.inlay_depth_mm)
 
 
 def place_front_on_blank(ws: ComponentWorkspace, origin_from_drawing: bool) -> bool:

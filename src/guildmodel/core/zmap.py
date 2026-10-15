@@ -274,7 +274,8 @@ def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
                      surface_z: np.ndarray | None = None,
                      pocket_polys=(), feature_band: np.ndarray | None = None,
                      feature_max_slope_deg: float = 0.0,
-                     anterior: np.ndarray | None = None) -> CastleRelief:
+                     anterior: np.ndarray | None = None,
+                     anterior_pocket_polys=()) -> CastleRelief:
     """Assemble the `CastleRelief` the CAM consumes around a sampled Z-map.
 
     Everything downstream — ops generation, posting, simulation — reads this
@@ -311,6 +312,7 @@ def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
                             if not partition.is_hole(r)] if groove else []),
         mask_body_override=body if groove else None,
         pocket_polys=list(pocket_polys),
+        anterior_pocket_polys=list(anterior_pocket_polys),
         surface_field=surface_field,
         feature_band=feature_band,
         feature_max_slope_deg=feature_max_slope_deg,
@@ -348,11 +350,15 @@ def _unfeatured(castle: CastleParams):
 def cam_relief(build, partition: CastlePartition, castle: CastleParams,
                hinges=(), resolution: float = CUT_RES_MM,
                margin: float = GRID_MARGIN_MM,
-               progress: Optional[ProgressFn] = None) -> CastleRelief:
+               progress: Optional[ProgressFn] = None,
+               inlays=()) -> CastleRelief:
     """A *complete* `CastleRelief` from whichever kernel `build` speaks for.
 
-    `build(partition, castle, hinges) -> (vertices, faces)`. Both kernels
-    supply one; nothing here knows which.
+    `build(partition, castle, hinges, inlays) -> (vertices, faces)`. Both
+    kernels supply one; nothing here knows which. `inlays` are the INLAY seat
+    polygons, index-aligned with `castle.inlays` (§8a); the posterior seats
+    are left out of the surface build like the pockets, since their own op
+    cuts them and the relief passes sail over them.
 
     `relief_from_zmap` alone fills `field` and the groove fields and leaves the
     rest at their defaults. That was enough for the parity gates, which only
@@ -382,34 +388,49 @@ def cam_relief(build, partition: CastlePartition, castle: CastleParams,
     origin, rows, cols = grid_for(body, resolution, margin)
     grid = (origin, rows, cols, resolution)
 
+    from .geometry.heights import zone_heights
+    from .geometry.inlays import inlay_cuts, zone_reference
+    from .geometry.pocket_floor import castle_pocket_floors
+
+    hinges, inlays = list(hinges), list(inlays)
+    seats = inlay_cuts(castle.inlays, inlays, castle_pocket_floors(hinges, castle),
+                       posterior_reference=zone_reference(
+                           partition, zone_heights(partition, castle, None)))
+    posterior_seats = [seat.outline for seat in seats if seat.posterior]
+
     _report(progress, "Building the part", 0.10)
-    z, anterior = triangle_envelopes(*build(partition, castle, hinges), *grid)
+    z, anterior = triangle_envelopes(*build(partition, castle, hinges, inlays),
+                                     *grid)
 
     surface_z = z
-    if len(hinges):
+    if hinges or posterior_seats:
         _report(progress, "Building the surface under the pockets", 0.45)
-        surface_z, _ = triangle_envelopes(*build(partition, castle, ()), *grid)
+        surface_z, _ = triangle_envelopes(*build(partition, castle, (), ()),
+                                          *grid)
 
     band, slope = None, 0.0
     plain = _unfeatured(castle)
     if plain is not None:
         _report(progress, "Finding the feature band", 0.70)
-        plain_z, _ = triangle_envelopes(*build(partition, plain, ()), *grid)
+        plain_z, _ = triangle_envelopes(*build(partition, plain, (), ()), *grid)
         band = (plain_z - surface_z) > FEATURE_BAND_MM
         slope = castle.posterior_feature_slope()
 
     _report(progress, "Relief ready", 0.92)
     return relief_from_zmap(
         z, partition, castle, origin, rows, cols, resolution, body, groove,
-        surface_z=surface_z, pocket_polys=list(hinges), feature_band=band,
-        feature_max_slope_deg=slope, anterior=anterior)
+        surface_z=surface_z, pocket_polys=hinges + posterior_seats,
+        feature_band=band, feature_max_slope_deg=slope, anterior=anterior,
+        anterior_pocket_polys=[seat.outline for seat in seats
+                               if not seat.posterior])
 
 
 def castle_relief(partition: CastlePartition, castle: CastleParams,
                   hinges=(), kernel: str = "mesh",
                   resolution: float = CUT_RES_MM,
                   margin: float = GRID_MARGIN_MM,
-                  progress: Optional[ProgressFn] = None) -> CastleRelief:
+                  progress: Optional[ProgressFn] = None,
+                  inlays=()) -> CastleRelief:
     """The relief every G-code path posts from — one entry point, one choice.
 
     `kernel` is `gui.mesh_build.KERNELS`: "raster" is the M17 heightfield,
@@ -440,12 +461,12 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     if kernel == "mesh":
         from .model.zmap import mesh_cam_relief
         return mesh_cam_relief(partition, castle, hinges, resolution, margin,
-                               progress)
+                               progress, inlays=inlays)
     if kernel == "brep":
         from .solid.zmap import solid_cam_relief
         return solid_cam_relief(partition, castle, hinges, resolution, margin,
-                                progress=progress)
+                                progress=progress, inlays=inlays)
     from .relief.castle import build_castle_relief
     return build_castle_relief(partition, castle, list(hinges),
                                resolution=resolution, margin=margin,
-                               progress=progress)
+                               progress=progress, inlay_polys=list(inlays))

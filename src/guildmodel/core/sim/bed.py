@@ -187,10 +187,12 @@ def relief_for_spec(spec: dict, *, resolution: float, kernel: str = "raster", pr
     if mode == "castle":
         from ..zmap import castle_relief
         return castle_relief(spec["partition"], spec["castle"], spec["hinge"],
-                             kernel=kernel, resolution=resolution, progress=progress)
+                             kernel=kernel, resolution=resolution, progress=progress,
+                             inlays=spec.get("inlay", ()))
     if mode == "temple":
         from ..relief.flat import (
-            build_temple_relief, place_temple_curves, place_temple_on_blank)
+            build_temple_relief, place_temple_curves, place_temple_on_blank,
+            place_temple_polygons)
         t = spec["temple"]
         outline, hinge, engraving = place_temple_on_blank(
             spec["outline"], spec["hinge"], spec["engraving"], t.blank_length_mm,
@@ -200,8 +202,12 @@ def relief_for_spec(spec: dict, *, resolution: float, kernel: str = "raster", pr
             spec.get("graphics", ()), spec["outline"], spec["hinge"],
             t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
             origin_from_drawing=t.origin_from_drawing)
+        seats = place_temple_polygons(
+            spec.get("inlay", ()), spec["outline"], spec["hinge"],
+            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
         return build_temple_relief(outline, t, hinge, engraving,
-                                   graphic_curves=graphics,
+                                   graphic_curves=graphics, inlay_polys=seats,
                                    resolution=resolution, progress=progress)
     from ..relief.flat import build_block_relief
     return build_block_relief(spec["lens"], spec["block"], resolution=resolution,
@@ -256,17 +262,21 @@ def simulate_component(
         from ..cam.component import CASTLE_CONTOUR_OPS
         from ..zmap import castle_relief
         castle, hinge = spec["castle"], spec["hinge"]
+        seats = list(spec.get("inlay", ()))
         tool = resolve_tool(cam.tool_name, tools_cfg, tools_cfg.get("flat_3175"))
         relief = castle_relief(spec["partition"], castle, hinge, kernel=kernel,
-                               resolution=resolution, progress=progress)
+                               resolution=resolution, progress=progress,
+                               inlays=seats)
         ops = generate_castle_program(relief, castle, hinge, tool,
-                                      params=cam, tools_cfg=tools_cfg)
+                                      params=cam, tools_cfg=tools_cfg,
+                                      inlay_polys=seats)
         contour_names, drill_names = set(CASTLE_CONTOUR_OPS), set()
         top_z, peck, fallback = castle.stock.total_pad_height_mm, 1.5, tool
         init_z = top_z + 1.0
     elif mode == "temple":
         from ..relief.flat import (
-            build_temple_relief, place_temple_curves, place_temple_on_blank)
+            build_temple_relief, place_temple_curves, place_temple_on_blank,
+            place_temple_polygons)
         from ..cam.temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
         t = spec["temple"]
         # Snap onto the blank FIRST (M11 stock-side), matching the generators the
@@ -280,11 +290,16 @@ def simulate_component(
             spec.get("graphics", ()), spec["outline"], spec["hinge"],
             t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
             origin_from_drawing=t.origin_from_drawing)
+        seats = place_temple_polygons(
+            spec.get("inlay", ()), spec["outline"], spec["hinge"],
+            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
         relief = build_temple_relief(outline, t, hinge, engraving,
-                                     graphic_curves=graphics,
+                                     graphic_curves=graphics, inlay_polys=seats,
                                      resolution=resolution, progress=progress)
         ops = generate_temple_program(outline, engraving, t, tools_cfg, cam,
-                                      hinge_polys=hinge, graphic_curves=graphics)
+                                      hinge_polys=hinge, graphic_curves=graphics,
+                                      inlay_polys=seats)
         contour_names, drill_names = set(TEMPLE_CONTOUR_OPS), set()
         top_z, peck = t.blank_thickness_mm, 1.5
         fallback, init_z = resolve_tool(t.profile_tool, tools_cfg), t.blank_thickness_mm

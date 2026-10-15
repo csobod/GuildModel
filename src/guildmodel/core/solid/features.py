@@ -124,6 +124,40 @@ def hinge_pocket_cutters(hinges: Iterable[Polygon], castle: CastleParams,
     return out
 
 
+def inlay_pocket_cutters(inlays, castle: CastleParams, hinges,
+                         partition: CastlePartition, heights: dict[str, float],
+                         top: float) -> list[TopoDS_Shape]:
+    """The inlay seats as prisms (§8a), from the one list `geometry.inlays`
+    makes of the params — the same list the raster carves and the mesh kernel
+    subtracts. A posterior seat is the region above its floor, trimmed by the
+    plane where it inherits a hinge pocket's tilt; an anterior seat is the
+    region from below the front face up to its depth. No anchor rays."""
+    from ..geometry.inlays import inlay_cuts, zone_reference
+    from ..geometry.pocket_floor import castle_pocket_floors
+
+    seats = inlay_cuts(castle.inlays, list(inlays or ()),
+                       castle_pocket_floors(list(hinges or []), castle),
+                       posterior_reference=zone_reference(partition, heights))
+    out = []
+    for seat in seats:
+        if seat.depth_mm <= 0.0:
+            continue                      # an island left at the surface
+        if seat.posterior:
+            low, _ = seat.floor_extremes()
+            prism = extrude(polygon_to_face(seat.region, low),
+                            max(top - low, CUT_MARGIN_MM))
+            if not seat.plane.flat:
+                prism = _above_plane(prism, seat.plane, seat.outline, top)
+        else:
+            _, high = seat.floor_extremes()
+            if high <= 0.0:
+                continue
+            prism = extrude(polygon_to_face(seat.region, -CUT_MARGIN_MM),
+                            high + CUT_MARGIN_MM)
+        out.append(prism)
+    return out
+
+
 def _above_plane(prism: TopoDS_Shape, floor, poly: Polygon,
                  top: float) -> TopoDS_Shape:
     """The part of `prism` on or above a tilted pocket floor: its common with the

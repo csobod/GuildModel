@@ -55,6 +55,7 @@ class MachineDynamics:
 # canonical op names, matched from the section comments of either dialect
 _CANON = [
     ("hinge", "Hinge Pockets"),
+    ("inlay", "Inlays"),          # the seats (§8a), their own section since 2026-10-15
     ("rough", "Rough Relief"),
     ("fine", "Fine Relief"),
     # The posterior features became their own op in 2026-08-11. Without an entry

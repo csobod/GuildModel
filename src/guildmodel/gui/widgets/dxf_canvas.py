@@ -413,9 +413,21 @@ class DxfCanvas(QWidget):
             pen.setCosmetic(True)   # width in screen px regardless of zoom
             painter.setPen(pen)
 
-            for curve in curves:
+            # A nested seat draws darker (§8a): a step in another seat or in
+            # a hinge pocket is deeper, and the canvas says so at a glance.
+            levels = None
+            if layer == "INLAY" and curves:
+                from guildmodel.core.geometry.inlays import nesting_levels
+                levels = nesting_levels(curves, self._layers.get("HINGE", []))
+
+            for k, curve in enumerate(curves):
                 if len(curve) < 2:
                     continue
+                if levels is not None:
+                    deep = QPen(QColor(color_hex).darker(100 + 35 * min(levels[k], 3)),
+                                width + 0.5 * min(levels[k], 2))
+                    deep.setCosmetic(True)
+                    painter.setPen(deep)
                 pts = [self._world_to_screen(x, y) for x, y in curve]
                 for i in range(len(pts) - 1):
                     painter.drawLine(pts[i], pts[i + 1])

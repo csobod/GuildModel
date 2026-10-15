@@ -50,6 +50,7 @@ GuildModel reads these layers:
 | `HINGE` | hinge pockets |
 | `SCULPT` | the castle layout, 5 cuts per side |
 | `ENGRAVING` | engraving grooves |
+| `INLAY` | seats for plaques and plates (§2, *Seats and plaques*) |
 | `BRIDGE` | the bridge |
 | `REF` | display only |
 
@@ -164,6 +165,60 @@ mirrored feature is one edit instead of two.
 > corner, or ease the corner in the drawing. **Read the log after a rebuild**,
 > because a program you have already stored keeps the readiness dot green on
 > its own.
+
+### Seats and plaques — the INLAY layer
+
+A closed curve drawn on GuildDraw's `INLAY` layer, on the front or on a
+temple, is a **seat**: a flat-bottomed pocket for a plaque, a laminate or a
+plate. The drawing carries the shape; GuildModel holds the rest, one row per
+seat in the **Inlays** section on the Model tab (and on the Temple tab for a
+temple's seats). There is no Add here — draw the seat in GuildDraw and it
+arrives. The flush, the tool, the depth per pass and the minimum thickness
+sit under the section's **Cut details** fold.
+
+| Control | What it does |
+|---|---|
+| **Enabled** | off leaves the seat uncut, and anything drawn inside it |
+| **Name** | your own label for the list, the log and the setup sheet |
+| **Relative to** | read off the drawing: the face, the parent seat's floor, or the hinge pocket's floor |
+| **Face** | which side the seat is cut into. Anterior is the visible side — the front of a frame, the outer side of a temple |
+| **Depth** | the insert's thickness, below what the seat is relative to |
+| **Flush** | cut the seat shallower (+, the insert sits proud) or deeper (−, sunk) than the insert |
+| **Mode** | Step, a pocket; or Island, left standing while its parent is pocketed around it |
+| **Tool** | the end mill that pockets the seat; the part's pocket tool by default |
+| **Depth per pass** | this seat's own, or the Cut tab's pocket setting |
+| **Min thickness** | the material the floor must leave against the other face |
+
+**Draw nesting to say what a seat is relative to.** A seat on its own is cut
+into a face. A seat drawn inside another seat is a step down from the
+parent's floor, on the parent's face. A seat drawn inside a `HINGE` curve is
+a step in the hinge pocket's floor and takes the pocket's tilt with it, so a
+hinge with a plate under it seats true. The canvas draws a nested seat
+darker. GuildDraw refuses a seat that leaves the outline, crosses a lens,
+drill or hinge curve, or half-overlaps another seat.
+
+**An island is a raised shape inside a plaque.** Draw the monogram inside the
+seat and set it to *Island*: the seat is pocketed around it and the monogram
+stands. Its own depth sinks its top; 0 leaves it at the surface.
+
+**Inlay depth**, beside the hinge pocket depth, is what a new seat starts
+at — a plaque's usual 1.0 mm. Each seat then keeps its own depth. The shop
+default is in Preferences ▸ Parts (§8).
+
+**A seat on the visible face is modeled and shown in 3D, and not posted.**
+Machining the front of a frame or the outer side of a temple needs the flip
+setup, which is a later release; the row says *not posted*, and the program
+is exactly the one you would post without the seat. A seat on the back of
+the frame, or on a temple's hinge side, is cut by the **Inlays** operation:
+after the relief has finished the surface the seat is measured from and
+before the eyewires, with the hinge tool unless the seat names another. A
+seat the tool cannot enter is left out and named in the Inspector with a
+tool that fits.
+
+**The thickness check.** When you generate, GuildModel measures each seat's
+floor against the other face at the same spot — a seat on the front under a
+hinge pocket on the back, two seats back to back — and names any seat that
+leaves less than its minimum, in the log, the Inspector and the setup sheet.
 
 ### Lens bevel groove
 
@@ -338,7 +393,7 @@ GuildDraw's horizontal zero and it is cut there, a dropped tip and all. Turn
 it off to center the temple's width on the blank instead. The injected-core
 bar shown in 3D runs down the blank's center line and is a visual guide only;
 **Core guide width** and **Core guide length** size it. Program: the hinge
-pockets and the engraving while
+pockets, the engraving and the inlay seats while
 the blank is rigid — whichever tool has the least work first, so the operator
 loads it, starts, and swaps once — then Holes, then the Temple Profile that
 releases the part. The Holes operation appears only when the drawing has
@@ -349,10 +404,18 @@ The angle tilts the pocket floor along the temple to offset splay built into
 a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
 positive angle makes the posterior edge deeper.
 
+A temple's `INLAY` curves are its seats for plates and plaques, one row each
+in the **Inlays** group under the Temple tab; the controls are those of §2,
+*Seats and plaques*. The outer face is the visible one and the default, and
+a seat there is modeled and not posted until the flip setup; a seat on the
+hinge side is pocketed by the Inlays operation beside the hinge pockets, and
+one drawn inside the hinge curve steps the pocket's floor.
+
 **Apply to both temples**, at the foot of the Temple tab, copies the tab onto
 the other temple — blank, snap, stock side and origin, hinge pocket depth and
-angle, engraving, tools, onion skin, hand allowance and holding — so both cut with
-the same tools and depths. Each temple keeps its own program zero (Machine
+angle, inlay depth, engraving, tools, onion skin, hand allowance and holding —
+so both cut with the same tools and depths; the other temple keeps its own
+seats, which are its drawing's. Each temple keeps its own program zero (Machine
 tab) and cut settings (Cut tab). The copied-to temple needs a rebuild and a
 new program, and its tab shows the copied values on the next visit.
 
@@ -552,7 +615,8 @@ that any sender can run.
   part: the program zero, whether the part is on the worktable to begin with
   (§6), the temples' snap to blank end and stock side, each part's origin
   from drawing, the blank sizes and pad block, the base-curve block's
-  mounting-hole pattern, and each part's tools. A project keeps its own
+  mounting-hole pattern, each part's tools, and the inlay depth a new seat
+  starts at on the front and on a temple. A project keeps its own
   values. Save one whose program zero, stock or temple alignment differs and
   GuildModel offers to make that the default, provided every part of that
   kind agrees. Each difference is a line with its own checkbox; clear the ones

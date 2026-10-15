@@ -323,6 +323,66 @@ class EdgeFeature(BaseModel):
         })
 
 
+class InlayFeature(BaseModel):
+    """One seat for a plaque, a laminate or a plate: a closed INLAY curve from the
+    drawing, with what the drawing does not carry (BUILDPLAN §8a, 2026-10-15).
+
+    GuildDraw sends geometry only. One of these exists per INLAY curve, made at
+    intake and matched on a re-import by containment order and centroid
+    (`geometry.inlays.reconcile`), the way an edge feature is matched by zone:
+    a tweaked drawing keeps every seat's depth and face.
+
+    **The containment tree decides what a seat is relative to**, and that is
+    derived, never typed. A seat on its own is cut into a face: the anterior by
+    default, which is the visible side of a front and the outer side of a
+    temple, where a plaque goes. A seat drawn inside another seat is a step
+    down from the parent's floor and inherits the parent's face. A seat drawn
+    inside a HINGE curve is a step in the hinge pocket's floor: it inherits the
+    pocket's plane, tilt and all, and so sits on the hinge's face.
+
+    `mode`: a *step* is cut down from its reference; an *island* is left
+    standing inside its parent, the parent pocketed around it, a raised
+    monogram on a plaque. An island's own depth then sinks its top below the
+    parent's reference, and 0 leaves it at the surrounding surface.
+
+    `depth_mm` is the insert's thickness; `flush_mm` cuts the seat shallower
+    (+, the insert proud) or deeper (−, sunk) than that. `tool` and
+    `stepdown_mm` empty mean the part's pocket tool and the cut setting.
+
+    `centroid` and `level` are the drawing-side identity the match reads; the
+    polygons themselves are derived from the drawing and never stored here.
+    """
+    id: str = ""
+    label: str = ""
+    enabled: bool = True
+    # Which face the seat is cut into. Derived for a nested seat and for one in a
+    # hinge; the maker's choice for a seat on its own.
+    face: Literal["anterior", "posterior"] = "anterior"
+    depth_mm: float = Field(1.0, ge=0)          # the insert's thickness
+    flush_mm: float = 0.0                       # + proud of the surface, − sunk
+    mode: Literal["step", "island"] = "step"
+    tool: str = ""                              # "" = the part's pocket tool
+    stepdown_mm: float | None = Field(None, gt=0)   # None = the cut setting
+    # The seat's floor never comes closer than this to the other face.
+    min_thickness_mm: float = Field(1.0, ge=0)
+
+    # What the seat is relative to, read off the containment tree at intake:
+    # "face", "seat" (its parent seat) or "hinge" (the pocket it sits in).
+    relative_to: Literal["face", "seat", "hinge"] = "face"
+    level: int = 0                              # containment depth, 0 = on the face
+    centroid: tuple[float, float] = (0.0, 0.0)  # of the curve, design frame
+    area_mm2: float = 0.0
+
+    def cut_depth_mm(self) -> float:
+        """How deep the seat is cut: the insert's thickness less the flush."""
+        return max(0.0, float(self.depth_mm) - float(self.flush_mm))
+
+    def posted(self) -> bool:
+        """True when the single posterior setup cuts this seat: enabled and on
+        the back. An anterior seat is modeled and previewed until M24."""
+        return self.enabled and self.face == "posterior"
+
+
 class BridgeReliefParams(BaseModel):
     """Bridge projection relief (M13.3, reworked 2026-07-02): a CONIC scoop on
     the posterior bridge, running on Y — the base (widest, deepest cut of the
@@ -426,6 +486,9 @@ class CastleParams(BaseModel):
     # the depth; + sinks the inferior edge, changing the temple's pantoscopic
     # angle at the hinge. 0 = the flat floor every earlier project has.
     hinge_pocket_angle_deg: float = Field(0.0, ge=-15.0, le=15.0)
+    # The depth a seat starts at when its INLAY curve first arrives (§8a): a
+    # plaque's common thickness. Each seat then keeps its own `depth_mm`.
+    inlay_depth_mm: float = Field(1.0, ge=0)
     stock: StockDefinition = Field(default_factory=StockDefinition)
     # Where the drawing sits on the blank (2026-10-14). The blank is centered on
     # the design origin (relief.castle.stock_top_heightfield), and GuildDraw's
@@ -447,6 +510,10 @@ class CastleParams(BaseModel):
     # Partial-span chamfers / fillets on either face (M17). Empty = none, so every
     # existing project models exactly as before.
     edge_features: list[EdgeFeature] = Field(default_factory=list)
+    # One per INLAY curve in the drawing (§8a), in containment order, parents
+    # first; index-aligned with the polygons the intake derived. Empty for every
+    # drawing without the layer, so nothing before 2.0 changes.
+    inlays: list[InlayFeature] = Field(default_factory=list)
 
     def resolved_edge_features(self) -> list[EdgeFeature]:
         """Every enabled edge feature, each followed by its mirrored twin where
@@ -465,7 +532,8 @@ class CastleParams(BaseModel):
         — the flag the relief build uses to decide whether an anterior surface is
         needed at all (M17). False keeps the historical single-surface fast path."""
         return (self.eyewire_bezel.cuts_anterior()
-                or any(f.face == "anterior" for f in self.resolved_edge_features()))
+                or any(f.face == "anterior" for f in self.resolved_edge_features())
+                or any(i.enabled and i.face == "anterior" for i in self.inlays))
 
     def cuts_posterior_features(self) -> bool:
         """True when any posterior finishing feature is on — the condition for
@@ -534,7 +602,8 @@ POSTERIOR_OPS: tuple[str, ...] = (
 # get a fine tool rather than the bulk global tool. Hinge pockets cut with the
 # 3.175 mm default leave ~1.6 mm corners instead of ~1 mm. An explicit op_tools
 # entry always overrides this; it only changes the otherwise-global fallback.
-DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm"}
+DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm",
+                                    "Inlays": "flat_2mm"}
 
 
 class ProgramZero(BaseModel):
@@ -809,6 +878,11 @@ class TempleParams(BaseModel):
     # edge keeps the depth; + sinks the posterior edge, offsetting splay built
     # into the hinge. 0 = the flat floor every earlier project has.
     hinge_pocket_angle_deg: float = Field(0.0, ge=-15.0, le=15.0)
+    # The depth a seat starts at when its INLAY curve first arrives (§8a).
+    inlay_depth_mm: float = Field(1.0, ge=0)
+    # One per INLAY curve on this temple, in containment order (§8a). The
+    # anterior face here is the temple's OUTER side, the one without the hinge.
+    inlays: list[InlayFeature] = Field(default_factory=list)
     engrave_depth_mm: float = 0.3          # groove depth below the top face
     # Axial depth per engraving pass. A groove deeper than this is cut in several
     # passes instead of one plunge to full depth — a 1.5 mm channel with a slender

@@ -88,18 +88,21 @@ def mesh_to_relief(model, partition: CastlePartition, castle: CastleParams,
                             resolution, body, groove)
 
 
-def _triangles(partition: CastlePartition, castle: CastleParams, hinges):
+def _triangles(partition: CastlePartition, castle: CastleParams, hinges,
+               inlays=()):
     from .build import build_castle_model
     from .kernel import to_trimesh
 
-    mesh = to_trimesh(build_castle_model(partition, castle, list(hinges)))
+    mesh = to_trimesh(build_castle_model(partition, castle, list(hinges),
+                                         inlays=list(inlays)))
     return mesh.vertices, mesh.faces
 
 
 def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
                     hinges=(), resolution: float = CUT_RES_MM,
                     margin: float = GRID_MARGIN_MM,
-                    progress: Optional[ProgressFn] = None) -> CastleRelief:
+                    progress: Optional[ProgressFn] = None,
+                    inlays=()) -> CastleRelief:
     """The complete relief the CAM posts from, built by Manifold.
 
     Takes the *parameters* rather than a model, because filling
@@ -108,4 +111,4 @@ def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
     kernel is answering.
     """
     return cam_relief(_triangles, partition, castle, hinges, resolution,
-                      margin, progress)
+                      margin, progress, inlays=inlays)

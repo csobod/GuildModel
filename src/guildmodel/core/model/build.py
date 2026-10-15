@@ -385,12 +385,48 @@ def hinge_pockets(hinges, castle: CastleParams, top: float) -> list[Manifold]:
     return out
 
 
+def inlay_pockets(inlays, castle: CastleParams, hinges, partition: CastlePartition,
+                  heights: dict[str, float], top: float) -> list[Manifold]:
+    """The inlay seats as prisms (§8a), from the one list `geometry.inlays`
+    makes of the params — the same list the raster carves and the B-Rep cuts.
+
+    A posterior seat is the region above its floor plane, trimmed by the plane
+    where a hinge pocket's tilt is inherited, exactly as `hinge_pockets` does.
+    An anterior seat is the region from below the front face up to its depth.
+    Pure geometry, no anchor ray: the seats never care what has been cut.
+    """
+    from ..geometry.inlays import inlay_cuts, zone_reference
+    from ..geometry.pocket_floor import castle_pocket_floors
+
+    seats = inlay_cuts(castle.inlays, list(inlays or ()),
+                       castle_pocket_floors(hinges or [], castle),
+                       posterior_reference=zone_reference(partition, heights))
+    out = []
+    for seat in seats:
+        if seat.depth_mm <= 0.0:
+            continue                      # an island left at the surface
+        if seat.posterior:
+            low, _ = seat.floor_extremes()
+            prism = extrude(seat.region, max(top - low, CUT_MARGIN_MM), base=low)
+            if not seat.plane.flat:
+                normal, offset = seat.plane.plane()
+                prism = _check(prism.trim_by_plane(normal, offset), "seat tilt")
+        else:
+            _, high = seat.floor_extremes()
+            if high <= 0.0:
+                continue
+            prism = extrude(seat.region, high + CUT_MARGIN_MM, base=-CUT_MARGIN_MM)
+        out.append(prism)
+    return out
+
+
 def build_castle_model(partition: CastlePartition, castle: CastleParams,
                        hinges: list | None = None,
                        heights: dict[str, float] | None = None,
-                       progress: ProgressFn = None) -> Manifold:
+                       progress: ProgressFn = None,
+                       inlays: list | None = None) -> Manifold:
     """The whole castle: terraces, footing blends, every finishing feature,
-    hinge pockets.
+    hinge pockets, inlay seats (`inlays`, index-aligned with `castle.inlays`).
 
     Order mirrors the B-Rep path exactly — terraces, footings, surface features
     one at a time, then everything that can share a pass — because parity is the
@@ -463,6 +499,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
 
     _report(progress, "Hinge pockets", 0.85)
     tools.extend(hinge_pockets(hinges, castle, top))
+    tools.extend(inlay_pockets(inlays, castle, hinges, partition, h, top))
     solid = subtract_all(solid, tools)
 
     # Once more at the end, for the reason `build_base` gives. With the blends

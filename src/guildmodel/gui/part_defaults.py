@@ -80,10 +80,10 @@ _GROUP_OF_KIND: dict[ComponentKind, str] = {
 #: stored "params" dict is ignored, so a hand-edited prefs file cannot reach into
 #: fields the page never offered.
 PARAM_FIELDS: dict[str, tuple[str, ...]] = {
-    "frame_front": ("stock", "origin_from_drawing"),
+    "frame_front": ("stock", "origin_from_drawing", "inlay_depth_mm"),
     "temple": ("snap_to_blank_end", "stock_side", "origin_from_drawing",
                "blank_length_mm", "blank_width_mm", "blank_thickness_mm",
-               "engrave_tool", "hinge_tool", "profile_tool"),
+               "engrave_tool", "hinge_tool", "profile_tool", "inlay_depth_mm"),
     "base_curve": ("blank_length_mm", "blank_width_mm", "blank_thickness_mm",
                    "hole_count", "hole_spacing_mm", "hole_diameter_mm",
                    "hole_arrangement", "profile_tool", "drill_tool"),

@@ -160,6 +160,7 @@ CASTLE_OP_TIERS: tuple[frozenset[str], ...] = (
     frozenset({"Rough Relief"}),
     frozenset({"Fine Relief"}),
     frozenset({"Features"}),
+    frozenset({"Inlays"}),       # the seats, after the relief finishes what they measure from (§8a)
     frozenset({"Eyewires"}),
     frozenset({"Holes"}),
     frozenset({"Lens Groove"}),
@@ -1095,15 +1096,23 @@ def analyze_program_reach(
     ops: list[CamOp],
     hinge_polys: list[Polygon],
     tools_cfg: dict | None = None,
+    inlay_groups=(),
 ) -> list[ReachWarning]:
-    """Reach check for a generated program: today the hinge pockets (the case
-    where a 2 mm pocket can't admit the 3.175 mm bulk tool). Extensible to other
-    closed features as M6 grows."""
+    """Reach check for a generated program: the hinge pockets (the case where
+    a 2 mm pocket can't admit the 3.175 mm bulk tool) and the inlay seats
+    (`inlay_groups`, what `inlay_ops.inlay_op_groups` returns: each Inlays op
+    with its tool and seats, whether or not the seats admitted it — a seat the
+    tool could not enter was left out of the program, and this is where that
+    is said, with a tool that fits)."""
     by_name = {op.name: op for op in ops}
     features: list[tuple[str, str, list[Polygon], dict]] = []
     hinge_op = by_name.get("Hinge Pockets")
     if hinge_op is not None and hinge_op.tool and hinge_polys:
         features.append(("Hinge Pockets", "hinge pocket", list(hinge_polys), hinge_op.tool))
+    for name, tool, seats in inlay_groups:
+        for seat in seats:
+            label = seat.feature.label or seat.feature.id
+            features.append((name, f"inlay seat '{label}'", [seat.region], tool))
     return reach_warnings(features, tools_cfg)
 
 
@@ -1466,6 +1475,7 @@ def generate_castle_program(
     params: CastleCamParams | None = None,
     progress: Optional[ProgressFn] = None,
     tools_cfg: dict | None = None,
+    inlay_polys: list[Polygon] = (),
 ) -> list[CamOp]:
     """The five ops, in machining order, from the castle relief.
 
@@ -1473,6 +1483,11 @@ def generate_castle_program(
     its own tool from `params.op_tools` (BUILDPLAN M6.1 multi-tool jobs) and
     carries it on `CamOp.tool`; otherwise every op uses `tool` (single-tool, the
     M1–M5 behavior). progress: optional per-op stage hook (BUILDPLAN M4.6 Part B).
+
+    `inlay_polys` are the INLAY seats, index-aligned with `castle.inlays` (§8a):
+    the posterior ones become the Inlays op, after the relief and before the
+    eyewires; the anterior ones are modeled and not posted, so a front with
+    only those posts byte-identically.
     """
     params = params or CastleCamParams()
     stock = castle.stock
@@ -1530,6 +1545,19 @@ def generate_castle_program(
     # order these rings occupied inside Fine Relief.
     if features.paths:
         ops.append(features)
+
+    # 3a — inlay seats (§8a): after the relief has finished the surface each
+    # seat is measured from, before the eyewires open the apertures. One list
+    # from the params, the same one the kernels cut.
+    if castle.inlays and inlay_polys:
+        from ..geometry.heights import zone_heights
+        from ..geometry.inlays import inlay_cuts, zone_reference
+        from .inlay_ops import inlay_ops
+        seats = inlay_cuts(
+            castle.inlays, list(inlay_polys), castle_pocket_floors(hinge_polys, castle),
+            posterior_reference=zone_reference(
+                relief.partition, zone_heights(relief.partition, castle, None)))
+        ops += inlay_ops(seats, params, tools_cfg, _tool_for("Inlays"))
 
     # 4 — eyewires (lens holes are the body's interior rings; with the groove
     # on these are the UNDERSIZED apertures — the rim lip)
@@ -1621,6 +1649,7 @@ def generate_castle_program(
 # Strategy descriptions for the in-app setup sheet, keyed by op name.
 _OP_STRATEGIES = {
     "Hinge Pockets": "Pocket 2D · ramped lap entry",
+    "Inlays": "Pocket 2D · ramped lap entry · seats, parents first",
     "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
     "Fine Relief": "Raster drop-cutter",
     "Features": "Drop-cutter · feature band, cusp stepover",
@@ -1652,7 +1681,9 @@ def op_summaries(
         length = op.path_length_mm()
         row = {
             "name": op.name,
-            "strategy": _OP_STRATEGIES.get(op.name, "—"),
+            "strategy": (_OP_STRATEGIES.get(op.name)
+                         or (_OP_STRATEGIES["Inlays"] if op.name.startswith("Inlays ")
+                             else "—")),
             "paths": len(op.paths),
             "floor_z_mm": floor_z,
             "cut_length_mm": length,
