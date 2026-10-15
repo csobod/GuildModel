@@ -279,6 +279,27 @@ class DxfCanvas(QWidget):
         self._draw_program_zero(painter)
         self._draw_measure(painter)
         self._draw_scale_bar(painter)
+        self._draw_caption(painter)
+
+    def set_caption(self, text: str) -> None:
+        """A quiet line in the scale-bar corner (M20): the frame front's 2D
+        view is the back of the frame, mirrored from the drawing, and says so."""
+        text = text or ""
+        if text != getattr(self, "_caption", ""):
+            self._caption = text
+            self.update()
+
+    def _draw_caption(self, painter: QPainter) -> None:
+        text = getattr(self, "_caption", "")
+        if not text:
+            return
+        font = QFont(self.font())
+        font.setPointSize(9)
+        painter.setFont(font)
+        painter.setPen(QColor(self._palette.placeholder))
+        margin = 16
+        rect = QRectF(margin, self.height() - margin - 16, self.width() - 2 * margin, 16)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
 
     def _draw_placeholder(self, painter: QPainter) -> None:
         font = QFont(self.font())

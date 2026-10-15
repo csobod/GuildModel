@@ -24,6 +24,22 @@ A component you never drew shows as a disabled tab.
 Each tab keeps its own parameters, model, program and readiness state. You can
 switch tabs freely, because nothing is lost.
 
+A drawing, project or DXF dragged from the file manager onto the window opens
+as the menu would. When a drawing opens, GuildModel builds the frame front and
+shows it in 3D; the temples and blocks are built the first time you visit
+their tab in the 3D view, so a walk through the tabs stays in 3D. Preferences
+▸ General turns the build on open off. The view you chose on a component is
+kept across a visit to the Worktable. The 2D view of the front is the back of
+the frame, mirrored from the drawing, and its caption says so.
+
+**File ▸ Reload Drawing (Ctrl+R)** re-reads the open drawing from disk after
+you save it again in GuildDraw. Every part keeps its parameters, cut settings,
+program zero, forming values, worktable switch and placement; the geometry is
+re-derived, and the models and programs, which described the old drawing, are
+dropped. While a drawing is open GuildModel watches the file: when it changes,
+a chip in the status bar reads *drawing changed · reload*, and clicking it
+reloads. Nothing interrupts you.
+
 **File ▸ Open DXF (Ctrl+Shift+O)** opens a single frame front exported as DXF.
 GuildModel reads these layers:
 
@@ -169,7 +185,13 @@ form cutter in the tool library.
 
 The **Stock** tab sets the blank dimensions and the pad block. They start
 from your defaults in Preferences ▸ Parts (§8); save a project on a different
-stock and GuildModel offers, once, to make it the default.
+stock and GuildModel offers, once, to make it the default. The blank is
+centered on the drawing's origin, which is where GuildDraw draws its stock
+blank guide, so with **Origin from drawing** on (the default) the front is cut
+exactly where it was drawn and several drawings laid out against one origin
+register alike. Turn it off for a drawing that was never drawn on its blank:
+the outline is centered on the blank, and the 2D view shows the drawing moved
+there. Turning it back on restores the drawing exactly.
 
 **Build 3D** builds every loaded component's model in one pass, and each tab
 caches its own model. The view strip carries:
@@ -309,8 +331,14 @@ fills a logo more cleanly than a V-bit. Over a DXF, which cannot tell text
 from drawing, the option applies to every closed curve; turn it off for a
 DXF temple that carries a logo. The hinge end snaps
 to the 170×30 blank edge; the snap, the stock side and the blank size start
-from your defaults in Preferences ▸ Parts (§8). The injected-core bar shown in
-3D is a visual guide only. Program: the hinge pockets and the engraving while
+from your defaults in Preferences ▸ Parts (§8). Across the blank, **Origin
+from drawing** (on by default) keeps the drawing's zero line on the blank's
+center line, where the injected core runs: draw the temple with the core on
+GuildDraw's horizontal zero and it is cut there, a dropped tip and all. Turn
+it off to center the temple's width on the blank instead. The injected-core
+bar shown in 3D runs down the blank's center line and is a visual guide only;
+**Core guide width** and **Core guide length** size it. Program: the hinge
+pockets and the engraving while
 the blank is rigid — whichever tool has the least work first, so the operator
 loads it, starts, and swaps once — then Holes, then the Temple Profile that
 releases the part. The Holes operation appears only when the drawing has
@@ -322,8 +350,8 @@ a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
 positive angle makes the posterior edge deeper.
 
 **Apply to both temples**, at the foot of the Temple tab, copies the tab onto
-the other temple — blank, snap and stock side, hinge pocket depth and angle,
-engraving, tools, onion skin, hand allowance and holding — so both cut with
+the other temple — blank, snap, stock side and origin, hinge pocket depth and
+angle, engraving, tools, onion skin, hand allowance and holding — so both cut with
 the same tools and depths. Each temple keeps its own program zero (Machine
 tab) and cut settings (Cut tab). The copied-to temple needs a rebuild and a
 new program, and its tab shows the copied values on the next visit.
@@ -433,19 +461,69 @@ another view, so you do not have to re-arm it when you come back.
 
 ## 6. The worktable — cut the whole model in one setup
 
-The **Worktable** tab is the machine bed. Import your bed as a DXF, where each
-closed region becomes a zone, or load the Guild standard bed. Click a region
-and tag its role: frame-front, temple R/L, base-curve R/L, or keep-out.
+The **Worktable** tab is the machine bed. Its panel has four groups, each of
+which folds away under its heading.
 
-**Nest Components** places every populated component onto a matching zone. Drag
-a footprint to nudge it, and rotate it with the angle spinbox. A live clearance
-badge flags collisions with keep-outs and screws, and outlines them in red on
-the bed. Set the bed's own program zero and hold-down height on the panel.
+**Bed.** Four buttons, their words in the tooltips: import your bed as a DXF,
+where each closed region becomes a zone, or load a saved `.bed`; load the
+Guild standard bed; save the bed; make it the default that loads with every
+session. Set the bed's size, its program zero and the hold-down height here.
+No field on this panel takes the mouse wheel until you click into it, so
+scrolling the sidebar never changes a value.
 
-**Generate Worktable Program** folds the whole nest into one `worktable.nc`. It
-schedules the bed to minimize tool changes, and respects each part's operation
-order. **Simulate Bed** runs the full-bed cut simulation and composites every
-placement into one verdict.
+**Zones.** The regions are listed in two groups, the zones and the
+hold-downs, the hold-downs folded away. Click a region on the bed, or a row in
+the list, and tag its role: frame-front, temple R/L, base-curve R/L, or
+keep-out; picking a screw on the bed unfolds its group. A zone can carry the
+fixture's **stop**, the edge the stock registers against, on either axis: a
+temple zone cut for 170 mm blanks with a stop at its left end takes a 160 mm
+blank flush left. *Centered* places the blank in the middle of the zone on
+that axis. The stop is saved with the bed. Remove, Undo and Redo sit beside
+the count; Undo and Redo cover every bed edit.
+
+**Parts.** One row per component, with a checkbox: on the bed, or not. A part
+left unchecked keeps its tab, builds and posts on its own, and is left out of
+the worktable program, its setup sheet and the bed simulation; its placement
+is kept, so checking it again puts it back where it was. Each row names the
+zone the part sits on and its state: *placed*, *unplaced*, *needs Generate*
+or *collision*. Pick a row and the part's controls follow: the zone to send
+it to, the rotation buttons and angle, and its X and Y offset on the bed.
+Which parts a new drawing starts with on the bed is set per kind of part in
+Preferences ▸ Parts (§8); a batch shop that cuts its base-curve blocks once
+leaves them off there.
+
+On the bed itself, drag a footprint to move it. A blank pushed past the
+pocket's wall comes back flush to it, and one dropped within 3 mm of an end,
+the center or the stop snaps there; Shift drops it exactly where it is.
+**Snap** (the button beside the turns, or S) pushes the selected part flush to
+its zone's stop, or, with no stop, to whichever end it is nearer, keeping its
+orientation: flip a temple 180°, drag it toward the
+other end and snap, and it sits flush there the other way round. The arrow keys nudge the selected part 0.1 mm, or 1 mm
+with Shift; R turns it 90°, Shift+R the other way; Delete takes it off the
+bed. The right-click menu snaps it, rotates it, sends it to another free zone
+of its role, or removes it. Each footprint shows the blank, dashed, and the
+outline the program cuts; a part whose cut would reach a keep-out draws in
+red.
+
+**Program.** **Auto-place** (the grid with an arrow) puts every part without
+a placement on a free zone of its role, against the zone's stop where it has
+one, at once, and leaves the placed ones where they are; **Re-place all** (the circling arrows) forgets every
+placement, nudges and turns included, and places every part again; the sheet
+button shows the last setup sheet. Placements are saved with the project and
+reopen where they were.
+Placing needs no program: **Generate** makes the programs, once per part, and
+posts the parts on the bed as one `worktable.nc`, scheduled to minimize tool
+changes while keeping each part's operation order. A part whose settings did
+not change since the last Generate is not rebuilt. Any edit that would change
+the program, on any tab or on the bed, marks the part *needs Generate*; the
+Program line says whether the bed program is current. The setup sheet names
+the parts left off as *not on this bed* and lists the keep-outs any
+operation reaches. **Simulate Bed** runs the whole-bed cut simulation over
+the same parts, generating the program first when it is stale, and
+composites every placement, rotation included, into one verdict. The verdict
+is read from the posted `worktable.nc` itself, and the playback carves each
+part's blank as listed, placed on the bed among the hold-downs, so what you
+see is the stock on the bench.
 
 ## 7. Send the job
 
@@ -464,21 +542,24 @@ that any sender can run.
 
 **Settings ▸ Preferences… (Ctrl+,)** — the same shortcut across the Guild apps.
 
-- **General** — the log panel on startup, the 3D preview and STL export
+- **General** — the log panel on startup, whether a drawing builds its frame
+  front on open, the 3D preview and STL export
   resolution, the default output folder, and the **Prompts**: the four offers
   GuildModel makes — the default bed, the part defaults, the material
   write-back, the tool-library write-back — each of which has a *Don't ask
   again* on the box and a switch here to turn it back on.
 - **Parts** — what a newly opened drawing or DXF starts from, for each kind of
-  part: the program zero, the temples' snap to blank end and stock side, the
-  blank sizes and pad block, the base-curve block's mounting-hole pattern, and
-  each part's tools. A project keeps its own values. Save one whose program
-  zero, stock or temple alignment differs and GuildModel offers to make that
-  the default, provided every part of that kind agrees. Each difference is a
-  line with its own checkbox; clear the ones that belong to this job only, and
-  Yes adopts the rest. The stock is one line per kind of part and is adopted
-  whole. GuildModel asks about each line once; a further change asks about
-  that change alone. The hole pattern and the tools are set here only.
+  part: the program zero, whether the part is on the worktable to begin with
+  (§6), the temples' snap to blank end and stock side, each part's origin
+  from drawing, the blank sizes and pad block, the base-curve block's
+  mounting-hole pattern, and each part's tools. A project keeps its own
+  values. Save one whose program zero, stock or temple alignment differs and
+  GuildModel offers to make that the default, provided every part of that
+  kind agrees. Each difference is a line with its own checkbox; clear the ones
+  that belong to this job only, and Yes adopts the rest. The stock is one line
+  per kind of part and is adopted whole. GuildModel asks about each line once;
+  a further change asks about that change alone. The hole pattern, the tools
+  and the worktable switch are set here only.
 - **Appearance** — dark mode; the viewport presets (Parchment, Dimmed,
   Blueprint, Matte Dark, Plain White, or a custom canvas color) that pin the
   canvas and 3D backdrop in both UI modes; the 3D light rig (Studio /
@@ -518,13 +599,15 @@ beside it, and so do your presses (`presses.yaml`, §2).
 |---|---|
 | Ctrl+O | Open Drawing (.gdraw) |
 | Ctrl+Shift+O | Open DXF |
+| Ctrl+R | Reload Drawing |
 | Ctrl+S | Save Project |
+| Ctrl+Shift+S | Save Project As |
 | F5 | Build 3D Model |
 | Ctrl+G | Generate G-code |
 | Ctrl+Shift+G | Export G-code (.nc) |
 | Ctrl+E | Export STL |
 | Ctrl+Shift+E | Export All STL |
-| Ctrl+Shift+S | Simulate the cut |
+| F6 | Simulate the cut |
 | M | Measure |
 | Ctrl+B | Worktable |
 | Ctrl+0 | Fit to View |

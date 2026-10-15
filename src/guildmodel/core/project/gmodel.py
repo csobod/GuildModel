@@ -48,9 +48,12 @@ _PREVIEW = "preview.png"
 _PROGRAM_DIR = "program"
 # Every component's own program set, so a whole-model project keeps the
 # temple programs as well as the front's: ``components/<id>/program/*.nc``
-# plus that component's setup / machine / cut report. The top-level set
-# stays the active component's (the job GuildSend streams).
+# plus that component's setup / machine / cut report. The worktable program
+# has a slot of its own under the same tree (`WORKTABLE_ID`, M20). The
+# top-level set is the job GuildSend streams: the bed program when the
+# project has one, else the active component's.
 _COMPONENTS_DIR = "components"
+WORKTABLE_ID = "worktable"
 
 #: files (besides ``program/*.nc``) that a gSender fork consumes
 HANDOFF_FILES = (_MANIFEST, _MACHINE, _SETUP)

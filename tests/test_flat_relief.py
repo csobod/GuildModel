@@ -67,14 +67,30 @@ def test_temple_mesh_is_watertight_solid():
 
 
 def test_temple_snap_offset_butts_hinge_end_and_centers_width():
-    t = TempleParams()
+    t = TempleParams(origin_from_drawing=False)
     outline = _temple_outline()                                 # x 10..130, y 5..29
     hinge = [box(115.0, 11.0, 127.0, 23.0)]                     # hinge on the +x end
-    dx, dy = temple_snap_offset(outline, hinge, t.blank_length_mm)
+    dx, dy = temple_snap_offset(outline, hinge, t.blank_length_mm,
+                                origin_from_drawing=t.origin_from_drawing)
     # width centerd on the blank
     assert dy == pytest.approx(-(5.0 + 29.0) / 2.0)
     # hinge (+x) extreme lands on +blank_length/2
     assert 130.0 + dx == pytest.approx(t.blank_length_mm / 2.0)
+
+
+def test_temple_snap_offset_keeps_the_drawings_zero_line_by_default():
+    """2026-10-14: the drawing's y = 0 is the core line, so across the blank the
+    temple stays where it was drawn; the snap along the blank is unchanged."""
+    t = TempleParams()
+    assert t.origin_from_drawing is True
+    outline = _temple_outline()                                 # y 5..29, not centered
+    hinge = [box(115.0, 11.0, 127.0, 23.0)]
+    dx, dy = temple_snap_offset(outline, hinge, t.blank_length_mm)
+    assert dy == 0.0
+    assert 130.0 + dx == pytest.approx(t.blank_length_mm / 2.0)
+    dx_c, _ = temple_snap_offset(outline, hinge, t.blank_length_mm,
+                                 origin_from_drawing=False)
+    assert dx_c == pytest.approx(dx)                            # X does not depend on it
 
 
 def test_temple_core_guide_runs_from_hinge_end():
@@ -86,6 +102,23 @@ def test_temple_core_guide_runs_from_hinge_end():
     assert (gy1 - gy0) == pytest.approx(t.core_guide_width_mm)   # 2 mm wide
     assert gx1 == pytest.approx(160.0)                          # starts at the hinge (+x) end
     assert (gx1 - gx0) == pytest.approx(t.core_guide_length_mm)  # 135 mm long
+    # down the blank's center line, not the outline's (2026-10-14)
+    assert (gy0 + gy1) / 2.0 == pytest.approx(0.0)
+
+
+def test_core_guide_sits_on_the_blank_center_line_not_the_outline():
+    """The bar marks the wire, which is in the blank: a dropped-tip temple placed
+    by its origin shows the shaft on the bar and the tip hanging below it."""
+    t = TempleParams(core_guide_width_mm=1.5, core_guide_length_mm=100.0)
+    shaft = box(-80.0, -2.0, 80.0, 2.0)                        # on the core line
+    tip = box(-80.0, -14.0, -60.0, 2.0)                        # drops 12 mm below it
+    outline = shaft.union(tip)
+    hinge = [box(70.0, -1.5, 78.0, 1.5)]
+    guide = temple_core_guide(outline, hinge, t)
+    gx0, gy0, gx1, gy1 = guide.bounds
+    assert (gy0, gy1) == pytest.approx((-0.75, 0.75))
+    assert (gx0, gx1) == pytest.approx((-20.0, 80.0))
+    assert outline.bounds[1] < -10.0                           # the outline is not centered on it
 
 
 def test_core_guide_length_clamps_to_outline():
@@ -265,7 +298,15 @@ def test_open_drawing_rename_and_view_persistence(tmp_path, monkeypatch):
 
     bc = by_kind[ComponentKind.BASE_CURVE_RIGHT]
     win._activate_workspace(bc)
-    assert win.stack.currentIndex() == 0                        # fell back to 2D (not built)
+    # Since M20's second session an unbuilt tab visited in 3D keeps the 3D page
+    # and is given a quiet build, rather than falling back to 2D; a tab that
+    # cannot be built at all is the one that falls back.
+    assert win.stack.currentIndex() == 1 and bc in win._lazy_built
+    win._lazy_built.discard(bc)
+    win._workspaces[bc].enabled = False                         # nothing to build: 2D
+    win._activate_workspace(bc)
+    assert win.stack.currentIndex() == 0
+    win._workspaces[bc].enabled = True
 
 
 def test_multi_mesh_worker_builds_all_in_one_pass(tmp_path, monkeypatch):

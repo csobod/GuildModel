@@ -194,10 +194,52 @@ def demo_parts():
     ]
 
 
+def _line(layer, pts, closed=False):
+    return {"kind": "line", "layer": layer, "closed": closed,
+            "nodes": [{"x": x, "y": y} for x, y in pts]}
+
+
+def _make_gdraw(path):
+    """A front, both temples and so both base-curve blocks: five parts."""
+    import json
+    import zipfile
+    from xml.etree import ElementTree as ET
+    ns = "http://www.w3.org/2000/svg"
+    ET.register_namespace("", ns)
+
+    def svg(state):
+        root = ET.Element(f"{{{ns}}}svg")
+        meta = ET.SubElement(root, f"{{{ns}}}metadata")
+        meta.text = json.dumps(state)
+        return ET.tostring(root, xml_declaration=True, encoding="utf-8")
+
+    front = {"curves": [
+        _line("OUTLINE", [(-60, -20), (60, -20), (60, 20), (-60, 20)], closed=True),
+        _line("LENS", [(20, -12), (45, -12), (45, 12), (20, 12)], closed=True),
+        _line("LENS", [(-45, -12), (-20, -12), (-20, 12), (-45, 12)], closed=True),
+        _line("SCULPT", [(0, -20), (0, 20)]),
+        _line("SCULPT", [(30, -20), (30, 20)]),
+        _line("HINGE", [(50, -5), (58, -5), (58, 5), (50, 5)], closed=True),
+    ]}
+    temple = {"curves": [
+        _line("OUTLINE", [(-70, -6), (70, -6), (70, 6), (-70, 6)], closed=True),
+        _line("ENGRAVING", [(-40, 0), (40, 0)]),
+    ]}
+    states = {"front": front, "temple_r": temple, "temple_l": temple, "hinge": {"curves": []}}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"active_tab": "front"}))
+        for tab, st in states.items():
+            zf.writestr(f"{tab}.svg", svg(st))
+    return path
+
+
 @pytest.mark.gui
 def test_nest_worker_and_gui_render_and_nudge(tmp_path, monkeypatch):
-    """The GUI NestWorker generates a component program and nests it; the bed canvas
-    renders the footprint and a drag nudges the placement (BUILDPLAN M7.6)."""
+    """The NestWorker generates a component program and nests it (the one-shot
+    flow the bed simulation tests keep). On the window a part is placed with
+    no program in hand (M20): Auto-place puts every part on its zone, the bed
+    canvas renders the footprints, a drag moves the saved placement, and a
+    drag that ends within 3 mm of the zone's center snaps to it."""
     pytest.importorskip("PySide6.QtWidgets")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -221,20 +263,34 @@ def test_nest_worker_and_gui_render_and_nudge(tmp_path, monkeypatch):
     assert len(done) == 1
     nest = done[0]
     assert [pl.zone_id for pl in nest.placements] == ["bc_template_right"]
+    # the block's pocket, widened by 40 mm so a drag has room: a blank the size
+    # of its pocket cannot go anywhere (session two of M20, the pocket's wall)
+    z = bed.zone("bc_template_right")
+    x0, y0, x1, y1 = z.bbox()
+    z.polygon = [(x0 - 20, y0), (x1 + 20, y0), (x1 + 20, y1), (x0 - 20, y1)]
 
     try:
         win = MainWindow()
     except Exception as exc:                                   # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
+    win._load_model(_make_gdraw(tmp_path / "m.gdraw"))
     win._worktable = bed
-    win._nest = nest
-    win._refresh_nest_render()                                # builds the canvas footprints
-    assert len(win.bed_canvas._placements) == 1
+    win.bed_canvas.set_worktable(bed)
+    win._on_nest_components()                                  # Auto-place: no programs
+    assert len(win.bed_canvas._placements) == len(win._workspaces) == 5
+    assert all(ws.bed_ops is None for ws in win._workspaces)   # nothing was generated
 
-    pl = nest.placements[0]
+    pl = win._wt_nest.on_zone("bc_template_right")
     before = (pl.dx, pl.dy)
-    win._on_component_nudged("bc_template_right", 7.0, -3.0)   # simulate a drag
-    assert (pl.dx, pl.dy) == pytest.approx((before[0] + 7.0, before[1] - 3.0))
+    assert before == pytest.approx(bed.zone("bc_template_right").bbox_center(), abs=1e-3)
+    win._on_component_nudged("bc_template_right", 7.0, 0.0)    # 7 mm: nothing within 3 mm
+    assert (pl.dx, pl.dy) == pytest.approx((before[0] + 7.0, before[1]))
+    win._on_component_nudged("bc_template_right", -5.5, 0.0)   # ends 1.5 mm off center: snaps
+    assert (pl.dx, pl.dy) == pytest.approx(before)
+    win._on_component_nudged("bcelow" if False else "bc_template_right", 40.0, 0.0)  # past the wall
+    assert pl.dx == pytest.approx(before[0] + 20.0)             # flush to the widened pocket's end
+    win._on_component_stepped("bc_template_right", 0.1, 0.0)   # an arrow key: never snapped
+    assert pl.dx == pytest.approx(before[0] + 20.1)
 
 
 def test_demo_nests_on_default_bed_clear(demo_parts):
@@ -300,42 +356,46 @@ def test_left_temple_nests_flipped_to_face_the_right():
 
 @pytest.mark.gui
 def test_gui_select_and_rotate_placement(tmp_path, monkeypatch):
-    """Clicking a footprint selects it (enabling the rotate controls); rotating spins
-    the placed ops and re-checks clearance without regenerating any program (M-UX)."""
+    """Clicking a footprint selects it (enabling the part controls); rotating
+    spins the saved placement about its blank's center, and the canvas
+    footprint turns with it, with no program in hand (M-UX → M20)."""
     pytest.importorskip("PySide6.QtWidgets")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
+    from guildmodel.core.project.schema import ComponentKind
     from guildmodel.gui.app import MainWindow
 
     bed = Worktable(zones=[_rect_zone("zl", BedRole.TEMPLE_LEFT, 0, 0, 200, 60)])
-    op = _op("Temple Profile", "flat_3175",
-             [(-70, -10), (70, -10), (70, 10), (-70, 10), (-70, -10)])
-    nest = nest_components_on_worktable([_part("temple_left", "Temple L", op)], bed)
-    pl = nest.placements[0]
-
     try:
         win = MainWindow()
     except Exception as exc:                                   # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
+    win._load_model(_make_gdraw(tmp_path / "m.gdraw"))
     win._worktable = bed
-    win._nest = nest
     win.bed_canvas.set_worktable(bed)
-    win._refresh_nest_render()
+    win._on_nest_components()                                  # only the left temple has a zone
+    pl = win._wt_nest.on_zone("zl")
+    assert pl is not None and len(win.bed_canvas._placements) == 1
+    tl = next(w for w in win._workspaces if w.kind == ComponentKind.TEMPLE_LEFT)
+    assert pl.component_id == win._component_id(tl)
+    assert pl.rotation_deg == 0.0                              # snapped: its orientation holds
 
     assert not win._bed_rot_180.isEnabled()                    # nothing selected yet
     win._on_bed_placement_selected("zl")                       # click a footprint
-    assert win._bed_rot_180.isEnabled()
-    assert "Temple L" in win._bed_sel_label.text()
+    assert win._bed_rot_180.isEnabled() and win._bed_nudge_x.isEnabled()
+    assert tl.label in win._bed_sel_label.text()
 
-    before = [tuple(p) for o in pl.ops for p in o.paths[0]]
+    x0, y0, x1, y1 = win.bed_canvas._placements[0]["bbox"]
     win._rotate_selected_placement(90.0)
-    after = [tuple(p) for o in pl.ops for p in o.paths[0]]
-    assert before != after                                     # ops actually rotated
     assert pl.rotation_deg == pytest.approx(90.0)
+    rx0, ry0, rx1, ry1 = win.bed_canvas._placements[0]["bbox"]
+    assert (rx1 - rx0, ry1 - ry0) == pytest.approx((y1 - y0, x1 - x0), abs=1e-6)
+    assert ((rx0 + rx1) / 2, (ry0 + ry1) / 2) == pytest.approx(((x0 + x1) / 2, (y0 + y1) / 2), abs=1e-6)
     assert win.bed_canvas.selected_placement_zone() == "zl"    # selection survives render
+    assert win._bed_rot_spin.value() == pytest.approx(90.0)
 
     win._on_bed_placement_selected("")                         # deselect
     assert not win._bed_rot_180.isEnabled()

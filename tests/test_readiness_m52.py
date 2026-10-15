@@ -56,7 +56,19 @@ def test_tooltip_wording_is_exact():
     # BUILDPLAN M5.2 specifies this wording verbatim — do not reword.
     assert rd.TOOLTIPS[rd.RED] == "DXF Loaded, Missing 3D Model + G-Code"
     assert rd.TOOLTIPS[rd.YELLOW] == "Model Built, Missing G-Code"
-    assert rd.TOOLTIPS[rd.GREEN] == "Ready for Transmission"
+    assert rd.TOOLTIPS[rd.GREEN] == "Ready for GuildSend"          # names the next app (M20)
+    assert rd.TOOLTIPS[rd.YELLOW_BROKEN] == "Program stored · model has problems"
+
+
+def test_a_stored_program_over_a_broken_model_is_yellow():
+    """The dot could be green over a model the tessellation rejected: a stored
+    program outranked everything. Since M20 the verdict demotes it (the
+    Inspector already leads with the verdict)."""
+    assert rd.state_for(True, True, True, model_ok=True) == rd.GREEN
+    assert rd.state_for(True, True, True, model_ok=False) == rd.YELLOW_BROKEN
+    assert rd.state_for(True, False, True, model_ok=False) == rd.YELLOW_BROKEN
+    assert rd.state_for(True, True, False, model_ok=False) == rd.YELLOW   # nothing stored: as before
+    assert rd.state_for(False, True, True, model_ok=False) == rd.OFF
 
 
 # ------------------------------------------------------------ theme colors

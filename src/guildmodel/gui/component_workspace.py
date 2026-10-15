@@ -32,6 +32,9 @@ class ComponentWorkspace:
     # is what lets the B-Rep castle be built from curves instead of polygons.
     curves: dict = field(default_factory=dict)
     enabled: bool = True
+    # On the worktable (BUILDPLAN M19): `Component.on_bed`. Seeded from the
+    # shop's default per kind of part; a reopened project's saved value wins.
+    on_bed: bool = True
     source_workspace: str = ""
     forming: object = None
     # Raw GuildDraw text objects (engraving) for this workspace; the GUI outlines them
@@ -40,6 +43,12 @@ class ComponentWorkspace:
     # Set once derive_workspace has applied the temple Y-axis re-orientation, so a
     # re-derive never double-flips the layers.
     layers_oriented: bool = False
+    # The rigid translation currently applied to ``layers`` / ``curves`` /
+    # ``engraving_text`` relative to the drawing as authored (2026-10-14).
+    # (0, 0) is the drawing's own origin: the default, and what every file had
+    # before. `place_front_on_blank` sets it when a front is centered on its
+    # blank and clears it when the maker turns that back off.
+    drawing_offset: tuple = (0.0, 0.0)
 
     # per-component editable params (pushed into / pulled from the kind-aware
     # param dock on a tab switch, M7.3). Exactly one is populated, per kind;
@@ -91,6 +100,10 @@ class ComponentWorkspace:
     core_guide: object = None        # temple injected-core bar bounds (3D marker)
     last_programs: dict = field(default_factory=dict)
     last_setup: object = None
+    # The part's design-frame ops as last generated for the bed program (M20),
+    # with the key they were generated under (`cam.placement.part_program_key`):
+    # Generate rebuilds only a part whose key moved. Never saved.
+    bed_ops: dict | None = None
 
     def engraving_split(self) -> tuple[list, list]:
         """``(text, graphics)`` — the two engraving arguments a temple build takes.
@@ -212,6 +225,54 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
         except Exception:
             ws.boxing = None
     return ws
+
+
+def place_front_on_blank(ws: ComponentWorkspace, origin_from_drawing: bool) -> bool:
+    """Set a frame front's placement on its blank (``CastleParams.origin_from_drawing``,
+    2026-10-14).
+
+    The blank is centered on the design origin, so a front is placed by moving the
+    DRAWING. With ``origin_from_drawing`` it stays as authored (offset (0, 0)): a
+    maker who lays several drawings out against one origin in GuildDraw gets the
+    same registration on the blank. Otherwise the OUTLINE's bounding-box center is
+    moved onto the origin, for a drawing that was never drawn on its blank. The
+    move is applied to the flattened layers, the exact curves and the outlined
+    engraving text alike, and the derived geometry is rebuilt, so the castle
+    relief, the B-Rep, the CAM, the sim and the 2D canvas all see one frame.
+    Idempotent: the offset in force is recorded on the workspace and only the
+    difference is applied, so toggling back restores the drawing exactly.
+
+    A temple is placed at build time instead (`relief.flat.place_temple_on_blank`,
+    where its snap lives) and a base-curve block is always centered
+    (`cam.block_ops.center_on_origin`); for those, and for a front with no
+    outline, this does nothing. Returns True when the geometry moved: the caller
+    owns the stale meshes, programs and inspector inputs that implies.
+    """
+    from guildmodel.core.geometry.curves import translated
+
+    if ws.kind != ComponentKind.FRAME_FRONT or ws.is_temple or ws.outline_poly is None:
+        return False
+    ox, oy = ws.drawing_offset
+    if origin_from_drawing:
+        tx, ty = 0.0, 0.0
+    else:
+        minx, miny, maxx, maxy = ws.outline_poly.bounds
+        # the outline's center as AUTHORED: today's coordinates less today's offset
+        cx, cy = (minx + maxx) / 2.0 - ox, (miny + maxy) / 2.0 - oy
+        tx, ty = -cx, -cy
+    dx, dy = tx - ox, ty - oy
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return False
+    ws.layers = {lyr: [[(x + dx, y + dy) for x, y in c] for c in curves]
+                 for lyr, curves in ws.layers.items()}
+    ws.curves = {lyr: [translated(c, dx, dy) for c in cs]
+                 for lyr, cs in (ws.curves or {}).items()}
+    ws.engraving_text = [[(x + dx, y + dy) for x, y in poly]
+                         for poly in ws.engraving_text]
+    ws.drawing_offset = (tx, ty)
+    # The boxing dimensions are lengths, so the ones measured before still hold.
+    derive_workspace(ws, boxing=ws.boxing)
+    return True
 
 
 def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:

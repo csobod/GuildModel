@@ -7,7 +7,13 @@ only — the stage name lives in the tooltip:
     gray/off  nothing loaded (no DXF)
     red       DXF imported, nothing built  — "DXF Loaded, Missing 3D Model + G-Code"
     yellow    3D model built               — "Model Built, Missing G-Code"
-    green     G-code stored to the .gmodel   — "Ready for Transmission"
+    yellow    program stored, model failed — "Program stored · model has problems"
+    green     G-code stored to the .gmodel   — "Ready for GuildSend"
+
+A stored program over a model the tessellation rejects used to stay green
+(the README told the maker to read the log rather than the dot); since M20 it
+is the fourth state. The green names the next app, as GuildDraw's names this
+one.
 
 Colors are sourced from ``theme`` (no hex literals here) and recolored per
 light/dark theme; the state machine that drives it lives in ``MainWindow``.
@@ -24,29 +30,34 @@ from guildmodel.gui.style import theme
 OFF = "off"
 RED = "red"
 YELLOW = "yellow"
+YELLOW_BROKEN = "yellow_broken"     # a stored program, a model that failed (M20)
 GREEN = "green"
 
 TOOLTIPS = {
     OFF: "No DXF loaded",
     RED: "DXF Loaded, Missing 3D Model + G-Code",
     YELLOW: "Model Built, Missing G-Code",
-    GREEN: "Ready for Transmission",
+    YELLOW_BROKEN: "Program stored · model has problems",
+    GREEN: "Ready for GuildSend",
 }
 
 _DIAMETER = 10  # px — subtle
 
 
-def state_for(dxf_loaded: bool, mesh_built: bool, program_stored: bool) -> str:
-    """The readiness state machine as a pure function of three job facts.
+def state_for(dxf_loaded: bool, mesh_built: bool, program_stored: bool,
+              model_ok: bool = True) -> str:
+    """The readiness state machine as a pure function of the job facts.
 
     green outranks yellow outranks red: a stored program implies the job is
     transmittable regardless of whether the (lazily rebuilt) preview mesh is
-    currently in hand. No DXF at all is gray/off.
+    currently in hand — unless the model in hand failed verification
+    (``model_ok`` False), which demotes a stored program to yellow (M20). No
+    DXF at all is gray/off.
     """
     if not dxf_loaded:
         return OFF
     if program_stored:
-        return GREEN
+        return GREEN if model_ok else YELLOW_BROKEN
     if mesh_built:
         return YELLOW
     return RED
@@ -88,6 +99,7 @@ class ReadinessDot(QWidget):
             OFF: pal.ready_off,
             RED: pal.ready_red,
             YELLOW: pal.ready_yellow,
+            YELLOW_BROKEN: pal.ready_yellow,
             GREEN: pal.ready_green,
         }[self._state])
 

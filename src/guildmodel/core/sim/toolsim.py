@@ -182,7 +182,10 @@ def achieved_floor_grouped(
     the bulk tool's relief are simulated with their own geometry. Kernels are
     cached per distinct profile.
     """
-    floor = np.full(shape, float(init_z), dtype=np.float64)
+    # `init_z` may be a heightfield of the grid's shape (M20): a bed of blanks of
+    # different thicknesses starts each cell at its own stock top.
+    floor = (np.array(init_z, dtype=np.float64, copy=True) if np.ndim(init_z) == 2
+             else np.full(shape, float(init_z), dtype=np.float64))
     spacing = point_spacing or resolution
     kernels: dict = {}
 

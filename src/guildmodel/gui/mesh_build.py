@@ -210,11 +210,13 @@ def _build_temple(spec, resolution, progress):
     outline, hinge, eng = place_temple_on_blank(
         spec["outline"], spec["hinge"], spec["engraving"],
         temple.blank_length_mm, stock_side=temple.stock_side,
-        snap=temple.snap_to_blank_end)
+        snap=temple.snap_to_blank_end,
+        origin_from_drawing=temple.origin_from_drawing)
     gfx = place_temple_curves(
         spec.get("graphics", ()), spec["outline"], spec["hinge"],
         temple.blank_length_mm, stock_side=temple.stock_side,
-        snap=temple.snap_to_blank_end)
+        snap=temple.snap_to_blank_end,
+        origin_from_drawing=temple.origin_from_drawing)
     relief = build_temple_relief(
         outline, temple, hinge, eng, graphic_curves=gfx,
         resolution=temple_preview_res(resolution, eng or gfx), progress=progress)

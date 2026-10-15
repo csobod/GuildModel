@@ -23,8 +23,8 @@ from guildmodel.core.cam.worktable import (
     user_default_bed_path,
 )
 from guildmodel.core.cam.layout import (
-    BedPart, bed_clearance_violations, build_bed_program, place_ops_at_zone,
-    zone_center,
+    BedPart, nest_components_on_worktable, ops_bbox_center,
+    place_ops_at_polygon_zone, worktable_clearance_violations,
 )
 from guildmodel.core.cam.castle_ops import CamOp
 
@@ -185,33 +185,27 @@ def test_to_fixture_dict_reproduces_zones_and_screws():
         assert (gx, gy) == pytest.approx((ox, oy))
 
 
-def test_m65_layout_machinery_re_passes_through_the_worktable():
-    """The M6.5 nesting + clearance run on the bridged fixture dict unchanged."""
-    derived = Worktable.from_fixture_dict(FIXTURE).to_fixture_dict()
-
-    # zone_center / place_ops_at_zone identical to the YAML fixture
-    assert zone_center(derived, "bc_template_right") == pytest.approx(
-        zone_center(FIXTURE, "bc_template_right"))
+def test_the_worktable_places_and_checks_where_the_fixture_did():
+    """The bed built from the fixture dict places a part on the fixture's zone
+    center and flags a cutting point parked on a screw — what the M6.5 fixture
+    helpers did until M20 retired them for the tagged bed."""
+    bed = Worktable.from_fixture_dict(FIXTURE)
+    z = FIXTURE["blank_zones"]["front"]
+    fixture_center = (z["x_mm"] + z["width_mm"] / 2.0, z["y_mm"] + z["height_mm"] / 2.0)
+    assert bed.zone("front").bbox_center() == pytest.approx(fixture_center)
 
     op = CamOp("P", paths=[[(0.0, 0.0, 0.0), (20.0, 10.0, 0.0)]],
                tool={**TOOLS["flat_3175"], "name": "flat_3175"})
-    p_fix, off_fix = place_ops_at_zone([op], FIXTURE, "front")
-    p_der, off_der = place_ops_at_zone([op], derived, "front")
-    assert off_der == pytest.approx(off_fix)
+    placed, (dx, dy) = place_ops_at_polygon_zone([op], bed.zone("front"))
+    assert ops_bbox_center(placed) == pytest.approx(fixture_center)
+    nest = nest_components_on_worktable(
+        [BedPart("frame_front", "Frame", "", [op], set(), set())], bed)
+    assert (nest.placements[0].dx, nest.placements[0].dy) == pytest.approx((dx, dy), abs=1e-3)
 
-    # build a 1-part bed on each → same placement offset
-    part = BedPart("frame_front", "Frame", "front", [op], set(), set())
-    bed_fix = build_bed_program([part], FIXTURE)
-    bed_der = build_bed_program(
-        [BedPart("frame_front", "Frame", "front", [op], set(), set())], derived)
-    assert bed_der.placements[0].x_mm == pytest.approx(bed_fix.placements[0].x_mm)
-    assert bed_der.placements[0].y_mm == pytest.approx(bed_fix.placements[0].y_mm)
-
-    # a cutting point parked on a screw is flagged through the derived bed too
+    # a cutting point parked on a screw is flagged
     near = CamOp("Cut", paths=[[(126.146, 180.273, 0.0)]],   # a front screw center
                  tool={**TOOLS["flat_3175"], "name": "flat_3175"})
-    assert bed_clearance_violations([near], derived) != []
-    assert bed_clearance_violations([near], FIXTURE) != []
+    assert worktable_clearance_violations([near], bed) != []
 
 
 # ------------------------------------------------------------------ persistence
@@ -379,7 +373,11 @@ def test_worktable_tab_loads_bed_and_tags_a_region(tmp_path, monkeypatch):
     assert win.stack.currentIndex() == win._worktable_page_index
     win._on_load_default_bed()
     assert win._worktable is not None
-    assert win._bed_region_list.count() == len(win._worktable.zones)   # 5 + 24
+    assert win._bed_region_count() == len(win._worktable.zones)   # 5 + 24, the screws folded
+    tree = win._bed_region_list
+    assert tree.topLevelItemCount() == 2
+    assert tree.topLevelItem(0).childCount() == 5 and tree.topLevelItem(0).isExpanded()
+    assert tree.topLevelItem(1).childCount() == 24 and not tree.topLevelItem(1).isExpanded()
 
     # tag a known untagged region (force one to untagged, then re-tag via the model)
     untag = win._worktable.untagged()
@@ -419,7 +417,7 @@ def test_worktable_tab_load_bed_size_and_remove(tmp_path, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(bed_path), "")))
     win._on_load_bed()
-    assert win._bed_region_list.count() == len(win._worktable.zones)
+    assert win._bed_region_count() == len(win._worktable.zones)
 
     # edit the work envelope
     win._bed_width_spin.setValue(250.0)

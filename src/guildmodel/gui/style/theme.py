@@ -169,6 +169,14 @@ QLabel#hintLabel { font-size: 10px; color: #8a6d2f; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #8a6d2f; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
+/* A collapsible group's header (M20): a heading with an arrow, not a button —
+   its checked state means "expanded" and must not take the inverted button fill. */
+QToolButton#collapsibleHeader, QToolButton#collapsibleHeader:checked,
+QToolButton#collapsibleHeader:hover, QToolButton#collapsibleHeader:pressed {
+    background: transparent; border: none; border-radius: 0; padding: 4px 2px;
+    min-width: 0; font-size: 12px; font-weight: bold; color: #1f1f1f; text-align: left;
+}
+QToolButton#collapsibleHeader:hover { color: #8a6d2f; }
 QLabel#placeholderLabel { font-size: 13px; color: #d4a840; }
 /* A Model/Stock value outside the range its stock and neighbors allow. */
 QLabel#outOfRangeMark { color: #b3541e; font-weight: bold; background: transparent; }
@@ -330,6 +338,12 @@ QLabel#hintLabel { font-size: 10px; color: #9a9382; background: transparent; }
 QLabel#smallLabel { font-size: 11px; background: transparent; }
 QLabel#mutedSmallLabel { font-size: 11px; color: #9a9382; background: transparent; }
 QLabel#sectionLabel { font-size: 11px; font-weight: bold; margin-top: 4px; background: transparent; }
+QToolButton#collapsibleHeader, QToolButton#collapsibleHeader:checked,
+QToolButton#collapsibleHeader:hover, QToolButton#collapsibleHeader:pressed {
+    background: transparent; border: none; border-radius: 0; padding: 4px 2px;
+    min-width: 0; font-size: 12px; font-weight: bold; color: #d4cfc0; text-align: left;
+}
+QToolButton#collapsibleHeader:hover { color: #e8c07a; }
 QLabel#placeholderLabel { font-size: 13px; color: #8a7a5a; }
 /* A Model/Stock value outside the range its stock and neighbors allow. */
 QLabel#outOfRangeMark { color: #e8a33d; font-weight: bold; background: transparent; }

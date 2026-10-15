@@ -14,7 +14,7 @@ from shapely.geometry import Polygon
 
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BedLayout, CastleCamParams, CastleParams,
-    ComponentPlacement, MachineProfile, ProjectSchema,
+    ComponentPlacement, MachineProfile, ProjectSchema, Worktable,
 )
 from guildmodel.core.cam.castle_ops import (
     CamOp, build_tool_settings, write_castle_program,
@@ -23,8 +23,9 @@ from guildmodel.core.cam.block_ops import (
     BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
 )
 from guildmodel.core.cam.layout import (
-    BedPart, bed_clearance_violations, build_bed_program, ops_bbox_center,
-    place_ops_at_zone, schedule_bed_ops, transform_ops, zone_center,
+    BedPart, build_nest_program, nest_components_on_worktable, ops_bbox_center,
+    place_ops_at_polygon_zone, schedule_bed_ops, transform_ops,
+    worktable_clearance_violations,
 )
 from guildmodel.core.post.grbl import GRBLPost
 from guildmodel.core.post.machine import lint_program
@@ -36,6 +37,9 @@ CONFIG = ROOT / "src" / "guildmodel" / "config"
 TOOLS = yaml.safe_load((CONFIG / "tools.yaml").read_text())
 MATS = yaml.safe_load((CONFIG / "materials.yaml").read_text())
 FIXTURE = yaml.safe_load((CONFIG / "fixtures" / "guild_cnc.yaml").read_text())
+# The fixture dict as the tagged bed it became in M7.4: since M20 the only bed
+# the nesting and the clearance check know.
+BED = Worktable.from_fixture_dict(FIXTURE)
 
 
 def _op(name, tool, pts):
@@ -58,14 +62,14 @@ def test_transform_translates_and_rotates():
 
 def test_zone_center_matches_fixture():
     z = FIXTURE["blank_zones"]["bc_template_right"]
-    assert zone_center(FIXTURE, "bc_template_right") == pytest.approx(
+    assert BED.zone("bc_template_right").bbox_center() == pytest.approx(
         (z["x_mm"] + z["width_mm"] / 2.0, z["y_mm"] + z["height_mm"] / 2.0))
 
 
 def test_place_centers_bbox_on_zone():
     op = _op("P", "flat_3175", [(0, 0), (20, 10)])           # bbox center (10, 5)
-    placed, (dx, dy) = place_ops_at_zone([op], FIXTURE, "bc_template_right")
-    cx, cy = zone_center(FIXTURE, "bc_template_right")
+    placed, (dx, dy) = place_ops_at_polygon_zone([op], BED.zone("bc_template_right"))
+    cx, cy = BED.zone("bc_template_right").bbox_center()
     bx, by = ops_bbox_center(placed)
     assert (bx, by) == pytest.approx((cx, cy))               # part centerd in zone
 
@@ -158,19 +162,19 @@ def demo_bed():
     od = sorted(lenses, key=lambda p: p.centroid.x)[-1]
     block_ops = generate_block_program(od, BaseCurveBlockParams(), TOOLS, cam)
     parts = [
-        BedPart("frame_front", "Frame", "front", frame_ops, {"Eyewires", "Perimeter"}, set()),
-        BedPart("base_curve_block", "Block", "bc_template_right", block_ops,
+        BedPart("frame_front", "Frame", "", frame_ops, {"Eyewires", "Perimeter"}, set()),
+        BedPart("base_curve_right", "Block", "", block_ops,
                 BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS),
     ]
-    return build_bed_program(parts, FIXTURE)
+    return build_nest_program(nest_components_on_worktable(parts, BED))
 
 
 def test_bed_places_each_part_on_its_zone(demo_bed):
     labels = {p.label: p for p in demo_bed.placements}
-    assert labels["Frame"].fixture_zone == "front"
-    assert labels["Block"].fixture_zone == "bc_template_right"
+    assert labels["Frame"].zone_id == "front"
+    assert labels["Block"].zone_id == "bc_template_right"
     # offsets land the parts in the positive machine quadrant (on the bed)
-    assert labels["Frame"].x_mm > 100 and labels["Block"].x_mm > 0
+    assert labels["Frame"].dx > 100 and labels["Block"].dx > 0
 
 
 def test_bed_op_names_are_prefixed_and_classified(demo_bed):
@@ -203,8 +207,8 @@ def test_one_program_posts_lints_and_clears(demo_bed):
     assert text.count("Tool Change") == 2     # 3 tools (fine hinge + bulk + drill) → 2 changes
     assert lint_program(text, machine) == []
     # drilling at the mounting screws is intended -> exempt; cutting must clear
-    assert bed_clearance_violations(demo_bed.ops, FIXTURE,
-                                    skip_op_names=demo_bed.drill_op_names) == []
+    assert worktable_clearance_violations(demo_bed.ops, BED,
+                                          skip_op_names=demo_bed.drill_op_names) == []
     # cut-time over the whole bed includes the change dwell
     rep = estimate_program(text, MachineDynamics.from_profile(machine),
                            tool_change_seconds=machine.tool_change_seconds)
@@ -216,7 +220,7 @@ def test_block_holes_land_on_the_fixture_mounting_screws(demo_bed):
     """The bc-template screws are the block's mounting bolts — so without the
     drill exemption, the clearance check *would* flag the holes (a sanity check
     that the exemption is doing real work)."""
-    flagged = bed_clearance_violations(demo_bed.ops, FIXTURE)   # no skip
+    flagged = worktable_clearance_violations(demo_bed.ops, BED)   # no skip
     assert any("Drill Holes" in v for v in flagged)
 
 

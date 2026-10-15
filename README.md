@@ -227,9 +227,9 @@ Where a run passes a near-cusp — a corner turning tighter than the feature is
 deep, such as the aviator fixture's endpiece at 58° in a quarter-millimeter —
 the swept cut can cross itself and leave a model that will not export. The app
 says so plainly in the log and the Inspector ("the model overlaps itself along
-N edges") and does not count the model as built — though note that a program
-you have already stored keeps the readiness dot green on its own merits, so
-read the log rather than the dot after a rebuild. Nudging the run's
+N edges") and does not count the model as built; a program you have already
+stored drops the readiness dot to yellow, *Program stored · model has
+problems*. Nudging the run's
 **Trim start** / **Trim end** past the corner, or
 easing the corner in the drawing, clears it. Measured at **7 of 288** builds
 across the three fixtures, both faces, both profiles and trims from 0.5 to

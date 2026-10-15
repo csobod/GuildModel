@@ -427,6 +427,14 @@ class CastleParams(BaseModel):
     # angle at the hinge. 0 = the flat floor every earlier project has.
     hinge_pocket_angle_deg: float = Field(0.0, ge=-15.0, le=15.0)
     stock: StockDefinition = Field(default_factory=StockDefinition)
+    # Where the drawing sits on the blank (2026-10-14). The blank is centered on
+    # the design origin (relief.castle.stock_top_heightfield), and GuildDraw's
+    # stock blank guide is centered on the scene origin, so by default the front
+    # is cut exactly where it was drawn: a maker who lays out several drawings
+    # against one origin gets the same registration on the blank. Off moves the
+    # OUTLINE's bounding-box center onto the origin at intake, for a drawing
+    # made somewhere else that was never drawn on its blank.
+    origin_from_drawing: bool = True
     onion_skin_mm: float = 0.4               # axial stock left under through-cuts (skin holding)
     hand_finishing_allowance_mm: float = 0.1  # radial leave-behind stock on contour operations
     holding: HoldingParams = Field(default_factory=HoldingParams)   # skin | tabs (M16)
@@ -833,10 +841,21 @@ class TempleParams(BaseModel):
     # side rotates the temple 180° in-plane (hinge pocket stays up) so it butts the
     # chosen end with the body running inward.
     stock_side: Literal["right", "left"] = "right"
+    # Where the temple sits ACROSS the blank when snapped (2026-10-14). The core
+    # runs down the blank's center line, and a maker draws the temple with the
+    # core on the drawing's zero line: GuildDraw's stock blank guide is centered
+    # on the origin, and the import keeps the origin. So by default the drawing's
+    # y = 0 lands on the blank's center line and an asymmetric temple (a dropped
+    # tip, more material above the core than below) sits exactly where it was
+    # drawn. Off centers the temple's bounding box across the blank, which is
+    # what every project did before and puts the core through the middle of
+    # the tip-to-shaft span rather than along the shaft. The snap along the
+    # blank (`snap_to_blank_end`, `stock_side`) is unaffected either way.
+    origin_from_drawing: bool = True
     # The injected core is a 3D *visual reference* only (not machined): a bar this
-    # wide and long, laid along the temple's long axis from the hinge end.
-    core_guide_width_mm: float = 2.0
-    core_guide_length_mm: float = 135.0
+    # wide and long, laid down the blank's center line from the hinge end.
+    core_guide_width_mm: float = Field(2.0, gt=0)
+    core_guide_length_mm: float = Field(135.0, gt=0)
 
     def stock(self) -> "StockDefinition":
         """A single-level StockDefinition for the blank (no pad block) — used for
@@ -969,9 +988,68 @@ class ComponentPlacement(BaseModel):
 
 
 class BedLayout(BaseModel):
-    """A multi-part worktable layout cut in one program (BUILDPLAN M6.5)."""
+    """A multi-part worktable layout cut in one program (BUILDPLAN M6.5).
+
+    Read for compatibility and no longer written (M20): the nest a project
+    keeps is `WorktableNest`.
+    """
     fixture: str = "guild_cnc"
     placements: list[ComponentPlacement] = Field(default_factory=list)
+
+
+class WorktablePlacement(BaseModel):
+    """Where one component sits on the worktable (BUILDPLAN M20).
+
+    The placement is the affine ``p ↦ R(rotation_deg)·p + (dx, dy)`` from the
+    part's design frame to the bed, the same map `cam.layout.BedPlacement`
+    carries with its ops; here without the ops, so it can be saved, reopened
+    and moved about with no program in hand. `zone_id` is the zone it was
+    placed on; a zone that no longer exists leaves the part unplaced.
+    `program_key` is the key the last Generate posted this placement under
+    (`cam.placement.program_key`), "" when it never was; a key that no longer
+    matches is what the Worktable panel shows as *stale*.
+    """
+    component_id: str
+    zone_id: str
+    dx: float = 0.0
+    dy: float = 0.0
+    rotation_deg: float = 0.0
+    program_key: str = ""
+
+
+class WorktableNest(BaseModel):
+    """The project's placements on its worktable (BUILDPLAN M20), one per
+    component at most, beside the bed itself (`ProjectSchema.worktable`).
+    `program_key` is the key of the whole bed program as last generated, so a
+    reopened project knows whether its stored ``worktable.nc`` is current."""
+    placements: list[WorktablePlacement] = Field(default_factory=list)
+    program_key: str = ""
+
+    def get(self, component_id: str) -> WorktablePlacement | None:
+        for pl in self.placements:
+            if pl.component_id == component_id:
+                return pl
+        return None
+
+    def put(self, placement: WorktablePlacement) -> WorktablePlacement:
+        """Add or replace the placement for its component."""
+        for i, pl in enumerate(self.placements):
+            if pl.component_id == placement.component_id:
+                self.placements[i] = placement
+                return placement
+        self.placements.append(placement)
+        return placement
+
+    def remove(self, component_id: str) -> bool:
+        before = len(self.placements)
+        self.placements = [pl for pl in self.placements if pl.component_id != component_id]
+        return len(self.placements) != before
+
+    def on_zone(self, zone_id: str) -> WorktablePlacement | None:
+        for pl in self.placements:
+            if pl.zone_id == zone_id:
+                return pl
+        return None
 
 
 class MachineRef(BaseModel):
@@ -1035,7 +1113,7 @@ class FormingMetadata(BaseModel):
     bridge_projection_mm: float = 0.0  # forward set of the bridge, mm, away from the face; never negative
     crease_gap_mm: float = 0.0       # distance between the creases at the bridge's top edge; 0 = the drawing's
     crease_angle_deg: float = 45.0   # the V's included angle; 0 = parallel creases
-    bridge_offset_mm: float = 0.0    # the V's centre line off the frame's axis, mm
+    bridge_offset_mm: float = 0.0    # the V's center line off the frame's axis, mm
     die_radius_mm: float = 0.0       # the die's convex face; 0 = the arc through both creases
     crease_blend_mm: float = 0.0     # fillet at each crease; 0 = a sharp fold
     formed_groove: bool = True       # the formed export carries the lens bevel groove
@@ -1252,6 +1330,13 @@ class WorktableZone(BaseModel):
     radius_mm: float | None = None
     source: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
+    # The fixture's stop (M20 session two): the zone edge the stock registers
+    # against, per axis. A temple zone cut for 170 mm blanks with a stop at its
+    # left end takes a 160 mm blank flush left; "none" centers the blank on
+    # that axis, as every placement did before. Saved in the .bed with the
+    # zone: the stop is the fixture's, not the project's.
+    stop_x: Literal["none", "left", "right"] = "none"
+    stop_y: Literal["none", "bottom", "top"] = "none"
 
     def is_placement(self) -> bool:
         """True for a role that holds a component (not untagged / keep-out)."""
@@ -1503,6 +1588,14 @@ class Component(BaseModel):
     kind: ComponentKind
     label: str = ""
     enabled: bool = True
+    # Whether the part is cut by the worktable program (BUILDPLAN M19). Distinct
+    # from `enabled`, which means "in this model": a part off the bed still has
+    # its tab, builds, exports and posts on its own; it is only left out of the
+    # nest's program, its setup sheet and the bed simulation. A shop in batch
+    # production cuts its base-curve templates once and leaves them off after.
+    # Absent in a file from before M19, so every existing project opens with
+    # every part on the bed.
+    on_bed: bool = True
 
     # per-kind parameters — exactly one populated, per `kind` (see params())
     castle: CastleParams | None = None
@@ -1577,8 +1670,9 @@ class ProjectSchema(BaseModel):
     cam_params: CastleCamParams = Field(default_factory=CastleCamParams)
     temple: TempleParams = Field(default_factory=TempleParams)   # BUILDPLAN M6.3
     base_curve_block: BaseCurveBlockParams = Field(default_factory=BaseCurveBlockParams)  # M6.4
-    bed_layout: BedLayout = Field(default_factory=BedLayout)      # BUILDPLAN M6.5
+    bed_layout: BedLayout = Field(default_factory=BedLayout)      # BUILDPLAN M6.5 (read only)
     worktable: Worktable | None = None                           # BUILDPLAN M7.4
+    worktable_nest: WorktableNest = Field(default_factory=WorktableNest)   # BUILDPLAN M20
     machine: MachineRef = Field(default_factory=MachineRef)
 
     # The multi-component model (BUILDPLAN M7.1). A project is an ordered list of

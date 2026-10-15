@@ -12,7 +12,9 @@ mask, exactly like the frame's lens openings).
     (floor = thickness − hinge_pocket_depth); carve the ENGRAVING curves (buffered
     to the engrave tool) as shallow grooves. Optionally snapped so the hinge/butt
     end registers to one end of the 170 mm blank (the injected metal core runs the
-    temple's length); the core itself is a 3D **visual reference**, not machined.
+    temple's length), with the drawing's zero line kept on the blank's center
+    line or the outline centered across it; the core itself is a 3D **visual
+    reference**, not machined.
   * **Base-curve block** — the **lens shape itself** extruded to the blank
     thickness, with the M4 mounting holes as through-holes, centerd on the
     origin. There is no surrounding box and no scribe: the block *is* the lens
@@ -107,16 +109,22 @@ def _build_flat_relief(
 
 def temple_snap_offset(
     outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
+    *, origin_from_drawing: bool = True,
 ) -> tuple[float, float]:
-    """Translation (dx, dy) that centers the temple across the blank width and
-    butts its HINGE/butt end against one short end of the 170 mm blank.
+    """Translation (dx, dy) that butts the temple's HINGE/butt end against one
+    short end of the 170 mm blank and settles it across the blank's width.
 
     The temple's long axis is x (as GuildDraw draws/exports it). The hinge end is
     the x-extreme nearer the HINGE centroid (falling back to the +x extreme); the
     blank is centerd on the origin, so the hinge extreme lands on ±blank_length/2.
+
+    Across the width (2026-10-14): with ``origin_from_drawing`` the drawing's
+    y = 0 stays on the blank's center line, where the core runs, so the temple
+    sits where the maker drew it against the core; otherwise the outline's
+    bounding box is centered across the blank, as every project did before.
     """
     minx, miny, maxx, maxy = outline.bounds
-    dy = -(miny + maxy) / 2.0
+    dy = 0.0 if origin_from_drawing else -(miny + maxy) / 2.0
     hx = unary_union(hinge_polys).centroid.x if hinge_polys else maxx
     half = blank_length / 2.0
     if abs(hx - maxx) <= abs(hx - minx):          # hinge on the +x end
@@ -136,13 +144,18 @@ def _hinge_on_plus_x(outline: Polygon, hinge_polys: list[Polygon]) -> bool:
 def temple_snap_transform(
     outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
     *, stock_side: str = "right", snap: bool = True,
+    origin_from_drawing: bool = True,
 ) -> tuple[bool, float, float]:
     """The rigid design→blank-frame transform the snap applies (BUILDPLAN M11):
     ``(flipped, dx, dy)`` such that a design point q maps to the blank frame as
     ``p = (−q if flipped else q) + (dx, dy)``. The GUI inverts this to draw the
     blank box / datum marker / toolpath overlay back in the design frame, so the
     2D view shows exactly where the cut lands on the blank. ``snap=False`` is the
-    identity."""
+    identity.
+
+    The 180° spin is about the origin, so the drawing's zero line maps onto
+    itself: an ``origin_from_drawing`` placement keeps the core line on the
+    blank's center line whichever end the hinge is sent to."""
     if not snap:
         return False, 0.0, 0.0
     flipped = _hinge_on_plus_x(outline, hinge_polys) != (stock_side != "left")
@@ -151,27 +164,32 @@ def temple_snap_transform(
         outline = scale(outline, xfact=-1.0, yfact=-1.0, origin=(0, 0))
         hinge_polys = [scale(h, xfact=-1.0, yfact=-1.0, origin=(0, 0))
                        for h in hinge_polys]
-    dx, dy = temple_snap_offset(outline, hinge_polys, blank_length)
+    dx, dy = temple_snap_offset(outline, hinge_polys, blank_length,
+                                origin_from_drawing=origin_from_drawing)
     return flipped, dx, dy
 
 
 def place_temple_on_blank(
     outline: Polygon, hinge_polys: list[Polygon], engraving: list,
     blank_length: float, *, stock_side: str = "right", snap: bool = True,
+    origin_from_drawing: bool = True,
 ) -> tuple[Polygon, list[Polygon], list]:
     """Position a temple on its blank (BUILDPLAN M11). When ``snap``, butt the HINGE
     end against the chosen short end (``stock_side`` "right"=+x / "left"=-x), keeping
     the hinge pocket up. If the hinge naturally points at the wrong end, the temple is
     rotated 180° in-plane (x,y)->(-x,-y) — the same posterior flip the import applies —
-    so the body runs inward from the chosen end rather than off the blank. Returns the
-    placed (outline, hinge_polys, engraving)."""
+    so the body runs inward from the chosen end rather than off the blank. Across the
+    blank, ``origin_from_drawing`` keeps the drawing's zero line on the blank's center
+    line; off centers the outline's width (see :func:`temple_snap_offset`). Returns
+    the placed (outline, hinge_polys, engraving)."""
     from shapely.affinity import scale, translate as _translate
     hinge_polys = list(hinge_polys)
     engraving = [list(c) for c in engraving]
     if not snap:
         return outline, hinge_polys, engraving
     flipped, dx, dy = temple_snap_transform(
-        outline, hinge_polys, blank_length, stock_side=stock_side, snap=True)
+        outline, hinge_polys, blank_length, stock_side=stock_side, snap=True,
+        origin_from_drawing=origin_from_drawing)
     if flipped:
         outline = scale(outline, xfact=-1.0, yfact=-1.0, origin=(0, 0))
         hinge_polys = [scale(h, xfact=-1.0, yfact=-1.0, origin=(0, 0)) for h in hinge_polys]
@@ -184,7 +202,7 @@ def place_temple_on_blank(
 
 def place_temple_curves(
     curves: list, outline: Polygon, hinge_polys: list[Polygon], blank_length: float,
-    *, stock_side: str = "right", snap: bool = True,
+    *, stock_side: str = "right", snap: bool = True, origin_from_drawing: bool = True,
 ) -> list:
     """Carry any further polylines through the same rigid placement
     :func:`place_temple_on_blank` gives the temple — the drawn ENGRAVING
@@ -192,7 +210,8 @@ def place_temple_curves(
     outline does. ``outline`` and ``hinge_polys`` are the *unplaced* ones the
     transform is derived from."""
     return place_temple_on_blank(outline, hinge_polys, curves, blank_length,
-                                 stock_side=stock_side, snap=snap)[2]
+                                 stock_side=stock_side, snap=snap,
+                                 origin_from_drawing=origin_from_drawing)[2]
 
 
 def temple_core_guide(
@@ -200,9 +219,17 @@ def temple_core_guide(
 ) -> Polygon:
     """The injected-core visual reference (BUILDPLAN M7): a `core_guide_width` ×
     `core_guide_length` bar laid along the temple's long axis from the hinge end,
-    centerd across the width. A 3D reference only — never machined."""
-    minx, miny, maxx, maxy = outline.bounds
-    cy = (miny + maxy) / 2.0
+    down the blank's center line. A 3D reference only — never machined.
+
+    ``outline`` is the temple as PLACED on its blank, which is centered on the
+    origin, so the center line is y = 0. Until 2026-10-14 the bar was centered on
+    the outline's own bounding box instead; the two agreed only because the
+    placement centered that box on the blank. The bar marks the wire, which is
+    in the blank, not in the drawing: with the drawing placed by its origin the
+    bar now shows where the temple sits against the core, which is the point of
+    drawing it on the core line in the first place."""
+    minx, _miny, maxx, _maxy = outline.bounds
+    cy = 0.0
     w = temple.core_guide_width_mm
     length = min(temple.core_guide_length_mm, maxx - minx)
     hx = unary_union(hinge_polys).centroid.x if hinge_polys else maxx

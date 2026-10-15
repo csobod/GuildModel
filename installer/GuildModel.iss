@@ -60,6 +60,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "associate"; Description: "Associate .gmodel project files with GuildModel"; GroupDescription: "File associations:"
+Name: "openwith"; Description: "Offer GuildModel under Open with for .gdraw drawings (GuildDraw stays the default)"; GroupDescription: "File associations:"
 
 [Files]
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -74,6 +75,18 @@ Root: HKCU; Subkey: "Software\Classes\.gmodel"; ValueType: string; ValueName: ""
 Root: HKCU; Subkey: "Software\Classes\GuildModel.Project"; ValueType: string; ValueName: ""; ValueData: "GuildModel Project"; Flags: uninsdeletekey; Tasks: associate
 Root: HKCU; Subkey: "Software\Classes\GuildModel.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: associate
 Root: HKCU; Subkey: "Software\Classes\GuildModel.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: associate
+; .gdraw: an OFFERED handler, never the default (M20). GuildDraw authors the
+; drawing and keeps the double-click; this adds GuildModel to the file's
+; Open-with list so the maker can hand a drawing across without opening the app
+; first. The same shape GuildSend uses for .gmodel. The one key that would claim
+; the default — Software\Classes\.gdraw\(Default) — is never written.
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#MyAppName}"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open"; ValueType: string; ValueName: ""; ValueData: "Model in GuildModel"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: ".gdraw"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\Applications\{#MyAppExeName}\SupportedTypes"; ValueType: string; ValueName: ".gmodel"; ValueData: ""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.gdraw\OpenWithList\{#MyAppExeName}"; ValueType: none; Flags: uninsdeletekey; Tasks: openwith
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

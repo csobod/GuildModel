@@ -15,6 +15,8 @@ import zipfile
 
 import pytest
 
+from guildmodel import __version__   # the title carries it, in GuildDraw's format (M20)
+
 _SVG_NS = "http://www.w3.org/2000/svg"
 
 
@@ -84,7 +86,7 @@ def test_fresh_load_is_clean_and_edit_marks_dirty(qapp, tmp_path, monkeypatch):
     win = _window(tmp_path, monkeypatch)
     win._load_model(_make_gdraw(tmp_path / "model.gdraw"))
     assert win._dirty is False                    # a just-loaded design is clean
-    assert win.windowTitle() == "GuildModel  —  model.gdraw"
+    assert win.windowTitle() == f"GuildModel {__version__} — model.gdraw"
 
     win.params.castle_changed.emit()              # a real user edit
     assert win._dirty is True
@@ -110,12 +112,12 @@ def test_save_clears_dirty_and_reopen_is_clean(qapp, tmp_path, monkeypatch):
     proj = tmp_path / "job.gmodel"
     assert win._save_gmodel_to(proj) is True
     assert win._dirty is False
-    assert win.windowTitle() == "GuildModel  —  job.gmodel"
+    assert win.windowTitle() == f"GuildModel {__version__} — job.gmodel"
 
     # Reopening the project is a programmatic restore — clean, no star.
     win._open_project(proj)
     assert win._dirty is False
-    assert win.windowTitle() == "GuildModel  —  job.gmodel"
+    assert win.windowTitle() == f"GuildModel {__version__} — job.gmodel"
 
 
 @pytest.mark.gui

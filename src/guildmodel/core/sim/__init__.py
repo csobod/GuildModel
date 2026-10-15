@@ -20,8 +20,10 @@ from .playback import (
     tool_envelope, tool_profile_dims, tool_radius_below,
 )
 from .bed import (
-    BedRemovalPart, ComponentSim, bed_collision_frames, build_bed_removal_plan,
-    composite_bed_report, simulate_bed_removal, simulate_component,
+    BedRemovalPart, ComponentSim, bed_collision_frames, bed_report_from_program,
+    build_bed_removal_plan, composite_bed_report, composite_bed_targets,
+    flat_blank_heightfield, placed_fields, relief_for_spec, simulate_bed_removal,
+    simulate_component, stock_for_spec,
 )
 
 __all__ = [
@@ -29,7 +31,9 @@ __all__ = [
     "cutting_paths_from_program", "cutting_paths_from_program_grouped",
     "cutting_paths_from_ops",
     "Completeness", "Gouge", "CutReport", "verify",
-    "ComponentSim", "composite_bed_report", "simulate_component",
+    "ComponentSim", "composite_bed_report", "composite_bed_targets", "placed_fields",
+    "simulate_component", "bed_report_from_program", "relief_for_spec", "stock_for_spec",
+    "flat_blank_heightfield",
     "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
     "build_bed_removal_plan",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",

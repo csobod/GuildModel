@@ -161,42 +161,85 @@ def test_demo_worktable_program_posts_lints_and_clears(demo_nest):
 
 # ------------------------------------------------------------------ GUI post (offscreen)
 
+def _line(layer, pts, closed=False):
+    return {"kind": "line", "layer": layer, "closed": closed,
+            "nodes": [{"x": x, "y": y} for x, y in pts]}
+
+
+def _make_gdraw(path):
+    import json
+    import zipfile
+    from xml.etree import ElementTree as ET
+    ns = "http://www.w3.org/2000/svg"
+    ET.register_namespace("", ns)
+
+    def svg(state):
+        root = ET.Element(f"{{{ns}}}svg")
+        meta = ET.SubElement(root, f"{{{ns}}}metadata")
+        meta.text = json.dumps(state)
+        return ET.tostring(root, xml_declaration=True, encoding="utf-8")
+
+    front = {"curves": [
+        _line("OUTLINE", [(-60, -20), (60, -20), (60, 20), (-60, 20)], closed=True),
+        _line("LENS", [(20, -12), (45, -12), (45, 12), (20, 12)], closed=True),
+        _line("LENS", [(-45, -12), (-20, -12), (-20, 12), (-45, 12)], closed=True),
+        _line("SCULPT", [(0, -20), (0, 20)]),
+        _line("SCULPT", [(30, -20), (30, 20)]),
+        _line("HINGE", [(50, -5), (58, -5), (58, 5), (50, 5)], closed=True),
+    ]}
+    temple = {"curves": [
+        _line("OUTLINE", [(-70, -6), (70, -6), (70, 6), (-70, 6)], closed=True),
+        _line("ENGRAVING", [(-40, 0), (40, 0)]),
+    ]}
+    states = {"front": front, "temple_r": temple, "temple_l": temple, "hinge": {"curves": []}}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"active_tab": "front"}))
+        for tab, st in states.items():
+            zf.writestr(f"{tab}.svg", svg(st))
+    return path
+
+
 @pytest.mark.gui
 def test_gui_generate_worktable_program(tmp_path, monkeypatch):
-    """The Worktable tab's Generate Worktable Program posts the nest into
-    `_last_programs['worktable.nc']` + a worktable setup sheet (BUILDPLAN M7.7)."""
+    """The Worktable panel's Generate posts the placed parts into the
+    worktable's own program slot with a setup sheet (BUILDPLAN M7.7 → M20):
+    nothing leaks onto a component, and the bed's program is what the
+    Worktable tab exports."""
     pytest.importorskip("PySide6.QtWidgets")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from PySide6.QtWidgets import QApplication, QMessageBox
-    from shapely.geometry import Polygon
 
     QApplication.instance() or QApplication([])
-    from guildmodel.gui.app import MainWindow, NestWorker
+    import guildmodel.gui.app as app_mod
+    from guildmodel.core.project.schema import ComponentKind
+    from guildmodel.gui.app import MainWindow
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: None)
-
-    bed = Worktable.from_fixture_dict(FIXTURE)
-    lens = Polygon([(0, 0), (40, 0), (40, 26), (0, 26)])         # a cheap stand-in lens
-    spec = {"mode": "block", "kind": "base_curve_right", "label": "BC R",
-            "lens": lens, "block": BaseCurveBlockParams()}
-    worker = NestWorker([spec], bed, cam_params=CastleCamParams())
-    done = []
-    worker.finished.connect(lambda nest: done.append(nest))
-    worker.run()
-    assert len(done) == 1 and done[0].placements
+    monkeypatch.setattr(app_mod.OpSummaryDialog, "exec", lambda self: 0)
 
     try:
         win = MainWindow()
     except Exception as exc:                                     # pragma: no cover
         pytest.skip(f"no usable Qt/VTK platform: {exc}")
+    win._load_model(_make_gdraw(tmp_path / "m.gdraw"))
+    bed = Worktable.from_fixture_dict(FIXTURE)
     win._worktable = bed
-    win._nest = done[0]
-    win._on_generate_worktable_nest()
+    win.bed_canvas.set_worktable(bed)
+    by_kind = {w.kind: w for w in win._workspaces}
+    front = by_kind[ComponentKind.FRAME_FRONT]
+    win._set_part_on_bed(front, False)        # the castle relief is the slow part; the flat parts prove the path
+    win._on_nest_components()
+    win._on_generate_worktable_nest(sync=True)
 
-    assert "worktable.nc" in (win._last_programs or {})
-    assert win._last_programs["worktable.nc"].strip()
-    assert win._last_setup["component"] == "worktable"
-    assert win._last_setup["parts"] and win._last_setup["parts"][0]["label"] == "BC R"
+    assert "worktable.nc" in win._wt_programs
+    assert win._wt_programs["worktable.nc"].strip()
+    assert win._wt_setup["component"] == "worktable"
+    flat = sorted(w.label for w in win._workspaces if w is not front)
+    assert sorted(p["label"] for p in win._wt_setup["parts"]) == flat
+    assert win._wt_setup["not_on_bed"] == [{"label": front.label, "kind": "frame_front"}]
+    assert all(w.last_programs == {} for w in win._workspaces)   # nothing leaked (M20)
+    assert win._last_programs == {}
+    win._on_show_worktable()
     assert win._act_export_nc.isEnabled()

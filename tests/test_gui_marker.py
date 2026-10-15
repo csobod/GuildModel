@@ -113,5 +113,19 @@ def test_the_marker_is_not_over_applied():
     # checked lines adopted, each asked once); the 2026-09-29 release check one
     # in `test_block_material_feeds` (the block posted from the front's tab);
     # v1.8.1 one in `test_engraving_graphics_v181` (a drawn logo and the text
-    # objects kept apart from the moment a .gdraw opens).
-    assert marked == 51, f"{marked} tests marked `gui`, expected 51"
+    # objects kept apart from the moment a .gdraw opens); the 2026-10-14 origin
+    # placement three in `test_origin_from_drawing` (the Stock tab switch
+    # moving the active front and back, the Temple tab's switch following the
+    # snap, a centered front saved, reopened and seeded from the shop); M19's
+    # parts on the bed three in `test_parts_on_bed_m19` (the Parts rows and
+    # the canvas following each other with Delete, Generate leaving a part
+    # off and the sheet saying so, a part off the bed saved and reopened and
+    # a fresh drawing seeded from the shop); M20's Worktable four in
+    # `test_worktable_m20` (place, move, turn, generate, stale, save and
+    # reopen; Reload Drawing and the watcher chip; a drop and the title;
+    # Simulate Bed generating first), a fifth for the 1.8.x bed program
+    # leaked onto a component, healed on open, and three from the maker's
+    # first drive (the bed sim reading the posted program, the panel quiet
+    # and iconed with the screws folded, a tab walk that stays in 3D).
+    # …and one for the zone's stop: Snap registering a flipped, shorter blank.
+    assert marked == 66, f"{marked} tests marked `gui`, expected 66"

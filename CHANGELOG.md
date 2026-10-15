@@ -3,6 +3,163 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
+## Unreleased — the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
+
+### The Worktable, redone (BUILDPLAN M20, 2026-10-14)
+
+The nest was not saved; nesting rebuilt every program behind a modal; a nest
+went stale without saying so; there were two commands named Generate
+Worktable Program; there was no Simulate Bed button; the canvas had no
+keyboard, no snapping and no context menu; the summary was a message box.
+And a worktable program generated on the Worktable tab was written onto
+whichever component sat behind that tab, on save and on the next tab switch,
+and came back on reopen as that component's program.
+
+* **Placements are saved with the project** and reopen where they were,
+  nudges and turns included. A part whose zone no longer exists is reported
+  unplaced. A project from 1.7 with the old bed layout is converted.
+* **Placing is not generating.** A part's footprint — its blank and the
+  outline it cuts — is placed on the bed with no program in hand.
+  *Auto-place* fills the zones by role at once and leaves the placed parts
+  alone; *Re-place all* starts over, behind a confirmation. The programs are
+  made at *Generate*, once per part, and a part whose settings did not change
+  is not rebuilt.
+* **Staleness shows.** Each part's row carries its state: placed, unplaced,
+  needs Generate, collision. Any edit that would change the program — on any
+  tab, a zone's role, the hold-down, the bed zero, a move on the bed — marks
+  the part; the Program line says whether the bed program is current, on
+  reopen too.
+* **One Generate, and Simulate Bed on the panel.** The File menu's Generate
+  Worktable Program of the fixed fixture is gone; the panel's Generate is the
+  one. Simulate Bed sits beside it and generates first when the program is
+  stale. The summary is the setup sheet, in the same dialog the component tabs
+  show, bounded to half the screen; the default-bed offer no longer stacks
+  behind it, and is made on Save.
+* **The canvas.** Drag with snapping to the zone's center within 3 mm (Shift
+  disables it); arrow-key nudges of 0.1 mm (Shift: 1 mm); R and Shift+R turn
+  the part; a right-click menu to rotate, send to another zone or remove;
+  hover highlight; the blank drawn dashed under the cut. The live clearance
+  check grows what the program sweeps by the largest tool: a front's body less
+  its lens openings, a temple's body, a block's outline ring, since a block's
+  mounting holes are drilled at the fixture's screws on purpose. The exact
+  check, operation by operation, runs at Generate and goes on the setup sheet.
+* **The panel in four groups** — Bed, Zones, Parts, Program — each folding
+  away under its heading; the selected part's zone, rotation and offset are
+  controls on the Parts group.
+* **The worktable program has a slot of its own** in the project, and is the
+  job GuildSend streams when the project has one. A 1.8.x project whose
+  worktable program had been written onto a component is healed on open.
+* **Flows.** File ▸ Reload Drawing (Ctrl+R) re-reads the drawing and keeps
+  every part's settings and placement; a watcher on the file lights a
+  status-bar chip, *drawing changed · reload*, rather than interrupting. A
+  drawing, project or DXF dropped on the window opens. A drawing builds its
+  frame front on open and shows it in 3D (Preferences ▸ General turns it
+  off). The front's 2D view is captioned *Back view (posterior), mirrored
+  from the drawing*. A stored program over a model that failed verification
+  drops the readiness dot to yellow, *Program stored · model has problems*;
+  the green now reads *Ready for GuildSend*. Save As takes Ctrl+Shift+S and
+  Simulation moves to F6, a saved override of the old chord dropped. The
+  window title carries the version. Open in GuildSend knows a Linux
+  checkout's launcher venv. The Windows installer offers GuildModel under
+  Open with for `.gdraw`, never as the default.
+
+### Session two of M20, from the maker's first drive (2026-10-14)
+
+* **The simulations carve the blank as listed**, its full size, the pad
+  block on the front's, not the relief grid cropped to the cut; on the bed,
+  each blank sits placed among the hold-downs, so the playback shows the
+  stock on the bench.
+* **The bed verdict is read from the posted program.** The whole-bed
+  simulation used to rebuild every relief and every program a second time;
+  it now reads `worktable.nc` itself onto one bed grid, takes the front's
+  relief from Generate's cache and builds only the flat parts' targets, and
+  runs the playback on the preview grid. Faster by what it no longer does;
+  the stock engine of M21 is the real answer.
+* **The Worktable panel**: icon buttons with their words in the tooltips for
+  the bed files, Remove / Undo / Redo, Auto-place, Re-place all and the setup
+  sheet; the regions as a tree with the hold-downs folded away; no field
+  takes the mouse wheel until clicked; the group headers read as headings in
+  dark mode, not as lit buttons.
+* **A walk through the tabs stays in 3D.** The view chosen on a component is
+  kept across a visit to the Worktable, and a tab visited in 3D whose model is
+  not built yet is built quietly rather than falling back to 2D.
+* **The sidebar's tabs after a visit to the bed.** Coming from the Worktable
+  to a temple, the Temple tab was missing from the sidebar until another tab
+  was visited: Qt marks a tab visible on a hidden bar without laying it out,
+  and a later no-op clears the mark. The panel lays its tabs out again
+  whenever it is shown.
+* **Snapping to the pocket's ends.** A dragged blank pushed past its zone's
+  wall comes back flush to it, and one dropped within 3 mm of an end, the
+  center or the stop snaps there; Shift drops it where it is. The new Snap
+  action (the button beside the turns, S on the canvas, the menu) pushes the
+  part flush to the end it is nearer, keeping its orientation: a 160 mm temple blank in a 170 mm zone, flipped 180°, sits
+  flush to either end the other way round. A zone can also carry the
+  fixture's **stop**, the edge the stock registers against, on either axis,
+  saved with the bed: Auto-place and Snap then register against it.
+
+### Parts on the bed, on and off (BUILDPLAN M19, 2026-10-14)
+
+Batch production cuts the base-curve templates once. Until now every
+populated component went onto the worktable, with no way to leave one off
+short of taking it out of the drawing, and the Worktable panel had no list of
+parts.
+
+* **A Parts list on the Worktable panel**, one row per component with a
+  checkbox: on the bed, or not. Unchecking leaves the part out of the
+  worktable program, its setup sheet and the bed simulation without a
+  re-nest; its placement is kept, hidden, and checking it again puts it back
+  where it was, nudged and rotated as it was. Delete on a selected footprint,
+  or *Remove from bed* on its right-click menu, unchecks the same box. Picking
+  a row selects the footprint and a click on the bed picks the row. A part
+  off the bed keeps its tab, builds, exports and posts on its own; its own
+  program does not change. The setup sheet lists the parts left off as *not
+  on this bed*, so the operator knows the program is partial on purpose. The
+  switch is saved with the project; a project from before opens with every
+  part on the bed.
+* **A default per kind of part.** Preferences ▸ Parts gains *On the worktable
+  by default* for the front, the temples and the base-curve blocks, so a shop
+  in batch production opens every new drawing with the blocks off. It is shop
+  policy, not a project departure, so Save never offers it; *Reset to shipped*
+  restores on.
+* **The bed simulation composites a rotated part correctly.** The nest seeds
+  an unsnapped left temple at 180°, and a maker spins any part on the bed;
+  the bed program cuts it so, but the whole-bed verification and the removal
+  playback laid its floor, target and stock down by translation alone, on the
+  strength of a comment that rotation defaulted to zero in the nest. They now
+  apply the placement's rotation: exactly for a quarter turn, by resampling
+  for any other angle, within one cell of a direct stamp of the rotated
+  toolpaths. No program changed.
+
+### A part is placed by the drawing's origin (2026-10-14)
+
+A maker draws against GuildDraw's grid: the temple core on the zero line, the
+stock blank guide centered on the origin, several drawings of one design laid
+out against the same origin so every cut registers alike. GuildModel's blank is
+centered on the design origin too, and the import keeps the origin, so the
+drawing's zero is the blank's center. The temple snap centered the outline's
+bounding box across the blank anyway, which put an asymmetric temple (a
+dropped tip) off the core and drew the core guide through the middle of the box
+rather than down the core.
+
+* **Origin from drawing**, a checkbox on the Temple tab and on the Stock tab,
+  on by default. For a snapped temple it keeps the drawing's zero line on the
+  blank's center line; the snap along the blank (hinge end, stock side) is as
+  it was, and a temple spun to the other end spins about the origin, so the
+  core line holds. Off centers the temple's width on the blank, as before.
+  For the frame front, on is what every project already did; off centers the
+  drawing on the blank at intake, for a drawing that was never drawn on its
+  blank, and toggling back restores it exactly. A base-curve block is always
+  centered and has no switch.
+* **The core guide runs down the blank's center line**, where the wire is,
+  whatever the placement. Its width and length, long in the saved project,
+  are now on the Temple tab.
+* **Shop defaults.** Preferences ▸ Parts offers the switch for the front and
+  the temples, and Save offers a project's departure from it.
+
+A saved project whose temple was not drawn on the origin will show it placed
+differently on reopen: the blank box in the 2D view shows where, and
+unchecking the box restores the old placement.
+
 ## v1.8.1 — a drawn logo is engraved as a filled shape
 
 A maker drew a six-armed logo on a temple's ENGRAVING layer as one closed
@@ -147,7 +304,7 @@ off, and the readiness dot reads the same three job facts it always did.
   radius* "the base curve" are corrected: it is the crest of the bridge in
   the frontal plane, and nothing crosses the seam from GuildDraw.
 
-### How it is modelled
+### How it is modeled
 
 One smooth map from the flat model to the formed part, in the maker's own
 vocabulary: every eyewire a spherical cap of the press's radius apexed at its

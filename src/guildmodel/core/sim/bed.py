@@ -10,12 +10,21 @@ the nested components are spatially **disjoint**, and the combined program is th
 per-component ops **reordered** (M7.7 `build_nest_program`) — and the achieved floor
 is order-independent (a per-cell *min* over swept points). So the bed's achieved
 floor is exactly the union of each component's floor in its own region, and this
-reuses the proven per-component sim verbatim. (Rapids between parts are excluded
-from the sim, as everywhere; rotation defaults to 0 in the nest, so placement is a
-pure translation.)
+reuses the proven per-component sim verbatim. Rapids between parts are excluded
+from the sim, as everywhere.
+
+A placement is the affine ``p ↦ R(θ)·p + (dx, dy)`` from the part's design frame
+(`cam.layout.BedPlacement`), and the composite applies the same map to the
+heightfields (`placed_fields`, BUILDPLAN M19): the exact `np.rot90` for a quarter
+turn, a resampling for any other angle. Until M19 only the translation was
+applied, while the steps came from the rotated ops, so a left temple nested at
+its 180° default was verified against a floor that faced the other way; the
+comment here that "rotation defaults to 0 in the nest" had been false since
+that default was seeded.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,7 +40,8 @@ from .playback import (
 @dataclass
 class ComponentSim:
     """One nested component's cut sim in its own design frame, plus the rigid
-    placement (dx, dy) that puts it on the bed (machine coordinates)."""
+    placement — a rotation about the design origin, then (dx, dy) — that puts
+    it on the bed (machine coordinates)."""
     floor: np.ndarray            # achieved floor (design grid)
     target: np.ndarray           # intended surface; NaN outside the body / openings
     inside: np.ndarray           # body mask
@@ -41,6 +51,178 @@ class ComponentSim:
     dy: float = 0.0
     label: str = ""
     kind: str = ""
+    rotation_deg: float = 0.0    # placement rotation, applied before the translation
+
+
+# ------------------------------------------------------------------ M19 placement
+
+def placed_fields(
+    fields: list, origin: tuple[float, float], resolution: float,
+    dx: float, dy: float, rotation_deg: float, *, kinds: tuple,
+) -> tuple[list, tuple[float, float]]:
+    """Design-frame grids under the placement ``p ↦ R(θ)·p + (dx, dy)``.
+
+    Returns ``(fields', (mx, my))``: the same grids seen from the machine frame,
+    and the machine XY of their cell ``[0, 0]``, so a caller stamps them onto the
+    bed by translation alone, as it always did. ``kinds`` names each field:
+
+    * ``"height"`` — a surface (the floor): bilinear, edge-clamped;
+    * ``"target"`` — a surface that is NaN off the body: filled from its nearest
+      valid cell before sampling, then NaN again wherever the ``"mask"`` is off;
+    * ``"mask"`` — the body (bool): nearest neighbor, off outside the grid;
+    * ``"stock"`` — a stock top: bilinear, zero (no stock) outside the grid.
+
+    A grid cell owns the half cell around its sample, so the mask and the stock
+    extend half a cell past the last sample (`scipy`'s ``grid-constant``; its
+    ``constant`` stops at the sample and loses a half cell all round, measured
+    2026-10-14 as 39 × 11 of a 40 × 12 blank).
+
+    θ = 0 returns the grids themselves and ``origin + (dx, dy)``, bit for bit the
+    translation this was before M19. A quarter turn is `np.rot90`, exact. Any
+    other angle is resampled with `scipy.ndimage.map_coordinates` onto a lattice
+    of the same pitch aligned with the machine grid, so the result is within a
+    cell of a direct stamp of the rotated ops (`tests/test_bed_sim_rotation_m19`).
+    """
+    th = float(rotation_deg) % 360.0
+    if th < 1e-9 or 360.0 - th < 1e-9:
+        return list(fields), (origin[0] + dx, origin[1] + dy)
+    quarter = th / 90.0
+    if abs(quarter - round(quarter)) < 1e-9:
+        return _rot90_fields(fields, origin, resolution, dx, dy, int(round(quarter)) % 4)
+    return _resample_fields(fields, origin, resolution, dx, dy, th, kinds=kinds)
+
+
+def _placed_center(origin, shape, resolution, dx, dy, th_deg):
+    """The design lattice's center (its cell centers' mean) and that point under
+    the placement — the point the rotated grid is laid out about."""
+    rows, cols = shape
+    cx = origin[0] + (cols - 1) / 2.0 * resolution
+    cy = origin[1] + (rows - 1) / 2.0 * resolution
+    c, s = math.cos(math.radians(th_deg)), math.sin(math.radians(th_deg))
+    return (cx, cy), (c * cx - s * cy + dx, s * cx + c * cy + dy), (c, s)
+
+
+def _rot90_fields(fields, origin, resolution, dx, dy, k):
+    """A quarter turn, exact. Row index runs with +y here, so a counter-clockwise
+    turn of the part is `np.rot90` with a negative ``k``."""
+    _, (mcx, mcy), _ = _placed_center(origin, fields[0].shape, resolution, dx, dy, 90.0 * k)
+    out = [np.rot90(f, -k) for f in fields]
+    orows, ocols = out[0].shape
+    return out, (mcx - (ocols - 1) / 2.0 * resolution,
+                 mcy - (orows - 1) / 2.0 * resolution)
+
+
+def _resample_fields(fields, origin, resolution, dx, dy, th_deg, *, kinds):
+    """Any angle: a machine-aligned lattice over the rotated footprint, each cell
+    sampled back in the design grid through the inverse placement."""
+    from scipy.ndimage import distance_transform_edt, map_coordinates
+
+    rows, cols = fields[0].shape
+    _, (mcx, mcy), (c, s) = _placed_center(origin, (rows, cols), resolution, dx, dy, th_deg)
+    hw, hh = (cols - 1) / 2.0 * resolution, (rows - 1) / 2.0 * resolution
+    corners = np.array([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]])
+    rot = corners @ np.array([[c, -s], [s, c]]).T
+    x0 = math.floor((mcx + rot[:, 0].min()) / resolution) * resolution
+    y0 = math.floor((mcy + rot[:, 1].min()) / resolution) * resolution
+    x1 = math.ceil((mcx + rot[:, 0].max()) / resolution) * resolution
+    y1 = math.ceil((mcy + rot[:, 1].max()) / resolution) * resolution
+    ocols = int(round((x1 - x0) / resolution)) + 1
+    orows = int(round((y1 - y0) / resolution)) + 1
+    jj, ii = np.meshgrid(np.arange(ocols), np.arange(orows))
+    qx = x0 + jj * resolution - mcx          # machine cell centers, about the placed center
+    qy = y0 + ii * resolution - mcy
+    px = c * qx + s * qy                     # inverse rotation → design offsets
+    py = -s * qx + c * qy
+    coords = [(py + hh) / resolution, (px + hw) / resolution]   # [row, col]
+
+    out: list = [None] * len(fields)
+    mask = None
+    for i, (f, kind) in enumerate(zip(fields, kinds)):
+        if kind == "mask":
+            mask = map_coordinates(np.asarray(f, dtype=np.uint8), coords, order=0,
+                                   mode="grid-constant", cval=0).astype(bool)
+            out[i] = mask
+    for i, (f, kind) in enumerate(zip(fields, kinds)):
+        f = np.asarray(f, dtype=np.float64)
+        if kind == "mask":
+            continue
+        if kind == "height":
+            out[i] = map_coordinates(f, coords, order=1, mode="nearest")
+        elif kind == "stock":
+            out[i] = map_coordinates(f, coords, order=1, mode="grid-constant", cval=0.0)
+        elif kind == "target":
+            valid = np.isfinite(f)
+            if valid.all():
+                filled = f
+            elif not valid.any():
+                filled = np.zeros_like(f)
+            else:
+                _, (ri, ci) = distance_transform_edt(~valid, return_indices=True)
+                filled = f[ri, ci]
+            t = map_coordinates(filled, coords, order=1, mode="nearest")
+            out[i] = np.where(mask, t, np.nan) if mask is not None else t
+        else:
+            raise ValueError(f"unknown field kind {kind!r}")
+    return out, (x0, y0)
+
+
+def flat_blank_heightfield(length_mm: float, width_mm: float, top_mm: float,
+                           resolution: float) -> tuple[np.ndarray, tuple[float, float]]:
+    """A single-level blank (a temple's, a block's) centered on the design
+    origin: the heightfield and the XY of its cell ``[0, 0]``. The stock a
+    simulation carves is the blank as listed, not the relief grid cropped to
+    the cut (session two of M20)."""
+    cols = max(1, int(round(length_mm / resolution)))
+    rows = max(1, int(round(width_mm / resolution)))
+    return (np.full((rows, cols), float(top_mm), dtype=np.float64),
+            (-length_mm / 2.0, -width_mm / 2.0))
+
+
+def relief_for_spec(spec: dict, *, resolution: float, kernel: str = "raster", progress=None):
+    """The part's relief in its design frame — the target the bed verdict
+    compares the posted program against (M20 session two). The castle relief
+    is what `PartsWorker` builds to generate the front's ops, so a caller with
+    that in hand passes it instead of calling this."""
+    mode = spec["mode"]
+    if mode == "castle":
+        from ..zmap import castle_relief
+        return castle_relief(spec["partition"], spec["castle"], spec["hinge"],
+                             kernel=kernel, resolution=resolution, progress=progress)
+    if mode == "temple":
+        from ..relief.flat import (
+            build_temple_relief, place_temple_curves, place_temple_on_blank)
+        t = spec["temple"]
+        outline, hinge, engraving = place_temple_on_blank(
+            spec["outline"], spec["hinge"], spec["engraving"], t.blank_length_mm,
+            stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
+        graphics = place_temple_curves(
+            spec.get("graphics", ()), spec["outline"], spec["hinge"],
+            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
+        return build_temple_relief(outline, t, hinge, engraving,
+                                   graphic_curves=graphics,
+                                   resolution=resolution, progress=progress)
+    from ..relief.flat import build_block_relief
+    return build_block_relief(spec["lens"], spec["block"], resolution=resolution,
+                              progress=progress)
+
+
+def stock_for_spec(spec: dict, resolution: float) -> tuple[np.ndarray, tuple[float, float]]:
+    """The part's blank as listed — its full size, the front's pad block on it —
+    centered on the design origin, at `resolution`: ``(heightfield, origin)``."""
+    mode = spec["mode"]
+    if mode == "castle":
+        from ..relief.castle import stock_top_heightfield
+        hf = stock_top_heightfield(spec["castle"].stock, resolution=resolution)
+        return hf.z, hf.origin
+    if mode == "temple":
+        t = spec["temple"]
+        return flat_blank_heightfield(t.blank_length_mm, t.blank_width_mm,
+                                      t.blank_thickness_mm, resolution)
+    b = spec["block"]
+    return flat_blank_heightfield(b.blank_length_mm, b.blank_width_mm,
+                                  b.blank_thickness_mm, resolution)
 
 
 def simulate_component(
@@ -92,10 +274,12 @@ def simulate_component(
         # its un-snapped design position and misses its placement.
         outline, hinge, engraving = place_temple_on_blank(
             spec["outline"], spec["hinge"], spec["engraving"], t.blank_length_mm,
-            stock_side=t.stock_side, snap=t.snap_to_blank_end)
+            stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
         graphics = place_temple_curves(
             spec.get("graphics", ()), spec["outline"], spec["hinge"],
-            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end)
+            t.blank_length_mm, stock_side=t.stock_side, snap=t.snap_to_blank_end,
+            origin_from_drawing=t.origin_from_drawing)
         relief = build_temple_relief(outline, t, hinge, engraving,
                                      graphic_curves=graphics,
                                      resolution=resolution, progress=progress)
@@ -161,8 +345,9 @@ def composite_bed_report(
     placement offset and `verify` the whole worktable.
 
     All components must share the bed `resolution` (the caller builds them at it);
-    placement is a pure translation by (dx, dy). On the rare overlap the first
-    component wins. Returns a `CutReport` the GUI renders via `show_report`.
+    each is rotated and translated by its placement (`placed_fields`, M19). On the
+    rare overlap the first component wins. Returns a `CutReport` the GUI renders
+    via `show_report`.
     """
     ox, oy = bed_origin
     width, height = work_area
@@ -173,9 +358,12 @@ def composite_bed_report(
     bed_floor = np.full((rows, cols), np.nan)
 
     for c in comps:
-        crows, ccols = c.inside.shape
-        coff = int(round((c.origin[0] + c.dx - ox) / resolution))
-        roff = int(round((c.origin[1] + c.dy - oy) / resolution))
+        (floor_c, target_c, inside_c), (mx, my) = placed_fields(
+            [c.floor, c.target, c.inside], c.origin, resolution, c.dx, c.dy,
+            c.rotation_deg, kinds=("height", "target", "mask"))
+        crows, ccols = inside_c.shape
+        coff = int(round((mx - ox) / resolution))
+        roff = int(round((my - oy) / resolution))
         r0, c0 = max(0, roff), max(0, coff)
         r1, c1 = min(rows, roff + crows), min(cols, coff + ccols)
         if r0 >= r1 or c0 >= c1:
@@ -183,15 +371,80 @@ def composite_bed_report(
         sr0, sc0 = r0 - roff, c0 - coff
         src = (slice(sr0, sr0 + (r1 - r0)), slice(sc0, sc0 + (c1 - c0)))
         dst = (slice(r0, r1), slice(c0, c1))
-        place = c.inside[src] & ~bed_inside[dst]      # first component wins on overlap
-        bed_inside[dst] |= c.inside[src]
+        place = inside_c[src] & ~bed_inside[dst]      # first component wins on overlap
+        bed_inside[dst] |= inside_c[src]
         bt, bf = bed_target[dst], bed_floor[dst]
-        bt[place] = c.target[src][place]
-        bf[place] = c.floor[src][place]
+        bt[place] = target_c[src][place]
+        bf[place] = floor_c[src][place]
         bed_target[dst], bed_floor[dst] = bt, bf
 
     # verify needs a finite floor where valid; cells outside the body are excluded.
     floor = np.where(np.isfinite(bed_floor), bed_floor, 0.0)
+    return verify(floor, bed_target, bed_inside, bed_origin, resolution,
+                  partition=None, complete_tol_mm=complete_tol_mm)
+
+
+def composite_bed_targets(comps: list, bed_origin: tuple[float, float],
+                          shape: tuple[int, int], resolution: float):
+    """Every component's (target, inside) under its placement onto one bed
+    grid: ``(bed_target, bed_inside)``. The first component wins an overlap."""
+    rows, cols = shape
+    ox, oy = bed_origin
+    bed_target = np.full((rows, cols), np.nan)
+    bed_inside = np.zeros((rows, cols), dtype=bool)
+    for c in comps:
+        (target_c, inside_c), (mx, my) = placed_fields(
+            [c.target, c.inside], c.origin, resolution, c.dx, c.dy,
+            c.rotation_deg, kinds=("target", "mask"))
+        crows, ccols = inside_c.shape
+        coff = int(round((mx - ox) / resolution))
+        roff = int(round((my - oy) / resolution))
+        r0, c0 = max(0, roff), max(0, coff)
+        r1, c1 = min(rows, roff + crows), min(cols, coff + ccols)
+        if r0 >= r1 or c0 >= c1:
+            continue
+        sr0, sc0 = r0 - roff, c0 - coff
+        src = (slice(sr0, sr0 + (r1 - r0)), slice(sc0, sc0 + (c1 - c0)))
+        dst = (slice(r0, r1), slice(c0, c1))
+        place = inside_c[src] & ~bed_inside[dst]
+        bed_inside[dst] |= inside_c[src]
+        bt = bed_target[dst]
+        bt[place] = target_c[src][place]
+        bed_target[dst] = bt
+    return bed_target, bed_inside
+
+
+def bed_report_from_program(
+    program_text: str,
+    comps: list,
+    stock_parts: list,
+    *,
+    resolution: float,
+    tools_cfg: dict,
+    fallback: ToolProfile,
+    margin_mm: float = 8.0,
+    complete_tol_mm: float = 0.5,
+    progress=None,
+) -> CutReport:
+    """The whole-bed verdict read from the POSTED program (M20 session two).
+
+    The program is the contract and the simulator its reader: ``worktable.nc``'s
+    cutting moves, grouped by tool, are stamped onto one machine-coordinate grid
+    — cropped to the placed blanks plus a margin, each cell starting at its own
+    blank's top — and compared with the targets composited from every part's
+    relief under its placement. Nothing is regenerated: the reliefs come from
+    Generate's cache (the front) or a flat build (temples, blocks), and the
+    paths from the file the machine will run.
+    """
+    bed_stock, bed_origin = _bed_stock(stock_parts, resolution, margin_mm)
+    groups = cutting_paths_from_program_grouped(program_text)
+    profiles = {n: ToolProfile.from_tool(tools_cfg[n])
+                for n in {t for _, t in groups if t and t in tools_cfg}}
+    floor = achieved_floor_grouped(groups, profiles, fallback, bed_origin,
+                                   bed_stock.shape, resolution, bed_stock,
+                                   progress=progress)
+    bed_target, bed_inside = composite_bed_targets(comps, bed_origin, bed_stock.shape,
+                                                   resolution)
     return verify(floor, bed_target, bed_inside, bed_origin, resolution,
                   partition=None, complete_tol_mm=complete_tol_mm)
 
@@ -202,12 +455,14 @@ def composite_bed_report(
 class BedRemovalPart:
     """One placed part for the volumetric bed sim (BUILDPLAN M7.12.3): its
     **machine-coordinate** cut steps (from the nest placement's ops) plus its stock
-    heightfield in the **design** grid and the placement offset onto the bed."""
+    heightfield in the **design** grid and the placement that puts it on the bed
+    (a rotation about the design origin, then the offset)."""
     steps: list                  # [(label, ToolProfile, paths in machine coords)]
     stock_top: np.ndarray        # design-frame stock heightfield
     origin: tuple                # design-frame origin of stock_top
     dx: float = 0.0
     dy: float = 0.0
+    rotation_deg: float = 0.0
 
 
 def simulate_bed_removal(
@@ -237,10 +492,14 @@ def simulate_bed_removal(
 def _bed_stock(parts: list, resolution: float, margin_mm: float):
     """The cropped bed stock heightfield + its machine-coord origin (shared by the
     frame-based bed sim and the position-based plan)."""
+    placed = []                       # (stock as seen from the machine, its origin)
     x0s, y0s, x1s, y1s = [], [], [], []
     for p in parts:
-        srows, scols = p.stock_top.shape
-        mx, my = p.origin[0] + p.dx, p.origin[1] + p.dy
+        (stock,), (mx, my) = placed_fields(
+            [p.stock_top], p.origin, resolution, p.dx, p.dy,
+            getattr(p, "rotation_deg", 0.0), kinds=("stock",))
+        placed.append((stock, mx, my))
+        srows, scols = stock.shape
         x0s.append(mx); y0s.append(my)
         x1s.append(mx + scols * resolution); y1s.append(my + srows * resolution)
     bed_ox, bed_oy = min(x0s) - margin_mm, min(y0s) - margin_mm
@@ -248,10 +507,10 @@ def _bed_stock(parts: list, resolution: float, margin_mm: float):
     rows = max(1, int(round((max(y1s) + margin_mm - bed_oy) / resolution)))
 
     bed_stock = np.zeros((rows, cols), dtype=np.float64)
-    for p in parts:
-        srows, scols = p.stock_top.shape
-        coff = int(round((p.origin[0] + p.dx - bed_ox) / resolution))
-        roff = int(round((p.origin[1] + p.dy - bed_oy) / resolution))
+    for stock, mx, my in placed:
+        srows, scols = stock.shape
+        coff = int(round((mx - bed_ox) / resolution))
+        roff = int(round((my - bed_oy) / resolution))
         r0, c0 = max(0, roff), max(0, coff)
         r1, c1 = min(rows, roff + srows), min(cols, coff + scols)
         if r0 >= r1 or c0 >= c1:
@@ -259,7 +518,7 @@ def _bed_stock(parts: list, resolution: float, margin_mm: float):
         sr0, sc0 = r0 - roff, c0 - coff
         bed_stock[r0:r1, c0:c1] = np.maximum(
             bed_stock[r0:r1, c0:c1],
-            p.stock_top[sr0:sr0 + (r1 - r0), sc0:sc0 + (c1 - c0)])
+            stock[sr0:sr0 + (r1 - r0), sc0:sc0 + (c1 - c0)])
     return bed_stock, (bed_ox, bed_oy)
 
 

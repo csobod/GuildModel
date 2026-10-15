@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtWidgets import QWidget, QSizePolicy
+from PySide6.QtWidgets import QWidget, QSizePolicy, QMenu
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import (
     QPainter, QPen, QColor, QBrush, QWheelEvent, QMouseEvent, QPaintEvent,
-    QResizeEvent, QFont, QPainterPath,
+    QResizeEvent, QFont, QPainterPath, QKeyEvent,
 )
 
 from guildmodel.core.project.schema import BedRole, bed_role_label
@@ -42,6 +42,13 @@ class BedCanvas(QWidget):
     component_nudged = Signal(str, float, float)   # zone id, total (dx, dy) mm on release
     component_selected = Signal(str)   # zone id of the clicked footprint, or "" (deselect)
     perimeter_clicked = Signal()    # the bed outline / work-envelope border was clicked
+    # Delete on the selected footprint, or "Remove from bed" in a footprint's
+    # menu (BUILDPLAN M19): the app unchecks the part's box; the canvas only asks.
+    component_removed = Signal(str)   # zone id of the footprint
+    component_rotated = Signal(str, float)   # zone id, degrees (R / Shift+R, the menu; M20)
+    component_stepped = Signal(str, float, float)   # zone id, (dx, dy): an arrow key, no snap (M20)
+    component_snapped = Signal(str)          # zone id: register against the zone's stop (S, the menu)
+    component_sent = Signal(str, str)        # zone id, target zone id (the menu; M20)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -62,6 +69,7 @@ class BedCanvas(QWidget):
         self._placements: list[dict] = []
         self._nest_drag: Optional[int] = None        # index of the placement being dragged
         self._selected_nest_idx: Optional[int] = None  # index of the selected footprint
+        self._hover_nest_idx: Optional[int] = None     # under the cursor (M20)
         self._nest_last: Optional[tuple[float, float]] = None
         self._nest_total: tuple[float, float] = (0.0, 0.0)
 
@@ -69,6 +77,7 @@ class BedCanvas(QWidget):
         self._offset: QPointF = QPointF(0.0, 0.0)
         self._pan_active = False
         self._pan_last = QPointF()
+        self._pan_moved = False                      # a right-click that never panned is a menu
 
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
 
@@ -132,13 +141,16 @@ class BedCanvas(QWidget):
         self._placements = []
         for pl in placements:
             paths = [list(p) for p in pl.get("paths", [])]
+            blank = [list(p) for p in pl.get("blank", [])]   # the blank's rings (M20)
             self._placements.append({
                 "zone_id": pl["zone_id"], "role": pl.get("role"),
-                "label": pl.get("label", ""), "paths": paths,
+                "component_id": pl.get("component_id", ""),
+                "label": pl.get("label", ""), "paths": paths, "blank": blank,
                 "violated": bool(pl.get("violated", False)),
-                "bbox": self._paths_bbox(paths),
+                "bbox": self._paths_bbox(paths + blank),
             })
         self._nest_drag = None
+        self._hover_nest_idx = None
         self._selected_nest_idx = next(
             (i for i, p in enumerate(self._placements) if p["zone_id"] == sel_zone), None)
         self.update()
@@ -347,12 +359,29 @@ class BedCanvas(QWidget):
         font.setPointSize(8)
         for i, pl in enumerate(self._placements):
             selected = i == self._selected_nest_idx
+            hovered = i == self._hover_nest_idx and not selected
             if pl["violated"]:
                 outline = "#d83a3a"
             else:
                 _, outline = _ROLE_COLORS.get(
                     BedRole(pl["role"]) if pl["role"] is not None else BedRole.UNASSIGNED,
                     _ROLE_COLORS[BedRole.UNASSIGNED])
+            # The blank, dashed and faint, so the pocket the part sits in reads
+            # against the cut (M20).
+            if pl.get("blank"):
+                bpen = QPen(QColor(outline), 2.0 if hovered else 1.0, Qt.PenStyle.DashLine)
+                bpen.setCosmetic(True)
+                painter.setPen(bpen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                for ring in pl["blank"]:
+                    if len(ring) < 2:
+                        continue
+                    bq = QPainterPath()
+                    bpts = [self._world_to_screen(x, y) for x, y, *_ in ring]
+                    bq.moveTo(bpts[0])
+                    for p in bpts[1:]:
+                        bq.lineTo(p)
+                    painter.drawPath(bq)
             # A selected footprint draws a dashed selection ring around its bbox.
             if selected:
                 x0, y0, x1, y1 = pl["bbox"]
@@ -364,7 +393,8 @@ class BedCanvas(QWidget):
                 painter.setPen(sel_pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(QRectF(tl, br))
-            pen = QPen(QColor(outline), 2.6 if selected else (2.0 if pl["violated"] else 1.4))
+            pen = QPen(QColor(outline),
+                       2.6 if selected else (2.2 if hovered else (2.0 if pl["violated"] else 1.4)))
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -465,6 +495,7 @@ class BedCanvas(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._pan_active = True
+            self._pan_moved = False
             self._pan_last = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
@@ -508,6 +539,8 @@ class BedCanvas(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._pan_active:
             delta = event.position() - self._pan_last
+            if delta.manhattanLength() > 0:
+                self._pan_moved = True
             self._offset += delta
             self._pan_last = event.position()
             self.update()
@@ -520,18 +553,41 @@ class BedCanvas(QWidget):
             self._nest_total = (self._nest_total[0] + dwx, self._nest_total[1] + dwy)
             self.update()
             event.accept()
+        elif self._placements:
+            # hover highlight (M20): the footprint under the cursor
+            wx, wy = self._screen_to_world(event.position().x(), event.position().y())
+            idx = self._nest_hit_test(wx, wy)
+            if idx != self._hover_nest_idx:
+                self._hover_nest_idx = idx
+                self.update()
 
     def _translate_placement(self, idx: int, dwx: float, dwy: float) -> None:
         pl = self._placements[idx]
         pl["paths"] = [[(x + dwx, y + dwy, *rest) for x, y, *rest in path]
                        for path in pl["paths"]]
+        pl["blank"] = [[(x + dwx, y + dwy, *rest) for x, y, *rest in ring]
+                       for ring in pl.get("blank", [])]
         x0, y0, x1, y1 = pl["bbox"]
         pl["bbox"] = (x0 + dwx, y0 + dwy, x1 + dwx, y1 + dwy)
+
+    def leaveEvent(self, event) -> None:              # noqa: N802 (Qt)
+        if self._hover_nest_idx is not None:
+            self._hover_nest_idx = None
+            self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._pan_active:
             self._pan_active = False
             self.unsetCursor()
+            # A right-click that stayed put over a footprint is its menu. The
+            # right button starts a pan on press, so the menu waits for the
+            # release rather than taking Qt's press-time context-menu event.
+            if (event.button() == Qt.MouseButton.RightButton and not self._pan_moved):
+                wx, wy = self._screen_to_world(event.position().x(), event.position().y())
+                idx = self._nest_hit_test(wx, wy)
+                if idx is not None:
+                    self._show_footprint_menu(idx, event.globalPosition().toPoint())
             event.accept()
         elif self._nest_drag is not None and event.button() == Qt.MouseButton.LeftButton:
             pl = self._placements[self._nest_drag]
@@ -542,6 +598,81 @@ class BedCanvas(QWidget):
             if dx or dy:
                 self.component_nudged.emit(pl["zone_id"], dx, dy)
             event.accept()
+
+    def _free_zones_for(self, pl: dict) -> list:
+        """The zones of the footprint's role no other footprint sits on (M20)."""
+        taken = {p["zone_id"] for p in self._placements if p is not pl}
+        try:
+            role = BedRole(pl["role"]) if pl.get("role") is not None else None
+        except ValueError:
+            role = None
+        return [z for z in self._zones
+                if z.is_placement() and (role is None or z.role == role)
+                and z.id not in taken]
+
+    def _show_footprint_menu(self, idx: int, global_pos) -> None:
+        """The footprint's menu (M19, M20): select it, then rotate it, send it
+        to another zone of its role, or take it off the bed."""
+        pl = self._placements[idx]
+        self._selected_nest_idx = idx
+        self.component_selected.emit(pl["zone_id"])
+        self.update()
+        menu = QMenu(self)
+        snap = menu.addAction("Snap to the nearer end")
+        rot90 = menu.addAction("Rotate 90°")
+        rot180 = menu.addAction("Rotate 180°")
+        send = menu.addMenu("Send to zone")
+        targets = {}
+        for z in self._free_zones_for(pl):
+            if z.id == pl["zone_id"]:
+                continue
+            targets[send.addAction(z.label or z.id)] = z.id
+        if not targets:
+            none = send.addAction("No free zone of this role")
+            none.setEnabled(False)
+        menu.addSeparator()
+        remove = menu.addAction(f"Remove {pl['label']} from bed")
+        chosen = menu.exec(global_pos)
+        if chosen is snap:
+            self.component_snapped.emit(pl["zone_id"])
+        elif chosen is rot90:
+            self.component_rotated.emit(pl["zone_id"], 90.0)
+        elif chosen is rot180:
+            self.component_rotated.emit(pl["zone_id"], 180.0)
+        elif chosen is remove:
+            self.component_removed.emit(pl["zone_id"])
+        elif chosen in targets:
+            self.component_sent.emit(pl["zone_id"], targets[chosen])
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """The selected footprint's keys (M19, M20): Delete or Backspace takes
+        it off the bed; the arrows nudge it 0.1 mm (Shift: 1 mm); R turns it
+        90° clockwise, Shift+R counter-clockwise."""
+        zone = self.selected_placement_zone()
+        key = event.key()
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if zone is not None:
+            if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self.component_removed.emit(zone)
+                event.accept()
+                return
+            step = 1.0 if shift else 0.1
+            arrows = {Qt.Key.Key_Left: (-step, 0.0), Qt.Key.Key_Right: (step, 0.0),
+                      Qt.Key.Key_Up: (0.0, step), Qt.Key.Key_Down: (0.0, -step)}
+            if key in arrows:
+                dx, dy = arrows[key]
+                self.component_stepped.emit(zone, dx, dy)   # a step, never snapped back
+                event.accept()
+                return
+            if key == Qt.Key.Key_R:
+                self.component_rotated.emit(zone, -90.0 if shift else 90.0)
+                event.accept()
+                return
+            if key == Qt.Key.Key_S:
+                self.component_snapped.emit(zone)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

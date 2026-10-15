@@ -11,14 +11,16 @@ Everything here is geometry on `CamOp` paths plus a precedence-aware scheduler; 
 existing `write_castle_program` posts the combined op list, and `cuttime` /
 `lint_program` measure and gate it.
 
-**M7.6** generalises the M6.5 fixture-name machinery onto the user-tagged
+**M7.6** generalizes the M6.5 fixture-name machinery onto the user-tagged
 `Worktable` (M7.4): `nest_components_on_worktable` matches each built component to a
 zone whose ROLE matches its kind (`frame_front` → a frame-front zone, …) and packs
 several components of one kind across several same-role zones;
 `worktable_clearance_violations` checks every placed cutting point against the bed's
 **arbitrary keep-out polygons** (a screw circle is a special case), keeping the
 base-curve drill-at-screw exemption. The M6.5 `build_bed_program` / fixture-dict path
-stays for the legacy Guild-fixture flow and the M7.7 combined post.
+(`zone_center`, `place_ops_at_zone`, `bed_clearance_violations`, `BedProgram`) was
+retired in M20: the tagged `Worktable` is the only bed, the saved placements the only
+nest (`cam.placement`), and `build_nest_program` the only combined post.
 """
 from __future__ import annotations
 
@@ -76,25 +78,6 @@ def rotate_ops_about(ops: list[CamOp], cx: float, cy: float,
     rcx = c * cx - s * cy
     rcy = s * cx + c * cy
     return transform_ops(ops, cx - rcx, cy - rcy, deg)
-
-
-def zone_center(fixture: dict, zone_name: str) -> tuple[float, float]:
-    """Machine-coordinate center of a fixture blank zone."""
-    z = fixture["blank_zones"][zone_name]
-    return (z["x_mm"] + z["width_mm"] / 2.0, z["y_mm"] + z["height_mm"] / 2.0)
-
-
-def place_ops_at_zone(
-    ops: list[CamOp], fixture: dict, zone_name: str, rotation_deg: float = 0.0,
-) -> tuple[list[CamOp], tuple[float, float]]:
-    """Rotate (about origin) then translate `ops` so their bounding-box center
-    lands on the zone center. Returns (placed_ops, (dx, dy) applied)."""
-    rotated = transform_ops(ops, 0.0, 0.0, rotation_deg) if rotation_deg else ops
-    bx, by = ops_bbox_center(rotated)
-    cx, cy = zone_center(fixture, zone_name)
-    dx, dy = cx - bx, cy - by
-    placed = transform_ops(ops, dx, dy, rotation_deg)
-    return placed, (dx, dy)
 
 
 def place_ops_at_polygon_zone(
@@ -186,39 +169,6 @@ def count_tool_changes(ops: list[CamOp]) -> int:
 
 # ------------------------------------------------------------------ clearance
 
-def bed_clearance_violations(
-    ops: list[CamOp], fixture: dict, skip_op_names: set | None = None,
-) -> list[str]:
-    """Check every placed (machine-coordinate) *cutting* toolpath point against
-    the bed's hold-down screw keep-outs — the whole layout at once.
-
-    `skip_op_names` are exempt — the base-curve block's mounting holes are drilled
-    *at* the fixture's screw positions on purpose (the screws are its mounting
-    bolts), so drilling ops are excluded; the contours / relief still must clear.
-    """
-    skip = skip_op_names or set()
-    screws = np.array([[s["x"], s["y"]] for s in fixture["hold_down_screws"]])
-    screw_r = fixture["hold_down_screw_radius_mm"]
-    out: list[str] = []
-    for op in ops:
-        if op.name in skip:
-            continue
-        op_r = op.tool["radius_mm"] if op.tool else 0.0
-        keep_r = screw_r + op_r
-        for path in op.paths:
-            pts = np.asarray([(p[0], p[1]) for p in path], dtype=float)
-            if pts.size == 0:
-                continue
-            d2 = ((pts[:, None, :] - screws[None, :, :]) ** 2).sum(axis=2)
-            hit = np.flatnonzero((d2 < keep_r ** 2).any(axis=1))
-            if hit.size:
-                x, y = pts[hit[0]]
-                out.append(f"{op.name}: enters a screw keep-out near "
-                           f"machine ({x:.1f}, {y:.1f})")
-                break
-    return out
-
-
 def worktable_clearance_violations(
     ops: list[CamOp], worktable, skip_op_names: set | None = None,
 ) -> list[str]:
@@ -300,45 +250,15 @@ class BedPart:
     # core end registered against the zone's end, exactly how the blank slides into
     # its slot on the worktable (2026-07-09 core-aligned nesting).
     place_by_origin: bool = False
-
-
-@dataclass
-class BedProgram:
-    ops: list[CamOp]                       # scheduled, in machine coordinates
-    contour_op_names: set
-    drill_op_names: set
-    placements: list                       # ComponentPlacement, with applied dx/dy
-    n_tool_changes: int
-
-
-def build_bed_program(parts: list[BedPart], fixture: dict) -> BedProgram:
-    """Place each part on its zone, prefix its op names with the part label,
-    collect the through-cut / drill name sets, schedule the whole bed by tool, and
-    return the combined op list ready for `write_castle_program`."""
-    from ..project.schema import ComponentPlacement
-
-    placed_components: list[list[CamOp]] = []
-    contour_names: set = set()
-    drill_names: set = set()
-    placements: list = []
-
-    for part in parts:
-        placed, (dx, dy) = place_ops_at_zone(part.ops, fixture, part.zone, part.rotation_deg)
-        for op in placed:
-            base = op.name
-            op.name = f"{part.label} · {base}"
-            if base in part.contour_names:
-                contour_names.add(op.name)
-            if base in part.drill_names:
-                drill_names.add(op.name)
-        placed_components.append(placed)
-        placements.append(ComponentPlacement(
-            kind=part.kind, label=part.label, fixture_zone=part.zone,
-            x_mm=round(dx, 3), y_mm=round(dy, 3), rotation_deg=part.rotation_deg))
-
-    scheduled = schedule_bed_ops(placed_components)
-    return BedProgram(scheduled, contour_names, drill_names, placements,
-                      count_tool_changes(scheduled))
+    # The project component this part is (M20): the key a saved
+    # `WorktablePlacement` is matched by. "" for the legacy callers.
+    component_id: str = ""
+    # The key the ops were generated under (`cam.placement.part_program_key`),
+    # carried back to the workspace cache by the window (M20).
+    part_key: str = ""
+    # The relief the ops were generated from, when the generator built one (the
+    # front's castle): the bed simulation's target, so it need not be rebuilt.
+    relief: object = None
 
 
 # ------------------------------------------------------------------ M7.6 role nesting
@@ -397,6 +317,15 @@ class BedNest:
 
     def all_ops(self) -> list[CamOp]:
         return [op for pl in self.placements for op in pl.ops]
+
+    def subset(self, labels) -> "BedNest":
+        """The nest restricted to the placements whose label is in `labels`
+        (BUILDPLAN M19: the parts on the bed). The placements are shared, not
+        copied, so a nudge through either nest is seen by both; the unplaced
+        parts and the work area are carried as they are."""
+        keep = set(labels)
+        return BedNest([pl for pl in self.placements if pl.label in keep],
+                       list(self.unplaced), self.work_area)
 
     def drill_op_names(self) -> set:
         names: set = set()

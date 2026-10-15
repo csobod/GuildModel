@@ -36,6 +36,12 @@ The offer is one checkbox per departure (2026-09-28), so a maker can take a new
 zero and leave a one-off job's blank, and "once" is per line: each departure's
 `key` is remembered for the session whether it was adopted or left, and a later
 save offers only the lines not yet asked about.
+
+Whether a kind of part is on the worktable to begin with (`Component.on_bed`,
+BUILDPLAN M19) is a shop default too — a batch shop cuts its base-curve
+templates once — stored as ``{"on_bed": false}`` on the group, absent when on.
+It is set in Preferences and never offered on Save: which parts a given job
+cuts is that job's business, not a policy to adopt.
 """
 from __future__ import annotations
 
@@ -74,8 +80,8 @@ _GROUP_OF_KIND: dict[ComponentKind, str] = {
 #: stored "params" dict is ignored, so a hand-edited prefs file cannot reach into
 #: fields the page never offered.
 PARAM_FIELDS: dict[str, tuple[str, ...]] = {
-    "frame_front": ("stock",),
-    "temple": ("snap_to_blank_end", "stock_side",
+    "frame_front": ("stock", "origin_from_drawing"),
+    "temple": ("snap_to_blank_end", "stock_side", "origin_from_drawing",
                "blank_length_mm", "blank_width_mm", "blank_thickness_mm",
                "engrave_tool", "hinge_tool", "profile_tool"),
     "base_curve": ("blank_length_mm", "blank_width_mm", "blank_thickness_mm",
@@ -94,8 +100,8 @@ TOOL_FIELDS: frozenset[str] = frozenset(
 #: What a saved project offers to adopt, besides the program zero and the stock
 #: (every group).
 OFFERED_FIELDS: dict[str, tuple[str, ...]] = {
-    "frame_front": (),
-    "temple": ("snap_to_blank_end", "stock_side"),
+    "frame_front": ("origin_from_drawing",),
+    "temple": ("snap_to_blank_end", "stock_side", "origin_from_drawing"),
     "base_curve": (),
 }
 
@@ -154,6 +160,12 @@ def param_overrides(prefs: dict | None, group: str) -> dict:
 
 
 # ------------------------------------------------------------------ reading
+
+def default_on_bed(prefs: dict | None, kind) -> bool:
+    """Whether a fresh part of `kind` starts on the worktable (M19). Only an
+    explicit ``false`` turns it off; absent, or anything else, is on."""
+    return _group_prefs(prefs, group_of(kind)).get("on_bed") is not False
+
 
 def default_program_zero(prefs: dict | None, kind) -> ProgramZero:
     """The shop's default G54 datum for `kind`; the schema's when none is set or
@@ -244,6 +256,7 @@ def seed_workspace(ws, prefs: dict | None) -> None:
     kind = ComponentKind(ws.kind)
     group = group_of(kind)
     ws.program_zero = default_program_zero(prefs, kind)
+    ws.on_bed = default_on_bed(prefs, kind)
     attr = _params_attr(kind)
     base = getattr(ws, attr, None) or schema_default(kind)
     setattr(ws, attr, with_overrides(base, group,
@@ -276,6 +289,8 @@ class Departure:
             return f"{who}: snap to blank end {'on' if self.value else 'off'}"
         if self.field == "stock_side":
             return f"{who}: stock side {self.value}"
+        if self.field == "origin_from_drawing":
+            return f"{who}: origin from drawing {'on' if self.value else 'off'}"
         if self.field == "stock":
             return f"{who}: {_stock_text(self.value)}"
         return f"{who}: {self.field.replace('_', ' ')} {self.value}"

@@ -1006,10 +1006,12 @@ def test_forming_imports_no_qt_and_no_cam():
 
 
 def test_the_readiness_dot_reads_three_job_facts_and_no_forming():
+    """Three job facts, and since M20 the model's verdict, which demotes a stored
+    program over a broken model — forming is still not among them."""
     from guildmodel.gui.widgets import readiness_dot
 
     params = list(inspect.signature(readiness_dot.state_for).parameters)
-    assert params == ["dxf_loaded", "mesh_built", "program_stored"]
+    assert params == ["dxf_loaded", "mesh_built", "program_stored", "model_ok"]
 
 
 # ------------------------------------------------------------- the schema

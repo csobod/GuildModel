@@ -8,6 +8,7 @@ and save() is silent on write errors.
 """
 
 import copy
+import logging
 import json
 import pathlib
 
@@ -25,7 +26,9 @@ _FILE = _DIR / "prefs.json"
 #: possibly have had an opinion about.
 #:
 #: 1 — M-N3 (2026-08-08): the model kernel default moved raster -> mesh.
-PREFS_VERSION = 1
+#: 2 — M20 (2026-10-14): Save As took Ctrl+Shift+S from Simulation (now F6);
+#:     a saved override that binds that chord elsewhere is dropped.
+PREFS_VERSION = 2
 
 DEFAULTS: dict = {
     "prefs_version":         PREFS_VERSION,
@@ -66,6 +69,9 @@ DEFAULTS: dict = {
     # Show the bottom log dock on startup (toggle the button to change it for
     # the session; this pref sets the default) — M4.6
     "show_log_on_start":     False,
+    # Build the frame front when a drawing opens and land on the 3D page
+    # (M20): the mesh kernel builds a front in a fraction of a second.
+    "build_on_open":         True,
     # Ask, when saving / exporting a changed worktable, whether to make it the
     # default bed. The "Don't ask again" checkbox in that prompt sets this False.
     # Every prompt_* key is a checkbox under Preferences ▸ General ▸ Prompts, so a
@@ -203,6 +209,24 @@ def _migrate_kernel_flip(data: dict, merged: dict) -> None:
         merged["model_kernel"] = DEFAULTS["model_kernel"]
 
 
+def _migrate_save_as_chord(data: dict, merged: dict) -> None:
+    """Ctrl+Shift+S is Save As since M20 (it was Simulation, now F6). An
+    override that binds the chord to any other action would collide with the
+    new default, so it is dropped — that action goes back to its default — and
+    said so in the log. Only overrides are stored, so a maker who never
+    rebound anything is carried over by the defaults alone."""
+    if data.get("prefs_version", 0) >= 2:
+        return
+    hk = merged.get("hotkeys")
+    if not isinstance(hk, dict):
+        return
+    for key, chord in list(hk.items()):
+        if key != "save_project_as" and str(chord).replace(" ", "") == "Ctrl+Shift+S":
+            del hk[key]
+            logging.getLogger(__name__).info(
+                "hotkey override %s=Ctrl+Shift+S dropped: the chord is Save As since M20", key)
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present.
 
@@ -228,6 +252,7 @@ def load() -> dict:
                 else:
                     merged[key] = copy.deepcopy(DEFAULTS[key])
             _retire_m124_stepdown(merged["cam_params"])
+            _migrate_save_as_chord(data, merged)
             return merged
     except Exception:
         pass

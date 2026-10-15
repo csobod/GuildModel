@@ -2,10 +2,11 @@
 of part (2026-09-27). The Qt face of `gui/part_defaults.py`.
 
 One group box per kind of part — Frame Front, Temples, Base-curve blocks — each
-with its program zero and the fields a shop sets once: blank sizes, the temples'
-blank-end snap and stock side, the block's mounting-hole pattern, the tools. The
-ranges mirror the param dock's, and *Reset to shipped* on each group puts the
-schema defaults back. `to_prefs()` returns the sparse `part_defaults` dict.
+with its program zero, whether the part is on the worktable to begin with (M19),
+and the fields a shop sets once: blank sizes, the temples' blank-end snap and
+stock side, the block's mounting-hole pattern, the tools. The ranges mirror the
+param dock's, and *Reset to shipped* on each group puts the schema defaults
+back. `to_prefs()` returns the sparse `part_defaults` dict.
 
 `PartDefaultsOffer` is the offer on Save: one checkbox per departure.
 """
@@ -141,6 +142,17 @@ class PartDefaultsPage(QWidget):
         return grp, form
 
     @staticmethod
+    def _on_bed_box(prefs: dict, kind: str, what: str) -> QCheckBox:
+        cb = QCheckBox("On the worktable by default")
+        cb.setChecked(part_defaults.default_on_bed(prefs, kind))
+        cb.setToolTip(
+            f"Whether {what} is on the bed when a drawing opens. Off leaves it out "
+            "of the worktable program until it is checked on the Worktable panel; "
+            "a shop in batch production cuts its base-curve blocks once and leaves "
+            "them off after.")
+        return cb
+
+    @staticmethod
     def _reset_row(form: QFormLayout, on_reset) -> None:
         btn = QPushButton("Reset to shipped")
         btn.setToolTip("Put this part's shipped defaults back.")
@@ -154,9 +166,12 @@ class PartDefaultsPage(QWidget):
         cp = part_defaults.default_params(prefs, "frame_front")
         grp, form = self._group(
             part_defaults.GROUP_LABELS["frame_front"],
-            "The frame front: its G54 datum and the stock it is cut from.")
+            "The frame front: its G54 datum, how it sits on its blank, and the stock "
+            "it is cut from.")
         self.front_zero = ZeroPicker(part_defaults.default_program_zero(prefs, "frame_front"))
         form.addRow("Program zero:", self.front_zero)
+        self.front_on_bed = self._on_bed_box(prefs, "frame_front", "the front")
+        form.addRow("", self.front_on_bed)
         st = cp.stock
         self.front_blank_length = _spin(st.blank_length_mm, 50.0, 300.0, 1.0, 1)
         self.front_blank_width = _spin(st.blank_width_mm, 30.0, 200.0, 1.0, 1)
@@ -164,6 +179,12 @@ class PartDefaultsPage(QWidget):
         form.addRow("Blank length:", self.front_blank_length)
         form.addRow("Blank width:", self.front_blank_width)
         form.addRow("Blank thickness:", self.front_blank_thickness)
+        self.front_origin = QCheckBox("Origin from drawing")
+        self.front_origin.setChecked(cp.origin_from_drawing)
+        self.front_origin.setToolTip(
+            "Cut the front where it was drawn, the drawing's origin at the blank's "
+            "center. Off centers the outline on the blank.")
+        form.addRow("", self.front_origin)
         self.front_pad = QCheckBox("Add nosepad pad block")
         self.front_pad.setChecked(st.use_pad_block)
         form.addRow("", self.front_pad)
@@ -182,8 +203,10 @@ class PartDefaultsPage(QWidget):
         for sb in (self.front_pad_length, self.front_pad_width, self.front_pad_thickness):
             sb.setEnabled(on)
 
-    def _set_front(self, cp: CastleParams, pz: ProgramZero) -> None:
+    def _set_front(self, cp: CastleParams, pz: ProgramZero, on_bed: bool = True) -> None:
         self.front_zero.set_value(pz)
+        self.front_on_bed.setChecked(on_bed)
+        self.front_origin.setChecked(cp.origin_from_drawing)
         st = cp.stock
         _set(self.front_blank_length, st.blank_length_mm)
         _set(self.front_blank_width, st.blank_width_mm)
@@ -200,6 +223,8 @@ class PartDefaultsPage(QWidget):
             "Both temples: G54 datum, how the part sits on its blank, blank size, tools.")
         self.temple_zero = ZeroPicker(part_defaults.default_program_zero(prefs, "temple_right"))
         form.addRow("Program zero:", self.temple_zero)
+        self.temple_on_bed = self._on_bed_box(prefs, "temple_right", "a temple")
+        form.addRow("", self.temple_on_bed)
         self.temple_snap = QCheckBox("Snap to blank end")
         self.temple_snap.setChecked(t.snap_to_blank_end)
         self.temple_snap.setToolTip(
@@ -213,6 +238,14 @@ class PartDefaultsPage(QWidget):
         self.temple_side.setEnabled(t.snap_to_blank_end)
         self.temple_snap.toggled.connect(self.temple_side.setEnabled)
         form.addRow("Stock side:", self.temple_side)
+        self.temple_origin = QCheckBox("Origin from drawing")
+        self.temple_origin.setChecked(t.origin_from_drawing)
+        self.temple_origin.setToolTip(
+            "Keep the drawing's zero line on the blank's center line, where the core "
+            "runs. Off centers the temple's width on the blank.")
+        self.temple_origin.setEnabled(t.snap_to_blank_end)
+        self.temple_snap.toggled.connect(self.temple_origin.setEnabled)
+        form.addRow("", self.temple_origin)
         self.temple_blank_length = _spin(t.blank_length_mm, 50.0, 300.0, 1.0, 1)
         self.temple_blank_width = _spin(t.blank_width_mm, 8.0, 80.0, 1.0, 1)
         self.temple_blank_thickness = _spin(t.blank_thickness_mm, 1.0, 12.0, 0.5, 1)
@@ -234,10 +267,12 @@ class PartDefaultsPage(QWidget):
             part_defaults.schema_default("temple_right"), ProgramZero()))
         lay.addWidget(grp)
 
-    def _set_temple(self, t: TempleParams, pz: ProgramZero) -> None:
+    def _set_temple(self, t: TempleParams, pz: ProgramZero, on_bed: bool = True) -> None:
         self.temple_zero.set_value(pz)
+        self.temple_on_bed.setChecked(on_bed)
         self.temple_snap.setChecked(t.snap_to_blank_end)
         _set_text(self.temple_side, t.stock_side)
+        self.temple_origin.setChecked(t.origin_from_drawing)
         _set(self.temple_blank_length, t.blank_length_mm)
         _set(self.temple_blank_width, t.blank_width_mm)
         _set(self.temple_blank_thickness, t.blank_thickness_mm)
@@ -253,6 +288,8 @@ class PartDefaultsPage(QWidget):
             "pattern, tools.")
         self.block_zero = ZeroPicker(part_defaults.default_program_zero(prefs, "base_curve_right"))
         form.addRow("Program zero:", self.block_zero)
+        self.block_on_bed = self._on_bed_box(prefs, "base_curve_right", "a base-curve block")
+        form.addRow("", self.block_on_bed)
         self.block_blank_length = _spin(b.blank_length_mm, 30.0, 150.0, 1.0, 1)
         self.block_blank_width = _spin(b.blank_width_mm, 30.0, 150.0, 1.0, 1)
         # 4 decimals so imperial gauges round-trip exactly (3/16" = 4.7625 mm).
@@ -285,8 +322,9 @@ class PartDefaultsPage(QWidget):
             part_defaults.schema_default("base_curve_right"), ProgramZero()))
         lay.addWidget(grp)
 
-    def _set_block(self, b: BaseCurveBlockParams, pz: ProgramZero) -> None:
+    def _set_block(self, b: BaseCurveBlockParams, pz: ProgramZero, on_bed: bool = True) -> None:
         self.block_zero.set_value(pz)
+        self.block_on_bed.setChecked(on_bed)
         _set(self.block_blank_length, b.blank_length_mm)
         _set(self.block_blank_width, b.blank_width_mm)
         _set(self.block_blank_thickness, b.blank_thickness_mm)
@@ -301,7 +339,9 @@ class PartDefaultsPage(QWidget):
 
     def front_params(self) -> CastleParams:
         base = part_defaults.schema_default("frame_front")
-        return base.model_copy(update={"stock": StockDefinition(
+        return base.model_copy(update={
+            "origin_from_drawing": self.front_origin.isChecked(),
+            "stock": StockDefinition(
             blank_length_mm=self.front_blank_length.value(),
             blank_width_mm=self.front_blank_width.value(),
             blank_thickness_mm=self.front_blank_thickness.value(),
@@ -316,6 +356,7 @@ class PartDefaultsPage(QWidget):
         return base.model_copy(update=dict(
             snap_to_blank_end=self.temple_snap.isChecked(),
             stock_side=self.temple_side.currentText(),
+            origin_from_drawing=self.temple_origin.isChecked(),
             blank_length_mm=self.temple_blank_length.value(),
             blank_width_mm=self.temple_blank_width.value(),
             blank_thickness_mm=self.temple_blank_thickness.value(),
@@ -341,15 +382,17 @@ class PartDefaultsPage(QWidget):
     def to_prefs(self) -> dict:
         """The sparse `part_defaults` dict: only what differs from the schema."""
         out: dict = {}
-        for group, params, picker in (
-            ("frame_front", self.front_params(), self.front_zero),
-            ("temple", self.temple_params(), self.temple_zero),
-            ("base_curve", self.block_params(), self.block_zero),
+        for group, params, picker, on_bed in (
+            ("frame_front", self.front_params(), self.front_zero, self.front_on_bed),
+            ("temple", self.temple_params(), self.temple_zero, self.temple_on_bed),
+            ("base_curve", self.block_params(), self.block_zero, self.block_on_bed),
         ):
             entry: dict = {}
             zero = part_defaults.sparse_zero(picker.value())
             if zero is not None:
                 entry["program_zero"] = zero
+            if not on_bed.isChecked():
+                entry["on_bed"] = False
             params_sparse = part_defaults.sparse_params(group, params)
             if params_sparse:
                 entry["params"] = params_sparse

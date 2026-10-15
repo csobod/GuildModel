@@ -25,8 +25,8 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QTabWidget, QCheckBox, QFormLayout,
     QDoubleSpinBox, QLineEdit, QScrollArea, QDockWidget, QFrame,
-    QToolBar, QProgressDialog, QTabBar, QComboBox,
-    QListWidget, QListWidgetItem, QSpinBox, QSplitter,
+    QToolBar, QProgressDialog, QTabBar, QComboBox, QToolButton,
+    QListWidget, QListWidgetItem, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem,
     QSlider, QColorDialog, QStyle, QAbstractSpinBox,
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QByteArray, QSize, QPointF
@@ -502,7 +502,6 @@ class GCodeWorker(_ProgressWorker):
         self.block = None                    # BaseCurveBlockParams | None
         self.block_overrides = None          # the block component's ComponentCamOverrides (M16)
         self.is_block = False
-        self.is_worktable = False            # combined multi-part bed (M6.5)
         self.op_overlay = None               # per-op toolpaths for the 2D overlay (M7.11)
         # inspector inputs (M7.14): captured by the finish handler into the dock
         self.reach_warnings: list = []
@@ -819,10 +818,12 @@ class GCodeWorker(_ProgressWorker):
         from guildmodel.core.relief.flat import place_temple_curves, place_temple_on_blank
         outline, hinge_polys, engraving = place_temple_on_blank(
             self.outline, self.hinge_polys, self.engraving, temple.blank_length_mm,
-            stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
+            stock_side=temple.stock_side, snap=temple.snap_to_blank_end,
+            origin_from_drawing=temple.origin_from_drawing)
         graphics = place_temple_curves(
             self.graphics, self.outline, self.hinge_polys, temple.blank_length_mm,
-            stock_side=temple.stock_side, snap=temple.snap_to_blank_end)
+            stock_side=temple.stock_side, snap=temple.snap_to_blank_end,
+            origin_from_drawing=temple.origin_from_drawing)
         ops = require_ops(
             generate_temple_program(outline, engraving, temple, tools_cfg, cam,
                                     hinge_polys=hinge_polys, graphic_curves=graphics),
@@ -910,7 +911,8 @@ class GCodeWorker(_ProgressWorker):
             from guildmodel.core.relief.flat import temple_snap_transform
             flipped, sdx, sdy = temple_snap_transform(
                 self.outline, self.hinge_polys, temple.blank_length_mm,
-                stock_side=temple.stock_side, snap=True)
+                stock_side=temple.stock_side, snap=True,
+                origin_from_drawing=temple.origin_from_drawing)
             sgn = -1.0 if flipped else 1.0
             for entry in self.op_overlay:
                 entry["paths"] = [[(sgn * (x - sdx), sgn * (y - sdy)) for x, y in path]
@@ -1127,172 +1129,6 @@ class GCodeWorker(_ProgressWorker):
         }
         self.finished.emit(summary, rows)
 
-    def _generate_worktable(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
-        """Combined worktable program (BUILDPLAN M6.5): the frame front + its
-        base-curve block, auto-packed onto their fixture zones and cut in **one**
-        program, scheduled to minimize tool changes across the whole bed."""
-        import yaml
-        from guildmodel.core.cam.block_ops import (
-            BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
-        )
-        from guildmodel.core.cam.castle_ops import (
-            CastleCamParams, build_tool_settings, generate_castle_program,
-            op_summaries, write_castle_program,
-        )
-        from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
-        from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
-        from guildmodel.core.cam.layout import BedPart, bed_clearance_violations, build_bed_program
-        from guildmodel.core.post.grbl import GRBLPost
-        from guildmodel.core.post.machine import (
-            clamp_cam_to_machine, lint_program, load_machine_profile,
-        )
-        from guildmodel.core.project.schema import BaseCurveBlockParams
-        from guildmodel.core.relief.castle import CUT_RES_MM
-        from guildmodel.core.zmap import castle_relief
-
-        cam = self.cam_params or CastleCamParams()
-        castle = self.castle
-        block = self.block or BaseCurveBlockParams()
-        machine = load_machine_profile(cam.machine_name, config_dir)
-        mat_name = self.params["material_name"]
-        mat = mats_cfg.get(mat_name.split()[0].lower(), mats_cfg["acetate"])
-        with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
-            fixture = yaml.safe_load(fh)
-        self.progress.emit(f"[gcode] Worktable · Machine: {machine.display_name}")
-
-        # The bed posts through the SAME machine/material clamp as the single-
-        # component program — otherwise stepdown, feeds, spindle and the arc /
-        # linearize decision reach the post unchecked (INCIDENT-2026-07-29).
-        cam, clamp = clamp_cam_to_machine(cam, machine, mat)
-        for w in clamp.warnings:
-            self.progress.emit(f"[gcode] machine: {w}")
-        # The block under its own CAM: its overrides and its material (acetal,
-        # in the standard job), clamped the same way (M16 on the bed).
-        block_cam, block_clamp, block_mat = _spec_cam(
-            {"mode": "block", "block": block, "cam_overrides": self.block_overrides},
-            self.cam_params or CastleCamParams(), machine, mats_cfg, mat_name)
-        self.progress.emit(
-            f"[gcode] Block: {block_mat}, feed {block_clamp.feed_rate_mmpm:.0f} / plunge "
-            f"{block_clamp.plunge_rate_mmpm:.0f} mm/min, {block_clamp.spindle_rpm} RPM, "
-            f"{block_cam.contour_stepdown_mm:.2f} mm per pass")
-        for w in block_clamp.warnings:
-            self.progress.emit(f"[gcode] block: machine: {w}")
-
-        # part 1 — the frame front (posterior cut)
-        self.progress.emit("[gcode] Worktable: building the frame relief…")
-        relief = castle_relief(self.partition, castle, self.hinge_polys,
-                               kernel=self.kernel, resolution=CUT_RES_MM,
-                               progress=self._progress)
-        frame_ops = generate_castle_program(
-            relief, castle, self.hinge_polys, tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"]),
-            params=cam, tools_cfg=tools_cfg)
-
-        # part 2 — the base-curve forming block from the OD lens
-        self.progress.emit("[gcode] Worktable: generating the base-curve block…")
-        block_ops = generate_block_program(self.block_lens, block, tools_cfg, block_cam)
-        from guildmodel.core.cam.castle_ops import op_notes, stamp_cut_settings
-        for w in stamp_cut_settings(frame_ops, tools_cfg, cam, clamp, machine=machine):
-            self.progress.emit(f"[gcode] tool: {w}")
-        for w in stamp_cut_settings(block_ops, tools_cfg, block_cam, block_clamp,
-                                    machine=machine):
-            self.progress.emit(f"[gcode] block tool: {w}")
-        for w in op_notes(frame_ops) + op_notes(block_ops):
-            self.progress.emit(f"[gcode] ⚠ {w}")
-
-        parts = [
-            BedPart("frame_front", "Frame", "front", frame_ops, set(CASTLE_CONTOUR_OPS), set()),
-            BedPart("base_curve_block", "Block", "bc_template_right", block_ops,
-                    BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS),
-        ]
-        bed = build_bed_program(parts, fixture)
-        self.progress.emit(
-            f"[gcode] Bed: {len(parts)} parts, {len(bed.ops)} ops, "
-            f"{bed.n_tool_changes} tool change(s) (grouped by tool):"
-        )
-        for p in bed.placements:
-            self.progress.emit(
-                f"[gcode]   {p.label} ({p.kind}) → {p.fixture_zone} "
-                f"@ ({p.x_mm:.1f}, {p.y_mm:.1f}) mm")
-
-        # The clamp warnings were logged per part by stamp_cut_settings above;
-        # this map is the bed's T-numbers and header, so its copies are dropped.
-        tool_settings, _ts_warns = build_tool_settings(
-            bed.ops, tools_cfg, default_feed=clamp.feed_rate_mmpm,
-            default_plunge=clamp.plunge_rate_mmpm, default_spindle=clamp.spindle_rpm,
-            machine=machine, tool_feeds=cam.tool_feeds)
-
-        # parts are placed in absolute machine coordinates → touch off machine zero
-        violations = bed_clearance_violations(bed.ops, fixture, skip_op_names=bed.drill_op_names)
-        for v in violations:
-            self.progress.emit(f"[gcode] WARNING: {v}")
-
-        first_ts = tool_settings[bed.ops[0].tool_name]
-        safe_z = cam.safe_z_for(max(castle.stock.total_pad_height_mm, block.blank_thickness_mm))
-        post = GRBLPost(
-            job_name="worktable", material=mat_name,
-            tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
-            feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
-            safe_z_mm=safe_z,
-        )
-        self._progress("Writing worktable program", 0.92)
-        write_castle_program(
-            bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
-            contour_stepdown_mm=cam.contour_stepdown_mm,
-            contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
-            contour_lead_in=cam.contour_lead_in,
-            tool_settings=tool_settings, tool_change_mode=machine.tool_change_mode,
-            contour_op_names=bed.contour_op_names, drill_op_names=bed.drill_op_names,
-            peck_depth_mm=block.peck_depth_mm)
-        text = post.to_string()
-        self.progress.emit(f"[gcode] worktable.nc generated ({len(text):,} bytes)")
-
-        text = self._check_z_profile(text)          # M-Z1 Z-profile guard
-        machine_warnings = lint_program(text, machine)
-        for w in machine_warnings:
-            self.progress.emit(f"[gcode] ⚠ machine: {w}")
-        self.clearance_violations = list(violations)      # M7.14 inspector inputs
-        self.machine_warnings = list(machine_warnings)
-        report = estimate_program(text, MachineDynamics.from_profile(machine),
-                                  tool_change_seconds=machine.tool_change_seconds)
-        self.progress.emit("[gcode] Estimated cut time —\n" + format_report(report))
-        rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
-                            tool_settings=tool_settings)
-
-        summary = ("Worktable program (frame front + base-curve block) generated "
-                   "and stored in the project.\nSave the project (Ctrl+S) or File ▸ "
-                   "Export G-code for a standalone .nc.")
-        summary += (f"\n\nMachine: {machine.display_name} · zero at machine origin"
-                    f"\n{len(parts)} parts, {len(tool_settings)} tools, "
-                    f"{report.n_tool_changes} change(s) — "
-                    f"{report.total_seconds / 60:.1f} min incl. changes")
-        if violations:
-            summary += f"\n\n⚠ {len(violations)} fixture clearance warning(s) — see log."
-        if machine_warnings:
-            summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
-
-        self.programs = {"worktable.nc": text}
-        self.machine_dump = machine.model_dump()
-        self.setup_dict = {
-            "component": "worktable",
-            "material": mat_name,
-            "machine": machine.display_name,
-            "parts": [
-                {"label": p.label, "kind": p.kind, "fixture_zone": p.fixture_zone,
-                 "x_mm": p.x_mm, "y_mm": p.y_mm, "rotation_deg": p.rotation_deg}
-                for p in bed.placements
-            ],
-            "tools": [
-                {"number": s.number, "name": n, "diameter_mm": s.diameter_mm,
-                 "spindle_rpm": s.spindle_rpm, "feed_rate_mmpm": s.feed_rate_mmpm}
-                for n, s in tool_settings.items()
-            ],
-            "n_tool_changes": report.n_tool_changes,
-            "est_cut_min": round(report.cutting_only_seconds / 60, 2),
-            "est_total_min": round(report.total_seconds / 60, 2),
-            "ops": rows,
-        }
-        self.finished.emit(summary, rows)
-
     def _generate(self) -> None:
         import yaml
         from guildmodel.core.cam.profile import profile_cut
@@ -1304,11 +1140,6 @@ class GCodeWorker(_ProgressWorker):
         tools_cfg = _tools_cfg()
         with open(config_dir / "materials.yaml", encoding="utf-8") as f:
             mats_cfg = yaml.safe_load(f)
-
-        # ---- Worktable path: several components in one program (M6.5) ----
-        if self.is_worktable:
-            self._generate_worktable(tools_cfg, mats_cfg, config_dir)
-            return
 
         # ---- Base-curve block path: drill + forming scribe + profile (M6.4) ----
         if self.is_block:
@@ -1508,16 +1339,17 @@ class SimWorker(_ProgressWorker):
             # Position-based removal plan (M7.12): the full toolpath + sparse
             # keyframes — the 3D block carves along the path in sync with the tool.
             self._progress("Building playback", 0.96)
-            stock_hf = stock_top_heightfield(
-                self.castle.stock, resolution=f.resolution,
-                origin=f.origin, shape=f.z.shape)
+            # The blank as listed on the Stock tab — its full size, the pad block on
+            # it — not the relief grid cropped to the cut (session two of M20):
+            # the block carved on screen is the one on the bench.
+            stock_hf = stock_top_heightfield(self.castle.stock, resolution=f.resolution)
             plan = build_removal_plan(
                 motion_steps_from_program(
                     post.to_string(), ToolProfile.from_tool(tool),
                     profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
                     rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
                     base_spacing=f.resolution),
-                stock_hf.z, f.origin, f.resolution)
+                stock_hf.z, stock_hf.origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, tool)
 
             # Lens groove (V1): the side-cut op is outside the Z-buffer sweep
@@ -1627,10 +1459,12 @@ class FlatSimWorker(_ProgressWorker):
                     place_temple_curves, place_temple_on_blank)
                 outline, hinge_polys, engraving = place_temple_on_blank(
                     self.outline, self.hinge_polys, self.engraving, t.blank_length_mm,
-                    stock_side=t.stock_side, snap=t.snap_to_blank_end)
+                    stock_side=t.stock_side, snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
                 graphics = place_temple_curves(
                     self.graphics, self.outline, self.hinge_polys, t.blank_length_mm,
-                    stock_side=t.stock_side, snap=t.snap_to_blank_end)
+                    stock_side=t.stock_side, snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
                 relief = build_temple_relief(
                     outline, t, hinge_polys, engraving, graphic_curves=graphics,
                     resolution=self.resolution, progress=self._progress)
@@ -1639,6 +1473,7 @@ class FlatSimWorker(_ProgressWorker):
                                               graphic_curves=graphics)
                 contour_names, drill_names = TEMPLE_CONTOUR_OPS, set()
                 top_z, peck = t.blank_thickness_mm, 1.5
+                blank_length, blank_width = t.blank_length_mm, t.blank_width_mm
                 fallback_tool = resolve_tool(t.profile_tool, tools_cfg)
             else:
                 b = self.block
@@ -1647,6 +1482,7 @@ class FlatSimWorker(_ProgressWorker):
                 ops = generate_block_program(self.lens, b, tools_cfg, cam)
                 contour_names, drill_names = BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS
                 top_z, peck = b.blank_thickness_mm, b.peck_depth_mm
+                blank_length, blank_width = b.blank_length_mm, b.blank_width_mm
                 fallback_tool = resolve_tool(b.profile_tool, tools_cfg)
 
             self._progress("Posting the program", 0.55)
@@ -1687,14 +1523,19 @@ class FlatSimWorker(_ProgressWorker):
             # Position-based removal plan (M7.12): single-level blank (temple /
             # base-curve block) carved along the toolpath in sync with the tool.
             self._progress("Building playback", 0.96)
-            stock_top = np.full(f.z.shape, float(top_z), dtype=float)
+            # The blank as listed on the part's tab, centered on the design origin
+            # the ops are in (a snapped temple sits at its end), not the relief
+            # grid cropped to the cut (session two of M20).
+            from guildmodel.core.sim.bed import flat_blank_heightfield
+            stock_top, stock_origin = flat_blank_heightfield(
+                blank_length, blank_width, float(top_z), f.resolution)
             plan = build_removal_plan(
                 motion_steps_from_program(
                     post.to_string(), ToolProfile.from_tool(fallback_tool),
                     profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
                     rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
                     base_spacing=f.resolution),
-                stock_top, f.origin, f.resolution)
+                stock_top, stock_origin, f.resolution)
             plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, report.summary_lines(), plan)
         except _Canceled:
@@ -1732,32 +1573,30 @@ def _spec_cam(spec: dict, cam, machine, mats_cfg: dict, material_name: str):
     return cam, clamp, name
 
 
-class NestWorker(_ProgressWorker):
-    """Generate each built component's program and nest them onto the tagged
-    worktable by role (BUILDPLAN M7.6). Off-thread because the frame relief build is
-    the slow part; the resulting `BedNest` drives the bed render + clearance badge.
-    Clearance itself is recomputed on the GUI thread (cheap) so a nudge can re-check
-    without regenerating any program.
+class PartsWorker(_ProgressWorker):
+    """Generate each spec's program in its design frame → ``list[BedPart]``
+    (BUILDPLAN M20): Generate's first half, off-thread because the frame
+    relief build is the slow part. The window turns the parts into the
+    machine-coordinate nest with its saved placements.
 
-    These ops are **posted verbatim** as `worktable.nc` (`build_nest_program`), so
-    they are built at `CUT_RES_MM` and against machine-clamped CAM params — the
-    same grid and the same limits as the single-component posting. This worker used
-    to take its grid from the 3D-preview preference, floored at 0.4 mm, which put a
-    preview-grade toolpath on real hardware (INCIDENT-2026-07-29). There is
-    deliberately no `resolution` parameter: nothing that ends in a `.nc` gets to
-    choose its own grid.
+    These ops are **posted verbatim** as `worktable.nc` (`build_nest_program`),
+    so they are built at `CUT_RES_MM` and against machine-clamped CAM params —
+    the same grid and the same limits as the single-component posting. This
+    worker used to take its grid from the 3D-preview preference, floored at
+    0.4 mm, which put a preview-grade toolpath on real hardware
+    (INCIDENT-2026-07-29). There is deliberately no `resolution` parameter:
+    nothing that ends in a `.nc` gets to choose its own grid.
     """
 
-    finished = Signal(object)    # core.cam.layout.BedNest
+    finished = Signal(object)    # list[core.cam.layout.BedPart]
     progress = Signal(str)
     error = Signal(str)
 
-    def __init__(self, specs, worktable, *, cam_params=None,
-                 machine=None, material: dict | None = None,
-                 materials: dict | None = None, material_name: str = "acetate") -> None:
+    def __init__(self, specs, *, cam_params=None, machine=None,
+                 material: dict | None = None, materials: dict | None = None,
+                 material_name: str = "acetate") -> None:
         super().__init__()
         self.specs = specs
-        self.worktable = worktable
         self.cam_params = cam_params
         self.machine = machine
         self.material = material            # the project's preset (older callers)
@@ -1766,89 +1605,122 @@ class NestWorker(_ProgressWorker):
 
     def run(self) -> None:
         try:
-            from guildmodel.core.cam.block_ops import (
-                BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
-            )
-            from guildmodel.core.cam.castle_ops import (
-                CastleCamParams, generate_castle_program, op_notes,
-                stamp_cut_settings,
-            )
-            from guildmodel.core.cam.temple_ops import (
-                TEMPLE_CONTOUR_OPS, generate_temple_program,
-            )
-            from guildmodel.core.cam.layout import (
-                BedPart, default_nest_rotation, nest_components_on_worktable,
-            )
-            from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
-            from guildmodel.core.relief.castle import CUT_RES_MM
-            from guildmodel.core.zmap import castle_relief
+            self.finished.emit(self._generate_parts())
+        except _Canceled:
+            self.canceled.emit()
+        except Exception:
+            self.error.emit(traceback.format_exc())
 
-            cam = self.cam_params or CastleCamParams()
-            mats = self.materials or (
-                {} if self.material is None else {"acetate": self.material})
-            tools = _tools_cfg()
-            n = max(len(self.specs), 1)
-            parts: list = []
-            for k, spec in enumerate(self.specs):
-                base = k / n
-                # Each component under its own CAM: its overrides, its material's
-                # feeds and depth per pass, clamped to the machine. One clamp
-                # against the project material used to serve every part, so a
-                # block nested with the front cut at the front's feeds.
-                cam_i, clamp_i, mat_i = _spec_cam(spec, cam, self.machine, mats,
-                                                  self.material_name)
-                if clamp_i is not None:
-                    self.progress.emit(
-                        f"[nest] {spec['label']}: {mat_i}, feed {clamp_i.feed_rate_mmpm:.0f} / "
-                        f"plunge {clamp_i.plunge_rate_mmpm:.0f} mm/min, {clamp_i.spindle_rpm} RPM, "
-                        f"{cam_i.contour_stepdown_mm:.2f} mm per pass")
-                    for w in clamp_i.warnings:
-                        self.progress.emit(f"[nest] {spec['label']}: machine: {w}")
-                default_tool = tools.get(cam_i.tool_name, tools["flat_3175"])
-                self.progress.emit(f"[nest] {spec['label']}: generating program…")
-                mode = spec["mode"]
-                if mode == "castle":
-                    relief = castle_relief(
-                        spec["partition"], spec["castle"], spec["hinge"],
-                        kernel=self.kernel, resolution=CUT_RES_MM,
-                        progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n))
-                    ops = generate_castle_program(
-                        relief, spec["castle"], spec["hinge"], default_tool,
-                        params=cam_i, tools_cfg=tools)
-                    parts.append(BedPart(spec["kind"], spec["label"], "", ops,
-                                         set(CASTLE_CONTOUR_OPS), set()))
-                elif mode == "temple":
-                    from guildmodel.core.relief.flat import (
-                        place_temple_curves, place_temple_on_blank)
-                    t = spec["temple"]
-                    t_outline, t_hinge, t_eng = place_temple_on_blank(
-                        spec["outline"], spec["hinge"], spec["engraving"],
-                        t.blank_length_mm, stock_side=t.stock_side,
-                        snap=t.snap_to_blank_end)
-                    t_gfx = place_temple_curves(
-                        spec.get("graphics", ()), spec["outline"], spec["hinge"],
-                        t.blank_length_mm, stock_side=t.stock_side,
-                        snap=t.snap_to_blank_end)
-                    ops = generate_temple_program(
-                        t_outline, t_eng, t, tools, cam_i, hinge_polys=t_hinge,
-                        graphic_curves=t_gfx)
-                    # A snapped temple's ops live in its blank frame: place blank
-                    # center → zone center so the core end stays registered against
-                    # the zone end, matching how the blank slides into its slot.
-                    parts.append(BedPart(spec["kind"], spec["label"], "", ops,
-                                         set(TEMPLE_CONTOUR_OPS), set(),
-                                         place_by_origin=t.snap_to_blank_end))
-                else:  # block
-                    ops = generate_block_program(spec["lens"], spec["block"], tools, cam_i)
-                    parts.append(BedPart(spec["kind"], spec["label"], "", ops,
-                                         set(BLOCK_CONTOUR_OPS), set(BLOCK_DRILL_OPS)))
-                # the ops carry their component's context to the post (`OpCut`)
-                if clamp_i is not None:
-                    for w in stamp_cut_settings(parts[-1].ops, tools, cam_i, clamp_i,
-                                                machine=self.machine):
-                        self.progress.emit(f"[nest] {spec['label']}: tool: {w}")
-                for w in op_notes(parts[-1].ops):
-                    self.progress.emit(f"[nest] ⚠ {spec['label']}: {w}")
+    def _generate_parts(self) -> list:
+        from guildmodel.core.cam.block_ops import (
+            BLOCK_CONTOUR_OPS, BLOCK_DRILL_OPS, generate_block_program,
+        )
+        from guildmodel.core.cam.castle_ops import (
+            CastleCamParams, generate_castle_program, op_notes,
+            stamp_cut_settings,
+        )
+        from guildmodel.core.cam.temple_ops import (
+            TEMPLE_CONTOUR_OPS, generate_temple_program,
+        )
+        from guildmodel.core.cam.layout import BedPart
+        from guildmodel.core.cam.component import CASTLE_CONTOUR_OPS
+        from guildmodel.core.relief.castle import CUT_RES_MM
+        from guildmodel.core.zmap import castle_relief
+
+        cam = self.cam_params or CastleCamParams()
+        mats = self.materials or (
+            {} if self.material is None else {"acetate": self.material})
+        tools = _tools_cfg()
+        n = max(len(self.specs), 1)
+        parts: list = []
+        for k, spec in enumerate(self.specs):
+            base = k / n
+            # Each component under its own CAM: its overrides, its material's
+            # feeds and depth per pass, clamped to the machine. One clamp
+            # against the project material used to serve every part, so a
+            # block nested with the front cut at the front's feeds.
+            cam_i, clamp_i, mat_i = _spec_cam(spec, cam, self.machine, mats,
+                                              self.material_name)
+            if clamp_i is not None:
+                self.progress.emit(
+                    f"[nest] {spec['label']}: {mat_i}, feed {clamp_i.feed_rate_mmpm:.0f} / "
+                    f"plunge {clamp_i.plunge_rate_mmpm:.0f} mm/min, {clamp_i.spindle_rpm} RPM, "
+                    f"{cam_i.contour_stepdown_mm:.2f} mm per pass")
+                for w in clamp_i.warnings:
+                    self.progress.emit(f"[nest] {spec['label']}: machine: {w}")
+            default_tool = tools.get(cam_i.tool_name, tools["flat_3175"])
+            self.progress.emit(f"[nest] {spec['label']}: generating program…")
+            mode = spec["mode"]
+            cid = spec.get("component_id", "")
+            if mode == "castle":
+                relief = castle_relief(
+                    spec["partition"], spec["castle"], spec["hinge"],
+                    kernel=self.kernel, resolution=CUT_RES_MM,
+                    progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n))
+                ops = generate_castle_program(
+                    relief, spec["castle"], spec["hinge"], default_tool,
+                    params=cam_i, tools_cfg=tools)
+                parts.append(BedPart(spec["kind"], spec["label"], "", ops,
+                                     set(CASTLE_CONTOUR_OPS), set(), component_id=cid,
+                                     relief=relief))
+            elif mode == "temple":
+                from guildmodel.core.relief.flat import (
+                    place_temple_curves, place_temple_on_blank)
+                t = spec["temple"]
+                t_outline, t_hinge, t_eng = place_temple_on_blank(
+                    spec["outline"], spec["hinge"], spec["engraving"],
+                    t.blank_length_mm, stock_side=t.stock_side,
+                    snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
+                t_gfx = place_temple_curves(
+                    spec.get("graphics", ()), spec["outline"], spec["hinge"],
+                    t.blank_length_mm, stock_side=t.stock_side,
+                    snap=t.snap_to_blank_end,
+                    origin_from_drawing=t.origin_from_drawing)
+                ops = generate_temple_program(
+                    t_outline, t_eng, t, tools, cam_i, hinge_polys=t_hinge,
+                    graphic_curves=t_gfx)
+                # A snapped temple's ops live in its blank frame: place blank
+                # center → zone center so the core end stays registered against
+                # the zone end, matching how the blank slides into its slot.
+                parts.append(BedPart(spec["kind"], spec["label"], "", ops,
+                                     set(TEMPLE_CONTOUR_OPS), set(),
+                                     place_by_origin=t.snap_to_blank_end, component_id=cid))
+            else:  # block
+                ops = generate_block_program(spec["lens"], spec["block"], tools, cam_i)
+                parts.append(BedPart(spec["kind"], spec["label"], "", ops,
+                                     set(BLOCK_CONTOUR_OPS), set(BLOCK_DRILL_OPS),
+                                     component_id=cid))
+            parts[-1].part_key = spec.get("part_key", "")
+            # the ops carry their component's context to the post (`OpCut`)
+            if clamp_i is not None:
+                for w in stamp_cut_settings(parts[-1].ops, tools, cam_i, clamp_i,
+                                            machine=self.machine):
+                    self.progress.emit(f"[nest] {spec['label']}: tool: {w}")
+            for w in op_notes(parts[-1].ops):
+                self.progress.emit(f"[nest] ⚠ {spec['label']}: {w}")
+        return parts
+
+
+class NestWorker(PartsWorker):
+    """Generate every part's program and nest them onto the worktable by role
+    (BUILDPLAN M7.6): the one-shot flow from before M20, kept for the tests
+    that drive it and as the shortest route to a nest with ops. The window
+    places first (`cam.placement.auto_place`) and generates at Generate
+    (`PartsWorker`)."""
+
+    finished = Signal(object)    # core.cam.layout.BedNest
+
+    def __init__(self, specs, worktable, **kw) -> None:
+        super().__init__(specs, **kw)
+        self.worktable = worktable
+
+    def run(self) -> None:
+        try:
+            from guildmodel.core.cam.layout import (
+                default_nest_rotation, nest_components_on_worktable,
+            )
+            parts = self._generate_parts()
             # Seed each part's bed orientation (an UN-snapped temple_left flips 180°
             # to face the right temple); the maker then rotates any placement freely
             # (M-UX). A snapped temple's orientation is authoritative — stock_side
@@ -1866,28 +1738,39 @@ class NestWorker(_ProgressWorker):
 
 
 class BedSimWorker(_ProgressWorker):
-    """Simulate the whole nested bed (BUILDPLAN M7.7): build each placed component's
-    cut sim and composite them onto one machine-coords bed grid → a `CutReport` for
-    the whole worktable. Off-thread because each component rebuilds its relief; the
-    report drives the shared 3D viewer's sim mode (Uncut / Gouge overlays).
+    """Simulate the whole nested bed (BUILDPLAN M7.7 → M20 session two).
 
-    `simulate_component` re-derives each part's relief *and* its program from the
-    spec, so the sim only verifies the posted bed when it rebuilds on the posting
-    grid — at any other resolution it is checking a program that will never run
-    (INCIDENT-2026-07-29). Hence `CUT_RES_MM` and no `resolution` parameter."""
+    Given the posted ``worktable.nc`` (`program_text`), the verdict is read from
+    it: the program's cutting moves are stamped onto one machine-coordinate
+    grid and compared with each part's relief under its placement
+    (`bed_report_from_program`). The front's relief comes from Generate's cache
+    (`reliefs`, by label); a temple's or a block's is a flat build. Nothing is
+    regenerated, which is what made the bed simulation sluggish: it used to
+    rebuild every relief and every program a second time. The playback carves
+    each part's blank as listed — the pad block on the front's — placed on the
+    bed, on the preview grid (`playback_resolution`): the verdict stays on the
+    posting grid, the block on screen need not.
+
+    Without `program_text` (the one-shot tests) it falls back to the pre-M20
+    path, `simulate_component` per part, composited.
+    """
 
     finished = Signal(object, object, object)   # CutReport, summary lines, RemovalPlayback
     progress = Signal(str)
     error = Signal(str)
 
     def __init__(self, specs, placements, work_area, *, cam_params=None,
-                 material_name: str = "acetate") -> None:
+                 material_name: str = "acetate", program_text: str | None = None,
+                 reliefs: dict | None = None, playback_resolution: float | None = None) -> None:
         super().__init__()
         self.specs = specs
         self.placements = placements          # list[BedPlacement] (label → dx/dy/kind)
         self.work_area = work_area
         self.cam_params = cam_params
         self.material_name = material_name
+        self.program_text = program_text
+        self.reliefs = reliefs or {}
+        self.playback_resolution = playback_resolution
 
     def run(self) -> None:
         try:
@@ -1895,18 +1778,16 @@ class BedSimWorker(_ProgressWorker):
             import yaml
             from guildmodel.core.cam.castle_ops import CastleCamParams
             from guildmodel.core.sim import (
-                BedRemovalPart, ComponentSim, ToolProfile, build_bed_removal_plan,
-                composite_bed_report, simulate_component, steps_from_ops,
+                BedRemovalPart, ComponentSim, ToolProfile, bed_report_from_program,
+                build_bed_removal_plan, composite_bed_report, relief_for_spec,
+                simulate_component, steps_from_ops, stock_for_spec,
             )
-
             from guildmodel.core.relief.castle import CUT_RES_MM
 
             cam = self.cam_params or CastleCamParams()
             config_dir = Path(__file__).parent.parent / "config"
             tools_cfg = _tools_cfg()
             mats_cfg = yaml.safe_load((config_dir / "materials.yaml").read_text(encoding="utf-8"))
-            # Same clamp the bed program posts under (NestWorker / Generate Worktable),
-            # so the bed sim shows the passes the bed will actually cut.
             try:
                 from guildmodel.core.post.machine import load_machine_profile
                 machine = load_machine_profile(cam.machine_name, config_dir)
@@ -1914,46 +1795,62 @@ class BedSimWorker(_ProgressWorker):
                 machine = None           # unknown machine: simulate unclamped, as before
             place = {pl.label: pl for pl in self.placements}
             specs = [s for s in self.specs if s["label"] in place]
+            play_res = self.playback_resolution or CUT_RES_MM
             comps: list = []
-            bed_parts: list = []          # volumetric bed removal (M7.12.3)
+            stock_parts: list = []        # the blanks on the posting grid (the floor's start)
+            bed_parts: list = []          # the blanks on the playback grid, with the steps
             geom: dict = {}
             n = max(len(specs), 1)
             for k, spec in enumerate(specs):
                 base = k / n
-                self.progress.emit(f"[bed-sim] {spec['label']}: simulating…")
-                # the same per-component CAM the nest generated under, or the
-                # sim verifies a program that never runs (INCIDENT-2026-07-29)
+                pl = place[spec["label"]]
+                self.progress.emit(f"[bed-sim] {spec['label']}: "
+                                   + ("target…" if self.program_text else "simulating…"))
                 cam_i, _clamp_i, mat_i = _spec_cam(spec, cam, machine, mats_cfg,
                                                    self.material_name)
-                floor, target, inside, origin, res = simulate_component(
-                    spec, cam=cam_i, tools_cfg=tools_cfg, mats_cfg=mats_cfg,
-                    material_name=mat_i, resolution=CUT_RES_MM,
-                    kernel=self.kernel,
-                    progress=lambda lbl, fr, b=base: self._progress(lbl, b + fr / n))
-                pl = place[spec["label"]]
-                comps.append(ComponentSim(floor, target, inside, origin, res,
-                                          dx=pl.dx, dy=pl.dy, label=pl.label, kind=pl.kind))
-
-                # bed removal part: this part's stock heightfield + machine-coord steps
-                mode = spec["mode"]
-                if mode == "castle":
-                    from guildmodel.core.relief.castle import stock_top_heightfield
-                    stock_hf = stock_top_heightfield(
-                        spec["castle"].stock, resolution=res, origin=origin,
-                        shape=floor.shape).z
-                elif mode == "temple":
-                    stock_hf = np.full(floor.shape, float(spec["temple"].blank_thickness_mm))
+                prog = lambda lbl, fr, b=base: self._progress(lbl, b + fr / n)
+                if self.program_text:
+                    relief = self.reliefs.get(spec["label"])
+                    if relief is None:
+                        relief = relief_for_spec(spec, resolution=CUT_RES_MM,
+                                                 kernel=self.kernel, progress=prog)
+                    f = relief.field
+                    target = np.where(relief.inside, f.z, np.nan)
+                    comps.append(ComponentSim(target, target, relief.inside, f.origin,
+                                              f.resolution, dx=pl.dx, dy=pl.dy,
+                                              label=pl.label, kind=pl.kind,
+                                              rotation_deg=pl.rotation_deg))
                 else:
-                    stock_hf = np.full(floor.shape, float(spec["block"].blank_thickness_mm))
+                    floor, target, inside, origin, res = simulate_component(
+                        spec, cam=cam_i, tools_cfg=tools_cfg, mats_cfg=mats_cfg,
+                        material_name=mat_i, resolution=CUT_RES_MM,
+                        kernel=self.kernel, progress=prog)
+                    comps.append(ComponentSim(floor, target, inside, origin, res,
+                                              dx=pl.dx, dy=pl.dy, label=pl.label,
+                                              kind=pl.kind, rotation_deg=pl.rotation_deg))
+                stock_cut, origin_cut = stock_for_spec(spec, CUT_RES_MM)
+                stock_parts.append(BedRemovalPart([], stock_cut, origin_cut, pl.dx, pl.dy,
+                                                  rotation_deg=pl.rotation_deg))
+                stock_play, origin_play = stock_for_spec(spec, play_res)
                 part_steps = [(f"{pl.label} · {lbl}", prof, paths)
                               for (lbl, prof, paths) in steps_from_ops(pl.ops, ToolProfile())]
                 for op_lbl, gv in _op_tool_geom(pl.ops, None).items():
                     geom[f"{pl.label} · {op_lbl}"] = gv
-                bed_parts.append(BedRemovalPart(part_steps, stock_hf, origin, pl.dx, pl.dy))
+                bed_parts.append(BedRemovalPart(part_steps, stock_play, origin_play,
+                                                pl.dx, pl.dy, rotation_deg=pl.rotation_deg))
 
-            self._progress("Compositing the bed", 0.96)
-            report = composite_bed_report(comps, self.work_area, resolution=CUT_RES_MM)
-            plan = build_bed_removal_plan(bed_parts, resolution=CUT_RES_MM)
+            if self.program_text:
+                self._progress("Reading the program onto the bed", 0.6)
+                fallback = ToolProfile.from_tool(tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"]))
+                report = bed_report_from_program(
+                    self.program_text, comps, stock_parts, resolution=CUT_RES_MM,
+                    tools_cfg=tools_cfg, fallback=fallback,
+                    progress=lambda fr: self._progress("Sweeping the tools", 0.6 + 0.3 * fr))
+            else:
+                self._progress("Compositing the bed", 0.9)
+                report = composite_bed_report(comps, self.work_area, resolution=CUT_RES_MM)
+            self._progress("Building playback", 0.95)
+            plan = build_bed_removal_plan(bed_parts, resolution=play_res)
             plan.op_tool_geom = geom
             self.finished.emit(report, report.summary_lines(), plan)
         except _Canceled:
@@ -1983,9 +1880,10 @@ def _available_screen(widget):
 class OpSummaryDialog(QDialog):
     """The in-app setup sheet (BUILDPLAN M4): one row per CAM operation."""
 
-    def __init__(self, rows: list[dict], summary: str, parent=None) -> None:
+    def __init__(self, rows: list[dict], summary: str, parent=None, *,
+                 title: str = "Posterior program — operation summary") -> None:
         super().__init__(parent)
-        self.setWindowTitle("Posterior program — operation summary")
+        self.setWindowTitle(title)
         self.setMinimumWidth(560)
 
         lay = QVBoxLayout(self)
@@ -2098,6 +1996,12 @@ class PrefsDialog(QDialog):
             "The toolbar button still toggles the log for the current session."
         )
         app_form.addRow(self._log_check)
+        self._build_open_check = QCheckBox("Build the frame front when a drawing opens")
+        self._build_open_check.setChecked(bool(prefs.get("build_on_open", True)))
+        self._build_open_check.setToolTip(
+            "Open a drawing and see it in 3D: the front is built and the 3D page "
+            "shown. The temples and blocks wait for Build 3D.")
+        app_form.addRow(self._build_open_check)
         gen_lay.addWidget(app_box)
 
         # The offers GuildModel makes, each with a "Don't ask again" on the box
@@ -3227,6 +3131,7 @@ class PrefsDialog(QDialog):
             "dark_mode": self._dark_check.isChecked(),
             "ui_scale": scale_key if scale_key == "auto" else float(scale_key),
             "show_log_on_start": self._log_check.isChecked(),
+            "build_on_open": self._build_open_check.isChecked(),
             "model_kernel": self._model_kernel_combo.currentData(),
             "preview_resolution_mm": round(self._preview_res.value(), 2),
             "export_resolution_mm": round(self._export_res.value(), 2),
@@ -3394,10 +3299,28 @@ class MainWindow(QMainWindow):
         self._bed_prompt_answered = False
         self._part_defaults_offered = set()  # keys of the part-defaults lines asked about
         self._tool_feeds_offered = None      # signature of the last tool-feeds offer
-        self._nest = None                 # core.cam.layout.BedNest (M7.6) once nested
+        self._nest = None                 # core.cam.layout.BedNest: the ops nest Generate built (M7.6 → M20)
         self._nest_specs = None           # build specs behind the nest (M7.7 bed sim)
         self._nest_thread = None
         self._nest_worker = None
+        # The project's placements on the bed (M20): saved with the project and
+        # independent of any program; `_nest` above is built from them at
+        # Generate, for the bed simulation. The worktable program has its own
+        # artifact set here — until M20 it was written onto whichever component
+        # was active behind the Worktable tab, on save and on a tab switch.
+        from guildmodel.core.project.schema import WorktableNest
+        self._wt_nest = WorktableNest()
+        self._wt_programs: dict = {}
+        self._wt_setup = None
+        self._wt_machine = None
+        self._wt_report = None
+        self._wt_after_generate = None    # what runs once the bed program is posted
+        self._wt_last_violations: list = []
+        self._parts_worker = None
+        self._parts_thread = None
+        self._source_path = None          # the drawing on disk: Reload and the watcher (M20)
+        self._source_watcher = None
+        self._reload_components = None    # a DXF reload applies these once the import lands
         self._selected_placement_zone = None   # zone id of the footprint being rotated (M-UX)
 
         # Active component's geometry (mirrors the active workspace)
@@ -3452,6 +3375,11 @@ class MainWindow(QMainWindow):
         # bed canvas / (no 3D) / bed cut-sim. `_switch_view` is the single source of
         # truth and always re-renders, so a (tab, view) combination is never stale.
         self._current_view = 0
+        # The view the maker chose on a component tab, kept across a visit to
+        # the Worktable (which has no 3D) and across a tab whose model is not
+        # built yet, so a tab-to-tab walk stays in 3D (session two of M20).
+        self._component_view = 0
+        self._lazy_built: set = set()     # workspaces a tab switch has tried to build
         # Cached cut-sim results so toggling back to Sim is instant; re-run only when
         # the design/CAM (component) or the nest (bed) changes. Active-component cache
         # is cleared on a tab switch (it belonged to the part we left).
@@ -3522,6 +3450,7 @@ class MainWindow(QMainWindow):
         self.readiness.set_dark_mode(dark)
         self._inspector.set_dark_mode(dark)
         icons_mod.apply_toolbar_icons(self._icon_actions, dark)
+        self._apply_worktable_icons(dark)         # the Worktable panel's buttons (M20)
         self._fit_toolbar_button_styles()         # icons now set → icon-only vs text
         self._style_toolbar_separators()          # re-tint for the new theme
 
@@ -3543,6 +3472,7 @@ class MainWindow(QMainWindow):
         built = self._mesh_built and (verdict is None or verdict.ok)
         self.readiness.set_state(readiness_dot.state_for(
             self._dxf_loaded, built, self._program_stored,
+            model_ok=not (self._mesh_built and verdict is not None and not verdict.ok),
         ))
 
     def _invalidate_program(self) -> None:
@@ -3691,6 +3621,17 @@ class MainWindow(QMainWindow):
         self._measure_lbl = QLabel("")
         self._measure_lbl.setObjectName("measureLabel")
         self._measure_lbl.setVisible(False)
+        # "drawing changed · reload": lit by the watcher on the source file (M20);
+        # a click reloads. Never a dialog — the maker is mid-edit in GuildDraw.
+        self._reload_chip = QToolButton()
+        self._reload_chip.setObjectName("reloadChip")
+        self._reload_chip.setText("drawing changed · reload")
+        self._reload_chip.setToolTip(
+            "The drawing was saved again on disk. Click to reload it (Ctrl+R).")
+        self._reload_chip.setAutoRaise(True)
+        self._reload_chip.setVisible(False)
+        self._reload_chip.clicked.connect(self._on_reload_drawing)
+        sb.addPermanentWidget(self._reload_chip)
         sb.addPermanentWidget(self._measure_lbl)
         self.zoom_label = QLabel("")
         self.zoom_label.setObjectName("mutedSmallLabel")
@@ -3703,13 +3644,12 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------- worktable (M7.4)
 
     def _build_worktable_page(self) -> QWidget:
-        """The Worktable bed page: a machine-coords canvas + a tagging panel.
-
-        Import a bed DXF (or load the Guild fixture), click each region, and tag
-        its role — frame-front / temple R-L / base-curve R-L / keep-out. The bed
-        is the `Worktable` model that supersedes the named fixture (BUILDPLAN M7.4).
-        """
+        """The Worktable page: the bed canvas, with its controls in the right
+        dock in four groups — Bed, Zones, Parts, Program — each collapsible
+        (BUILDPLAN M20 §5.2.6). The bed is the `Worktable` model (M7.4); the
+        parts on it are the project's saved placements (M20)."""
         from guildmodel.gui.widgets.bed_canvas import BedCanvas
+        from guildmodel.gui.widgets.collapsible import CollapsibleGroup
         from guildmodel.core.project.schema import BedRole, bed_role_label
 
         page = QWidget()
@@ -3720,7 +3660,12 @@ class MainWindow(QMainWindow):
         self.bed_canvas = BedCanvas()
         self.bed_canvas.region_clicked.connect(self._on_bed_region_clicked)
         self.bed_canvas.component_nudged.connect(self._on_component_nudged)
+        self.bed_canvas.component_stepped.connect(self._on_component_stepped)
         self.bed_canvas.component_selected.connect(self._on_bed_placement_selected)
+        self.bed_canvas.component_removed.connect(self._on_bed_component_removed)
+        self.bed_canvas.component_rotated.connect(self._on_component_rotated)
+        self.bed_canvas.component_snapped.connect(self._on_component_snapped)
+        self.bed_canvas.component_sent.connect(self._on_component_sent)
         self.bed_canvas.perimeter_clicked.connect(self._on_perimeter_selected)
         h.addWidget(self.bed_canvas, 1)
 
@@ -3731,48 +3676,50 @@ class MainWindow(QMainWindow):
         self._worktable_panel.setObjectName("worktablePanel")
         v = QVBoxLayout(self._worktable_panel)
         v.setContentsMargins(10, 10, 10, 10)
-        v.setSpacing(8)
+        v.setSpacing(6)
 
         title = QLabel("Worktable")
         title.setObjectName("sectionTitle")
         v.addWidget(title)
-        desc = QLabel("Import a bed DXF (or load a saved .bed / the Guild fixture), "
-                      "then click each region and tag its role. An outer outline "
-                      "around the regions is the bed's work envelope. Keep-outs are "
-                      "hold-downs the cutter must avoid.")
+        desc = QLabel("The machine bed: its zones and keep-outs, the parts placed on "
+                      "it, and the one program that cuts them.")
         desc.setWordWrap(True)
         desc.setObjectName("mutedSmallLabel")
         v.addWidget(desc)
 
-        # File ops, two per row (Load DXF/BED combines the DXF-import and .bed-load
-        # paths — the open dialog dispatches on the file's extension).
-        self._bed_load_btn = QPushButton("Load DXF/BED…")
-        self._bed_load_btn.setToolTip("Import a bed DXF or open a saved .bed file.")
-        self._bed_load_btn.clicked.connect(self._on_load_bed_or_dxf)
-        self._bed_default_btn = QPushButton("Load Guild Bed")
-        self._bed_default_btn.setToolTip("Load the shipped Guild CNC fixture.")
-        self._bed_default_btn.clicked.connect(self._on_load_default_bed)
-        self._bed_save_btn = QPushButton("Save Bed…")
-        self._bed_save_btn.setToolTip("Save this worktable to a .bed file.")
-        self._bed_save_btn.clicked.connect(self._on_save_bed)
-        self._bed_setdefault_btn = QPushButton("Set as Default")
-        self._bed_setdefault_btn.setToolTip(
-            "Make this bed the default that loads with every new session.")
-        self._bed_setdefault_btn.clicked.connect(self._on_set_default_bed)
-        load_row = QHBoxLayout()
-        load_row.addWidget(self._bed_load_btn)
-        load_row.addWidget(self._bed_default_btn)
-        v.addLayout(load_row)
-        save_row = QHBoxLayout()
-        save_row.addWidget(self._bed_save_btn)
-        save_row.addWidget(self._bed_setdefault_btn)
-        v.addLayout(save_row)
+        def muted(text: str = "") -> QLabel:
+            lbl = QLabel(text)
+            lbl.setObjectName("mutedSmallLabel")
+            lbl.setWordWrap(True)
+            return lbl
+
+        # ── Bed: load, save, default, size, zero, hold-down ─────────────────
+        # Icon buttons with their words in the tooltip (session two of M20):
+        # the sidebar is narrow, and the four bed verbs read at a glance.
+        self._wt_icon_buttons: list = []
+        grp = CollapsibleGroup("Bed")
+        b = grp.body_layout
+        self._bed_load_btn = self._wt_icon_button(
+            "bed-load", "Load DXF/BED… — import a bed DXF or open a saved .bed file",
+            self._on_load_bed_or_dxf)
+        self._bed_default_btn = self._wt_icon_button(
+            "bed-guild", "Load Guild Bed — the shipped Guild CNC fixture",
+            self._on_load_default_bed)
+        self._bed_save_btn = self._wt_icon_button(
+            "bed-save", "Save Bed… — save this worktable to a .bed file", self._on_save_bed)
+        self._bed_setdefault_btn = self._wt_icon_button(
+            "bed-default", "Set as Default — the bed that loads with every new session",
+            self._on_set_default_bed)
+        file_row = QHBoxLayout()
+        for btn in (self._bed_load_btn, self._bed_default_btn, self._bed_save_btn,
+                    self._bed_setdefault_btn):
+            file_row.addWidget(btn)
+        file_row.addStretch(1)
+        b.addLayout(file_row)
 
         # Bed size = the work envelope (BUILDPLAN M7.4). Click the bed perimeter to
         # select it; edit W × H here. A DXF's outer outline seeds this on import.
-        v.addSpacing(6)
-        size_title = QLabel("Bed size (work envelope):")
-        v.addWidget(size_title)
+        b.addWidget(QLabel("Bed size (work envelope):"))
         size_row = QHBoxLayout()
         self._bed_width_spin = QDoubleSpinBox()
         self._bed_width_spin.setKeyboardTracking(False)   # settles on Enter or a click away
@@ -3787,61 +3734,7 @@ class MainWindow(QMainWindow):
             sp.valueChanged.connect(self._on_bed_size_changed)
         size_row.addWidget(self._bed_width_spin)
         size_row.addWidget(self._bed_height_spin)
-        v.addLayout(size_row)
-
-        v.addSpacing(6)
-        v.addWidget(QLabel("Selected region role:"))
-        self._bed_role_combo = QComboBox()
-        for role in BedRole:
-            self._bed_role_combo.addItem(bed_role_label(role), role.value)
-        self._bed_role_combo.setEnabled(False)
-        self._bed_role_combo.currentIndexChanged.connect(self._on_bed_role_changed)
-        v.addWidget(self._bed_role_combo)
-
-        self._bed_region_list = QListWidget()
-        self._bed_region_list.currentRowChanged.connect(self._on_bed_list_row)
-        v.addWidget(self._bed_region_list, 1)
-
-        self._bed_remove_btn = QPushButton("Remove Region")
-        self._bed_remove_btn.setToolTip(
-            "Delete the selected region (e.g. a polygonize sliver or a leftover face).")
-        self._bed_remove_btn.setEnabled(False)
-        self._bed_remove_btn.clicked.connect(self._on_remove_region)
-        v.addWidget(self._bed_remove_btn)
-
-        undo_row = QHBoxLayout()
-        self._bed_undo_btn = QPushButton("↶ Undo")
-        self._bed_undo_btn.setToolTip("Undo the last bed edit (remove / tag / load).")
-        self._bed_undo_btn.setEnabled(False)
-        self._bed_undo_btn.clicked.connect(self._on_wt_undo)
-        self._bed_redo_btn = QPushButton("↷ Redo")
-        self._bed_redo_btn.setToolTip("Redo the last undone bed edit.")
-        self._bed_redo_btn.setEnabled(False)
-        self._bed_redo_btn.clicked.connect(self._on_wt_redo)
-        undo_row.addWidget(self._bed_undo_btn)
-        undo_row.addWidget(self._bed_redo_btn)
-        v.addLayout(undo_row)
-
-        self._bed_counts = QLabel("No bed loaded")
-        self._bed_counts.setObjectName("mutedSmallLabel")
-        self._bed_counts.setWordWrap(True)
-        v.addWidget(self._bed_counts)
-
-        v.addSpacing(6)
-        hd_row = QHBoxLayout()
-        hd_row.addWidget(QLabel("Hold-down height:"))
-        self._bed_holddown_spin = QDoubleSpinBox()
-        self._bed_holddown_spin.setKeyboardTracking(False)   # settles on Enter or a click away
-        self._bed_holddown_spin.setRange(0.0, 80.0)
-        self._bed_holddown_spin.setSingleStep(0.5)
-        self._bed_holddown_spin.setDecimals(1)
-        self._bed_holddown_spin.setSuffix(" mm")
-        self._bed_holddown_spin.setValue(8.0)
-        self._bed_holddown_spin.setToolTip(
-            "Height of the hold-downs (screw heads / clamps) above the bed.")
-        self._bed_holddown_spin.valueChanged.connect(self._on_holddown_height_changed)
-        hd_row.addWidget(self._bed_holddown_spin)
-        v.addLayout(hd_row)
+        b.addLayout(size_row)
 
         bz_row = QHBoxLayout()
         bz_row.addWidget(QLabel("Bed zero:"))
@@ -3859,44 +3752,150 @@ class MainWindow(QMainWindow):
             "Where the whole-bed worktable.nc touches off G54.")
         self._bed_zero_combo.currentIndexChanged.connect(self._on_bed_zero_changed)
         bz_row.addWidget(self._bed_zero_combo)
-        v.addLayout(bz_row)
+        b.addLayout(bz_row)
 
-        v.addSpacing(6)
-        self._bed_nest_btn = QPushButton("Nest Components")
-        self._bed_nest_btn.setToolTip(
-            "Auto-place every component on a role-matched zone (drag to nudge).")
-        self._bed_nest_btn.clicked.connect(self._on_nest_components)
-        v.addWidget(self._bed_nest_btn)
-        self._bed_nest_status = QLabel("")
-        self._bed_nest_status.setObjectName("mutedSmallLabel")
-        self._bed_nest_status.setWordWrap(True)
-        v.addWidget(self._bed_nest_status)
+        hd_row = QHBoxLayout()
+        hd_row.addWidget(QLabel("Hold-down height:"))
+        self._bed_holddown_spin = QDoubleSpinBox()
+        self._bed_holddown_spin.setKeyboardTracking(False)   # settles on Enter or a click away
+        self._bed_holddown_spin.setRange(0.0, 80.0)
+        self._bed_holddown_spin.setSingleStep(0.5)
+        self._bed_holddown_spin.setDecimals(1)
+        self._bed_holddown_spin.setSuffix(" mm")
+        self._bed_holddown_spin.setValue(8.0)
+        self._bed_holddown_spin.setToolTip(
+            "Height of the hold-downs (screw heads / clamps) above the bed.")
+        self._bed_holddown_spin.valueChanged.connect(self._on_holddown_height_changed)
+        hd_row.addWidget(self._bed_holddown_spin)
+        b.addLayout(hd_row)
+        v.addWidget(grp)
+        self._wt_group_bed = grp
 
-        # Rotate a placed component (M-UX): click a footprint on the bed to select it,
-        # then spin it — e.g. face the left temple to the right, or orient both temples
-        # for slotted loading. The rotated part posts directly into the worktable.nc.
-        v.addSpacing(8)
-        rot_title = QLabel("Rotate placement")
-        rot_title.setObjectName("sectionTitle")
-        v.addWidget(rot_title)
-        self._bed_sel_label = QLabel("Click a component footprint on the bed to select it.")
-        self._bed_sel_label.setObjectName("mutedSmallLabel")
-        self._bed_sel_label.setWordWrap(True)
-        v.addWidget(self._bed_sel_label)
+        # ── Zones: the regions and their roles ──────────────────────────────
+        grp = CollapsibleGroup("Zones")
+        b = grp.body_layout
+        b.addWidget(muted("Click a region on the bed and tag its role. An outer outline "
+                          "around the regions is the work envelope; keep-outs are "
+                          "hold-downs the cutter must avoid."))
+        b.addWidget(QLabel("Selected region role:"))
+        self._bed_role_combo = QComboBox()
+        for role in BedRole:
+            self._bed_role_combo.addItem(bed_role_label(role), role.value)
+        self._bed_role_combo.setEnabled(False)
+        self._bed_role_combo.currentIndexChanged.connect(self._on_bed_role_changed)
+        b.addWidget(self._bed_role_combo)
 
+        # The fixture's stop (session two of M20): the zone edge the stock
+        # registers against. A temple zone cut for 170 mm blanks with a stop at
+        # one end takes a 160 mm blank flush to it; Auto-place, a drag that ends
+        # near it and the Snap action all register there, orientation kept.
+        stop_row = QHBoxLayout()
+        stop_row.addWidget(QLabel("Stop:"))
+        self._bed_stop_x = QComboBox()
+        for label, key in (("X: centered", "none"), ("X: left end", "left"),
+                           ("X: right end", "right")):
+            self._bed_stop_x.addItem(label, key)
+        self._bed_stop_y = QComboBox()
+        for label, key in (("Y: centered", "none"), ("Y: bottom", "bottom"),
+                           ("Y: top", "top")):
+            self._bed_stop_y.addItem(label, key)
+        for cb in (self._bed_stop_x, self._bed_stop_y):
+            cb.setToolTip(
+                "The zone edge the stock registers against — the fixture's stop. "
+                "Centered places the blank in the middle of the zone on that axis.")
+            cb.setEnabled(False)
+            cb.currentIndexChanged.connect(self._on_zone_stop_changed)
+            stop_row.addWidget(cb, 1)
+        b.addLayout(stop_row)
+
+        # The regions as a tree (session two of M20): the zones, then the
+        # hold-downs folded away — the Guild bed has five zones and
+        # twenty-four screws, and the screws are rarely what is being tagged.
+        self._bed_region_list = QTreeWidget()
+        self._bed_region_list.setHeaderHidden(True)
+        self._bed_region_list.setRootIsDecorated(True)
+        self._bed_region_list.setIndentation(14)
+        self._bed_region_list.currentItemChanged.connect(self._on_bed_tree_current)
+        self._bed_region_list.itemExpanded.connect(self._on_bed_tree_folded)
+        self._bed_region_list.itemCollapsed.connect(self._on_bed_tree_folded)
+        self._bed_keepouts_expanded = False
+        row_h = self._bed_region_list.fontMetrics().height() + 6
+        self._bed_region_list.setMinimumHeight(4 * row_h)
+        self._bed_region_list.setMaximumHeight(9 * row_h + 6)
+        b.addWidget(self._bed_region_list)
+
+        self._bed_remove_btn = self._wt_icon_button(
+            "zone-remove", "Remove Region — delete the selected region (a polygonize "
+            "sliver, a leftover face)", self._on_remove_region)
+        self._bed_remove_btn.setEnabled(False)
+        self._bed_undo_btn = self._wt_icon_button(
+            "edit-undo", "Undo the last bed edit (remove / tag / load)", self._on_wt_undo)
+        self._bed_undo_btn.setEnabled(False)
+        self._bed_redo_btn = self._wt_icon_button(
+            "edit-redo", "Redo the last undone bed edit", self._on_wt_redo)
+        self._bed_redo_btn.setEnabled(False)
+        edit_row = QHBoxLayout()
+        for btn in (self._bed_remove_btn, self._bed_undo_btn, self._bed_redo_btn):
+            edit_row.addWidget(btn)
+        edit_row.addStretch(1)
+        self._bed_counts = muted("No bed loaded")
+        edit_row.addWidget(self._bed_counts, 2)
+        b.addLayout(edit_row)
+        v.addWidget(grp)
+        self._wt_group_zones = grp
+
+        # ── Parts: on the bed or not, where, and the selected one's controls ─
+        # One row per enabled component (BUILDPLAN M19): its box bound to
+        # `on_bed`, the zone it sits on and its chip — placed, unplaced, stale,
+        # collision (M20 §5.2.3). Unchecking leaves the part out of the program,
+        # the setup sheet and the bed simulation; its placement is kept.
+        grp = CollapsibleGroup("Parts")
+        b = grp.body_layout
+        self._bed_parts_list = QListWidget()
+        self._bed_parts_list.setToolTip(
+            "Which parts this bed program cuts. Uncheck a part to leave it off the "
+            "bed; its placement is kept, and checking it puts it back where it was. "
+            "Delete on a selected footprint does the same. The chip says whether "
+            "the part is placed, unplaced, stale (needs Generate) or in collision.")
+        self._bed_parts_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        row_h = self._bed_parts_list.fontMetrics().height() + 6
+        self._bed_parts_list.setFixedHeight(5 * row_h + 6)
+        self._bed_parts_list.itemChanged.connect(self._on_bed_part_item_changed)
+        self._bed_parts_list.currentRowChanged.connect(self._on_bed_parts_row)
+        b.addWidget(self._bed_parts_list)
+
+        self._bed_sel_label = muted("Click a footprint on the bed, or a row above, to select it.")
+        b.addWidget(self._bed_sel_label)
+
+        zone_row = QHBoxLayout()
+        zone_row.addWidget(QLabel("Zone:"))
+        self._bed_part_zone_combo = QComboBox()
+        self._bed_part_zone_combo.setToolTip(
+            "Send the selected part to another free zone of its role.")
+        self._bed_part_zone_combo.currentIndexChanged.connect(self._on_bed_part_zone_combo)
+        zone_row.addWidget(self._bed_part_zone_combo, 1)
+        b.addLayout(zone_row)
+
+        # Rotate the selected placement (M-UX): spin a temple so it loads into a
+        # slot, or flip the left temple 180° to face the right.
         rot_row = QHBoxLayout()
+        self._bed_snap_btn = self._wt_icon_button(
+            "nest-snap", "Snap to end (S) — push the selected part flush to its zone's "
+            "stop, or to whichever end it is nearer, keeping its orientation",
+            self._on_snap_selected_placement)
+        rot_row.addWidget(self._bed_snap_btn)
         self._bed_rot_ccw = QPushButton("⟲ 90°")
         self._bed_rot_cw = QPushButton("⟳ 90°")
         self._bed_rot_180 = QPushButton("180°")
-        self._bed_rot_ccw.setToolTip("Rotate the selected component 90° counter-clockwise.")
-        self._bed_rot_cw.setToolTip("Rotate the selected component 90° clockwise.")
-        self._bed_rot_180.setToolTip("Flip the selected component 180°.")
+        self._bed_rot_ccw.setToolTip("Rotate the selected part 90° counter-clockwise (Shift+R).")
+        self._bed_rot_cw.setToolTip("Rotate the selected part 90° clockwise (R).")
+        self._bed_rot_180.setToolTip("Flip the selected part 180°.")
         self._bed_rot_ccw.clicked.connect(lambda: self._rotate_selected_placement(-90.0))
         self._bed_rot_cw.clicked.connect(lambda: self._rotate_selected_placement(90.0))
         self._bed_rot_180.clicked.connect(lambda: self._rotate_selected_placement(180.0))
-        for b in (self._bed_rot_ccw, self._bed_rot_cw, self._bed_rot_180):
-            rot_row.addWidget(b)
-        v.addLayout(rot_row)
+        for btn in (self._bed_rot_ccw, self._bed_rot_cw, self._bed_rot_180):
+            rot_row.addWidget(btn)
+        b.addLayout(rot_row)
 
         ang_row = QHBoxLayout()
         ang_row.addWidget(QLabel("Angle:"))
@@ -3907,31 +3906,131 @@ class MainWindow(QMainWindow):
         self._bed_rot_spin.setSingleStep(5.0)
         self._bed_rot_spin.setWrapping(True)
         self._bed_rot_spin.setSuffix(" °")
-        self._bed_rot_spin.setToolTip(
-            "Set the selected component's absolute rotation on the bed.")
+        self._bed_rot_spin.setToolTip("The selected part's rotation on the bed.")
         self._bed_rot_spin.editingFinished.connect(self._on_bed_rot_spin)
         ang_row.addWidget(self._bed_rot_spin)
-        v.addLayout(ang_row)
+        b.addLayout(ang_row)
+
+        off_row = QHBoxLayout()
+        off_row.addWidget(QLabel("Offset:"))
+        self._bed_nudge_x = QDoubleSpinBox()
+        self._bed_nudge_y = QDoubleSpinBox()
+        for sp, prefix in ((self._bed_nudge_x, "X "), (self._bed_nudge_y, "Y ")):
+            sp.setKeyboardTracking(False)
+            sp.setRange(-5000.0, 5000.0)
+            sp.setDecimals(3)                 # a placement is kept to the micron
+            sp.setSingleStep(0.1)
+            sp.setPrefix(prefix)
+            sp.setSuffix(" mm")
+            sp.setToolTip("Where the part's design origin sits on the bed; the arrow "
+                          "keys nudge it by 0.1 mm (Shift: 1 mm).")
+            sp.editingFinished.connect(self._on_bed_nudge_spin)
+            off_row.addWidget(sp)
+        b.addLayout(off_row)
+        v.addWidget(grp)
+        self._wt_group_parts = grp
         self._set_rotation_controls_enabled(False)
 
-        self._bed_gen_btn = QPushButton("Generate Worktable Program")
+        # ── Program: place, generate, simulate, the sheet ───────────────────
+        grp = CollapsibleGroup("Program")
+        b = grp.body_layout
+        self._bed_nest_btn = self._wt_icon_button(
+            "nest-place", "Auto-place — put every part that has no placement on a free "
+            "zone of its role, at once; the placed ones stay where they are",
+            self._on_nest_components)
+        self._bed_replace_btn = self._wt_icon_button(
+            "nest-replace", "Re-place all — forget every placement, nudges and turns "
+            "included, and place every part again on its zone", self._on_replace_all)
+        self._bed_replace_btn.setEnabled(False)
+        self._bed_sheet_btn = self._wt_icon_button(
+            "sheet", "Setup sheet… — the last bed program's operations, tools and time",
+            self._on_show_bed_sheet)
+        self._bed_sheet_btn.setEnabled(False)
+        place_row = QHBoxLayout()
+        for btn in (self._bed_nest_btn, self._bed_replace_btn, self._bed_sheet_btn):
+            place_row.addWidget(btn)
+        place_row.addStretch(1)
+        b.addLayout(place_row)
+
+        gen_row = QHBoxLayout()
+        self._bed_gen_btn = QPushButton("Generate")
         self._bed_gen_btn.setToolTip(
-            "Post the whole nested bed as one worktable.nc.")
+            "Post the parts on the bed as one worktable.nc: a part whose settings "
+            "did not change is not rebuilt.")
         self._bed_gen_btn.setEnabled(False)
         self._bed_gen_btn.clicked.connect(self._on_generate_worktable_nest)
-        v.addWidget(self._bed_gen_btn)
+        self._wt_icon_buttons.append((self._bed_gen_btn, "op-gcode"))
+        self._bed_sim_btn = QPushButton("Simulate Bed")
+        self._bed_sim_btn.setToolTip(
+            "Simulate the whole bed's cut and verify it; generates the program "
+            "first when it is stale.")
+        self._bed_sim_btn.setEnabled(False)
+        self._bed_sim_btn.clicked.connect(self._on_simulate_bed)
+        self._wt_icon_buttons.append((self._bed_sim_btn, "sim-cut"))
+        gen_row.addWidget(self._bed_gen_btn)
+        gen_row.addWidget(self._bed_sim_btn)
+        b.addLayout(gen_row)
 
-        # The bed cut-sim is driven by the Simulation view toggle (M7.12 unified
-        # tab/view model) — no separate button. A hint points the maker there; the
-        # Sim toggle enables once the bed is nested.
-        self._bed_sim_hint = QLabel(
-            "To simulate the bed, switch to the Simulation view "
-            "(enabled once components are nested).")
-        self._bed_sim_hint.setObjectName("mutedSmallLabel")
-        self._bed_sim_hint.setWordWrap(True)
-        v.addWidget(self._bed_sim_hint)
+        self._bed_program_label = muted("No parts on the bed.")
+        b.addWidget(self._bed_program_label)
+        self._bed_nest_status = muted("")
+        b.addWidget(self._bed_nest_status)
+        v.addWidget(grp)
+        self._wt_group_program = grp
+
+        # A field in a scrolling sidebar must not take the wheel until it is
+        # clicked (session two of M20): a scroll down the panel rewrote the bed
+        # zero, a rotation, an offset.
+        from guildmodel.gui.widgets.quiet import make_quiet
+        make_quiet(self._bed_width_spin, self._bed_height_spin, self._bed_zero_combo,
+                   self._bed_holddown_spin, self._bed_role_combo, self._bed_part_zone_combo,
+                   self._bed_rot_spin, self._bed_nudge_x, self._bed_nudge_y,
+                   self._bed_stop_x, self._bed_stop_y)
+        self._apply_worktable_icons(getattr(self, "_dark_mode", False))
         v.addStretch(0)
         return page
+
+    def _wt_icon_button(self, icon: str, tip: str, slot) -> QToolButton:
+        """An icon-only button for the Worktable panel; its words live in the
+        tooltip, and its icon follows the theme (`_apply_worktable_icons`)."""
+        btn = QToolButton()
+        btn.setToolTip(tip)
+        btn.setIconSize(QSize(20, 20))
+        btn.clicked.connect(slot)
+        self._wt_icon_buttons.append((btn, icon))
+        return btn
+
+    def _apply_worktable_icons(self, dark: bool) -> None:
+        from guildmodel.gui import icons as icons_mod
+        for btn, name in getattr(self, "_wt_icon_buttons", []):
+            icon = icons_mod.themed_icon(name, dark)
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setIconSize(QSize(20, 20))
+
+    def _bed_region_items(self) -> list:
+        """The region rows of the tree, zones first, then the hold-downs."""
+        out = []
+        tree = self._bed_region_list
+        for t in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(t)
+            for c in range(top.childCount()):
+                out.append(top.child(c))
+        return out
+
+    def _bed_region_count(self) -> int:
+        return len(self._bed_region_items())
+
+    def _on_bed_tree_current(self, cur, _prev) -> None:
+        if cur is None:
+            return
+        zone_id = cur.data(0, Qt.ItemDataRole.UserRole)
+        if zone_id:
+            self._select_bed_region(zone_id)
+
+    def _on_bed_tree_folded(self, item) -> None:
+        if item is not None and item.data(0, Qt.ItemDataRole.UserRole) == "__keepouts__":
+            self._bed_keepouts_expanded = item.isExpanded()
 
     def _ensure_worktable(self):
         """The active bed, defaulting to the user's saved default bed if any, else the
@@ -3958,8 +4057,8 @@ class MainWindow(QMainWindow):
         self._bed_holddown_spin.setValue(self._worktable.hold_down_height_mm)
         self._bed_holddown_spin.blockSignals(False)
         self._refresh_worktable_panel()
-        if self._nest is not None:                 # re-show a prior nest (M7.6)
-            self._refresh_nest_render()
+        self._refresh_nest_render()                # the placements and their chips (M20)
+        self._act_export_nc.setEnabled(bool(self._wt_programs))   # the bed's own program (M20)
         self._right_dock.setVisible(self._act_sidebar.isChecked())
         # The dock page (→ worktable controls) is set by _switch_view / _sync_dock_page.
         self._switch_view(self._current_view)     # bed canvas, or the bed sim if cached
@@ -3985,6 +4084,7 @@ class MainWindow(QMainWindow):
         self._clear_nest()                 # a new bed invalidates any prior nest
         self.bed_canvas.set_worktable(wt)
         self._refresh_worktable_panel()
+        self._refresh_nest_render()        # the placements against the new zones (M20)
         self._bed_prompt_answered = False
         self._mark_dirty()
         if log_msg:
@@ -4231,7 +4331,7 @@ class MainWindow(QMainWindow):
             return
         self._bed_region_list.blockSignals(True)
         self._bed_region_list.clearSelection()
-        self._bed_region_list.setCurrentRow(-1)
+        self._bed_region_list.setCurrentItem(None)
         self._bed_region_list.blockSignals(False)
         self._bed_role_combo.setEnabled(False)
         self._bed_remove_btn.setEnabled(False)
@@ -4263,16 +4363,288 @@ class MainWindow(QMainWindow):
     # ---- nesting (BUILDPLAN M7.6) ------------------------------------------
 
     def _clear_nest(self) -> None:
+        """Drop the ops nest the last Generate built and the bed simulation it
+        fed (M20). The saved placements stay; `_clear_placements` is the one
+        that forgets them."""
         self._nest = None
         self._nest_specs = None
         self._bed_removal = None              # the bed sim no longer matches
         self._bed_report = None
+        self._update_view_toggles()
+
+    def _clear_placements(self) -> None:
+        """A new drawing: no placements and no bed program (M20)."""
+        from guildmodel.core.project.schema import WorktableNest
+        self._wt_nest = WorktableNest()
+        self._wt_programs = {}
+        self._wt_setup = self._wt_machine = self._wt_report = None
+        self._wt_last_violations = []
+        self._selected_placement_zone = None
+        self._clear_nest()
         if hasattr(self, "_bed_nest_status"):
             self._bed_nest_status.setText("")
-        if hasattr(self, "_bed_gen_btn"):
-            self._bed_gen_btn.setEnabled(False)
         self.bed_canvas.clear_nest()
+        self._refresh_bed_parts_list()
+        self._refresh_bed_program_state()
+
+    # ---- parts on the bed: ids, footprints, keys, chips (BUILDPLAN M19 / M20)
+
+    @staticmethod
+    def _component_id(ws) -> str:
+        """The id a saved placement is matched by: the part's kind, which is
+        unique in a project and stable across a reopen. Not the source
+        workspace — both base-curve blocks come from the front's drawing."""
+        return ws.kind.value
+
+    def _workspace_by_id(self, cid: str):
+        return next((w for w in self._workspaces if self._component_id(w) == cid), None)
+
+    def _workspace_by_zone(self, zone_id: str):
+        pl = self._wt_nest.on_zone(zone_id)
+        return self._workspace_by_id(pl.component_id) if pl is not None else None
+
+    def _bed_workspaces(self) -> list:
+        """The buildable components on the bed, in tab order."""
+        return [self._workspaces[i] for i in self._buildable_workspaces()
+                if self._workspaces[i].on_bed]
+
+    def _parts_off_bed(self) -> list:
+        """The buildable components left off the bed, for the setup sheet."""
+        return [self._workspaces[i] for i in self._buildable_workspaces()
+                if not self._workspaces[i].on_bed]
+
+    def _bed_targets(self) -> list:
+        """The parts the bed program cuts: on the bed, placed on a zone that exists."""
+        out = []
+        for ws in self._bed_workspaces():
+            pl = self._wt_nest.get(self._component_id(ws))
+            if pl is not None and self._zone_or_none(pl.zone_id) is not None:
+                out.append(ws)
+        return out
+
+    def _bed_can_generate(self) -> bool:
+        return bool(self._bed_targets())
+
+    def _bed_placements(self) -> list:
+        """The ops nest's placements for the parts on the bed (M19), once
+        Generate has built it; a placement no workspace speaks for is on the
+        bed."""
+        if self._nest is None:
+            return []
+        off = {ws.label for ws in self._workspaces if not ws.on_bed}
+        return [pl for pl in self._nest.placements if pl.label not in off]
+
+    def _params_of(self, ws):
+        """The part's parameters: the dock's for the active component, the
+        workspace's otherwise — the rule `_stock_top_for_kind` keeps."""
+        from guildmodel.core.project.schema import component_param_field
+        field = component_param_field(ws.kind)
+        active = ws is self._active_workspace()
+        if field == "castle":
+            return (self.params.castle_params() if active or ws.castle_params is None
+                    else ws.castle_params)
+        if field == "temple":
+            return (self.params.temple_params() if active or ws.temple_params is None
+                    else ws.temple_params)
+        return (self.params.block_params() if active or ws.block_params is None
+                else ws.block_params)
+
+    def _overrides_of(self, ws):
+        return (self.params.cam_overrides() if ws is self._active_workspace()
+                else ws.cam_overrides)
+
+    def _footprint_for(self, ws):
+        """The part's blank and cut in its design frame (`cam.placement`), or
+        None when it cannot be built."""
+        from guildmodel.core.cam.placement import (
+            footprint_block, footprint_front, footprint_temple)
+        from guildmodel.core.project.schema import ComponentKind
+        cid = self._component_id(ws)
+        tools = _tools_cfg()
+        try:
+            if ws.kind == ComponentKind.FRAME_FRONT and ws.castle_ready:
+                return footprint_front(cid, ws.label, ws.outline_poly, self._params_of(ws),
+                                       self.params.cam_params(), tools,
+                                       lenses=(ws.lens_od, ws.lens_os))
+            if ws.is_temple:
+                return footprint_temple(cid, ws.kind.value, ws.label, ws.outline_poly,
+                                        ws.hinge_polys, self._params_of(ws), tools)
+            if self._is_block_workspace(ws):
+                return footprint_block(cid, ws.kind.value, ws.label, ws.lens_od,
+                                       self._params_of(ws), tools)
+        except Exception:                                    # noqa: BLE001
+            self.append_log(f"[nest] {ws.label}: no footprint:\n" + traceback.format_exc())
+        return None
+
+    def _zone_or_none(self, zone_id: str):
+        if self._worktable is None or not zone_id:
+            return None
+        try:
+            return self._worktable.zone(zone_id)
+        except KeyError:
+            return None
+
+    def _part_key(self, ws) -> str:
+        """What the part's design-frame ops depend on (`cam.placement`)."""
+        from guildmodel.core.cam.placement import geometry_fingerprint, part_program_key
+        cam = self.params.cam_params()
+        return part_program_key(
+            ws.kind.value, self._params_of(ws), cam, cam_overrides=self._overrides_of(ws),
+            material=self.params.material_name(), machine=cam.machine_name,
+            geometry=geometry_fingerprint(ws.layers, ws.engraving_text, ws.drawing_offset),
+            tools=_tools_cfg())
+
+    def _program_key_for(self, ws, pl) -> str:
+        from guildmodel.core.cam.placement import placement_key, program_key
+        return program_key(self._part_key(ws),
+                           placement_key(pl, self._zone_or_none(pl.zone_id), self._worktable))
+
+    def _current_bed_key(self) -> str:
+        """The key the whole bed program has now: every target's."""
+        from guildmodel.core.cam.placement import bed_program_key
+        return bed_program_key([
+            self._program_key_for(ws, self._wt_nest.get(self._component_id(ws)))
+            for ws in self._bed_targets()])
+
+    def _placement_state(self, ws, *, keep_outs=None) -> tuple[str, str]:
+        """``(chip, where)`` for a component — *unplaced*, *off*, *collision*,
+        *stale* or *placed* (M20 §5.2.3) — and the zone it sits on."""
+        from guildmodel.core.cam.placement import footprint_violations, off_bed_violations
+        pl = self._wt_nest.get(self._component_id(ws))
+        if pl is None:
+            return ("unplaced", "not placed")
+        zone = self._zone_or_none(pl.zone_id)
+        if zone is None:
+            return ("unplaced", f"zone {pl.zone_id} is gone")
+        where = zone.label or zone.id
+        if not ws.on_bed:
+            return ("off", f"{where} (off)")
+        fp = self._footprint_for(ws)
+        if fp is None:
+            return ("unplaced", f"{where} · cannot be built")
+        if (footprint_violations(fp, pl, self._worktable, keep_outs)
+                or off_bed_violations(fp, pl, self._worktable)):
+            return ("collision", f"{where} · collision")
+        if not self._wt_programs or pl.program_key != self._program_key_for(ws, pl):
+            return ("stale", f"{where} · needs Generate")
+        return ("placed", where)
+
+    def _bed_program_state(self) -> tuple[str, str]:
+        """The worst chip over the parts on the bed, and what to do about it."""
+        states = [self._placement_state(ws)[0] for ws in self._bed_workspaces()]
+        if not states:
+            return ("none", "No parts on the bed.")
+        for chip, text in (
+                ("collision", "A part reaches a keep-out: move it, then Generate."),
+                ("unplaced", "A part is not placed: Auto-place, then Generate."),
+                ("stale", "The bed program needs Generate.")):
+            if chip in states:
+                return (chip, text)
+        if not self._wt_programs or self._wt_nest.program_key != self._current_bed_key():
+            return ("stale", "The bed program needs Generate.")
+        return ("placed", "The bed program is current.")
+
+    def _refresh_bed_parts_list(self) -> None:
+        """Rebuild the Parts rows: every enabled component, its box bound to
+        `on_bed`, where it sits and its chip (M19, M20)."""
+        if not hasattr(self, "_bed_parts_list"):
+            return
+        from guildmodel.core.cam.placement import keep_out_shapes
+        lst = self._bed_parts_list
+        keep = keep_out_shapes(self._worktable) if self._worktable is not None else []
+        rows: list[tuple[int, str, bool]] = []
+        for i, ws in enumerate(self._workspaces):
+            if not ws.enabled:
+                continue
+            _chip, where = self._placement_state(ws, keep_outs=keep)
+            rows.append((i, f"{ws.label}  ·  {where}", ws.on_bed))
+        lst.blockSignals(True)
+        have = [lst.item(r).data(Qt.ItemDataRole.UserRole) for r in range(lst.count())]
+        if have == [i for i, _, _ in rows]:
+            # The same parts: update the rows in place. A rebuild here would
+            # delete the very item whose check just changed, under its signal.
+            for r, (_, text, on) in enumerate(rows):
+                it = lst.item(r)
+                it.setText(text)
+                it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        else:
+            cur = lst.currentItem()
+            current = cur.data(Qt.ItemDataRole.UserRole) if cur is not None else None
+            lst.clear()
+            for i, text, on in rows:
+                it = QListWidgetItem(text)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+                it.setData(Qt.ItemDataRole.UserRole, i)
+                lst.addItem(it)
+                if i == current:
+                    lst.setCurrentItem(it)
+        lst.blockSignals(False)
+
+    def _refresh_bed_program_state(self) -> None:
+        """The Program group's line and its buttons follow the chips (M20)."""
+        if not hasattr(self, "_bed_program_label"):
+            return
+        _state, text = self._bed_program_state()
+        self._bed_program_label.setText(text)
+        can = self._bed_can_generate()
+        self._bed_gen_btn.setEnabled(can)
+        self._bed_sim_btn.setEnabled(can)
+        self._bed_sheet_btn.setEnabled(bool(self._wt_setup))
+        self._bed_replace_btn.setEnabled(bool(self._wt_nest.placements))
+        if self._on_worktable_tab():
+            self._act_export_nc.setEnabled(bool(self._wt_programs))
         self._update_view_toggles()
+
+    def _bed_parts_item(self, label: str):
+        for r in range(self._bed_parts_list.count()):
+            it = self._bed_parts_list.item(r)
+            i = it.data(Qt.ItemDataRole.UserRole)
+            if 0 <= i < len(self._workspaces) and self._workspaces[i].label == label:
+                return it
+        return None
+
+    def _on_bed_part_item_changed(self, item) -> None:
+        i = item.data(Qt.ItemDataRole.UserRole)
+        if not (0 <= i < len(self._workspaces)):
+            return
+        on = item.checkState() == Qt.CheckState.Checked
+        ws = self._workspaces[i]
+        if on != ws.on_bed:
+            self._set_part_on_bed(ws, on)
+
+    def _set_part_on_bed(self, ws, on: bool) -> None:
+        """Put a part on the bed or take it off: the one path the Parts box,
+        Delete on a footprint and the footprint's menu all go through."""
+        ws.on_bed = bool(on)
+        self.append_log(f"[nest] {ws.label}: {'on the bed' if on else 'off the bed'}.")
+        if not on:
+            pl = self._wt_nest.get(self._component_id(ws))
+            if pl is not None and pl.zone_id == self._selected_placement_zone:
+                self._selected_placement_zone = None
+        self._after_placement_change()
+
+    def _on_bed_parts_row(self, row: int) -> None:
+        """A Parts row was picked — select that part's footprint on the bed."""
+        if row < 0:
+            return
+        it = self._bed_parts_list.item(row)
+        i = it.data(Qt.ItemDataRole.UserRole) if it is not None else -1
+        if not (0 <= i < len(self._workspaces)):
+            return
+        ws = self._workspaces[i]
+        pl = self._wt_nest.get(self._component_id(ws)) if ws.on_bed else None
+        zone = pl.zone_id if pl is not None and self._zone_or_none(pl.zone_id) else None
+        self._selected_placement_zone = zone
+        self.bed_canvas.set_selected_placement(zone)
+        self._sync_rotation_controls()
+
+    def _on_bed_component_removed(self, zone_id: str) -> None:
+        """Delete on a selected footprint, or Remove from bed in its menu: the
+        same as unchecking the part's box."""
+        ws = self._workspace_by_zone(zone_id)
+        if ws is not None:
+            self._set_part_on_bed(ws, False)
 
     def _materials_cfg(self) -> dict:
         """Every material preset, as the posting paths read them."""
@@ -4294,178 +4666,321 @@ class MainWindow(QMainWindow):
                 mats_cfg.get(mat_name.split()[0].lower(), mats_cfg["acetate"]))
 
     def _on_nest_components(self) -> None:
-        """Generate each built component's program and auto-place it on a role-
-        matched zone of the tagged worktable (BUILDPLAN M7.6)."""
+        """Auto-place (BUILDPLAN M20): put every part without a placement on a
+        free zone of its role, at once and with no program in hand. Nest
+        Components used to generate every program first; generation is
+        Generate's now."""
+        from guildmodel.core.cam.placement import auto_place
         self._ensure_worktable()
         if not self._worktable.placement_zones():
             QMessageBox.information(
                 self, "No placement zones",
                 "Tag at least one zone with a component role (frame-front, temple, "
-                "base-curve) before nesting. Keep-outs alone hold nothing.")
+                "base-curve) before placing. Keep-outs alone hold nothing.")
             return
-        targets = self._buildable_workspaces()
-        if not targets:
+        self._sync_active_workspace()        # the active component's dock edits
+        fps = [fp for fp in (self._footprint_for(self._workspaces[i])
+                             for i in self._buildable_workspaces()) if fp is not None]
+        if not fps:
             QMessageBox.information(
-                self, "Nothing to nest",
-                "Open a drawing (or a matched frame) so there are built components "
-                "to place on the bed.")
+                self, "Nothing to place",
+                "Open a drawing (or a matched frame) so there are parts to place "
+                "on the bed.")
             return
-        if self._nest_thread is not None and self._nest_thread.isRunning():
-            return
-        self._sync_active_workspace()        # capture the active component's dock edits
-        specs = [self._build_spec(i) for i in targets]
-        self._nest_specs = specs             # kept for the whole-bed sim (M7.7)
-        self._bed_nest_btn.setEnabled(False)
-        self._bed_nest_status.setText("Nesting…")
-        self.append_log(f"[nest] Nesting {len(specs)} component(s) onto "
-                        f"{self._worktable.display_name}…")
+        made = auto_place(fps, self._worktable, self._wt_nest)
+        for pl in made:
+            ws = self._workspace_by_id(pl.component_id)
+            self.append_log(f"[nest] {ws.label if ws else pl.component_id} → {pl.zone_id} "
+                            f"at ({pl.dx:.1f}, {pl.dy:.1f}) mm, {pl.rotation_deg:.0f}°")
+        for fp in fps:
+            pl = self._wt_nest.get(fp.component_id)
+            if pl is None or self._zone_or_none(pl.zone_id) is None:
+                self.append_log(f"[nest]   {fp.label}: no free {fp.kind} zone — unplaced")
+        if not made:
+            self.append_log("[nest] Every part that has a zone is already placed.")
+        self._after_placement_change()
 
-        # The nest's ops ARE the worktable program — built on the posting grid,
-        # against the posting machine + material limits (INCIDENT-2026-07-29).
-        cam = self.params.cam_params()
-        machine, mat = self._posting_limits(cam)
-        self._nest_worker = NestWorker(specs, self._worktable, cam_params=cam,
-                                       machine=machine, material=mat,
-                                       materials=self._materials_cfg(),
-                                       material_name=self.params.material_name())
-        self._nest_worker.kernel = self._model_kernel()
-        self._nest_thread = QThread()
-        self._nest_worker.moveToThread(self._nest_thread)
-        self._nest_thread.started.connect(self._nest_worker.run)
-        self._nest_worker.progress.connect(self.append_log)
-        self._nest_worker.finished.connect(self._on_nest_finished)
-        self._nest_worker.error.connect(self._on_nest_error)
-        self._nest_worker.canceled.connect(self._on_nest_canceled)
-        self._nest_worker.finished.connect(self._nest_thread.quit)
-        self._nest_worker.error.connect(self._nest_thread.quit)
-        self._nest_worker.canceled.connect(self._nest_thread.quit)
-        dlg = self._open_progress("Nesting components")
-        self._nest_worker.stage.connect(self._on_stage)
-        dlg.canceled.connect(self._nest_worker.cancel, Qt.ConnectionType.DirectConnection)
-        self._nest_thread.start()
+    def _on_replace_all(self) -> None:
+        """Re-place all: forget every placement, nudges and turns included, and
+        auto-place afresh — behind a confirmation."""
+        from guildmodel.core.project.schema import WorktableNest
+        if self._wt_nest.placements:
+            res = QMessageBox.question(
+                self, "Re-place all",
+                "Forget every placement on the bed — nudges and rotations included — "
+                "and place every part again on its zone?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if res != QMessageBox.StandardButton.Yes:
+                return
+        self._wt_nest = WorktableNest()
+        self._selected_placement_zone = None
+        self._on_nest_components()
 
-    def _on_nest_finished(self, nest) -> None:
-        self._close_progress()
-        self._nest = nest
-        self._bed_nest_btn.setEnabled(True)
-        if nest.unplaced:
-            for p in nest.unplaced:
-                self.append_log(f"[nest]   {p.label}: no free {p.kind} zone — unplaced")
+    def _after_placement_change(self) -> None:
+        """A placement moved, turned, came or went: the ops nest and the bed
+        simulation describe a bed that no longer exists."""
+        self._clear_nest()
         self._refresh_nest_render()
         self._mark_dirty()
 
-    def _on_nest_error(self, tb: str) -> None:
-        self._close_progress()
-        self._bed_nest_btn.setEnabled(True)
-        self._bed_nest_status.setText("Nesting failed — see log")
-        self._report_failure("Nesting", "nest", tb)
-
-    def _on_nest_canceled(self) -> None:
-        self._close_progress()
-        self._bed_nest_btn.setEnabled(True)
-        self._bed_nest_status.setText("Nesting canceled")
-        self.append_log("[nest] Canceled.")
-
     def _refresh_nest_render(self) -> None:
-        """Build the bed-canvas footprints from the current nest, flag keep-out
-        collisions per placement (live after a nudge), and update the badge."""
-        from guildmodel.core.cam.layout import worktable_clearance_violations
-        if self._nest is None:
+        """The canvas footprints from the saved placements (M20): the blank and
+        the cut of every part on the bed under its placement, the live
+        clearance per footprint, then the status line, the rows and the
+        Program line."""
+        from guildmodel.core.cam.placement import (
+            footprint_violations, keep_out_shapes, off_bed_violations, placed)
+        if not hasattr(self, "bed_canvas"):
             return
+        if self._worktable is None:
+            self.bed_canvas.clear_nest()
+            self._refresh_bed_parts_list()
+            self._refresh_bed_program_state()
+            return
+        keep = keep_out_shapes(self._worktable)
         dicts: list[dict] = []
         all_viol: list[str] = []
-        for pl in self._nest.placements:
-            viol = worktable_clearance_violations(
-                pl.ops, self._worktable, skip_op_names=pl.drill_names)
+        n_on = n_off = n_unplaced = 0
+        for i in self._buildable_workspaces():
+            ws = self._workspaces[i]
+            pl = self._wt_nest.get(self._component_id(ws))
+            if pl is None or self._zone_or_none(pl.zone_id) is None:
+                n_unplaced += 1
+                continue
+            if not ws.on_bed:
+                n_off += 1
+                continue
+            fp = self._footprint_for(ws)
+            if fp is None:
+                continue
+            n_on += 1
+            viol = (footprint_violations(fp, pl, self._worktable, keep)
+                    + off_bed_violations(fp, pl, self._worktable))
             all_viol += viol
-            names = pl.contour_names | pl.drill_names
-            paths = [[(x, y) for x, y, *_ in path]
-                     for op in pl.ops if op.name in names for path in op.paths]
-            dicts.append({"zone_id": pl.zone_id, "role": pl.role, "label": pl.label,
-                          "paths": paths, "violated": bool(viol)})
+            cut = placed(fp.cut, pl)
+            geoms = list(getattr(cut, "geoms", [cut]))
+            paths = ([[(x, y) for x, y in g.exterior.coords] for g in geoms]
+                     + [[(x, y) for x, y in r.coords] for g in geoms for r in g.interiors])
+            blanks = ([[(x, y) for x, y in placed(fp.blank, pl).exterior.coords]]
+                      + [[(x, y) for x, y in placed(e, pl).exterior.coords] for e in fp.extras])
+            dicts.append({"zone_id": pl.zone_id, "component_id": pl.component_id,
+                          "role": ws.kind.value, "label": ws.label, "paths": paths,
+                          "blank": blanks, "violated": bool(viol)})
         self.bed_canvas.set_nest(dicts)
         for v in all_viol:
-            self.append_log(f"[nest] ⚠ {v}")
-        n = len(self._nest.placements)
-        bits = [f"{n} placed"]
-        if self._nest.unplaced:
-            bits.append(f"{len(self._nest.unplaced)} unplaced")
-        bits.append("clear" if not all_viol else f"{len(all_viol)} collision(s)")
-        self._bed_nest_status.setText("Nested: " + " · ".join(bits)
-                                      + ".  Drag a footprint to nudge it.")
-        self._bed_gen_btn.setEnabled(bool(self._nest.placements))
-        self._bed_removal = None              # a (re)nest invalidates the cached bed sim
-        self._bed_report = None
-        self._update_view_toggles()           # refresh the Sim-view toggle availability
-        self.status_lbl.setText(
-            "Bed nested — " + ("all clear" if not all_viol
-                               else f"{len(all_viol)} keep-out collision(s)"))
-        # Keep the selection valid (its placement may be gone after a re-nest), reflect
-        # it on the canvas, and update the rotate controls. The app owns the selection.
+            if v not in self._wt_last_violations:
+                self.append_log(f"[nest] ⚠ {v}")
+        self._wt_last_violations = list(all_viol)
+        if hasattr(self, "_bed_nest_status"):
+            if n_on or n_off or n_unplaced:
+                bits = [f"{n_on} on the bed"]
+                if n_off:
+                    bits.append(f"{n_off} off")
+                if n_unplaced:
+                    bits.append(f"{n_unplaced} unplaced")
+                bits.append("clear" if not all_viol else f"{len(all_viol)} collision(s)")
+                self._bed_nest_status.setText(
+                    " · ".join(bits) + ".  Drag a footprint to move it; R turns it.")
+            else:
+                self._bed_nest_status.setText("")
+        if n_on and self._on_worktable_tab():
+            self.status_lbl.setText(
+                "Bed — " + ("all clear" if not all_viol
+                            else f"{len(all_viol)} keep-out collision(s)"))
         if self._selected_placement() is None:
             self._selected_placement_zone = None
         self.bed_canvas.set_selected_placement(self._selected_placement_zone)
         self._sync_rotation_controls()
+        self._refresh_bed_parts_list()
+        self._refresh_bed_program_state()
 
-    def _on_component_nudged(self, zone_id: str, dx: float, dy: float) -> None:
-        """A footprint was dragged on the bed — shift its placement and re-check
-        clearance without regenerating any program (BUILDPLAN M7.6)."""
-        if self._nest is None:
+    def _on_component_nudged(self, zone_id: str, dx: float, dy: float,
+                             snap: bool = True) -> None:
+        """A footprint was dragged on the bed: move its placement and settle it
+        (M20 session two): a blank pushed past the pocket's wall comes back
+        flush to it, and one dropped within 3 mm of an end, the center or the
+        stop snaps there; Shift drops it exactly where it is. An arrow-key step
+        (`_on_component_stepped`) is never snapped, or a 0.1 mm step would be
+        undone at once."""
+        from guildmodel.core.cam.placement import nudge, snap_to_zone
+        pl = self._wt_nest.on_zone(zone_id)
+        ws = self._workspace_by_zone(zone_id)
+        if pl is None or ws is None:
             return
-        for pl in self._nest.placements:
-            if pl.zone_id == zone_id:
-                pl.nudge(dx, dy)
-                break
-        self._refresh_nest_render()
-        self._mark_dirty()
+        nudge(pl, dx, dy)
+        shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        zone = self._zone_or_none(pl.zone_id)
+        fp = self._footprint_for(ws) if (snap and not shift) else None
+        if zone is not None and fp is not None and snap_to_zone(fp, pl, zone):
+            self.append_log(f"[nest] {ws.label}: settled on {zone.label or zone.id}.")
+        self._after_placement_change()
 
-    # ---- rotate a placed component (M-UX) ----------------------------------
+    def _on_component_stepped(self, zone_id: str, dx: float, dy: float) -> None:
+        self._on_component_nudged(zone_id, dx, dy, snap=False)
+
+    # ---- the selected placement: rotate, nudge, send (M-UX → M20) ----------
 
     def _selected_placement(self):
-        """The nest placement currently selected on the bed, or None."""
-        if self._nest is None or not self._selected_placement_zone:
+        """The saved placement selected on the bed, or None. A part off the bed
+        is not on the canvas and cannot be selected."""
+        if not self._selected_placement_zone:
             return None
-        for pl in self._nest.placements:
-            if pl.zone_id == self._selected_placement_zone:
-                return pl
-        return None
+        pl = self._wt_nest.on_zone(self._selected_placement_zone)
+        ws = self._workspace_by_id(pl.component_id) if pl is not None else None
+        if (pl is None or ws is None or not ws.on_bed
+                or self._zone_or_none(pl.zone_id) is None):
+            return None
+        return pl
+
+    def _selected_workspace(self):
+        pl = self._selected_placement()
+        return self._workspace_by_id(pl.component_id) if pl is not None else None
 
     def _set_rotation_controls_enabled(self, on: bool) -> None:
         for w in (self._bed_rot_ccw, self._bed_rot_cw, self._bed_rot_180,
-                  self._bed_rot_spin):
+                  self._bed_rot_spin, self._bed_nudge_x, self._bed_nudge_y,
+                  self._bed_part_zone_combo, self._bed_snap_btn):
             w.setEnabled(on)
 
     def _sync_rotation_controls(self) -> None:
-        """Reflect the selected placement on the rotate controls (label + angle)."""
+        """Reflect the selected placement on the part controls: the label, the
+        angle, the offset, and the zones it could go to."""
         if not hasattr(self, "_bed_sel_label"):
             return
         pl = self._selected_placement()
-        if pl is None:
+        ws = self._selected_workspace()
+        cb = self._bed_part_zone_combo
+        if pl is None or ws is None:
             self._bed_sel_label.setText(
-                "Click a component footprint on the bed to select it.")
+                "Click a footprint on the bed, or a row above, to select it.")
             self._set_rotation_controls_enabled(False)
+            cb.blockSignals(True)
+            cb.clear()
+            cb.blockSignals(False)
             return
         self._set_rotation_controls_enabled(True)
-        self._bed_sel_label.setText(f"Selected: {pl.label}  ·  {pl.rotation_deg:.0f}°")
-        self._bed_rot_spin.blockSignals(True)
-        self._bed_rot_spin.setValue(pl.rotation_deg % 360.0)
-        self._bed_rot_spin.blockSignals(False)
+        self._bed_sel_label.setText(f"Selected: {ws.label}  ·  {pl.rotation_deg:.0f}°")
+        for sp, val in ((self._bed_rot_spin, pl.rotation_deg % 360.0),
+                        (self._bed_nudge_x, pl.dx), (self._bed_nudge_y, pl.dy)):
+            sp.blockSignals(True)
+            sp.setValue(val)
+            sp.blockSignals(False)
+        from guildmodel.core.project.schema import BedRole
+        taken = {p.zone_id for p in self._wt_nest.placements if p is not pl}
+        cb.blockSignals(True)
+        cb.clear()
+        for z in self._worktable.placement_zones():
+            if z.role != BedRole(ws.kind.value) or z.id in taken:
+                continue
+            cb.addItem(z.label or z.id, z.id)
+        idx = cb.findData(pl.zone_id)
+        cb.setCurrentIndex(idx if idx >= 0 else 0)
+        cb.blockSignals(False)
 
     def _on_bed_placement_selected(self, zone_id: str) -> None:
-        """A footprint was clicked on the bed — target the rotate controls at it."""
+        """A footprint was clicked on the bed — target the part controls at it,
+        and show the same part picked on the Parts rows (M19)."""
         self._selected_placement_zone = zone_id or None
         self._sync_rotation_controls()
+        if hasattr(self, "_bed_parts_list"):
+            ws = self._selected_workspace()
+            it = self._bed_parts_item(ws.label) if ws is not None else None
+            self._bed_parts_list.blockSignals(True)
+            self._bed_parts_list.setCurrentItem(it)
+            self._bed_parts_list.blockSignals(False)
 
     def _rotate_selected_placement(self, ddeg: float) -> None:
-        """Rotate the selected placement by `ddeg` about its center, then re-render +
-        re-check clearance (no program regeneration — the placed ops carry the spin)."""
         pl = self._selected_placement()
-        if pl is None:
+        ws = self._selected_workspace()
+        if pl is None or ws is None:
             return
-        pl.rotate(ddeg)
-        self._refresh_nest_render()          # re-extract footprints + re-check clearance
-        self.append_log(f"[nest] Rotated {pl.label} to {pl.rotation_deg:.0f}°.")
-        self._mark_dirty()
+        self._rotate_placement(ws, pl, ddeg)
+
+    def _rotate_placement(self, ws, pl, ddeg: float) -> None:
+        """Spin a placement about its blank's center, so it stays in its pocket."""
+        from guildmodel.core.cam.placement import rotate_about_center
+        fp = self._footprint_for(ws)
+        if fp is None:
+            return
+        rotate_about_center(fp, pl, ddeg)
+        self.append_log(f"[nest] Rotated {ws.label} to {pl.rotation_deg:.0f}°.")
+        self._after_placement_change()
+
+    def _on_snap_selected_placement(self) -> None:
+        pl = self._selected_placement()
+        if pl is not None:
+            self._snap_placement(pl.zone_id)
+
+    def _on_component_snapped(self, zone_id: str) -> None:
+        """S on the canvas, or its menu (M20 session two)."""
+        self._snap_placement(zone_id)
+
+    def _snap_placement(self, zone_id: str) -> None:
+        """Push the part flush to its zone's stop, else to the end it is nearer,
+        keeping the orientation — the Snap the maker asked for: a 160 mm blank
+        flipped 180° in a 170 mm zone goes flush to either end as it is."""
+        from guildmodel.core.cam.placement import register_to_zone
+        pl = self._wt_nest.on_zone(zone_id)
+        ws = self._workspace_by_zone(zone_id)
+        zone = self._zone_or_none(zone_id)
+        if pl is None or ws is None or zone is None:
+            return
+        from guildmodel.core.cam.placement import zone_targets
+        fp = self._footprint_for(ws)
+        if fp is None:
+            return
+        self._selected_placement_zone = zone_id
+        tx, ty = zone_targets(fp, pl, zone)
+        if register_to_zone(fp, pl, zone, nearest=True):
+            name_x = min(tx.items(), key=lambda kv: abs(kv[1]))[0]
+            name_y = min(ty.items(), key=lambda kv: abs(kv[1]))[0]
+            where = {"left": "the left end", "right": "the right end"}.get(name_x) or {
+                "bottom": "the bottom", "top": "the top"}.get(name_y, "the center")
+            self.append_log(f"[nest] {ws.label}: snapped to {where} of {zone.label or zone.id}.")
+            self._after_placement_change()
+        else:
+            self._sync_rotation_controls()
+
+    def _on_component_rotated(self, zone_id: str, ddeg: float) -> None:
+        """R / Shift+R on the canvas, or its menu (M20)."""
+        pl = self._wt_nest.on_zone(zone_id)
+        ws = self._workspace_by_zone(zone_id)
+        if pl is None or ws is None:
+            return
+        self._selected_placement_zone = zone_id
+        self._rotate_placement(ws, pl, ddeg)
+
+    def _on_component_sent(self, zone_id: str, target_zone_id: str) -> None:
+        """Send to zone… from the canvas menu (M20)."""
+        self._send_placement_to(zone_id, target_zone_id)
+
+    def _send_placement_to(self, zone_id: str, target_zone_id: str) -> None:
+        from guildmodel.core.cam.placement import send_to_zone
+        pl = self._wt_nest.on_zone(zone_id)
+        ws = self._workspace_by_zone(zone_id)
+        zone = self._zone_or_none(target_zone_id)
+        if pl is None or ws is None or zone is None or target_zone_id == zone_id:
+            return
+        if self._wt_nest.on_zone(target_zone_id) is not None:
+            QMessageBox.information(self, "Zone taken",
+                                    f"{zone.label or zone.id} already holds a part.")
+            return
+        fp = self._footprint_for(ws)
+        if fp is None:
+            return
+        send_to_zone(fp, pl, zone)
+        self._selected_placement_zone = target_zone_id
+        self.append_log(f"[nest] {ws.label} → {zone.label or zone.id}.")
+        self._after_placement_change()
+
+    def _on_bed_part_zone_combo(self, idx: int) -> None:
+        pl = self._selected_placement()
+        if pl is None or idx < 0:
+            return
+        target = self._bed_part_zone_combo.itemData(idx)
+        if target and target != pl.zone_id:
+            self._send_placement_to(pl.zone_id, target)
 
     def _on_bed_rot_spin(self) -> None:
         """The absolute-angle spinbox was edited — rotate to that bed angle."""
@@ -4475,6 +4990,18 @@ class MainWindow(QMainWindow):
         delta = float(self._bed_rot_spin.value()) - pl.rotation_deg
         if abs(delta) > 1e-6:
             self._rotate_selected_placement(delta)
+
+    def _on_bed_nudge_spin(self) -> None:
+        """The X / Y offset spins: an absolute placement."""
+        from guildmodel.core.cam.placement import nudge
+        pl = self._selected_placement()
+        if pl is None:
+            return
+        dx = float(self._bed_nudge_x.value()) - pl.dx
+        dy = float(self._bed_nudge_y.value()) - pl.dy
+        if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+            nudge(pl, dx, dy)
+            self._after_placement_change()
 
     def _bed_safe_z(self, cam) -> float:
         """Safe rapid height above the tallest obstacle on the bed — the tallest
@@ -4488,7 +5015,7 @@ class MainWindow(QMainWindow):
         rapid of the bed program 1 mm inside the pad block.
         """
         tops: list[float] = []
-        for pl in self._nest.placements:
+        for pl in self._bed_placements():
             z = self._worktable.zone(pl.zone_id) if self._worktable else None
             if z is not None and z.stock_thickness_mm:
                 tops.append(float(z.stock_thickness_mm))
@@ -4529,6 +5056,7 @@ class MainWindow(QMainWindow):
         self._bed_removal = None
         self._bed_report = None
         self._update_view_toggles()
+        self._refresh_nest_render()                # the keys moved (M20)
 
     def _on_bed_zero_changed(self, idx: int) -> None:
         """Bed-zero datum edited (M11) — store it on the worktable. The whole-bed
@@ -4539,24 +5067,99 @@ class MainWindow(QMainWindow):
         mode, x_ref, y_ref = self._bed_zero_combo.itemData(idx)
         self._worktable.program_zero = ProgramZero(mode=mode, x_ref=x_ref, y_ref=y_ref)
         self._mark_dirty()
+        self._refresh_nest_render()                # the keys moved (M20)
 
-    def _on_generate_worktable_nest(self) -> None:
-        """Post the whole nested bed as one ``worktable.nc`` (BUILDPLAN M7.7).
+    def _on_generate_worktable_nest(self, *, sync: bool = False, then=None) -> None:
+        """Generate (BUILDPLAN M20): post the parts on the bed as one
+        ``worktable.nc``.
 
-        Generalises the M6.5 fixture worktable onto the user-tagged ``Worktable`` +
-        the multi-component nest (M7.6): one combined, tool-change-minimized program,
-        linted + keep-out-clearance-checked + cut-timed over the whole bed, stored in
-        the project. The component programs were already generated by Nest Components
-        — on the posting grid, under the posting machine limits — so this is a fast
-        post (no relief rebuild). Per-component tabs still Generate each part on its
-        own — this is the bed-wide output."""
+        Two halves. First, every target part whose design-frame ops are missing
+        or whose key moved is regenerated — off-thread behind the progress
+        dialog, or inline for ``sync`` — and cached on its workspace; a part
+        whose key still matches is not rebuilt. Then the saved placements turn
+        the ops into the machine-coordinate nest, which is scheduled, posted,
+        linted, checked against the keep-outs op by op and cut-timed exactly as
+        before, and stored in the worktable's own slot. ``then`` runs once the
+        program is posted (Simulate Bed). Nest Components used to do the first
+        half for every part on every nest; the component tabs still Generate
+        each part on its own."""
         self._commit_typed_value()
-        if self._nest is None or not self._nest.placements:
+        self._ensure_worktable()
+        targets = self._bed_targets()
+        if not targets:
             QMessageBox.information(
-                self, "Nest first",
-                "Click Nest Components to place the model on the bed, then generate "
-                "the worktable program.")
+                self, "Place first",
+                "Auto-place the parts on the bed, with at least one checked on the "
+                "Parts list, then generate the worktable program.")
             return
+        if self._parts_thread is not None and self._parts_thread.isRunning():
+            return
+        self._sync_active_workspace()        # the active component's dock edits
+        todo = [ws for ws in targets
+                if not ws.bed_ops or ws.bed_ops.get("key") != self._part_key(ws)]
+        self._wt_after_generate = then
+        if not todo:
+            self._finish_bed_generate()
+            return
+        specs = []
+        for ws in todo:
+            spec = self._build_spec(self._workspaces.index(ws))
+            spec["component_id"] = self._component_id(ws)
+            spec["part_key"] = self._part_key(ws)
+            specs.append(spec)
+        self.append_log(f"[gcode] Worktable: generating {len(specs)} of {len(targets)} "
+                        "part program(s)…")
+        cam = self.params.cam_params()
+        machine, mat = self._posting_limits(cam)
+        worker = PartsWorker(specs, cam_params=cam, machine=machine, material=mat,
+                             materials=self._materials_cfg(),
+                             material_name=self.params.material_name())
+        worker.kernel = self._model_kernel()
+        worker.progress.connect(self.append_log)
+        worker.finished.connect(self._on_bed_parts_ready)
+        worker.error.connect(self._on_bed_parts_error)
+        worker.canceled.connect(self._on_bed_parts_canceled)
+        self._parts_worker = worker
+        if sync:
+            worker.run()
+            return
+        self._bed_gen_btn.setEnabled(False)
+        self._parts_thread = QThread()
+        worker.moveToThread(self._parts_thread)
+        self._parts_thread.started.connect(worker.run)
+        worker.finished.connect(self._parts_thread.quit)
+        worker.error.connect(self._parts_thread.quit)
+        worker.canceled.connect(self._parts_thread.quit)
+        dlg = self._open_progress("Generating the worktable program")
+        worker.stage.connect(self._on_stage)
+        dlg.canceled.connect(worker.cancel, Qt.ConnectionType.DirectConnection)
+        self._parts_thread.start()
+
+    def _on_bed_parts_ready(self, parts) -> None:
+        self._close_progress()
+        for part in parts:
+            ws = self._workspace_by_id(part.component_id)
+            if ws is None:
+                continue
+            ws.bed_ops = {"key": part.part_key, "ops": part.ops,
+                          "contour": set(part.contour_names), "drill": set(part.drill_names),
+                          "relief": part.relief}      # the bed sim's target (M20)
+        self._finish_bed_generate()
+
+    def _on_bed_parts_error(self, tb: str) -> None:
+        self._close_progress()
+        self._wt_after_generate = None
+        self._refresh_bed_program_state()
+        self._report_failure("Worktable program", "gcode", tb)
+
+    def _on_bed_parts_canceled(self) -> None:
+        self._close_progress()
+        self._wt_after_generate = None
+        self._refresh_bed_program_state()
+        self.append_log("[gcode] Worktable program canceled.")
+
+    def _finish_bed_generate(self) -> None:
+        """The second half: the saved placements, the cached ops, one program."""
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, build_tool_settings, op_summaries, write_castle_program,
         )
@@ -4564,26 +5167,43 @@ class MainWindow(QMainWindow):
             MachineDynamics, estimate_program, format_report,
         )
         from guildmodel.core.cam.layout import (
-            build_nest_program, worktable_clearance_violations,
+            BedPart, build_nest_program, worktable_clearance_violations,
         )
+        from guildmodel.core.cam.placement import nest_from_placements
         from guildmodel.core.post.grbl import GRBLPost
         from guildmodel.core.post.machine import clamp_cam_to_machine, lint_program
 
+        then, self._wt_after_generate = self._wt_after_generate, None
+        targets = self._bed_targets()
+        parts = []
+        for ws in targets:
+            c = ws.bed_ops
+            if not c or c.get("key") != self._part_key(ws):
+                self.append_log(f"[gcode] {ws.label}: its program is not current — "
+                                "Generate again.")
+                self._refresh_bed_program_state()
+                return
+            parts.append(BedPart(ws.kind.value, ws.label, "", c["ops"],
+                                 set(c["contour"]), set(c["drill"]),
+                                 component_id=self._component_id(ws)))
         try:
+            nest = nest_from_placements(parts, self._wt_nest, self._worktable)
+            self._nest = nest
+            self._nest_specs = [self._build_spec(self._workspaces.index(ws)) for ws in targets]
             cam = self.params.cam_params() or CastleCamParams()
             tools_cfg = _tools_cfg()
             machine, mat = self._posting_limits(cam)
             mat_name = self.params.material_name()
-            # The same clamp Nest Components generated these ops under — the post
-            # must not re-open feeds/stepdown the ops were built to respect.
+            # The same clamp the parts were generated under — the post must not
+            # re-open feeds/stepdown the ops were built to respect.
             cam, clamp = clamp_cam_to_machine(cam, machine, mat)
             for w in clamp.warnings:
                 self.append_log(f"[gcode] machine: {w}")
 
-            bed = build_nest_program(self._nest)
+            bed = build_nest_program(nest)
             if not bed.ops:
                 QMessageBox.information(self, "Nothing to cut",
-                                       "The nested components produced no toolpaths.")
+                                       "The placed components produced no toolpaths.")
                 return
             self.append_log(
                 f"[gcode] Worktable: {len(bed.placements)} part(s), {len(bed.ops)} ops, "
@@ -4596,6 +5216,8 @@ class MainWindow(QMainWindow):
             for w in ts_warns:
                 self.append_log(f"[gcode] tool: {w}")
 
+            # The exact check, op by op, now that the ops exist (M20 §5.2.2):
+            # warnings in the setup sheet and the Inspector.
             violations = worktable_clearance_violations(
                 bed.ops, self._worktable, skip_op_names=bed.drill_op_names)
             for vmsg in violations:
@@ -4651,10 +5273,12 @@ class MainWindow(QMainWindow):
                                  "Could not post the worktable program — see the log.")
             return
 
-        self._last_programs = {"worktable.nc": text}
-        self._last_machine = machine.model_dump()
-        self._last_report = None
-        self._last_setup = {
+        off_bed = self._parts_off_bed()
+        unplaced = [ws.label for ws in self._bed_workspaces() if ws not in targets]
+        self._wt_programs = {"worktable.nc": text}
+        self._wt_machine = machine.model_dump()
+        self._wt_report = None
+        self._wt_setup = {
             "component": "worktable",
             "material": mat_name,
             "machine": machine.display_name,
@@ -4662,6 +5286,10 @@ class MainWindow(QMainWindow):
                 {"label": pl.label, "kind": pl.kind, "zone": pl.zone_id,
                  "x_mm": pl.dx, "y_mm": pl.dy, "rotation_deg": pl.rotation_deg}
                 for pl in bed.placements],
+            # The parts left off on purpose (M19), so the operator reading the
+            # sheet knows the program is partial by choice, not by accident.
+            "not_on_bed": [{"label": ws.label, "kind": ws.kind.value} for ws in off_bed],
+            "clearance_warnings": list(violations),
             "tools": [
                 {"number": s.number, "name": n, "diameter_mm": s.diameter_mm,
                  "spindle_rpm": s.spindle_rpm, "feed_rate_mmpm": s.feed_rate_mmpm}
@@ -4670,6 +5298,15 @@ class MainWindow(QMainWindow):
             "est_total_min": round(report.total_seconds / 60, 2),
             "ops": rows,
         }
+        self._wt_rows = rows
+        # The keys the program was posted under: the chips read "placed"
+        # against them, here and on reopen.
+        for ws in targets:
+            pl = self._wt_nest.get(self._component_id(ws))
+            pl.program_key = self._program_key_for(ws, pl)
+        self._wt_nest.program_key = self._current_bed_key()
+        self._bed_removal = None              # a simulation of the old program
+        self._bed_report = None
         self._act_export_nc.setEnabled(True)
         self.append_log(f"[gcode] worktable.nc generated ({len(text):,} bytes).")
 
@@ -4678,15 +5315,19 @@ class MainWindow(QMainWindow):
                    f"{report.total_seconds / 60:.1f} min incl. changes.\n\n"
                    "Stored in the project (Ctrl+S to save) or File ▸ Export G-code "
                    "for a standalone .nc.")
+        if off_bed:
+            summary += ("\n\nNot on this bed: "
+                        + ", ".join(ws.label for ws in off_bed) + ".")
         warn_bits = []
-        if self._nest.unplaced:
-            warn_bits.append(f"{len(self._nest.unplaced)} component(s) unplaced")
+        if unplaced:
+            warn_bits.append(f"{len(unplaced)} part(s) unplaced")
         if violations:
             warn_bits.append(f"{len(violations)} clearance warning(s)")
         if machine_warnings:
             warn_bits.append(f"{len(machine_warnings)} machine warning(s)")
         if warn_bits:
             summary += "\n\n⚠ " + " · ".join(warn_bits) + " — see log."
+        self._wt_summary = summary
 
         # Fold straight into an open project (single DXF or whole .gdraw model — both
         # are embedded, so the container stays self-contained).
@@ -4700,26 +5341,60 @@ class MainWindow(QMainWindow):
         else:
             self._mark_dirty()       # program held in memory until Save Project
         self.status_lbl.setText("Worktable G-code ready")
-        QMessageBox.information(self, "Worktable program", summary)
-        self._maybe_prompt_default_bed()   # offer to keep this bed as the default
+        self._refresh_nest_render()
+        if then is not None:
+            then()
+        else:
+            self._on_show_bed_sheet()
+
+    def _on_show_bed_sheet(self) -> None:
+        """The last bed program's setup sheet, the same dialog the component
+        path shows (M20 §5.2.4), bounded to half the screen."""
+        if not self._wt_setup:
+            return
+        rows = self._wt_setup.get("ops") or []
+        summary = getattr(self, "_wt_summary", None) or (
+            f"Worktable program — {len(self._wt_setup.get('parts') or [])} part(s), "
+            f"{self._wt_setup.get('est_total_min', 0):.1f} min incl. changes.")
+        OpSummaryDialog(rows, summary, self,
+                        title="Worktable program — operation summary").exec()
+
+    def _on_simulate_bed(self) -> None:
+        """Simulate Bed on the panel (M20 §5.2.4): the Simulation view of the
+        whole bed, generated first when the program is stale."""
+        self._switch_view(2, run=True)
 
     def _start_bed_sim(self) -> None:
         """Run the whole nested bed's cut sim off-thread (driven by the Sim view on
         the Worktable tab, BUILDPLAN M7.12). The Sim toggle is only enabled when the
         bed is nested and the view is already in sim mode (the caller switched it)."""
-        if self._nest is None or not self._nest.placements or not self._nest_specs:
+        if not self._bed_can_generate():
             return
         if self._sim_thread is not None and self._sim_thread.isRunning():
+            return
+        # The simulation is of the posted program: a stale or missing bed
+        # program is generated first, and the sim follows (M20).
+        if (self._nest is None or not self._wt_programs or not self._nest_specs
+                or self._wt_nest.program_key != self._current_bed_key()):
+            self._on_generate_worktable_nest(then=self._start_bed_sim)
+            return
+        placements = self._bed_placements()
+        if not placements:
             return
         self.view3d.clear_sim()                   # no stale block while this runs
         self.status_lbl.setText("Simulating bed…")
         self.append_log("[bed-sim] Simulating the whole nested bed…")
 
+        from guildmodel.core.relief.castle import PREVIEW_RES_MM
+        reliefs = {ws.label: ws.bed_ops["relief"] for ws in self._bed_targets()
+                   if ws.bed_ops and ws.bed_ops.get("relief") is not None}
         self._sim_worker = BedSimWorker(
-            self._nest_specs, self._nest.placements,
+            self._nest_specs, placements,
             (self._worktable.work_area_width_mm, self._worktable.work_area_height_mm),
             cam_params=self.params.effective_cam_params(),
-            material_name=self.params.effective_material_name())
+            material_name=self.params.effective_material_name(),
+            program_text=self._wt_programs.get("worktable.nc"), reliefs=reliefs,
+            playback_resolution=PREVIEW_RES_MM)
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
@@ -4815,32 +5490,36 @@ class MainWindow(QMainWindow):
     def _on_bed_region_clicked(self, zone_id: str) -> None:
         self._select_bed_region(zone_id or None)
 
-    def _on_bed_list_row(self, row: int) -> None:
-        if row < 0:
-            return
-        item = self._bed_region_list.item(row)
-        if item is not None:
-            self._select_bed_region(item.data(Qt.ItemDataRole.UserRole))
-
     def _select_bed_region(self, zone_id) -> None:
         from guildmodel.core.project.schema import BedRole, bed_role_label
         self.bed_canvas.set_selected(zone_id)
-        self._bed_region_list.blockSignals(True)
+        tree = self._bed_region_list
+        tree.blockSignals(True)
         matched = False
-        for i in range(self._bed_region_list.count()):
-            it = self._bed_region_list.item(i)
-            if it.data(Qt.ItemDataRole.UserRole) == zone_id:
-                self._bed_region_list.setCurrentRow(i)
+        for it in self._bed_region_items():
+            if it.data(0, Qt.ItemDataRole.UserRole) == zone_id:
+                parent = it.parent()
+                if parent is not None and not parent.isExpanded():
+                    parent.setExpanded(True)       # a screw picked on the bed unfolds its group
+                tree.setCurrentItem(it)
                 matched = True
                 break
         if not matched:
-            self._bed_region_list.clearSelection()
-        self._bed_region_list.blockSignals(False)
+            tree.clearSelection()
+            tree.setCurrentItem(None)
+        tree.blockSignals(False)
 
         self._bed_role_combo.setEnabled(zone_id is not None)
         self._bed_remove_btn.setEnabled(zone_id is not None)
-        if zone_id is not None and self._worktable is not None:
-            z = self._worktable.zone(zone_id)
+        z = (self._worktable.zone(zone_id)
+             if zone_id is not None and self._worktable is not None else None)
+        for cb, val in ((self._bed_stop_x, z.stop_x if z else "none"),
+                        (self._bed_stop_y, z.stop_y if z else "none")):
+            cb.setEnabled(z is not None and z.is_placement())
+            cb.blockSignals(True)
+            cb.setCurrentIndex(max(0, cb.findData(val)))
+            cb.blockSignals(False)
+        if z is not None:
             self._bed_role_combo.blockSignals(True)
             idx = self._bed_role_combo.findData(BedRole(z.role).value)
             if idx >= 0:
@@ -4864,17 +5543,51 @@ class MainWindow(QMainWindow):
         self.append_log(f"[worktable] {zid} → {bed_role_label(z.role)}")
         self._mark_dirty()
 
+    def _on_zone_stop_changed(self, _idx: int) -> None:
+        """The selected zone's stop edge (M20 session two): an undoable bed
+        edit, saved with the bed. The parts on it move at the next Snap or
+        Auto-place, not by themselves."""
+        zid = self.bed_canvas.selected_id()
+        if zid is None or self._worktable is None:
+            return
+        z = self._worktable.zone(zid)
+        sx = self._bed_stop_x.currentData()
+        sy = self._bed_stop_y.currentData()
+        if (sx, sy) == (z.stop_x, z.stop_y):
+            return
+        self._wt_snapshot()                 # undoable
+        z.stop_x, z.stop_y = sx, sy
+        self._bed_prompt_answered = False
+        self.append_log(f"[worktable] {zid}: stop X {sx}, Y {sy}")
+        self._mark_dirty()
+        self._sync_rotation_controls()
+
     def _refresh_worktable_panel(self, keep_selection=None) -> None:
         from guildmodel.core.project.schema import bed_role_label
+        from guildmodel.core.project.schema import BedRole
         wt = self._worktable
-        self._bed_region_list.blockSignals(True)
-        self._bed_region_list.clear()
+        tree = self._bed_region_list
+        tree.blockSignals(True)
+        tree.clear()
         if wt is not None:
-            for z in wt.zones:
-                it = QListWidgetItem(f"{z.label or z.id}  ·  {bed_role_label(z.role)}")
-                it.setData(Qt.ItemDataRole.UserRole, z.id)
-                self._bed_region_list.addItem(it)
-        self._bed_region_list.blockSignals(False)
+            zones = [z for z in wt.zones if z.role != BedRole.KEEP_OUT]
+            keeps = [z for z in wt.zones if z.role == BedRole.KEEP_OUT]
+            for title, members, key, expanded in (
+                    (f"Zones ({len(zones)})", zones, "__zones__", True),
+                    (f"Hold-downs ({len(keeps)})", keeps, "__keepouts__",
+                     self._bed_keepouts_expanded)):
+                if not members:
+                    continue
+                top = QTreeWidgetItem([title])
+                top.setData(0, Qt.ItemDataRole.UserRole, key)
+                top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                for z in members:
+                    it = QTreeWidgetItem([f"{z.label or z.id}  ·  {bed_role_label(z.role)}"])
+                    it.setData(0, Qt.ItemDataRole.UserRole, z.id)
+                    top.addChild(it)
+                tree.addTopLevelItem(top)
+                top.setExpanded(expanded)
+        tree.blockSignals(False)
 
         for btn in (self._bed_save_btn, self._bed_setdefault_btn):
             btn.setEnabled(wt is not None)
@@ -4957,8 +5670,20 @@ class MainWindow(QMainWindow):
         self._act_save_project.setToolTip("Save the project  (Ctrl+S)")
         self._act_save_project.triggered.connect(self._on_save_project)
         self._act_save_project_as = QAction("Save Project As…", self)
-        self._act_save_project_as.setToolTip("Save the project to a new .gmodel file")
+        self._act_save_project_as.setShortcut("Ctrl+Shift+S")
+        self._act_save_project_as.setToolTip(
+            "Save the project to a new .gmodel file  (Ctrl+Shift+S)")
         self._act_save_project_as.triggered.connect(self._on_save_project_as)
+
+        # Re-read the open drawing from disk (M20): the loop a maker lives in
+        # is tweak in GuildDraw, save, see it here. Every part's settings and
+        # placement survive; the geometry is re-derived.
+        self._act_reload = QAction("Reload Drawing", self)
+        self._act_reload.setShortcut("Ctrl+R")
+        self._act_reload.setToolTip(
+            "Re-read the open drawing from disk, keeping every part's settings  (Ctrl+R)")
+        self._act_reload.setEnabled(False)
+        self._act_reload.triggered.connect(self._on_reload_drawing)
 
         self._act_build = QAction("Build 3D Model", self)
         self._act_build.setShortcut("F5")
@@ -5016,12 +5741,6 @@ class MainWindow(QMainWindow):
         self._act_export_nc.changed.connect(
             lambda: self._act_send.setEnabled(self._act_export_nc.isEnabled()))
 
-        self._act_worktable = QAction("Generate Worktable Program", self)
-        self._act_worktable.setToolTip(
-            "Cut the frame and its base-curve block in one bed program")
-        self._act_worktable.setEnabled(False)
-        self._act_worktable.triggered.connect(self._on_generate_worktable)
-
         self._act_view2d = QAction("2D Outline", self, checkable=True)
         self._act_view2d.setChecked(True)
         self._act_view2d.setToolTip("2D outline view")
@@ -5034,9 +5753,9 @@ class MainWindow(QMainWindow):
         # it cut-sims that part; on the Worktable tab it cut-sims the whole bed.
         # Disabled until there's something to simulate, guiding the maker (M7.12).
         self._act_simulate = QAction("Simulation", self, checkable=True)
-        self._act_simulate.setShortcut("Ctrl+Shift+S")
+        self._act_simulate.setShortcut("F6")
         self._act_simulate.setToolTip(
-            "Simulate the cut and verify the result  (Ctrl+Shift+S)")
+            "Simulate the cut and verify the result  (F6)")
         self._act_simulate.setEnabled(False)
         self._act_simulate.triggered.connect(lambda: self._switch_view(2, run=True))
 
@@ -5299,6 +6018,7 @@ class MainWindow(QMainWindow):
             ("open_project", self._act_open_project, "Open Project", "input", False),
             ("save_project", self._act_save_project, "Save Project", "input", False),
             ("save_project_as", self._act_save_project_as, "Save Project As", "input", False),
+            ("reload", self._act_reload, "Reload Drawing", "input", False),
             ("build", self._act_build, "Build 3D Model", "build", True),
             ("gcode", self._act_gcode, "Generate G-code", "build", True),
             ("export_nc", self._act_export_nc, "Export G-code", "build", True),
@@ -5309,7 +6029,6 @@ class MainWindow(QMainWindow):
             ("export_formed", self._act_export_formed, "Export Formed STL", "build", False),
             # ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),  # retired rc2
             ("block", self._act_block, "Generate Base-Curve Block", "build", False),
-            ("worktable_gen", self._act_worktable, "Generate Worktable Program", "build", False),
             ("view2d", self._act_view2d, "2D View", "view", True),
             ("view3d", self._act_view3d, "3D View", "view", True),
             ("simulate", self._act_simulate, "Simulation", "view", True),
@@ -5371,6 +6090,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_open_model)
         self._recent_menu = file_menu.addMenu("Open &Recent")
         self._rebuild_recent_menu()
+        file_menu.addAction(self._act_reload)
         file_menu.addSeparator()
         file_menu.addAction(self._act_open_project)
         file_menu.addAction(self._act_save_project)
@@ -5379,7 +6099,6 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_build)
         file_menu.addAction(self._act_gcode)
         file_menu.addAction(self._act_block)
-        file_menu.addAction(self._act_worktable)
         file_menu.addAction(self._act_export_nc)
         file_menu.addAction(self._act_export)
         file_menu.addAction(self._act_export_all)
@@ -5496,8 +6215,9 @@ class MainWindow(QMainWindow):
             name = self._project_path.name
         else:
             name = self._source_name or "Frame CAM"
+        from guildmodel import __version__
         star = "*" if self._dirty else ""
-        self.setWindowTitle(f"GuildModel  —  {name}{star}")
+        self.setWindowTitle(f"GuildModel {__version__} — {name}{star}")
 
     def _mark_dirty(self) -> None:
         if self._restoring:
@@ -5671,6 +6391,128 @@ class MainWindow(QMainWindow):
             return
         self.open_path(path)
 
+    # ------------------------------------------------------------------ reload, drops, build on open (M20)
+
+    def _watch_source(self, path) -> None:
+        """Watch the drawing on disk; a change lights the status-bar chip."""
+        from PySide6.QtCore import QFileSystemWatcher
+        if self._source_watcher is None:
+            self._source_watcher = QFileSystemWatcher(self)
+            self._source_watcher.fileChanged.connect(self._on_source_file_changed)
+        for f in self._source_watcher.files():
+            self._source_watcher.removePath(f)
+        if hasattr(self, "_reload_chip"):
+            self._reload_chip.setVisible(False)
+        self._act_reload.setEnabled(path is not None)
+        if path is not None and Path(path).is_file():
+            self._source_watcher.addPath(str(path))
+
+    def _on_source_file_changed(self, _changed: str) -> None:
+        if self._source_path is None or not Path(self._source_path).is_file():
+            return
+        # An editor saves by replacing the file, which drops it from the watch.
+        if str(self._source_path) not in self._source_watcher.files():
+            self._source_watcher.addPath(str(self._source_path))
+        self._reload_chip.setVisible(True)
+        self.append_log(f"[model] {Path(self._source_path).name} changed on disk — "
+                        "Reload Drawing (Ctrl+R) re-reads it.")
+
+    def _on_reload_drawing(self) -> None:
+        """File ▸ Reload Drawing (Ctrl+R): re-read the drawing from disk and keep
+        every component's parameters, overrides, zero, forming, bed switch and
+        placement. The geometry is re-derived; every model and program described
+        the old drawing and is dropped."""
+        path = self._source_path
+        if path is None or not Path(path).is_file():
+            QMessageBox.information(
+                self, "Reload Drawing",
+                "There is no drawing on disk to reload: this design came from a "
+                "project's embedded copy, or the file has moved.")
+            return
+        for th in (self._mesh_thread, self._gcode_thread, self._import_thread,
+                   self._parts_thread, self._nest_thread, self._sim_thread):
+            if th is not None and th.isRunning():
+                QMessageBox.information(
+                    self, "Reload Drawing",
+                    "A build or a program is in progress; reload when it has finished.")
+                return
+        comps = self._build_project_schema().components
+        active = self._active_ws
+        self._pending_artifacts = None
+        self._pending_component_artifacts = {}
+        self._pending_flagged = []
+        if str(path).lower().endswith((".gdraw", ".svg")):
+            self._load_model(Path(path), from_project=True)
+            self._source_path = Path(path)
+            self._apply_components_to_workspaces(comps)
+            if 0 <= active < len(self._workspaces):
+                self._activate_workspace(active)
+        else:
+            self._reload_components = comps     # applied when the import lands
+            self._load_dxf(Path(path), from_project=True)
+            self._source_path = Path(path)
+        self._watch_source(Path(path))
+        self._clear_nest()
+        self._mark_dirty()
+        self.append_log(f"[model] Reloaded {Path(path).name}: settings kept, geometry "
+                        "re-derived; the models and programs are stale.")
+        self.status_lbl.setText(f"Reloaded {Path(path).name} — rebuild and regenerate")
+
+    def _build_on_open(self) -> None:
+        """Build the frame front when a drawing opens and land on the 3D page
+        (M20; Preferences ▸ General). Deferred a tick, and only for a window on
+        screen, so a headless open costs nothing."""
+        if not self._prefs.get("build_on_open", True):
+            return
+        from guildmodel.core.project.schema import ComponentKind
+        token = self._design_token
+
+        def go() -> None:
+            if token != self._design_token or not self.isVisible():
+                return
+            front = next((i for i in self._buildable_workspaces()
+                          if self._workspaces[i].kind == ComponentKind.FRAME_FRONT), None)
+            if front is not None and not self._workspaces[front].mesh_built:
+                self._build_all([front])
+
+        # A timer the window owns: a bare single-shot outlives a window closed
+        # before the loop spins and fires into a deleted widget.
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(go)
+        timer.timeout.connect(timer.deleteLater)
+        timer.start(0)
+
+    @staticmethod
+    def _droppable_path(mime) -> str | None:
+        if not mime.hasUrls():
+            return None
+        for url in mime.urls():
+            p = url.toLocalFile()
+            if p and p.lower().endswith((".gdraw", ".gmodel", ".dxf", ".svg")):
+                return p
+        return None
+
+    def dragEnterEvent(self, event) -> None:          # noqa: N802 (Qt)
+        if self._droppable_path(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:           # noqa: N802 (Qt)
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:               # noqa: N802 (Qt)
+        """A .gdraw, .gmodel, .dxf or .svg from the file manager opens as the
+        menu would (M20)."""
+        p = self._droppable_path(event.mimeData())
+        if p is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        if self._confirm_discard():
+            self.open_path(p)
+
     def open_path(self, path: str) -> None:
         """Open any supported file by suffix — a .gmodel project, a .gdraw/.svg
         drawing, or a DXF. Used by the recent-files menu and by a file passed on
@@ -5680,6 +6522,7 @@ class MainWindow(QMainWindow):
             self._open_project(Path(path))
         elif lower.endswith((".gdraw", ".svg")):
             self._load_model(Path(path))
+            self._build_on_open()
         else:
             self._load_dxf(Path(path))
 
@@ -5701,6 +6544,7 @@ class MainWindow(QMainWindow):
         )
         proj.cam.material = MaterialRef(name=self.params.material_name())
         proj.worktable = self._worktable          # the tagged bed, if any (M7.4)
+        proj.worktable_nest = self._wt_nest.model_copy(deep=True)   # the placements (M20)
         # One Component per workspace, carrying its kind + edited params, so a whole-
         # model (.gdraw) session round-trips — not just the active frame (M7.1).
         comps = []
@@ -5711,7 +6555,7 @@ class MainWindow(QMainWindow):
             param = getattr(ws, ws_param[field], None)
             kwargs = dict(
                 id=ws.source_workspace or ws.kind.value, kind=ws.kind,
-                label=ws.label, enabled=ws.enabled,
+                label=ws.label, enabled=ws.enabled, on_bed=ws.on_bed,
                 source_workspace=ws.source_workspace, source_file=self._source_name,
                 has_program=ws.program_stored)
             if param is not None:
@@ -5753,12 +6597,25 @@ class MainWindow(QMainWindow):
                 component_artifacts[ws.source_workspace or ws.kind.value] = {
                     "programs": dict(ws.last_programs), "setup": ws.last_setup,
                     "machine": ws.last_machine, "report": ws.last_report}
+        # The worktable program in a slot of its own (M20), and at the top
+        # level — the job GuildSend streams — whenever there is one: the whole
+        # bed is the job once the maker has made it. Else the active component's.
+        from guildmodel.core.project.gmodel import WORKTABLE_ID
+        if self._wt_programs:
+            top = component_artifacts[WORKTABLE_ID] = {
+                "programs": dict(self._wt_programs), "setup": self._wt_setup,
+                "machine": self._wt_machine, "report": self._wt_report}
+            top_programs, top_setup = top["programs"], top["setup"]
+            top_machine, top_report = top["machine"] or machine, top["report"]
+        else:
+            top_programs, top_setup = self._last_programs, self._last_setup
+            top_machine, top_report = machine, self._last_report
         save_gmodel(
             path, project=self._build_project_schema(),
             dxf_bytes=self._source_dxf_bytes,
             gdraw_bytes=self._source_gdraw_bytes,
-            programs=self._last_programs or None,
-            machine=machine, setup=self._last_setup, report=self._last_report,
+            programs=top_programs or None,
+            machine=top_machine, setup=top_setup, report=top_report,
             component_artifacts=component_artifacts or None,
         )
 
@@ -5873,19 +6730,46 @@ class MainWindow(QMainWindow):
         self._part_defaults_offered = set()  # a reopened project is a fresh offer
         self._tool_feeds_offered = None
         self._refresh_wt_undo_buttons()
-        self._last_programs = dict(bundle.programs)
-        self._last_setup = bundle.setup
-        self._last_machine = bundle.machine
-        self._last_report = bundle.report
+        # The worktable's own program set (M20), out of the component sets. A
+        # file from 1.8.x can carry a worktable.nc as a component's program (it
+        # was written onto whichever component sat behind the Worktable tab);
+        # one of those is taken as the bed's and not handed back to a component
+        # that never cut it.
+        from guildmodel.core.cam.placement import legacy_layout_to_nest
+        from guildmodel.core.project.gmodel import WORKTABLE_ID
+        comp_art = dict(bundle.component_artifacts)
+        wt_art = comp_art.pop(WORKTABLE_ID, None)
+        if wt_art is None:
+            for cid, art in list(comp_art.items()):
+                if set(art.get("programs") or {}) == {"worktable.nc"}:
+                    wt_art = comp_art.pop(cid)
+                    break
+        top_is_bed = bool(bundle.programs) and set(bundle.programs) == {"worktable.nc"}
+        if wt_art is None and top_is_bed:
+            wt_art = {"programs": dict(bundle.programs), "setup": bundle.setup,
+                      "machine": bundle.machine, "report": bundle.report}
+        self._wt_programs = dict(wt_art["programs"]) if wt_art else {}
+        self._wt_setup = wt_art.get("setup") if wt_art else None
+        self._wt_machine = wt_art.get("machine") if wt_art else None
+        self._wt_report = wt_art.get("report") if wt_art else None
+        self._wt_nest = (proj.worktable_nest.model_copy(deep=True)
+                         if proj.worktable_nest.placements
+                         else legacy_layout_to_nest(proj.bed_layout, proj.components))
+        self._clear_nest()
+        top = None if top_is_bed else {
+            "programs": dict(bundle.programs), "setup": bundle.setup,
+            "machine": bundle.machine, "report": bundle.report}
+        self._last_programs = dict(top["programs"]) if top else {}
+        self._last_setup = top["setup"] if top else None
+        self._last_machine = top["machine"] if top else None
+        self._last_report = top["report"] if top else None
         # The workspaces the embedded drawing rebuilds below take these over
         # (`_seed_workspace_artifacts`); until 2026-09-26 they did not, and
-        # activating the first fresh workspace wiped the four lines above, so
-        # every reopen lost the stored program and the next save dropped it
-        # from the file.
-        self._pending_artifacts = ({"programs": dict(bundle.programs), "setup": bundle.setup,
-                                    "machine": bundle.machine, "report": bundle.report}
-                                   if bundle.has_program() else None)
-        self._pending_component_artifacts = dict(bundle.component_artifacts)
+        # activating the first fresh workspace wiped the lines above, so every
+        # reopen lost the stored program and the next save dropped it from the
+        # file.
+        self._pending_artifacts = top if (top and top["programs"]) else None
+        self._pending_component_artifacts = comp_art
         self._pending_flagged = [c.id for c in (proj.components or []) if c.has_program]
         self._project_path = path
         # Readiness: a stored program means the reopened job is transmittable
@@ -5959,6 +6843,7 @@ class MainWindow(QMainWindow):
         # Re-bind shortcuts + rebuild the toolbar from the (possibly edited) prefs (M7.15).
         if "hotkeys" in p:
             self._apply_hotkeys()
+        self.setAcceptDrops(True)             # a drawing or project dropped on the window (M20)
         if "toolbar" in p:
             self._rebuild_toolbar()
 
@@ -6004,6 +6889,7 @@ class MainWindow(QMainWindow):
         self.params.zone_hovered.connect(self._on_zone_hover)
         self.params.cam_changed.connect(self._on_cam_changed)
         self.params.temple_apply_both.connect(self._on_apply_temple_to_both)
+        self.params.front_placement_changed.connect(self._on_front_placement_changed)
         # Any user param edit means unsaved work (suppressed during restores).
         self.params.castle_changed.connect(self._mark_dirty)
         self.params.stock_changed.connect(self._mark_dirty)
@@ -6046,7 +6932,8 @@ class MainWindow(QMainWindow):
         return castle_ready or self._active_is_flat()
 
     def _bed_sim_enabled(self) -> bool:
-        return self._nest is not None and bool(self._nest.placements)
+        """A placed part on the bed: the sim generates the program first (M20)."""
+        return self._bed_can_generate()
 
     # ------------------------------------------------ view-aware sidebar (UX pass)
 
@@ -6129,7 +7016,7 @@ class MainWindow(QMainWindow):
         else:
             self._dock_stack.setCurrentIndex(0)
 
-    def _switch_view(self, view: int, *, run: bool = False) -> None:
+    def _switch_view(self, view: int, *, run: bool = False, remember: bool = True) -> None:
         """Single source of truth for the central view. Renders `view`
         (0 = 2D, 1 = 3D, 2 = Sim) for the ACTIVE tab and always re-pushes that tab's
         content, so a (tab, view) combination is never stale (BUILDPLAN M7.12).
@@ -6161,6 +7048,8 @@ class MainWindow(QMainWindow):
                 view = 0
                 self.stack.setCurrentIndex(0)
         self._current_view = view
+        if remember and not self._on_worktable_tab():
+            self._component_view = view   # the view the maker chose (M20 session two)
         self._sync_dock_page()            # dock follows the view (view-aware sidebar)
         self._update_view_toggles()
 
@@ -6306,6 +7195,8 @@ class MainWindow(QMainWindow):
                          "The cutting bed — import a bed DXF, tag role zones + keep-outs")
         tb.blockSignals(False)
         tb.setVisible(True)
+        self._lazy_built = set()                        # a new set of parts (M20)
+        self._refresh_bed_parts_list()                  # the Parts rows (M19)
         # Apply to both temples needs a second temple to copy to.
         n_temples = len(self._temple_workspaces())
         self.params.set_temple_apply_both_enabled(
@@ -6322,8 +7213,8 @@ class MainWindow(QMainWindow):
 
     def _on_apply_temple_to_both(self) -> None:
         """Temple tab ▸ Apply to both temples (2026-09-27): copy the tab's settings
-        — blank, snap and stock side, hinge pocket depth and angle, engraving,
-        tools, onion skin, hand allowance, holding — onto the other temple, so both
+        — blank, snap, stock side and origin, hinge pocket depth and angle,
+        engraving, tools, onion skin, hand allowance, holding — onto the other temple, so both
         cut with the same tools and depths. Each temple keeps its own fixture
         zone, program zero (Machine tab) and per-part cut settings (Cut tab).
 
@@ -6361,6 +7252,61 @@ class MainWindow(QMainWindow):
         self.append_log("[temple] Applied the Temple tab to " + ", ".join(changed)
                         + " (fixture zone, program zero and cut settings kept per temple).")
         self.status_lbl.setText("Temple settings applied to " + ", ".join(changed))
+
+    def _place_fronts(self, workspaces) -> None:
+        """Place every frame front on its blank as its params say (2026-10-14):
+        as drawn, or centered on the blank (`place_front_on_blank`). Geometry
+        only, done before the views draw it. A front whose params are still the
+        dock's (a plain DXF) takes the dock's word."""
+        from guildmodel.core.project.schema import ComponentKind
+        from guildmodel.gui.component_workspace import place_front_on_blank
+        for ws in workspaces:
+            if ws.kind != ComponentKind.FRAME_FRONT:
+                continue
+            params = ws.castle_params or self.params.castle_params()
+            if place_front_on_blank(ws, params.origin_from_drawing):
+                ox, oy = ws.drawing_offset
+                self.append_log(
+                    f"[model] {ws.label or 'Frame front'}: centered on the blank "
+                    f"(drawing moved {ox:+.2f}, {oy:+.2f} mm).")
+
+    def _on_front_placement_changed(self, origin_from_drawing: bool) -> None:
+        """Stock tab ▸ Origin from drawing (2026-10-14).
+
+        The front is placed by moving the drawing, so for the active front this
+        is a geometry reload: every cached mesh, the stored program, the toolpath
+        overlay and the inspector inputs described the old frame, and the 2D
+        canvas, the hinge and zone lists and the stock box are redrawn from the
+        new one. A temple's own checkbox lives on its tab and is applied at
+        build time instead (`relief.flat.place_temple_on_blank`)."""
+        from guildmodel.core.project.schema import ComponentKind
+        from guildmodel.gui.component_workspace import place_front_on_blank
+        ws = self._active_workspace()
+        if ws is None or ws.kind != ComponentKind.FRAME_FRONT:
+            return
+        self._sync_active_workspace()            # the dock's new value onto the workspace
+        self._mark_dirty()
+        if not place_front_on_blank(ws, origin_from_drawing):
+            return                               # already there: a drawing on its origin
+        self._design_token += 1                  # a build in flight is for the frame we left
+        ws.mesh_built = False
+        ws.stage_cache = {}
+        ws.edge_cache = {}
+        ws.program_stored = False
+        ws.diag = {}
+        self._drop_formed_caches()
+        self._restoring += 1                     # the dock is re-filled, not edited
+        try:
+            self._load_active_geometry(ws)
+            self._apply_workspace_to_ui(ws)
+        finally:
+            self._restoring -= 1
+        self._invalidate_program()
+        self._refresh_readiness()
+        ox, oy = ws.drawing_offset
+        where = ("as drawn" if origin_from_drawing
+                 else f"centered on the blank (drawing moved {ox:+.2f}, {oy:+.2f} mm)")
+        self.append_log(f"[model] {ws.label or 'Frame front'}: {where}.")
 
     def _on_component_tab_changed(self, index: int) -> None:
         if index == self._worktable_tab_index:
@@ -6435,6 +7381,12 @@ class MainWindow(QMainWindow):
 
         self._clear_toolpath_overlay()       # the overlay belonged to the old tab (M7.11)
         self.canvas.set_layers(ws.display_layers())
+        # The 2D view is the back of the frame: the intake mirrors the drawing
+        # into posterior coordinates, so an asymmetric front arrives flipped
+        # from what GuildDraw showed a moment ago (M20).
+        self.canvas.set_caption(
+            "Back view (posterior), mirrored from the drawing"
+            if ws.kind == ComponentKind.FRAME_FRONT and ws.outline_poly is not None else "")
         non_empty = [k for k, v in ws.layers.items() if v]
         self.params.set_file(
             ws.label,
@@ -6505,23 +7457,37 @@ class MainWindow(QMainWindow):
         self._act_simulate.setEnabled(ws.castle_ready or flat_buildable)
         self._act_gcode.setEnabled(has_outline)          # frame castle or temple profile
         self._act_block.setEnabled(ws.lens_od is not None)
-        self._act_worktable.setEnabled(ws.castle_ready and ws.lens_od is not None)
         self._act_export_nc.setEnabled(bool(ws.last_programs))
 
         if ws.boxing is not None:
             b = ws.boxing
             self.params.update_boxing(b.a, b.b, b.dbl, b.ed)
         self._update_stock_canvas()
-        # Re-apply the active view to THIS component, refreshing its content. On a
-        # passive tab switch, fall back to 2D when the chosen view has nothing to show
-        # for this component yet — an unbuilt 3D, or a Sim with no cached result — so
-        # we never flash an empty 3D / sim or auto-run an expensive sim.
-        view = self._current_view
+        # Re-apply the view the maker chose on a component to THIS component,
+        # refreshing its content (session two of M20: `_component_view`, not the
+        # bed's forced 2D). A tab visited in 3D whose model is not built yet is
+        # built now, in the background, and shows the 3D page it will fill — a
+        # fall-back to 2D was the "reset" the maker kept meeting. A Sim with no
+        # cached result falls back to the model, never auto-runs.
+        view = self._component_view
+        lazy = None
         if view == 1 and not self._has_active_3d():
-            view = 0
+            idx = self._workspaces.index(ws)
+            if (idx in self._buildable_workspaces() and idx not in self._lazy_built
+                    and not (self._mesh_thread is not None and self._mesh_thread.isRunning())):
+                lazy = idx
+            else:
+                view = 0
         elif view == 2 and self._active_sim_removal is None:
-            view = 0
-        self._switch_view(view)
+            view = 1 if self._has_active_3d() else 0
+        self._switch_view(view, remember=False)
+        if lazy is not None:
+            self._lazy_built.add(lazy)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self._lazy_build(lazy))
+            timer.timeout.connect(timer.deleteLater)
+            timer.start(0)
 
     def _activate_workspace(self, index: int) -> None:
         """Make component ``index`` active: persist the current one, swap the
@@ -6552,15 +7518,19 @@ class MainWindow(QMainWindow):
             self._drop_formed_caches()       # they belonged to the part we left (M18)
         self._active_ws = index
         ws = self._workspaces[index]
+        # The tab bar first: `_switch_view` asks whether the Worktable tab is
+        # current to decide between the bed's 2D and the component's view, and
+        # a component activated from the bed (a reopen, a reload, a test) was
+        # answered "the bed" and forced to 2D (session two of M20).
+        if self.component_tabs.currentIndex() != index:
+            self.component_tabs.blockSignals(True)
+            self.component_tabs.setCurrentIndex(index)
+            self.component_tabs.blockSignals(False)
         self._load_active_geometry(ws)
         self._apply_workspace_to_ui(ws)
         # The dock PAGE is chosen by _switch_view (called from _apply_workspace_to_ui)
         # so it follows the active view; here we only honor the sidebar toggle.
         self._right_dock.setVisible(self._act_sidebar.isChecked())
-        if self.component_tabs.currentIndex() != index:
-            self.component_tabs.blockSignals(True)
-            self.component_tabs.setCurrentIndex(index)
-            self.component_tabs.blockSignals(False)
         self._refresh_readiness()
 
     # ------------------------------------------------------------------ DXF import
@@ -6583,6 +7553,7 @@ class MainWindow(QMainWindow):
             "GuildDraw drawing (*.gdraw);;GuildDraw SVG (*.svg);;All files (*)")
         if path_str:
             self._load_model(Path(path_str))
+            self._build_on_open()
 
     def _load_model(self, path: Path, *, from_project: bool = False) -> None:
         """Import a GuildDraw ``.gdraw`` as a multi-component project (M7.3): one
@@ -6620,7 +7591,12 @@ class MainWindow(QMainWindow):
         self._source_dxf_bytes = None
         if not from_project:
             self._project_path = None
-        self._clear_nest()                 # the previous file's bed nest / sim is stale
+        if from_project:
+            self._clear_nest()             # the project's placements are restored after this
+        else:
+            self._clear_placements()       # a new drawing: no placements, no bed program (M20)
+        self._source_path = None if from_project else Path(path)
+        self._watch_source(self._source_path)
         # Every part starts from the shop's own defaults (Preferences ▸ Parts):
         # its program zero, the temples' blank-end snap and stock side, blank
         # sizes, the block's hole pattern, tools. A reopened project overlays its
@@ -6630,6 +7606,7 @@ class MainWindow(QMainWindow):
         self._part_defaults_offered = set()
         self._tool_feeds_offered = None
         self._inject_gdraw_engraving(workspaces)
+        self._place_fronts(workspaces)
         self._design_token += 1            # any build in flight is for the design we are leaving
         self._workspaces = workspaces
         self._active_ws = -1
@@ -6724,6 +7701,7 @@ class MainWindow(QMainWindow):
             if comp is None:
                 continue
             ws.enabled = comp.enabled
+            ws.on_bed = comp.on_bed                      # on the worktable (M19)
             ws.program_zero = comp.program_zero          # restore per-component datum (M11)
             ws.cam_overrides = comp.cam_overrides        # restore per-component CAM (M16)
             ws.forming = self._merge_saved_forming(ws.forming, comp.forming)   # M18
@@ -6732,6 +7710,9 @@ class MainWindow(QMainWindow):
             self._seed_workspace_artifacts(ws, comp)
         self._pending_artifacts = None
         self._pending_component_artifacts = {}
+        self._place_fronts(self._workspaces)        # the saved placement (2026-10-14)
+        self._refresh_bed_parts_list()              # the rows were built before the restore (M19)
+        self._refresh_nest_render()                 # the saved placements (M20)
         if 0 <= self._active_ws < len(self._workspaces):
             self._activate_workspace(self._active_ws)   # push restored params into the dock
 
@@ -6787,6 +7768,8 @@ class MainWindow(QMainWindow):
         # Remembered for _on_import_finished: a .gmodel re-import of the embedded
         # DXF (a temp file) must not land in the recent-files menu.
         self._import_from_project = from_project
+        self._source_path = None if from_project else Path(path)
+        self._watch_source(self._source_path)
         self._import_worker = ImportWorker(path)
         self._import_thread = QThread()
         self._import_worker.moveToThread(self._import_thread)
@@ -6836,6 +7819,7 @@ class MainWindow(QMainWindow):
             self._part_defaults_offered = set()
             self._tool_feeds_offered = None
             ws.program_zero = part_defaults_mod.default_program_zero(self._prefs, ws.kind)
+            ws.on_bed = part_defaults_mod.default_on_bed(self._prefs, ws.kind)
             if ws.is_temple:
                 ws.temple_params = part_defaults_mod.default_params(self._prefs, ws.kind)
             else:
@@ -6850,10 +7834,17 @@ class MainWindow(QMainWindow):
             self._seed_workspace_artifacts(ws, None)
             self._pending_artifacts = None
             self._pending_component_artifacts = {}
-        self._clear_nest()                 # the previous file's bed nest / sim is stale
+        self._place_fronts([ws])
+        if self._import_from_project:
+            self._clear_nest()
+        else:
+            self._clear_placements()       # a new drawing: no placements, no bed program (M20)
         self._workspaces = [ws]
         self._active_ws = -1
         self._populate_component_tabs()
+        if self._reload_components is not None:         # Reload Drawing on a DXF (M20)
+            comps, self._reload_components = self._reload_components, None
+            self._apply_components_to_workspaces(comps)
 
         if ws.is_temple:
             text, graphics = ws.engraving_split()
@@ -7048,7 +8039,15 @@ class MainWindow(QMainWindow):
         return resolve_kernel(str(self._prefs.get(
             "model_kernel", prefs_mod.DEFAULTS["model_kernel"])))
 
-    def _build_all(self, targets: list[int]) -> None:
+    def _lazy_build(self, index: int) -> None:
+        """Build the component a tab switch landed on in 3D (M20 session two):
+        quietly, no progress dialog for a build of a fraction of a second."""
+        if (self._active_ws != index or self._has_active_3d()
+                or not (0 <= index < len(self._workspaces))):
+            return
+        self._build_all([index], quiet=True)
+
+    def _build_all(self, targets: list[int], *, quiet: bool = False) -> None:
         """Build every target component's mesh in a single background thread."""
         if self._mesh_thread is not None and self._mesh_thread.isRunning():
             return                            # a build is already in flight
@@ -7074,8 +8073,9 @@ class MainWindow(QMainWindow):
         self._mesh_worker.canceled.connect(self._mesh_thread.quit)
         self._stamp_build(self._mesh_worker, self._mesh_thread)
         self._mesh_worker.stage.connect(self._on_stage)
-        dlg = self._open_progress("Building 3D models")
-        dlg.canceled.connect(self._mesh_worker.cancel, Qt.ConnectionType.DirectConnection)
+        if not quiet:
+            dlg = self._open_progress("Building 3D models")
+            dlg.canceled.connect(self._mesh_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._mesh_thread.start()
 
     def _on_multi_mesh_built(self, i: int, mesh, edges, core_guide) -> None:
@@ -7227,7 +8227,8 @@ class MainWindow(QMainWindow):
         from guildmodel.core.relief.flat import temple_snap_transform
         return temple_snap_transform(
             self._outline_poly, self._hinge_polys, t.blank_length_mm,
-            stock_side=t.stock_side, snap=True)
+            stock_side=t.stock_side, snap=True,
+            origin_from_drawing=t.origin_from_drawing)
 
     @staticmethod
     def _snap_to_design(q, frame):
@@ -8249,49 +9250,6 @@ class MainWindow(QMainWindow):
                 return ws.cam_overrides
         return None
 
-    def _on_generate_worktable(self) -> None:
-        """Cut the frame front + its base-curve block in one bed program (M6.5)."""
-        self._commit_typed_value()
-        if self._gcode_thread is not None and self._gcode_thread.isRunning():
-            return                            # a G-code job is already in flight
-        if not (self._partition is not None and self._partition.classified
-                and self._lens_od is not None):
-            QMessageBox.warning(
-                self, "Worktable needs a full frame",
-                "Load a frame DXF with SCULPT zones and lenses — the worktable "
-                "cuts the frame front and its base-curve block together.")
-            return
-        self._act_worktable.setEnabled(False)
-        self._act_gcode.setEnabled(False)
-        self.append_log("[gcode] Generating the worktable program (frame + base-curve block).")
-
-        worker = GCodeWorker(
-            outline=self._outline_poly, castle=self.params.castle_params(),
-            params=self._collect_gcode_params(), partition=self._partition,
-            hinge_polys=self._hinge_polys, cam_params=self.params.effective_cam_params())
-        worker.block_lens = self._lens_od
-        worker.block = self.params.block_params()
-        worker.block_overrides = self._block_component_overrides()
-        worker.is_worktable = True
-        worker.kernel = self._model_kernel()
-        self._gcode_worker = worker
-
-        self._gcode_thread = QThread()
-        worker.moveToThread(self._gcode_thread)
-        self._gcode_thread.started.connect(worker.run)
-        worker.progress.connect(self.append_log)
-        worker.finished.connect(self._on_gcode_finished)
-        worker.error.connect(self._on_gcode_error)
-        worker.canceled.connect(self._on_gcode_canceled)
-        worker.finished.connect(self._gcode_thread.quit)
-        worker.error.connect(self._gcode_thread.quit)
-        worker.canceled.connect(self._gcode_thread.quit)
-
-        dlg = self._open_progress("Generating worktable program")
-        worker.stage.connect(self._on_stage)
-        dlg.canceled.connect(worker.cancel, Qt.ConnectionType.DirectConnection)
-        self._gcode_thread.start()
-
     def _collect_gcode_params(self) -> dict:
         p = self.params
         return {
@@ -8531,9 +9489,6 @@ class MainWindow(QMainWindow):
         self.append_log("[gcode] Done.")
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
-        self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.classified
-            and self._lens_od is not None)
         self.status_lbl.setText("G-code ready")
         # Capture the program + setup for the .gmodel container (M5.1). A new
         # program supersedes any stale cut report.
@@ -8576,18 +9531,12 @@ class MainWindow(QMainWindow):
         self._report_failure("G-code generation", "gcode", tb)
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
-        self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.classified
-            and self._lens_od is not None)
 
     def _on_gcode_canceled(self) -> None:
         self._close_progress()
         self.append_log("[gcode] Canceled.")
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
-        self._act_worktable.setEnabled(
-            self._partition is not None and self._partition.classified
-            and self._lens_od is not None)
         self.status_lbl.setText("G-code canceled")
 
     def _on_open_in_guildsend(self) -> None:
@@ -8659,7 +9608,10 @@ class MainWindow(QMainWindow):
         (the program lives in the project by default; this is the opt-in loose
         export, mirroring Export STL)."""
         self._commit_typed_value()
-        if not self._last_programs:
+        # From the Worktable tab the bed's own program is what is exported (M20).
+        programs = (self._wt_programs if self._on_worktable_tab() and self._wt_programs
+                    else programs)
+        if not programs:
             QMessageBox.information(
                 self, "Export G-code",
                 "Generate G-code first (Ctrl+G) — then export it to a .nc file.",
@@ -8668,8 +9620,8 @@ class MainWindow(QMainWindow):
         if self._z_profile_hold("export anyway"):
             return
         base = Path(self._prefs["last_output_dir"] or ".")
-        if len(self._last_programs) == 1:
-            name, text = next(iter(self._last_programs.items()))
+        if len(programs) == 1:
+            name, text = next(iter(programs.items()))
             path_str, _ = QFileDialog.getSaveFileName(
                 self, "Export G-code", str(base / name), "G-code (*.nc);;All files (*)"
             )
@@ -8692,7 +9644,7 @@ class MainWindow(QMainWindow):
                 return
             written = []
             try:
-                for name, text in self._last_programs.items():
+                for name, text in programs.items():
                     p = Path(d) / name
                     p.write_text(text, encoding="utf-8")
                     written.append(p)
@@ -8996,10 +9948,20 @@ def _find_guildsend() -> Optional[list]:
     if which:
         return [which]
     sibling = Path(__file__).resolve().parents[3].parent / "GuildSend"
+    main_py = sibling / "main.py"
+    # Linux (M20): the launcher's venv first — GuildSend's .venv is the synced
+    # Windows one, .venv-linux the one its desktop entry runs — then Windows.
+    for venv in (".venv-linux", ".venv"):
+        exe = sibling / venv / "bin" / "guildsend"
+        if exe.is_file():
+            return [str(exe)]
+        py = sibling / venv / "bin" / "python"
+        if py.is_file() and main_py.is_file():
+            return [str(py), str(main_py)]
     for py_name in ("pythonw.exe", "python.exe"):
         py = sibling / ".venv" / "Scripts" / py_name
-        if py.is_file() and (sibling / "main.py").is_file():
-            return [str(py), str(sibling / "main.py")]
+        if py.is_file() and main_py.is_file():
+            return [str(py), str(main_py)]
     return None
 
 

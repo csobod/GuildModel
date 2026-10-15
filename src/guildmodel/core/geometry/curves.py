@@ -342,6 +342,28 @@ def mirror_y(curve):
     return _mirrored(curve, 1)
 
 
+def translated(curve, dx: float, dy: float):
+    """The curve moved by ``(dx, dy)``.
+
+    The front's "center on the blank" placement (2026-10-14) moves the drawing
+    at intake, and the exact curves have to make the same trip as the points
+    or the B-Rep builds a part the polygons do not describe. Translating a
+    B-spline is translating its hull: knots, degree and weights stay. An offset
+    curve keeps its distance, because a translation keeps handedness.
+    """
+    if curve is None:
+        return None
+    if isinstance(curve, OffsetCurve):
+        return OffsetCurve(basis=translated(curve.basis, dx, dy),
+                           distance=curve.distance, layer=curve.layer)
+    cp = curve.control_points.copy()
+    cp[:, 0] += dx
+    cp[:, 1] += dy
+    return NurbsCurve(control_points=cp, knots=curve.knots, degree=curve.degree,
+                      closed=curve.closed, weights=curve.weights,
+                      layer=curve.layer)
+
+
 def _mirrored(curve, axis: int):
     if isinstance(curve, OffsetCurve):
         # A reflection reverses handedness, so the `Z x tangent` direction flips

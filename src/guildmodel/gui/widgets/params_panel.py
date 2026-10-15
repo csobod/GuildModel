@@ -259,6 +259,7 @@ class ParamsPanel(QTabWidget):
     stock_changed = Signal()       # blank / pad block dimensions
     cam_changed = Signal()         # tool / material / allowances / fallback
     temple_apply_both = Signal()   # Temple tab ▸ Apply to both temples (2026-09-27)
+    front_placement_changed = Signal(bool)   # Stock tab ▸ Origin from drawing (2026-10-14)
     zone_hovered = Signal(str)     # zone name under the cursor, "" on leave
     # A Model-tab handle is being dragged: the value is not settled, but the
     # shape it describes is worth showing. Separate from `castle_changed`
@@ -330,6 +331,32 @@ class ParamsPanel(QTabWidget):
     # Layers that only exist on a frame front (a temple / base curve has no lens).
     _LENS_ONLY_LAYERS = ("LENS", "BRIDGE", "SCULPT")
 
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt)
+        super().showEvent(event)
+        self._relayout_tab_bar()
+
+    def _relayout_tab_bar(self) -> None:
+        """Make the tab bar lay its tabs out again (session two of M20).
+
+        `QTabBar.setTabVisible` on a hidden bar only marks its layout dirty, and
+        the next call that changes nothing clears the mark — so a kind switched
+        while the panel sat behind the Worktable page came back with its new
+        tab marked visible and never drawn (the Temple tab after a visit to
+        the bed), until a switch to another kind redrew the bar. Hiding and
+        showing a tab that is not current, while the bar is on screen, is a
+        change the bar lays out at once; the current tab is left alone so the
+        current index cannot move.
+        """
+        if not self.isVisible():
+            return
+        bar = self.tabBar()
+        current = self.currentIndex()
+        for i in range(self.count()):
+            if i != current and self.isTabVisible(i):
+                bar.setTabVisible(i, False)
+                bar.setTabVisible(i, True)
+                break
+
     def set_component_kind(self, kind) -> None:
         """Show only what applies to the active component's kind (M7.3 + UX pass).
 
@@ -352,6 +379,7 @@ class ParamsPanel(QTabWidget):
         self.setTabVisible(self._tab_stock, is_frame)
         self.setTabVisible(self._tab_temple, is_temple)
         self.setTabVisible(self._tab_block, is_block)
+        self._relayout_tab_bar()
         # Frame-lens-only content inside the universal Info / Machine tabs.
         self._boxing_group.setVisible(is_frame)
         for layer in self._LENS_ONLY_LAYERS:
@@ -1470,6 +1498,19 @@ class ParamsPanel(QTabWidget):
         form.addRow("Blank width:", self.blank_width)
         form.addRow("Blank thickness:", self.blank_thickness)
 
+        # Where the drawing sits on the blank (2026-10-14). Not wired to
+        # stock_changed: moving the drawing is a geometry reload, which the
+        # window does (`_on_front_placement_changed`).
+        self.front_origin_from_drawing = QCheckBox("Origin from drawing")
+        self.front_origin_from_drawing.setChecked(True)
+        self.front_origin_from_drawing.setToolTip(
+            "Cut the front where it was drawn: the drawing's origin is the blank's "
+            "center, as GuildDraw's stock blank guide shows it, so drawings laid out "
+            "against one origin register alike.\nOff centers the outline on the blank, "
+            "for a drawing that was not drawn on its blank.")
+        self.front_origin_from_drawing.toggled.connect(self.front_placement_changed)
+        form.addRow("", self.front_origin_from_drawing)
+
         self.use_pad_block = QCheckBox("Add nosepad pad block")
         self.use_pad_block.setChecked(True)
         self.use_pad_block.setToolTip(
@@ -1497,8 +1538,10 @@ class ParamsPanel(QTabWidget):
             sb.setEnabled(on)
 
     def _on_temple_snap_toggled(self, on: bool) -> None:
-        """Stock side only matters when snapping to the blank; invalidate the path."""
+        """Stock side and the across-blank placement only matter when snapping to
+        the blank; invalidate the path."""
         self.temple_stock_side.setEnabled(on)
+        self.temple_origin_from_drawing.setEnabled(on)
         self.cam_changed.emit()
 
     # ------------------------------------------------------------------ Temple tab
@@ -1518,7 +1561,8 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank = QCheckBox("Snap to blank end")
         self.temple_snap_blank.setChecked(d.snap_to_blank_end)
         self.temple_snap_blank.setToolTip(
-            "Re-center the temple on its blank for cutting (hinge butted to one end).")
+            "Butt the hinge end against one end of the blank for cutting, so the "
+            "injected core runs the temple's length and the profile never crosses it.")
         self.temple_snap_blank.toggled.connect(self._on_temple_snap_toggled)
         form.addRow("", self.temple_snap_blank)
         self.temple_stock_side = QComboBox()
@@ -1529,6 +1573,27 @@ class ParamsPanel(QTabWidget):
         self.temple_stock_side.currentIndexChanged.connect(self.cam_changed)
         self.temple_stock_side.setEnabled(d.snap_to_blank_end)
         form.addRow("Stock side:", self.temple_stock_side)
+        # Across the blank (2026-10-14): the drawing's zero line is the core line.
+        self.temple_origin_from_drawing = QCheckBox("Origin from drawing")
+        self.temple_origin_from_drawing.setChecked(d.origin_from_drawing)
+        self.temple_origin_from_drawing.setToolTip(
+            "Keep the drawing's zero line on the blank's center line, where the core "
+            "runs: the temple sits across the blank exactly as drawn, and the core "
+            "guide shows how it sits against the core.\nOff centers the temple's "
+            "width on the blank, as every earlier project did (when 'Snap to blank "
+            "end' is on).")
+        self.temple_origin_from_drawing.toggled.connect(self.cam_changed)
+        self.temple_origin_from_drawing.setEnabled(d.snap_to_blank_end)
+        form.addRow("", self.temple_origin_from_drawing)
+        self.temple_core_width = _spinbox(d.core_guide_width_mm, 0.5, 10.0, step=0.1, decimals=1)
+        self.temple_core_width.setToolTip(
+            "Width of the core guide: the bar the 3D view draws down the blank's "
+            "center line where the injected core runs. A reference only; nothing is cut.")
+        form.addRow("Core guide width:", self.temple_core_width)
+        self.temple_core_length = _spinbox(d.core_guide_length_mm, 10.0, 300.0, step=1.0, decimals=1)
+        self.temple_core_length.setToolTip(
+            "Length of the core guide, in from the hinge end. A reference only; nothing is cut.")
+        form.addRow("Core guide length:", self.temple_core_length)
 
         self.temple_engrave_depth = _spinbox(d.engrave_depth_mm, 0.0, 3.0, step=0.05, decimals=2)
         self.temple_engrave_depth.setToolTip("Groove depth below the top face.")
@@ -1589,7 +1654,8 @@ class ParamsPanel(QTabWidget):
         for w in (self.temple_blank_length, self.temple_blank_width,
                   self.temple_blank_thickness, self.temple_engrave_depth,
                   self.temple_engrave_stepdown, self.temple_hinge_depth,
-                  self.temple_hinge_angle,
+                  self.temple_hinge_angle, self.temple_core_width,
+                  self.temple_core_length,
                   self.temple_onion, self.temple_allowance):
             w.valueChanged.connect(self.cam_changed)
         self.temple_blank_thickness.valueChanged.connect(self._refresh_temple_limits)
@@ -1603,8 +1669,8 @@ class ParamsPanel(QTabWidget):
         # temple to copy to.
         self.temple_apply_both_btn = QPushButton("Apply to both temples")
         self.temple_apply_both_btn.setToolTip(
-            "Copy this tab's settings to the other temple — blank, snap and stock "
-            "side, hinge pocket depth and angle, engraving, tools, onion skin, hand "
+            "Copy this tab's settings to the other temple — blank, snap, stock side "
+            "and origin, hinge pocket depth and angle, engraving, tools, onion skin, hand "
             "allowance and holding.\nEach temple keeps its own program zero "
             "(Machine tab) and cut settings (Cut tab).")
         self.temple_apply_both_btn.setEnabled(False)
@@ -2708,6 +2774,7 @@ class ParamsPanel(QTabWidget):
             hinge_pocket_depth_mm=self.hinge_pocket_depth.value(),
             hinge_pocket_angle_deg=self.hinge_pocket_angle.value(),
             stock=self.stock_definition(),
+            origin_from_drawing=self.front_origin_from_drawing.isChecked(),
             onion_skin_mm=self.onion_skin.value(),
             hand_finishing_allowance_mm=self.hand_allowance.value(),
             holding=self.holding_params(),
@@ -2808,6 +2875,7 @@ class ParamsPanel(QTabWidget):
             sb.setValue(val)
             sb.blockSignals(False)
         for cb, val in ((self.use_pad_block, c.stock.use_pad_block),
+                        (self.front_origin_from_drawing, c.origin_from_drawing),
                         (self.splay_enable, c.pad_splay.enabled),
                         (self.splay_toric, c.pad_splay.toric),
                         (self.splay_noncontig, c.pad_splay.non_contiguous),
@@ -2955,6 +3023,9 @@ class ParamsPanel(QTabWidget):
             profile_tool=self.temple_profile_tool.currentText(),
             snap_to_blank_end=self.temple_snap_blank.isChecked(),
             stock_side=self.temple_stock_side.currentText(),
+            origin_from_drawing=self.temple_origin_from_drawing.isChecked(),
+            core_guide_width_mm=self.temple_core_width.value(),
+            core_guide_length_mm=self.temple_core_length.value(),
             onion_skin_mm=self.temple_onion.value(),
             hand_finishing_allowance_mm=self.temple_allowance.value(),
             holding=self.holding_params(),
@@ -2969,8 +3040,8 @@ class ParamsPanel(QTabWidget):
             btn.setToolTip(why)
         elif on:
             btn.setToolTip(
-                "Copy this tab's settings to the other temple — blank, snap and stock "
-                "side, hinge pocket depth and angle, engraving, tools, onion skin, hand "
+                "Copy this tab's settings to the other temple — blank, snap, stock side "
+                "and origin, hinge pocket depth and angle, engraving, tools, onion skin, hand "
                 "allowance and holding.\nEach temple keeps its own program zero "
                 "(Machine tab) and cut settings (Cut tab).")
 
@@ -2987,6 +3058,8 @@ class ParamsPanel(QTabWidget):
             (self.temple_hinge_angle, t.hinge_pocket_angle_deg),
             (self.temple_onion, t.onion_skin_mm),
             (self.temple_allowance, t.hand_finishing_allowance_mm),
+            (self.temple_core_width, t.core_guide_width_mm),
+            (self.temple_core_length, t.core_guide_length_mm),
         ):
             sb.blockSignals(True); sb.setValue(val); sb.blockSignals(False)
         self.set_holding_params(t.holding)
@@ -3003,7 +3076,11 @@ class ParamsPanel(QTabWidget):
         self.temple_snap_blank.blockSignals(True)
         self.temple_snap_blank.setChecked(t.snap_to_blank_end)
         self.temple_snap_blank.blockSignals(False)
+        self.temple_origin_from_drawing.blockSignals(True)
+        self.temple_origin_from_drawing.setChecked(t.origin_from_drawing)
+        self.temple_origin_from_drawing.blockSignals(False)
         self.temple_stock_side.setEnabled(t.snap_to_blank_end)
+        self.temple_origin_from_drawing.setEnabled(t.snap_to_blank_end)
         self._refresh_temple_limits()
         self._refresh_tool_feed_rows()
 
