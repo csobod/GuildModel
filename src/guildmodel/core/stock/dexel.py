@@ -257,8 +257,10 @@ class DexelStock:
         out.overflow_merges = self.overflow_merges
         return out
 
-    def mirrored(self, mirror_x: float = 0.0, z_flip: float | None = None) -> "DexelStock":
-        """The stock flipped over (M24): mirrored in X about ``x = mirror_x``
+    def mirrored(self, mirror_x: float = 0.0, z_flip: float | None = None,
+                 axis: str = "x") -> "DexelStock":
+        """The stock flipped over (M24): mirrored about ``x = mirror_x`` (or,
+        with ``axis="y"``, about ``y = mirror_x``: the rotary's flip, M26)
         and, with `z_flip`, turned upside down so that ``z -> z_flip - z`` —
         every interval's top becomes its bottom and the columns' intervals
         are read in the new top-first order. Bit for bit reversible: flipping
@@ -266,10 +268,17 @@ class DexelStock:
         rows, cols = self.shape
         res = self.resolution
         ox, oy = self.origin
-        ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
-        top = self.z_top[:, :, ::-1].copy()
-        bot = self.z_bot[:, :, ::-1].copy()
-        count = self.count[:, ::-1].copy()
+        if axis == "y":
+            oy2 = 2.0 * float(mirror_x) - (oy + (rows - 1) * res)
+            ox2, oy = ox, oy2
+            top = self.z_top[:, ::-1, :].copy()
+            bot = self.z_bot[:, ::-1, :].copy()
+            count = self.count[::-1, :].copy()
+        else:
+            ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
+            top = self.z_top[:, :, ::-1].copy()
+            bot = self.z_bot[:, :, ::-1].copy()
+            count = self.count[:, ::-1].copy()
         if z_flip is not None:
             zf = float(z_flip)
             k = self.k

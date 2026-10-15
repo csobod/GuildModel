@@ -39,14 +39,17 @@ class MachineDynamics:
     max_accel_mmps2: float = 500.0      # GRBL $120/$121
     junction_deviation_mm: float = 0.01  # GRBL $11
     min_junction_speed_mmps: float = 0.0
+    rotary_max_rate_degpm: float = 3600.0   # the fourth axis (M26); a rotary-only move's rate
 
     @classmethod
     def from_profile(cls, profile) -> "MachineDynamics":
         """Build dynamics from a project.schema.MachineProfile (duck-typed)."""
+        rot = getattr(profile, "rotary", None)
         return cls(
             rapid_rate_mmpm=profile.rapid_rate_mmpm,
             max_accel_mmps2=profile.max_accel_mmps2,
             junction_deviation_mm=profile.junction_deviation_mm,
+            rotary_max_rate_degpm=(float(rot.max_rate_degpm) if rot is not None else 3600.0),
         )
 
 
@@ -175,12 +178,15 @@ def _arc_metrics(cur, end, i, j, ccw, accel, junc_v_cap):
 def _parse_segments(gcode: str, dyn: MachineDynamics) -> list[_Segment]:
     rapid_mmps = dyn.rapid_rate_mmpm / 60.0
     pos = (0.0, 0.0, 0.0)
+    a_pos = 0.0                      # the rotary (M26)
     feed_mmps = 0.0
+    inverse_time = False             # G93: F is 1 / minutes for the move
     motion = 0                       # 0=G0 1=G1 2=G2(cw) 3=G3(ccw)
     incremental = False
     unit_scale = 1.0                 # mm
     op = "Setup"
     segs: list[_Segment] = []
+    rot_degps = dyn.rotary_max_rate_degpm / 60.0
 
     for raw in gcode.splitlines():
         line = raw.strip()
@@ -231,12 +237,21 @@ def _parse_segments(gcode: str, dyn: MachineDynamics) -> list[_Segment]:
                     incremental = False
                 elif g == 91:
                     incremental = True
+                elif g == 93:
+                    inverse_time = True
+                elif g == 94:
+                    inverse_time = False
             elif L == "F":
-                feed_mmps = (v * unit_scale) / 60.0
-            elif L in "XYZIJ":
+                feed_mmps = (v * unit_scale) / 60.0 if not inverse_time else v
+            elif L in "XYZIJA":
                 pass  # handled below
         # axis words
         d = {w[0].upper(): float(w[1]) * unit_scale for w in words if w[0].upper() in "XYZIJ"}
+        a_words = [float(w[1]) for w in words if w[0].upper() == "A"]
+        na = a_pos
+        if a_words:
+            na = (a_pos + a_words[0]) if incremental else a_words[0]
+            saw_axis = True
         if "X" in d:
             nx = (pos[0] + d["X"]) if incremental else d["X"]; saw_axis = True
         if "Y" in d:
@@ -247,6 +262,27 @@ def _parse_segments(gcode: str, dyn: MachineDynamics) -> list[_Segment]:
             continue
 
         end = (nx, ny, nz)
+        da = abs(na - a_pos)
+        if da > 1e-9 and motion in (0, 1):
+            # A move with the rotary (M26): a rapid turn runs at the rotary's
+            # rate; a feed in G93 takes 1 / F minutes; in G94 the linear feed
+            # rules and the rotary keeps up, or the rotary rules when the
+            # linear part is too short for it.
+            length = math.dist(pos, end)
+            if motion == 0:
+                seconds = max(length / max(rapid_mmps, 1e-9), da / max(rot_degps, 1e-9))
+            elif inverse_time and feed_mmps > 0:
+                seconds = 60.0 / feed_mmps          # F is 1 / minutes here
+            else:
+                lin = length / max(feed_mmps if feed_mmps > 0 else rapid_mmps, 1e-9)
+                seconds = max(lin, da / max(rot_degps, 1e-9))
+            eff_len = length if length > 1e-9 else da
+            dirv = _dir(pos, end) if length > 1e-9 else (0.0, 0.0, 1.0)
+            segs.append(_Segment(op, motion == 0, eff_len, eff_len / max(seconds, 1e-9), dirv, dirv))
+            pos = end
+            a_pos = na
+            continue
+        a_pos = na
         if motion in (2, 3) and ("I" in d or "J" in d):
             i_off, j_off = d.get("I", 0.0), d.get("J", 0.0)
             length, cap, t0, t1 = _arc_metrics(

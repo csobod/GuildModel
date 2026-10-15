@@ -64,22 +64,27 @@ class TwoSidedJob:
 
 # ------------------------------------------------------------------ geometry
 
-def mirror_polygon(poly, mirror_x: float = 0.0):
-    """`poly` mirrored in X about ``x = mirror_x``."""
+def mirror_polygon(poly, mirror_x: float = 0.0, axis: str = "x"):
+    """`poly` mirrored about ``x = mirror_x`` (the manual flip about the
+    fixture's vertical line) or, with ``axis="y"``, about ``y = mirror_x``
+    (the rotary's flip about the frame's horizontal, M26)."""
+    if axis == "y":
+        return _scale(poly, xfact=1.0, yfact=-1.0, origin=(0.0, float(mirror_x)))
     return _scale(poly, xfact=-1.0, yfact=1.0, origin=(float(mirror_x), 0.0))
 
 
-def mirrored_partition(partition: CastlePartition, mirror_x: float = 0.0) -> CastlePartition:
+def mirrored_partition(partition: CastlePartition, mirror_x: float = 0.0,
+                       axis: str = "x") -> CastlePartition:
     """The partition as side two sees it: every polygon mirrored, the zones
     keeping their names (the heights are the same for both eyes), the seams
     dropped (no footing is cut on side two), the holes mirrored so `is_hole`
     still tells an opening from an aperture."""
-    zones = [Zone(z.name, z.kind, z.side, mirror_polygon(z.polygon, mirror_x))
+    zones = [Zone(z.name, z.kind, z.side, mirror_polygon(z.polygon, mirror_x, axis))
              for z in partition.zones]
     return CastlePartition(
-        body=mirror_polygon(partition.body, mirror_x), zones=zones, edges=[],
+        body=mirror_polygon(partition.body, mirror_x, axis), zones=zones, edges=[],
         matched=partition.matched,
-        holes=[mirror_polygon(h, mirror_x) for h in partition.holes])
+        holes=[mirror_polygon(h, mirror_x, axis) for h in partition.holes])
 
 
 def _mask(polys, origin, rows, cols, res) -> np.ndarray:
@@ -117,16 +122,22 @@ def needs_second_side(relief: CastleRelief) -> bool:
 
 
 def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
-                          mirror_x: float = 0.0) -> CastleRelief | None:
+                          mirror_x: float = 0.0, flip: str = "manual",
+                          center_y: float = 0.0,
+                          center_z: float | None = None) -> CastleRelief | None:
     """The anterior as a relief for side two, or None when there is nothing
     to cut there.
 
-    Mirrored in X about `mirror_x` (the flip line in the design frame: the
-    blank's center line, 0, on the Guild bed), and re-zeroed: the new top is
-    the former anterior face at ``T``, the blank's thickness, and the target
-    height is ``T - anterior``. The anterior seats become the pockets; the
-    cells a feature took material from become the band the Features pass
-    finishes, at the anterior features' steepest slope.
+    A manual flip mirrors in X about `mirror_x` (the flip line in the design
+    frame: the blank's center line, 0, on the Guild bed) and re-zeroes on the
+    fixture plane: the new top is the former anterior face at ``T``, the
+    blank's thickness, and the target height is ``T - anterior``. A rotary
+    flip (M26) turns the blank about the rotary's centerline instead:
+    mirrored in Y about `center_y` and in Z about `center_z` (half the blank
+    by default), so side two is side one with Y and Z negated about them.
+    The anterior seats become the pockets; the cells a feature took material
+    from become the band the Features pass finishes, at the anterior
+    features' steepest slope.
     """
     if not needs_second_side(relief):
         return None
@@ -135,30 +146,37 @@ def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
     res = float(f.resolution)
     ox, oy = f.origin
     T = float(castle.stock.blank_thickness_mm)
+    rotary = flip == "rotary"
+    axis = "y" if rotary else "x"
+    m = float(center_y) if rotary else float(mirror_x)
+    zf = (2.0 * float(center_z if center_z is not None else T / 2.0)) if rotary else T
+    flipg = np.flipud if rotary else np.fliplr
     a = relief.anterior_z
     front = _front_mask(relief)                        # the face side two cuts
     depth = np.where(front, relief.anterior_depth, 0.0)
-    z2 = np.fliplr(T - a)
-    ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
-    origin2 = (float(ox2), float(oy))
-    seats2 = [mirror_polygon(p, mirror_x) for p in relief.anterior_pocket_polys]
-    seat_mask = _mask(seats2, origin2, rows, cols, res)
-    # the new top: the former front, flat at T, or the pressed slab's own
-    # bottom turned over (M25)
-    if relief.stock_bottom is not None:
-        new_top = np.fliplr(T - relief.stock_bottom.z)
-        new_bottom = np.fliplr(T - relief.stock_top.z)
+    z2 = flipg(zf - a)
+    if rotary:
+        origin2 = (float(ox), float(2.0 * m - (oy + (rows - 1) * res)))
     else:
-        new_top = np.full((rows, cols), T)
+        origin2 = (float(2.0 * m - (ox + (cols - 1) * res)), float(oy))
+    seats2 = [mirror_polygon(p, m, axis) for p in relief.anterior_pocket_polys]
+    seat_mask = _mask(seats2, origin2, rows, cols, res)
+    # the new top: the former front, flat at the flip height, or the pressed
+    # slab's own bottom turned over (M25)
+    if relief.stock_bottom is not None:
+        new_top = flipg(zf - relief.stock_bottom.z)
+        new_bottom = flipg(zf - relief.stock_top.z)
+    else:
+        new_top = np.full((rows, cols), zf)
         new_bottom = None
     surface2 = np.where(seat_mask, new_top, z2)   # the passes sail over the seats
-    band = np.fliplr(depth > ANTERIOR_BAND_MM) & ~seat_mask
+    band = flipg(depth > ANTERIOR_BAND_MM) & ~seat_mask
     slope = float(castle.anterior_feature_slope()) if band.any() else 0.0
     return CastleRelief(
         field=Heightfield(z=z2, origin=origin2, resolution=res),
-        inside=np.fliplr(front).copy(),
-        zone_index=np.fliplr(relief.zone_index).copy(),
-        partition=mirrored_partition(relief.partition, mirror_x),
+        inside=flipg(front).copy(),
+        zone_index=flipg(relief.zone_index).copy(),
+        partition=mirrored_partition(relief.partition, m, axis),
         pocket_polys=seats2,
         surface_field=Heightfield(z=surface2, origin=origin2, resolution=res),
         feature_band=band if band.any() else None,
@@ -187,14 +205,15 @@ def flipped_castle(castle: CastleParams) -> CastleParams:
 # ------------------------------------------------------------------ the plan
 
 def _side_two_inlays(castle_two: CastleParams, inlay_polys, mirror_x: float,
-                     params: CastleCamParams, tools_cfg, default_tool, T: float) -> list:
+                     params: CastleCamParams, tools_cfg, default_tool, T: float,
+                     axis: str = "x") -> list:
     """The Inlays op for side two: the former anterior seats, mirrored, cut
     from the new top down by their depth."""
     if not castle_two.inlays or not inlay_polys:
         return []
     from ..geometry.inlays import inlay_cuts
     from .inlay_ops import inlay_ops
-    polys2 = [mirror_polygon(p, mirror_x) for p in inlay_polys]
+    polys2 = [mirror_polygon(p, mirror_x, axis) for p in inlay_polys]
     seats = inlay_cuts(castle_two.inlays, polys2, [], posterior_reference=T)
     seats = [s for s in seats if s.posterior and s.depth_mm > 0.0]
     return inlay_ops(seats, params, tools_cfg, default_tool) if seats else []
@@ -203,8 +222,15 @@ def _side_two_inlays(castle_two: CastleParams, inlay_polys, mirror_x: float,
 def plan_two_sided(relief: CastleRelief, castle: CastleParams, hinge_polys, tool: dict,
                    params: CastleCamParams, tools_cfg: dict | None = None,
                    inlay_polys=(), *, mirror_x: float = 0.0,
-                   flip_axis_x_mm: float | None = None, progress=None) -> TwoSidedJob:
+                   flip_axis_x_mm: float | None = None, progress=None,
+                   flip: str = "manual", rotary=None) -> TwoSidedJob:
     """Both sides' ops and the setups between them.
+
+    `flip` is ``manual`` (the blank turned by hand about the fixture's flip
+    line) or ``rotary`` (M26: turned by the machine's fourth axis about its
+    centerline, `rotary` the profile's `RotaryAxis`; the back program then
+    commands ``G0 A180`` and side two is side one with Y and Z negated about
+    the centerline).
 
     `params.two_sided` decides: ``off`` posts the posterior alone as before;
     ``on`` posts two sides whatever the front carries; ``auto`` posts two
@@ -215,7 +241,14 @@ def plan_two_sided(relief: CastleRelief, castle: CastleParams, hinge_polys, tool
     them on side one with the skin or the tabs as today.
     """
     mode = getattr(params, "two_sided", "auto")
-    relief_two = None if mode == "off" else anterior_setup_relief(relief, castle, mirror_x=mirror_x)
+    rotary_flip = flip == "rotary" and rotary is not None
+    cy = float(getattr(rotary, "center_y_mm", 0.0)) if rotary_flip else 0.0
+    cz = float(getattr(rotary, "center_z_mm", castle.stock.blank_thickness_mm / 2.0)) if rotary_flip else None
+    axis = "y" if rotary_flip else "x"
+    m = cy if rotary_flip else mirror_x
+    relief_two = None if mode == "off" else anterior_setup_relief(
+        relief, castle, mirror_x=mirror_x, flip="rotary" if rotary_flip else "manual",
+        center_y=cy, center_z=cz)
     if mode == "on" and relief_two is None:
         relief_two = _flat_second_side(relief, castle, mirror_x)
     notes: list = []
@@ -257,8 +290,8 @@ def plan_two_sided(relief: CastleRelief, castle: CastleParams, hinge_polys, tool
         from .castle_ops import resolve_tool
         inlay_tool = (resolve_tool(params.tool_for_op("Inlays"), tools_cfg or {}, default=tool)
                       if tools_cfg else tool)
-        seat_ops = _side_two_inlays(castle_two, inlay_polys, mirror_x, params_two, tools_cfg,
-                                    inlay_tool, T)
+        seat_ops = _side_two_inlays(castle_two, inlay_polys, m, params_two, tools_cfg,
+                                    inlay_tool, T, axis)
         if seat_ops:
             # after the relief finishes the face the seats are measured from,
             # before the through-cuts open the part: the same place as side one
@@ -274,15 +307,22 @@ def plan_two_sided(relief: CastleRelief, castle: CastleParams, hinge_polys, tool
                            [Setup(side="posterior", wcs="G54", program="posterior_cut.nc",
                                   stock_top_mm=castle.stock.total_pad_height_mm)], notes)
     reprobe = ["Z"] + (["XY"] if getattr(params, "reprobe_xy", False) else [])
+    if rotary_flip:
+        reprobe = ["Z"] if getattr(params, "probe_block", False) else []
+    a_deg = (180.0 * float(getattr(rotary, "direction_sign", 1))) if rotary_flip else None
+    top_two = (float(np.nanmax(relief_two.stock_top.z)) if relief_two.stock_top is not None else T)
     setups = [
         Setup(side="posterior", wcs="G54", program="posterior_cut.nc",
               stock_top_mm=castle.stock.total_pad_height_mm, mirror_x_mm=float(mirror_x),
               flip_axis_x_mm=flip_axis_x_mm),
-        Setup(side="anterior", wcs="G55", program="back_cut.nc", flip="manual",
-              stock_top_mm=T, mirror_x_mm=float(mirror_x), flip_axis_x_mm=flip_axis_x_mm,
+        Setup(side="anterior", wcs="G55", program="back_cut.nc",
+              flip="rotary" if rotary_flip else "manual", a_deg=a_deg,
+              stock_top_mm=top_two, mirror_x_mm=float(mirror_x), flip_axis_x_mm=flip_axis_x_mm,
               reprobe=reprobe,
               notes=[("through-cuts on side two" if through_two else "through-cuts on side one"),
-                     "released on tabs" if through_two else ""]),
+                     "released on tabs" if through_two else "",
+                     (f"indexed flip: the rotary turns the blank {a_deg:+.0f} degrees about its "
+                      f"centerline" if rotary_flip else "")]),
     ]
     setups[1].notes = [n for n in setups[1].notes if n]
     return TwoSidedJob(ops_one, ops_two, relief_two, castle_two, setups, notes)
@@ -306,7 +346,13 @@ def _flat_second_side(relief: CastleRelief, castle: CastleParams, mirror_x: floa
 
 def flip_pause_text(setup: Setup) -> str:
     """The pause GuildSend parses, with the flip line, the work offset and
-    the probe to run after it."""
+    the probe to run after it; for a rotary flip, the indexed turn instead."""
+    if setup.flip == "rotary":
+        parts = [f"Indexed flip: the rotary turns the blank to A{(setup.a_deg or 180.0):.3f}",
+                 f"then {setup.wcs}"]
+        if setup.reprobe:
+            parts.append("re-probe " + " and ".join(setup.reprobe))
+        return "; ".join(parts)
     parts = [FLIP_PAUSE]
     if setup.flip_axis_x_mm is not None:
         parts.append(f"flip about machine X {setup.flip_axis_x_mm:.3f} mm")

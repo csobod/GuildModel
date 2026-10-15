@@ -694,6 +694,41 @@ the stock, and the flip the way the program assumes. The bench test is a
 through-hole pattern from side one and a matching counterbore from side two
 in a scrap blank, measured at four corners under a loupe.
 
+### The fourth axis — what a rotary does and does not do
+
+A rotary on the Guild CNC is for the **indexed flip**: with the blank
+centered on the rotary's centerline on a bar fixture, side two of a
+two-sided job is side one with Y and Z negated about that line, and the
+back program begins with the turn, `G0 A180`, then the side's work offset,
+with no pause to re-fixture by hand. The machine profile says whether the
+machine has the axis (**Guild CNC (fourth axis)** is the shipped
+four-axis profile, its figures placeholders for the bench), what it is
+called, what it turns about, which way (the sign has flipped in a shipped
+firmware; a chamfer on one corner tells you), its centerline, its rate and
+its travel; the fixture file says the blank is on the rotary bar and where
+its centerline lies on the bed. GRBL 1.1 has no fourth axis: grblHAL or
+FluidNC carries it, and the first bench session decides which. A program
+with A words is refused by the post on a three-axis profile, and the lint
+says so if one reaches it; the cut-time estimate charges a turn at the
+rotary's rate; a move in which the rotary and the feed arrive together
+runs in inverse time, G93, and never as an arc.
+
+What a rotary does not do is the lens groove on a curved front. The rim's
+normal tilts in two directions and one rotary compensates one: about the
+frame's horizontal the residual yaws the disc into the walls and widens a
+2 mm groove by half a millimeter or more; about the vertical the residual
+is smaller but the swing needs a height this class of machine does not
+have. A correct groove on a curved front is a five-axis feature, and it
+waits for the experiments of 2.5. Before the rotary is mounted, measure
+the spindle nose to the table at Z max; the swing of the blank and its
+fixture must fit under it, and the profile holds both numbers.
+
+The bench test is the flip test of a two-sided job with the flip done by
+`G0 A180`: a through-hole pattern from side one and a matching counterbore
+from side two, concentric at four corners within 0.1 mm, and the rotary
+back at zero within 0.05 degrees over ten turns. GuildSend's side, the
+A axis in its status, jog and settings, is its own work.
+
 ## 6. The worktable — cut the whole model in one setup
 
 The **Worktable** tab is the machine bed. Its panel has four groups, each of

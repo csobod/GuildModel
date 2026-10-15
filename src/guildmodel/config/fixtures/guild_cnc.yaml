@@ -30,6 +30,18 @@ max_z_mm:  80.0
 # 6 mm acetate sheet with a 4 mm nosepad block bonded in the center area,
 # giving 10 mm total thickness there.
 
+# How the front blank is held (BUILDPLAN M26 §11.2): flat on the bed (the
+# default, the flip by hand about flip_axis_x_mm), on a rotary bar (the flip
+# by G0 A180 about the bar's centerline, given here in bed coordinates), or in
+# a curved nest (a pressed blank, M25). Fill rotary_bar from the bench: the
+# centerline by an indicator sweep at A0 and A180.
+mount: flat
+rotary_bar:
+  center_y_mm: 144.272       # the front station's horizontal center line
+  center_z_mm: 50.0          # the rotary's center height over the table, to measure
+  blank_offset_mm: 0.0       # the blank's offset along the axis from the chuck
+  swing_radius_mm: 38.0      # the blank with its fixture; checked against the profile
+
 blank_zones:
 
   front:

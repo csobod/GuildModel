@@ -158,6 +158,10 @@ _IJ = re.compile(r"([IJ])\s*(-?\d*\.?\d+)")
 _ARC_ENDPOINT_TOL_MM = 0.002
 
 
+#: The rotary word on a line, the A of M26 (a word, not the A of "G28 A0").
+_A_WORD = re.compile(r"(?<![A-Za-z])A(-?\d+(?:\.\d+)?)")
+
+
 def lint_program(text: str, profile: MachineProfile) -> list[str]:
     """Check a posted program against the profile. Returns actionable warnings.
 
@@ -175,6 +179,8 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
     spindles: list[float] = []
     has_arc = False
     arc_mismatch = 0.0
+    a_words: list[float] = []
+    has_g93 = False
 
     for raw in text.splitlines():
         s = raw.strip()
@@ -199,10 +205,17 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
             y = words["Y"]; ys.append(y)
         if "Z" in words:
             z = words["Z"]; zs.append(z)
-        if "F" in words:
+        if "F" in words and not has_g93:
             max_feed = max(max_feed, words["F"])
         if "S" in words:
             spindles.append(words["S"])
+        a_match = _A_WORD.search(code)
+        if a_match:
+            a_words.append(float(a_match.group(1)))
+        if code.split()[0:1] == ["G93"] or " G93" in f" {code}":
+            has_g93 = True
+        if " G94" in f" {code}":
+            has_g93 = False
 
     if xs and ys:
         ext_x, ext_y = max(xs) - min(xs), max(ys) - min(ys)
@@ -228,6 +241,16 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
             break
     if has_arc and not profile.supports_arcs:
         warns.append("G2/G3 arcs present but machine profile reports no arc support")
+    if a_words:
+        rot = getattr(profile, "rotary", None)
+        if not getattr(profile, "has_rotary", False):
+            warns.append(f"A words present but the machine profile has no rotary (axes "
+                         f"{getattr(profile, 'axes', 'XYZ')})")
+        elif rot is not None and rot.travel_deg and max(abs(a) for a in a_words) > rot.travel_deg + 1e-9:
+            warns.append(f"A{max(abs(a) for a in a_words):.1f} is past the rotary's travel of "
+                         f"{rot.travel_deg:g} degrees")
+    if "G93" in text and not getattr(profile, "supports_g93", True):
+        warns.append("G93 inverse-time feed present but the machine profile reports no G93 support")
     if arc_mismatch > _ARC_ENDPOINT_TOL_MM:
         warns.append(
             f"arc endpoint radius mismatch up to {arc_mismatch:.4f} mm — strict senders "

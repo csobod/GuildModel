@@ -5,6 +5,25 @@ and the current release's note; everything else lives here.
 
 ## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
 
+### The fourth axis: the indexed flip (BUILDPLAN M26, 2026-10-15)
+
+A machine profile may now carry a fourth axis, off by default: the
+controller, the axes, the rotary (letter, what it turns about, its sign,
+its centerline, its rate and travel), inverse-time support, and the
+spindle-nose-to-table height a swing must fit under. *Guild CNC (fourth
+axis)* ships as a profile of placeholders for the bench; the fixture file
+says how the blank is mounted. On a rotary bar, a two-sided job flips by
+the machine: side two is side one with Y and Z negated about the
+centerline, and the back program begins with `G0 A180` and the side's
+offset, with no pause. The post writes A words to three decimals, runs a
+move in which the rotary and the feed arrive together in inverse time and
+never as an arc, refuses an A word on a three-axis profile or past the
+travel, and unwinds the rotary at the end; the lint names an A word the
+profile cannot run; the cut-time estimate charges a turn at the rotary's
+rate; the simulation turns the stock about the centerline and cuts side
+two from it. The guide's §5 says what a rotary does for a curved front and
+what it does not: the groove waits for five axes.
+
 ### The pre-formed blank: cut after pressing (BUILDPLAN M25, 2026-10-15)
 
 *Pre-formed blank* on the Stock tab cuts the front after it is pressed to

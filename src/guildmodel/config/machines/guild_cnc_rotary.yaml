@@ -1,0 +1,51 @@
+# GuildModel machine profile — Guild CNC with a fourth axis (BUILDPLAN M26).
+# The same machine as guild_cnc.yaml with a rotary about the frame's horizontal
+# (X) on a four-axis controller. Every figure marked "to measure" is a
+# placeholder for the bench (§11.4 step 0 and step 3): the spindle-nose-to-
+# table height, the rotary's centerline, its direction sign and its rate come
+# off the machine, not out of this file.
+
+name: guild_cnc_rotary
+display_name: "Guild CNC (fourth axis)"
+
+work_area_x_mm: 300.0
+work_area_y_mm: 200.0
+work_area_z_mm: 80.0
+
+max_feed_mmpm: 3000.0
+max_plunge_mmpm: 1000.0
+max_spindle_rpm: 24000.0
+min_spindle_rpm: 0.0
+max_doc_mm: 5.0
+
+rapid_rate_mmpm: 3000.0
+max_accel_mmps2: 500.0
+junction_deviation_mm: 0.01
+
+supports_arcs: true
+units: mm
+enforce_soft_limits: true
+tool_change_mode: m0
+tool_change_seconds: 20.0
+
+# The controller and its axes. GRBL 1.1 has no fourth axis: grblHAL or
+# FluidNC carries it (the first bench session decides, §11.5).
+controller: grblhal
+axes: "XYZA"
+rotary:
+  letter: A
+  about: X                   # the frame's horizontal: the 165 mm blank along the axis
+  direction_sign: 1          # to verify: a chamfer on one corner says which way A180 turns
+  center_y_mm: 0.0           # the centerline in the design frame (the blank centered on it)
+  center_z_mm: 3.0           # half a 6 mm blank: the flip negates Y and Z about these
+  max_rate_degpm: 3600.0     # to measure ($113 on grblHAL)
+  accel_degps2: 200.0        # to measure ($123)
+  travel_deg: 0.0            # 0 = unlimited ($133 = 0 on grblHAL)
+  steps_per_deg: 0.0         # to measure ($103)
+  is_rotary_flag: true       # $376 on grblHAL
+  homing: none
+  index_repeatability_deg: 0.1
+rotary_feed_mode: g93
+supports_g93: true
+spindle_nose_to_table_mm: null   # to measure at Z max before the rotary is mounted
+notes: "Placeholders for the bench; the indexed flip is the only use in 2.0."

@@ -1132,6 +1132,29 @@ class BaseCurveBlockParams(BaseModel):
         return [(x0 + i * s, 0.0) for i in range(n)]
 
 
+class RotaryAxis(BaseModel):
+    """A fourth axis on the machine (BUILDPLAN M26 §11.2): what it is called,
+    what it turns about, which way, where its centerline lies in the design
+    frame, and how fast it goes. The sign convention has flipped in a shipped
+    firmware, so `direction_sign` is a field to verify at the bench, never a
+    constant."""
+    letter: Literal["A", "B", "C"] = "A"
+    about: Literal["X", "Y"] = "X"
+    direction_sign: Literal[1, -1] = 1
+    # The centerline in the design frame: a blank centered on it flips about
+    # y = center_y_mm and z = center_z_mm, so side two is side one with Y and
+    # Z negated about them (§11.1). The fixture carries the bed coordinates.
+    center_y_mm: float = 0.0
+    center_z_mm: float = 3.0
+    max_rate_degpm: float = 3600.0
+    accel_degps2: float = 200.0
+    travel_deg: float = 0.0                 # 0 = unlimited rotation
+    steps_per_deg: float = 0.0
+    is_rotary_flag: bool = True
+    homing: Literal["switch", "hard_stop", "none"] = "none"
+    index_repeatability_deg: float = 0.1
+
+
 class MachineProfile(BaseModel):
     """A GRBL-family machine's capabilities (BUILDPLAN M4.8 task 3).
 
@@ -1173,6 +1196,29 @@ class MachineProfile(BaseModel):
     # Guild CNC has no ATC, so manual is the default.
     tool_change_mode: Literal["m6", "m0"] = "m0"
     tool_change_seconds: float = 20.0      # nominal dwell per change, cut-time model
+
+    # The controller and its axes (M26), additive and off by default: GRBL
+    # 1.1 is three-axis; a fourth axis needs grblHAL, FluidNC or grbl-Mega-5X.
+    controller: Literal["grbl11", "grblhal", "fluidnc", "grbl_mega_5x", "smoothie",
+                        "other"] = "grbl11"
+    axes: str = "XYZ"
+    rotary: RotaryAxis | None = None
+    rotary_feed_mode: Literal["g93", "deg_per_min", "linear_dominant"] = "g93"
+    supports_g93: bool = True
+    # Spindle nose to table at Z max, mm: what a rotary's swing must fit under.
+    spindle_nose_to_table_mm: float | None = None
+
+    @property
+    def has_rotary(self) -> bool:
+        return self.rotary is not None and self.rotary.letter in self.axes.upper()
+
+    def max_swing_radius_mm(self, center_height_mm: float) -> float | None:
+        """The largest swing a blank may have on a rotary whose centerline
+        stands `center_height_mm` over the table: the nose-to-table height
+        less that, or None when the height is not measured (§11.4 step 0)."""
+        if self.spindle_nose_to_table_mm is None:
+            return None
+        return float(self.spindle_nose_to_table_mm) - float(center_height_mm)
     notes: str = ""
 
 

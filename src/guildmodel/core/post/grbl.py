@@ -102,6 +102,16 @@ class GRBLPost:
     # Lines emitted after the header's modal block, before the first move: a
     # side's re-probe instruction (M24).
     preamble: list[str] = field(default_factory=list)
+    # The fourth axis (M26): the axes the controller has, the rotary's letter,
+    # its travel (0 = unlimited) and its rate; `index_a_deg`, when set, is the
+    # indexed flip the header commands before the side's work offset.
+    axes: str = "XYZ"
+    rotary_letter: str = "A"
+    rotary_travel_deg: float = 0.0
+    rotary_max_rate_degpm: float = 3600.0
+    supports_g93: bool = True
+    index_a_deg: float | None = None
+    rotary_unwind: str = "g53"          # "g53" (G53 G0 A0), "g28" (G28 A0), "none"
 
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
     _last_xy: tuple | None = field(default=None, init=False, repr=False)
@@ -129,6 +139,9 @@ class GRBLPost:
             "G21" if self.units == "mm" else "G20",
             "G17  ; XY arc plane",
         ]
+        if self.index_a_deg is not None:
+            # the indexed flip: the rotary turns the blank, then the side's offset
+            self.rotary_index(self.index_a_deg)
         if self.wcs and self.wcs != "G54":
             self._lines.append(f"{self.wcs}  ; work offset for this side")
         self._lines += list(self.preamble)
@@ -304,6 +317,96 @@ class GRBLPost:
         self._last_z = None           # operator may have jogged Z during the pause
         self._last_xy = None
 
+    # ------------------------------------------------------------- the fourth axis (M26)
+
+    def _a_word(self, a: float) -> str:
+        """The rotary word, validated: refused on a controller without the
+        axis, and against the travel when the profile bounds it."""
+        letter = self.rotary_letter.upper()
+        if letter not in self.axes.upper():
+            raise ValueError(
+                f"the program needs a {letter} axis and the machine profile has {self.axes}: "
+                "pick a four-axis profile, or a manual flip")
+        if self.rotary_travel_deg and abs(a) > self.rotary_travel_deg + 1e-9:
+            raise ValueError(
+                f"{letter}{a:.3f} is past the rotary's travel of {self.rotary_travel_deg:g} degrees")
+        return f"{letter}{a:.3f}"
+
+    def rotary_index(self, a_deg: float) -> None:
+        """A rapid turn of the rotary alone (the indexed flip, `G0 A180`),
+        from a safe height."""
+        self._lines.append(f"; Indexed flip: the rotary turns the blank to {self.rotary_letter}{a_deg:.3f}")
+        self._lines.append(f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}")
+        self._lines.append(f"G0 {self._a_word(a_deg)}")
+        self._last_z = self.safe_z_mm
+        self._last_xy = None
+
+    def unwind(self) -> None:
+        """Bring the rotary home at the program's end, the way the profile
+        says (a wrapped axis unwinds with G53, an unwrapped one homes)."""
+        if self.rotary_unwind == "none":
+            return
+        if self.rotary_unwind == "g28":
+            self._lines.append(f"G28 {self.rotary_letter}0")
+        else:
+            self._lines.append(f"G53 G0 {self.rotary_letter}0")
+
+    def feed4(self, x: float, y: float, z: float, a: float, *, da: float,
+              length_mm: float, feed: float | None = None) -> None:
+        """A cutting move with a rotary word (M26). With `da` the rotary's
+        change over the move, the move runs in inverse time (G93) when the
+        profile supports it, timed to the slower of the linear feed and the
+        rotary's rate; else in G94 with the linear feed and the rotary keeping
+        up. The caller brackets a G93 stretch with `g93_begin` / `g93_end`."""
+        self._check_below_safe(z)
+        ox, oy, oz = self.work_offset
+        f = feed if feed is not None else self.feed_rate_mmpm
+        if not f or f <= 0:
+            raise ValueError("the feed rate is not set")
+        parts = ["G1", f"X{x + ox:.4f}", f"Y{y + oy:.4f}", f"Z{z + oz:.4f}", self._a_word(a)]
+        if abs(da) > 1e-9 and self.supports_g93:
+            minutes = max(length_mm / f, abs(da) / max(self.rotary_max_rate_degpm, 1e-9))
+            parts.append(f"F{1.0 / max(minutes, 1e-9):.4f}")
+        else:
+            parts.append(f"F{f:.0f}")
+        self._lines.append(" ".join(parts))
+        self._last_z = z
+
+    def g93_begin(self) -> None:
+        if self.supports_g93:
+            self._lines.append("G93  ; inverse time: the rotary and the feed arrive together")
+
+    def g93_end(self) -> None:
+        if self.supports_g93:
+            self._lines.append("G94  ; units per minute")
+
+    def emit_polyline4(self, points, feed: float | None = None) -> None:
+        """A path whose points carry the rotary word, ``(x, y, z, a)``:
+        linearized (no arc with a varying A word is defined on a GRBL-family
+        controller), entered from the feed plane like any pass, in G93 for
+        the stretch over which A changes."""
+        pts = [(float(x), float(y), float(z), float(a)) for x, y, z, a in points]
+        if not pts:
+            return
+        x0, y0, z0, a0 = pts[0]
+        self._link_retract(x0, y0)
+        self._lines.append(f"G0 X{x0 + self.work_offset[0]:.4f} Y{y0 + self.work_offset[1]:.4f} "
+                           f"{self._a_word(a0)}")
+        self._last_xy = (x0, y0)
+        self._rapid_to_feed_plane(z0)
+        self.plunge(z0)
+        varying = any(abs(p[3] - pts[0][3]) > 1e-9 for p in pts[1:])
+        if varying:
+            self.g93_begin()
+        prev = pts[0]
+        for p in pts[1:]:
+            length = math.dist(prev[:3], p[:3])
+            self.feed4(p[0], p[1], p[2], p[3], da=p[3] - prev[3], length_mm=length, feed=feed)
+            prev = p
+        if varying:
+            self.g93_end()
+        self._last_xy = (pts[-1][0], pts[-1][1])
+
     def probe_z_block(self, depth_mm: float = 25.0, feed_mmpm: float = 100.0,
                       wcs_slot: int = 2) -> list[str]:
         """The G38.2 touch-off that re-establishes a side's Z after the flip
@@ -364,7 +467,10 @@ class GRBLPost:
         self.spindle_on()
 
     def end_program(self) -> None:
-        self._lines += ["M5", f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}", "M30"]
+        self._lines += ["M5", f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}"]
+        if self.index_a_deg is not None:
+            self.unwind()
+        self._lines.append("M30")
 
     def _emit_moves(self, pts: list[tuple[float, float, float]], arc_tol: float) -> None:
         """Feed through pts[1:] (current position is pts[0]); arc-fit if asked."""

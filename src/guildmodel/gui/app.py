@@ -813,8 +813,20 @@ class GCodeWorker(_ProgressWorker):
                     **cam.op_enabled, "Eyewires": False, "Holes": False, "Lens Groove": False}})
         self.progress.emit("[gcode] Castle: generating the operations…")
         from guildmodel.core.cam.two_sided import plan_two_sided
+        # The flip (M26): by the machine's rotary when the profile has one and
+        # the blank is on the rotary bar; by hand about the fixture's flip line
+        # otherwise. A test or a dialog may name the mount directly.
+        with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
+            mount = (getattr(self, "fixture_mount", None)
+                     or (yaml.safe_load(fh) or {}).get("mount", "flat"))
+        flip = "rotary" if (machine.has_rotary and mount == "rotary_bar") else "manual"
         job = plan_two_sided(relief, castle, self.hinge_polys, tool, cam, tools_cfg,
-                             inlay_polys=self.inlay_polys, progress=self._progress)
+                             inlay_polys=self.inlay_polys, progress=self._progress,
+                             flip=flip, rotary=machine.rotary if flip == "rotary" else None)
+        if job.two_sided and flip == "rotary":
+            self.progress.emit(
+                f"[gcode] Indexed flip: the rotary turns the blank {job.setups[1].a_deg:+.0f} "
+                f"degrees about {machine.rotary.about}; side two runs in G55 with no pause.")
         if flat_setups:
             job.setups = flat_setups + job.setups
             job.setups[-1].notes = list(job.setups[-1].notes) + ["on the pressed blank, in the nest"]
@@ -1064,6 +1076,16 @@ class GCodeWorker(_ProgressWorker):
                          or len({op.tool_name for op in job.side_two if op.tool_name}) > 1)
             first_two = settings_two.get(job.side_two[0].tool_name)
             offset_two = cam.program_zero.work_offset(castle_two.stock)
+            setup_two = job.setups[1]
+            rotary_kw = {}
+            if setup_two.flip == "rotary" and machine.rotary is not None:
+                rotary_kw = dict(
+                    axes=machine.axes, rotary_letter=machine.rotary.letter,
+                    rotary_travel_deg=float(machine.rotary.travel_deg),
+                    rotary_max_rate_degpm=float(machine.rotary.max_rate_degpm),
+                    supports_g93=bool(machine.supports_g93),
+                    index_a_deg=float(setup_two.a_deg or 180.0),
+                    rotary_unwind="g53" if not machine.rotary.travel_deg else "g28")
             post2 = GRBLPost(
                 job_name="back_cut", material=p["material_name"],
                 tool_diameter_mm=first_two.diameter_mm if first_two else post_dia,
@@ -1072,11 +1094,11 @@ class GCodeWorker(_ProgressWorker):
                 plunge_rate_mmpm=first_two.plunge_rate_mmpm if first_two else post_plunge,
                 safe_z_mm=cam.safe_z_for(top_two),
                 feed_plane_mm=top_two + 1.0,
-                work_offset=offset_two, wcs="G55")
-            post2.preamble = ["; " + flip_pause_text(job.setups[1])]
+                work_offset=offset_two, wcs="G55", **rotary_kw)
+            post2.preamble = ["; " + flip_pause_text(setup_two)]
             if cam.probe_block:
                 post2.preamble += post2.probe_z_block()
-            else:
+            elif setup_two.flip != "rotary":
                 post2.preamble.append("; Re-zero Z on the stock top (the former front) before cutting")
             if cam.link_retracts:
                 from guildmodel.core.cam.castle_ops import work_holding_keepouts
@@ -1123,6 +1145,8 @@ class GCodeWorker(_ProgressWorker):
             "flip_axis_x_mm": flip,
             "setups": [s.model_dump() for s in job.setups],
             "two_sided": job.two_sided,
+            "run_mode": ("rotary_indexed" if (job.two_sided and job.setups[-1].flip == "rotary")
+                         else "two_file"),
             "est_cycle_min_side_two": (round(side_two_report.cycle_seconds / 60, 2)
                                        if side_two_report is not None else None),
             "inlays": _inlay_sheet(seats, thin),
@@ -1633,13 +1657,17 @@ class SimWorker(_ProgressWorker):
                  material_name="acetate", resolution: float = 0.3,
                  inlay_polys=(), program_text: str | None = None,
                  sculpt_sources=None, back_program_text: str | None = None,
-                 forming=None, bridge=None) -> None:
+                 forming=None, bridge=None, back_setup=None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
         self.cam_params = cam_params
         self.forming = forming           # the project's forming, for a pre-formed blank (M25)
         self.bridge = bridge
+        # Side two's setup record (M24/M26): how the blank was flipped, by
+        # hand about the fixture's line or by the rotary about its centerline.
+        self.back_setup = dict(back_setup) if isinstance(back_setup, dict) else (
+            back_setup.model_dump() if back_setup is not None else None)
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)
         self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
@@ -1803,10 +1831,23 @@ class SimWorker(_ProgressWorker):
             # side one fails the whole.
             if self.program_text and self.back_program_text:
                 from guildmodel.core.cam.two_sided import anterior_setup_relief
-                relief_two = anterior_setup_relief(relief, self.castle)
+                flip = (self.back_setup or {}).get("flip", "manual")
+                rotary = None
+                if flip == "rotary":
+                    try:
+                        from guildmodel.core.post.machine import load_machine_profile
+                        rotary = load_machine_profile(cam.machine_name, config_dir).rotary
+                    except Exception:                        # noqa: BLE001
+                        rotary = None
+                    if rotary is None:
+                        flip = "manual"
+                T = float(self.castle.stock.blank_thickness_mm)
+                cy = float(rotary.center_y_mm) if rotary is not None else 0.0
+                cz = float(rotary.center_z_mm) if rotary is not None else T / 2.0
+                relief_two = anterior_setup_relief(relief, self.castle, flip=flip,
+                                                   center_y=cy, center_z=cz)
                 if relief_two is not None:
                     import dataclasses
-                    T = float(self.castle.stock.blank_thickness_mm)
                     if relief.preformed:
                         # the pressed slab's own envelopes bound side one's result
                         hi, lo = relief.stock_top.z, relief.stock_bottom.z
@@ -1814,8 +1855,12 @@ class SimWorker(_ProgressWorker):
                         hi = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
                                                    origin=f.origin, shape=f.z.shape).z
                         lo = 0.0
-                    verdict2 = carry["verdict"].clipped(lo, hi).mirrored(0.0, z_flip=T)
-                    blank2 = carry["stock"].mirrored(0.0, z_flip=T)
+                    if flip == "rotary":
+                        verdict2 = carry["verdict"].clipped(lo, hi).mirrored(cy, z_flip=2 * cz, axis="y")
+                        blank2 = carry["stock"].mirrored(cy, z_flip=2 * cz, axis="y")
+                    else:
+                        verdict2 = carry["verdict"].clipped(lo, hi).mirrored(0.0, z_flip=T)
+                        blank2 = carry["stock"].mirrored(0.0, z_flip=T)
                     lines_one = [f"Side one: {ln}" for ln in lines]
                     status_one = report.status()
                     self.progress.emit("[sim] Side two: the anterior after the flip…")
@@ -7098,6 +7143,8 @@ class MainWindow(QMainWindow):
             machine=top_machine, setup=top_setup, report=top_report,
             component_artifacts=component_artifacts or None,
             features=self._sculpt_feature_bytes() or None,
+            run_mode=((top_setup or {}).get("run_mode") if isinstance(top_setup, dict) else None)
+                     or "two_file",
         )
 
     def _save_gmodel_to(self, path: Path, announce: bool = True) -> bool:
@@ -10068,6 +10115,8 @@ class MainWindow(QMainWindow):
                 sculpt_sources=self._sculpt_sources(),
                 back_program_text=(self._last_programs.get("back_cut.nc")
                                    if program and self._program_stored else None),
+                back_setup=(((self._last_setup or {}).get("setups") or [None, None])[-1]
+                            if program and self._program_stored else None),
                 forming=self._preformed_forming(), bridge=self._preformed_bridge())
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
