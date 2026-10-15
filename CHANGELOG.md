@@ -21,8 +21,11 @@ verdict allows the walls' lean in the rim band and says how much it is.
 The lens groove is left out with a sentence, or cut flat first by the
 hybrid, *Apertures and groove first*, which posts the apertures and the
 groove in a program of their own before pressing. A flat project is
-byte-identical. A pre-formed front is cut in its nest, not on the bed, and
-a second side on it waits for the nest fixture work.
+byte-identical. A pre-formed front is cut in its nest, not on the bed.
+*Export Nest…* on the Forming panel writes the nest: the pre-cut dies' cup
+for side one and the post-cut dome for side two, on the dowels; a
+two-sided job on the pressed blank turns the slab over in it, and the
+simulation cuts side two from side one's result upside down.
 
 ### Two-sided jobs: the flip (BUILDPLAN M24, 2026-10-15)
 

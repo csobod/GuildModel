@@ -596,8 +596,11 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
         rows, cols = f.z.shape
         apertures = ()
         if getattr(castle.stock, "apertures_first", False):
+            # the openings the flat program cut: the rim lip when the groove
+            # is on (the groove widens them later), the drawn apertures else
+            body_cut, _ = groove_body(partition, castle)
             is_hole = partition.is_hole
-            apertures = [Polygon(r) for r in partition.body.interiors if not is_hole(r)]
+            apertures = [Polygon(r) for r in body_cut.interiors if not is_hole(r)]
         top, bottom = formed_blank_envelopes(castle.stock, fmap, f.origin, rows, cols,
                                              f.resolution, apertures=apertures)
         # Where the slab has no material (past its edge, or an aperture cut
@@ -608,13 +611,33 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
         bottom = np.where(np.isfinite(bottom), bottom, low)
         relief.stock_top = Heightfield(z=top, origin=f.origin, resolution=f.resolution)
         relief.stock_bottom = Heightfield(z=bottom, origin=f.origin, resolution=f.resolution)
+        # What the front carries to cut is what the flat front carries,
+        # pressed along with the slab: the flat model's own lower envelope,
+        # the depth off the flat front, mapped onto the formed grid and laid
+        # on the slab's bottom. The formed mesh's lower envelope itself would
+        # read every leaning wall as a cut into the front.
+        from .model.zmap import _triangles
+        fv, ff = _triangles(partition, castle, hinges, inlays, sculpt_sources, None)
+        fo, fr, fc_ = grid_for(partition.body, resolution, margin)
+        _, flat_depth = triangle_envelopes(fv, ff, fo, fr, fc_, resolution)
+        depth2 = np.zeros((rows, cols))
+        rr, cc = np.nonzero(flat_depth > 1e-6)
+        if len(rr):
+            pts = np.column_stack([fo[0] + cc * resolution, fo[1] + rr * resolution,
+                                   np.zeros(len(rr))])
+            w = fmap(pts)
+            ci = np.round((w[:, 0] - f.origin[0]) / resolution).astype(int)
+            ri = np.round((w[:, 1] - f.origin[1]) / resolution).astype(int)
+            ok = (ci >= 0) & (ci < cols) & (ri >= 0) & (ri < rows)
+            np.maximum.at(depth2, (ri[ok], ci[ok]), flat_depth[rr[ok], cc[ok]])
+        relief.anterior = np.where(np.isfinite(bottom), bottom, low) + depth2
         # The formed part's walls tilt with the curve, so the footprint at the
         # anterior face runs outside the posterior edge by the thickness times
         # the sine of the tilt. A three-axis cut makes the wall vertical at the
         # front edge; the sliver between is not a surface the relief can reach
         # or the verdict should ask for, so the body is where the part has
         # real thickness (the wall's own cells excepted).
-        thick = (relief.field.z - relief.anterior_z) > FORMED_WALL_MM
+        thick = (relief.field.z - relief.stock_bottom.z) > FORMED_WALL_MM
         relief.inside = relief.inside & thick
         relief.zone_index = np.where(relief.inside, relief.zone_index, -1)
         return relief

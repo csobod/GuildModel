@@ -95,11 +95,24 @@ def _mask(polys, origin, rows, cols, res) -> np.ndarray:
     return out.reshape(rows, cols)
 
 
+def _front_mask(relief: CastleRelief) -> np.ndarray:
+    """The front's own footprint on the relief grid: the body as it is on a
+    flat blank; on a pressed blank (M25) the body the relief's partition
+    carries, which is the front's, wider than the back's by the walls' lean."""
+    if relief.stock_bottom is None:
+        return relief.inside
+    f = relief.field
+    rows, cols = f.z.shape
+    return _mask([relief.partition.body], f.origin, rows, cols, float(f.resolution))
+
+
 def needs_second_side(relief: CastleRelief) -> bool:
     """True when the front takes material off the anterior, or carries a
     seat there: something for side two to cut."""
-    if relief.anterior is not None and bool((relief.anterior_depth > ANTERIOR_BAND_MM).any()):
-        return True
+    if relief.anterior is not None:
+        depth = np.where(_front_mask(relief), relief.anterior_depth, 0.0)
+        if bool((depth > ANTERIOR_BAND_MM).any()):
+            return True
     return bool(relief.anterior_pocket_polys)
 
 
@@ -123,7 +136,8 @@ def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
     ox, oy = f.origin
     T = float(castle.stock.blank_thickness_mm)
     a = relief.anterior_z
-    depth = relief.anterior_depth
+    front = _front_mask(relief)                        # the face side two cuts
+    depth = np.where(front, relief.anterior_depth, 0.0)
     z2 = np.fliplr(T - a)
     ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
     origin2 = (float(ox2), float(oy))
@@ -142,7 +156,7 @@ def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
     slope = float(castle.anterior_feature_slope()) if band.any() else 0.0
     return CastleRelief(
         field=Heightfield(z=z2, origin=origin2, resolution=res),
-        inside=np.fliplr(relief.inside).copy(),
+        inside=np.fliplr(front).copy(),
         zone_index=np.fliplr(relief.zone_index).copy(),
         partition=mirrored_partition(relief.partition, mirror_x),
         pocket_polys=seats2,

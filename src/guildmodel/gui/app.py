@@ -778,9 +778,9 @@ class GCodeWorker(_ProgressWorker):
                 f"{relief.wall_lean_mm:.2f} mm between the front's edge and the back's, and "
                 "a three-axis cut makes them vertical at the front's.")
             if cam.two_sided != "off":
-                cam = cam.model_copy(update={"two_sided": "off"})
-                self.progress.emit("[gcode] Two-sided on a pressed blank comes with the "
-                                   "nest fixture; one setup posted.")
+                self.progress.emit("[gcode] A second side on the pressed blank turns the slab "
+                                   "over in its nest: side two's stock is side one's result "
+                                   "upside down, the dome nest under its back.")
             if getattr(castle.stock, "apertures_first", False):
                 # The hybrid: the eyewires, the holes and the groove cut flat
                 # before pressing, in a program of their own; the pressed
@@ -1050,6 +1050,10 @@ class GCodeWorker(_ProgressWorker):
             # program with the pause text GuildSend parses and the re-probe.
             from guildmodel.core.cam.two_sided import flip_pause_text
             castle_two = job.castle_two
+            # the turned slab's own top on a pressed blank (M25), else the flat stock
+            top_two = (float(np.nanmax(job.relief_two.stock_top.z))
+                       if job.relief_two.stock_top is not None
+                       else castle_two.stock.total_pad_height_mm)
             settings_two, resolved_two = build_tool_settings(
                 job.side_two, tools_cfg,
                 default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
@@ -1066,8 +1070,8 @@ class GCodeWorker(_ProgressWorker):
                 spindle_rpm=first_two.spindle_rpm if first_two else post_spindle,
                 feed_rate_mmpm=first_two.feed_rate_mmpm if first_two else post_feed,
                 plunge_rate_mmpm=first_two.plunge_rate_mmpm if first_two else post_plunge,
-                safe_z_mm=cam.safe_z_for(castle_two.stock.total_pad_height_mm),
-                feed_plane_mm=castle_two.stock.total_pad_height_mm + 1.0,
+                safe_z_mm=cam.safe_z_for(top_two),
+                feed_plane_mm=top_two + 1.0,
                 work_offset=offset_two, wcs="G55")
             post2.preamble = ["; " + flip_pause_text(job.setups[1])]
             if cam.probe_block:
@@ -1076,8 +1080,7 @@ class GCodeWorker(_ProgressWorker):
                 post2.preamble.append("; Re-zero Z on the stock top (the former front) before cutting")
             if cam.link_retracts:
                 from guildmodel.core.cam.castle_ops import work_holding_keepouts
-                post2.link_clearance_z_mm = (castle_two.stock.total_pad_height_mm
-                                             + cam.link_clearance_mm)
+                post2.link_clearance_z_mm = top_two + cam.link_clearance_mm
                 post2.link_keepouts = tuple(work_holding_keepouts(
                     job.relief_two.partition.body, castle_two.stock, post2.tool_diameter_mm / 2.0,
                     screw_head_diameter_mm=cam.screw_head_diameter_mm,
@@ -1804,15 +1807,22 @@ class SimWorker(_ProgressWorker):
                 if relief_two is not None:
                     import dataclasses
                     T = float(self.castle.stock.blank_thickness_mm)
-                    on_grid = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
-                                                    origin=f.origin, shape=f.z.shape)
-                    verdict2 = carry["verdict"].clipped(0.0, on_grid.z).mirrored(0.0, z_flip=T)
+                    if relief.preformed:
+                        # the pressed slab's own envelopes bound side one's result
+                        hi, lo = relief.stock_top.z, relief.stock_bottom.z
+                    else:
+                        hi = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
+                                                   origin=f.origin, shape=f.z.shape).z
+                        lo = 0.0
+                    verdict2 = carry["verdict"].clipped(lo, hi).mirrored(0.0, z_flip=T)
                     blank2 = carry["stock"].mirrored(0.0, z_flip=T)
                     lines_one = [f"Side one: {ln}" for ln in lines]
                     status_one = report.status()
                     self.progress.emit("[sim] Side two: the anterior after the flip…")
+                    init_two = (float(np.nanmax(relief_two.stock_top.z)) + 0.5
+                                if relief_two.stock_top is not None else T)
                     report, lines, plan, _ = _simulate_program(
-                        self.back_program_text, relief_two, tools_cfg, tool, init_z=T,
+                        self.back_program_text, relief_two, tools_cfg, tool, init_z=init_two,
                         stock_field=stock_hf, feed_mmpm=feed_mmpm,
                         partition=relief_two.partition, progress=self._progress,
                         verdict0=verdict2, blank0=blank2)
@@ -7392,6 +7402,7 @@ class MainWindow(QMainWindow):
         self._forming_panel.export_requested.connect(self._on_export_formed_stl)
         self._forming_panel.dies_changed.connect(self._on_dies_changed)           # M23
         self._forming_panel.dies_export_requested.connect(self._on_export_dies)
+        self._forming_panel.nest_export_requested.connect(self._on_export_nests)   # M25
 
         # Restore persisted material + CAM params (machine / tool / strategy /
         # feeds). Set the material first (without repopulating), then apply the
@@ -9711,6 +9722,70 @@ class MainWindow(QMainWindow):
                             f"A {r['a_flat_mm']:g} → {r['a_formed_mm']:g}, PD {r['pd_flat_mm']:g} → "
                             f"{r['pd_formed_mm']:g}, width {r['width_flat_mm']:g} → {r['width_formed_mm']:g}")
         return written
+
+    def _write_nests(self, i: int, folder: Path) -> list[Path]:
+        """The nest fixture for a pressed blank (M25 §10.2): the pre-cut
+        dies' cup holds the slab for side one, the post-cut dome, cut away
+        under the taller zones, holds the carved back for side two; both
+        carry the dowels, so the flip registers. Written like the dies."""
+        from guildmodel.core.forming import build_dies
+        from guildmodel.core.model.kernel import to_trimesh
+        from guildmodel.core.project.schema import FormingMetadata, PressDieParams
+        ws = self._workspaces[i]
+        if not ws.castle_ready or ws.partition is None:
+            return []
+        forming = ws.forming if ws.forming is not None else FormingMetadata()
+        if i == self._active_ws:
+            forming = self._active_forming()
+        castle = ws.castle_params or self.params.castle_params()
+        written = []
+        try:
+            cup = build_dies(ws.partition, castle,
+                             forming.model_copy(update={"dies": forming.dies.model_copy(
+                                 update={"mode": "pre_cut"})}), ws.lens_od, ws.lens_os)
+            dome = build_dies(ws.partition, castle,
+                              forming.model_copy(update={"dies": forming.dies.model_copy(
+                                  update={"mode": "post_cut"})}), ws.lens_od, ws.lens_os)
+        except Exception:                                    # noqa: BLE001
+            self._report_failure("Nest build", "nest", traceback.format_exc())
+            return []
+        stem = self._export_filenames()[i].replace(".stl", "")
+        for name, man in (("nest_side_one", cup.anterior), ("nest_side_two", dome.posterior)):
+            path = folder / f"{stem}_{name}.stl"
+            mesh = to_trimesh(man)
+            mesh.export(str(path))
+            self.append_log(f"[nest] {path.name}: {len(mesh.faces):,} tris, {man.volume():.0f} mm³")
+            written.append(path)
+        self.append_log("[nest] side one: the pressed slab in the cup, front down; side two: "
+                        "the carved back over the dome, turned about the blank's center line "
+                        "on the dowels")
+        return written
+
+    def _on_export_nests(self) -> None:
+        """Export Nest… (M25): the active front's nest fixture to a folder."""
+        self._commit_typed_value()
+        i = self._active_ws
+        ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
+        if ws is None or not ws.castle_ready:
+            QMessageBox.information(
+                self, "Export Nest",
+                "The nest is cut to a frame front with its SCULPT zone layout. "
+                + self._export_blocked_reason(ws))
+            return
+        self._sync_active_workspace()
+        folder = QFileDialog.getExistingDirectory(
+            self, "Export the nest fixture", self._prefs["last_output_dir"] or ".")
+        if not folder:
+            return
+        self._prefs["last_output_dir"] = folder
+        prefs_mod.save(self._prefs)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            written = self._write_nests(i, Path(folder))
+        finally:
+            QApplication.restoreOverrideCursor()
+        if written:
+            self.status_lbl.setText(f"Wrote {len(written)} nest file(s) to {folder}")
 
     def _on_export_dies(self) -> None:
         """Export Dies… (M23): the active front's dies to a folder."""

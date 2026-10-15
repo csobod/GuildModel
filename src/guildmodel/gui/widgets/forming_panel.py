@@ -75,6 +75,7 @@ class FormingPanel(QFrame):
     export_requested = Signal()
     dies_changed = Signal()              # a die parameter moved (M23)
     dies_export_requested = Signal()     # Export Dies…
+    nest_export_requested = Signal()     # Export Nest… (the pressed blank's fixture, M25)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -362,10 +363,19 @@ class FormingPanel(QFrame):
         self.die_readout.setObjectName("mutedSmallLabel")
         self.die_readout.setWordWrap(True)
         g.addWidget(self.die_readout, 5, 4, 1, 3)
+        btns = QHBoxLayout()
         self.dies_btn = QPushButton("Export Dies…")
         self.dies_btn.setToolTip("Write the dies, and post-cut the punch and anvil, as STL files.")
         self.dies_btn.clicked.connect(self.dies_export_requested)
-        g.addWidget(self.dies_btn, 5, 7)
+        btns.addWidget(self.dies_btn)
+        self.nest_btn = QPushButton("Export Nest…")
+        self.nest_btn.setToolTip(
+            "The nest fixture for a pre-formed blank: the cup that holds the pressed\n"
+            "slab for side one and the dome that holds its carved back for side two,\n"
+            "both on the dowels, so the flip registers.")
+        self.nest_btn.clicked.connect(self.nest_export_requested)
+        btns.addWidget(self.nest_btn)
+        g.addLayout(btns, 5, 7)
 
         self._die_sliders = (self.die_mat, self.die_clearance, self.die_over_bend,
                              self.die_cutaway_clear, self.die_relief, self.die_rim, self.die_trim,

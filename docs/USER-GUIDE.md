@@ -316,8 +316,17 @@ the eyewires, the holes and the groove are cut flat first, in a program of
 their own, the part is pressed in the post-cut dies, and the pressed blank
 is nested for the rest. It trades the bridge's draw-in for a correct
 groove. A pre-formed front is cut in its nest, not on the worktable; take
-it off the bed. A second side on the pressed blank waits for the nest
-fixture work.
+it off the bed.
+
+**Export Nest…** on the Forming panel writes the nest fixture: the cup
+that holds the pressed slab front down for side one, and the dome, cut
+away under the taller zones, that holds the carved back for side two, both
+on the dowels of the flip line. A two-sided job on the pressed blank turns
+the slab over in its nest: side two's stock is side one's result upside
+down, and the simulation cuts it so. What is documented here is the
+geometry and the programs; the pressing of a blank for cutting, the nest
+and the flip on a curved blank are the maker's own tests, and the first
+parts should be measured before a batch.
 
 ### Export STL
 
