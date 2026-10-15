@@ -5,6 +5,30 @@ and the current release's note; everything else lives here.
 
 ## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
 
+### Sculpts: your own meshes on the frame (BUILDPLAN M22, 2026-10-15)
+
+Drop an `.stl` on the 3D view and it is on the frame: repaired, its flat
+back found, snapped to the posterior at the center and sunk so the union is
+one body. Emboss adds it, Deboss cuts it; Mirror derives the twin; a handle
+in the 3D view moves and turns it, and the model rebuilds when you let go.
+
+* **Import that survives real files.** The soup is welded, an inside-out
+  shell turned, an open shell mended by pymeshfix, overlapping shells
+  unioned rather than summed, and a shell nothing can mend offered as its
+  hull, labeled. A scanned back with no exact facet is grown from the
+  mesh: ten microns of noise on every vertex still recovers the mounting
+  normal to a few parts in ten thousand.
+* **A sculpt on the back is cut.** It lands in the surface the posterior
+  program posts, its footprint joins the feature band, and a *Sculpt
+  Finish* operation, off unless ticked, runs a ball over the footprint at a
+  stepover from a 15 micron cusp. A sculpt on the front changes nothing the
+  posterior program cuts, byte for byte.
+* **What a tool cannot reach is said.** After each build the log reports
+  the area that faces down between the part's two envelopes.
+* The project file (`.gmodel`, format 2) carries each sculpt's bytes under
+  `features/`; a file from before loads as it did. The mesh kernel builds
+  sculpts; the raster and B-Rep kernels do not, and the panel says so.
+
 ### Inlays: the INLAY layer, modeled and cut (BUILDPLAN §8a, 2026-10-15)
 
 A closed curve on GuildDraw's new `INLAY` layer, on the front or a temple, is

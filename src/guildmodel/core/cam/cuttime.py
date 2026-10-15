@@ -63,6 +63,7 @@ _CANON = [
     # Relief — and the per-op breakdown silently mis-bills the one op most likely
     # to be carrying a different (slower) tool.
     ("features", "Features"),
+    ("sculpt", "Sculpt Finish"),  # the fine pass over a sculpt (M22)
     ("eyewire", "Eyewires"),
     ("perimeter", "Perimeter"),
 ]

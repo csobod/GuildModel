@@ -28,6 +28,10 @@ dependencies = [
     # season chasing cannot be represented. Floated, not pinned: unlike the
     # B-Rep kernel it produces meshes we verify directly on every build.
     "manifold3d>=3.5",
+    # Repairs an open or self-touching shell of a sculpt the maker drops on the
+    # frame (BUILDPLAN M22): GPL-3, a small abi3 wheel. Imported only on the
+    # shell Manifold rejects.
+    "pymeshfix>=0.17",
 ]
 
 [project.optional-dependencies]

@@ -404,6 +404,9 @@ def _unfeatured(castle: CastleParams):
     plain.bridge_relief.enabled = False
     for feature in plain.edge_features:
         feature.enabled = False
+    # A sculpt's footprint joins the band the same way (M22 §7.5): the
+    # unfeatured build has no sculpts, so the difference finds them.
+    plain.sculpts = []
     return plain
 
 
@@ -473,7 +476,9 @@ def cam_relief(build, partition: CastlePartition, castle: CastleParams,
     if plain is not None:
         _report(progress, "Finding the feature band", 0.70)
         plain_z, _ = triangle_envelopes(*build(partition, plain, (), ()), *grid)
-        band = (plain_z - surface_z) > FEATURE_BAND_MM
+        # Either way: a chamfer or a scoop takes material off the plain
+        # surface, an embossed sculpt (M22) stands above it.
+        band = np.abs(plain_z - surface_z) > FEATURE_BAND_MM
         slope = castle.posterior_feature_slope()
 
     _report(progress, "Relief ready", 0.92)
@@ -490,7 +495,7 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
                   resolution: float = CUT_RES_MM,
                   margin: float = GRID_MARGIN_MM,
                   progress: Optional[ProgressFn] = None,
-                  inlays=()) -> CastleRelief:
+                  inlays=(), sculpt_sources=None) -> CastleRelief:
     """The relief every G-code path posts from — one entry point, one choice.
 
     `kernel` is `gui.mesh_build.KERNELS`: "raster" is the M17 heightfield,
@@ -521,7 +526,8 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     if kernel == "mesh":
         from .model.zmap import mesh_cam_relief
         return mesh_cam_relief(partition, castle, hinges, resolution, margin,
-                               progress, inlays=inlays)
+                               progress, inlays=inlays,
+                               sculpt_sources=sculpt_sources)
     if kernel == "brep":
         from .solid.zmap import solid_cam_relief
         return solid_cam_relief(partition, castle, hinges, resolution, margin,

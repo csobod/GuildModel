@@ -160,6 +160,7 @@ CASTLE_OP_TIERS: tuple[frozenset[str], ...] = (
     frozenset({"Rough Relief"}),
     frozenset({"Fine Relief"}),
     frozenset({"Features"}),
+    frozenset({"Sculpt Finish"}),   # the fine pass over a sculpt, after the band it stands in (M22)
     frozenset({"Inlays"}),       # the seats, after the relief finishes what they measure from (§8a)
     frozenset({"Eyewires"}),
     frozenset({"Holes"}),
@@ -756,27 +757,8 @@ def relief_ops(
               rings: list[list] | None = None) -> None:
         if rings is None:
             rings = contour_parallel_rings(machining, params.relief_stepover_mm)
-        for ring in rings:
-            if not _ring_is_ccw(ring):        # uniform climb direction on the finish (M12.5)
-                ring = list(reversed(ring))
-            dp = _densify_xy(ring, res)
-            if len(dp) < 2:
-                continue
-            ci = np.clip(((dp[:, 0] - ox) / res).round().astype(int), 0, cols - 1)
-            ri = np.clip(((dp[:, 1] - oy) / res).round().astype(int), 0, rows - 1)
-            m = mask[ri, ci]
-            idx = np.flatnonzero(m)
-            if idx.size < 2:
-                continue
-            zline = _bilinear_sample(zgrid, dp[:, 0], dp[:, 1], ox, oy, res)
-            breaks = _link_breaks(idx, zline, gap_cells, max_rise)
-            for grp in np.split(idx, breaks):
-                a, b = int(grp[0]), int(grp[-1])      # span the small internal gaps too
-                if b - a + 1 < min_cells:
-                    continue
-                pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
-                       for k in range(a, b + 1)]
-                op.paths.append(_rdp(pts, params.simplify_tol_mm))
+        _emit_rings(op, zgrid, mask, rings, ox, oy, res, gap_cells, min_cells, max_rise,
+                    params.simplify_tol_mm)
 
     # Finish only where the target sits BELOW the stock surface; skip every flat-top
     # cell that already sits at stock height (the nosepad tower caps + the outside
@@ -1467,6 +1449,107 @@ def feature_reach_warnings(
 
 # ------------------------------------------------------------------ program assembly
 
+def _emit_rings(op: CamOp, zgrid: np.ndarray, mask: np.ndarray, rings: list,
+                ox: float, oy: float, res: float, gap_cells: int, min_cells: int,
+                max_rise: float, simplify_tol: float) -> None:
+    """Ride `rings` over `zgrid` where `mask` says, in climb direction, the
+    small gaps linked and the short runs dropped: the relief passes' emitter,
+    shared with the sculpt finish (M22)."""
+    rows, cols = zgrid.shape
+    for ring in rings:
+        if not _ring_is_ccw(ring):        # uniform climb direction on the finish (M12.5)
+            ring = list(reversed(ring))
+        dp = _densify_xy(ring, res)
+        if len(dp) < 2:
+            continue
+        ci = np.clip(((dp[:, 0] - ox) / res).round().astype(int), 0, cols - 1)
+        ri = np.clip(((dp[:, 1] - oy) / res).round().astype(int), 0, rows - 1)
+        m = mask[ri, ci]
+        idx = np.flatnonzero(m)
+        if idx.size < 2:
+            continue
+        zline = _bilinear_sample(zgrid, dp[:, 0], dp[:, 1], ox, oy, res)
+        breaks = _link_breaks(idx, zline, gap_cells, max_rise)
+        for grp in np.split(idx, breaks):
+            a, b = int(grp[0]), int(grp[-1])      # span the small internal gaps too
+            if b - a + 1 < min_cells:
+                continue
+            pts = [(float(dp[k, 0]), float(dp[k, 1]), float(zline[k]))
+                   for k in range(a, b + 1)]
+            op.paths.append(_rdp(pts, simplify_tol))
+
+
+#: The cusp the Sculpt Finish pass leaves between its rings, mm (M22 §7.5):
+#: fine detail, an order under the feature pass's.
+SCULPT_CUSP_MM = 0.015
+
+
+def sculpt_stepover(tool: dict, cusp_mm: float = SCULPT_CUSP_MM) -> float:
+    """The stepover that leaves `cusp_mm` between passes: on a ball, the
+    chord at the cusp height; on anything else, the feature pass's rule at a
+    sculpt's slope. Never under the finest step the grid can carry."""
+    r = float(tool.get("radius_mm", 0.0) or 0.0)
+    h = max(1e-4, min(float(cusp_mm), r if r > 0 else cusp_mm))
+    if tool.get("type") == "ball" and r > 0:
+        step = 2.0 * math.sqrt(h * (2.0 * r - h))
+    else:
+        from ..project.schema import SCULPT_SLOPE_DEG
+        step = h / math.tan(math.radians(SCULPT_SLOPE_DEG))
+    return max(FEATURE_STEP_MIN_MM, step)
+
+
+def sculpt_finish_op(relief: CastleRelief, stock, tool: dict, params: CastleCamParams,
+                     footprints, cusp_mm: float = SCULPT_CUSP_MM) -> CamOp:
+    """The fine pass over the sculpts' footprints (M22 §7.5): contour rings
+    at `sculpt_stepover`, riding the tool's own drop-cutter surface, confined
+    to the footprints grown by the tool's radius. Empty when there is
+    nothing to ride; the caller drops it."""
+    from scipy.ndimage import distance_transform_edt
+    from shapely.ops import unary_union
+
+    op = CamOp("Sculpt Finish")
+    shadows = [p for p in footprints if p is not None and not p.is_empty]
+    if not shadows:
+        return op
+    f = relief.field
+    surf = relief.surface_field if relief.surface_field is not None else f
+    res = f.resolution
+    ox, oy = f.origin
+    inside = relief.inside
+    r = float(tool["radius_mm"])
+    stock_hf = stock_top_heightfield(stock, resolution=res, origin=f.origin, shape=f.z.shape)
+    band_mm = max(r, params.relief_stepover_mm)
+    dist, (iy, ix) = distance_transform_edt(~inside, sampling=res, return_indices=True)
+    band = inside | (dist <= band_mm + 1e-9)
+    cam_z = np.where(band, np.minimum(surf.z[iy, ix], stock_hf.z), stock_hf.z)
+    cam_hf = Heightfield(z=cam_z, origin=f.origin, resolution=res)
+    cls = cutter_location_surface(cam_hf, tool["type"], r).z
+    ceiling = cutter_location_surface(stock_hf, tool["type"], r).z
+    region = unary_union([p.buffer(r + res, join_style="round") for p in shadows])
+    rows, cols = f.z.shape
+    xs = ox + np.arange(cols) * res
+    ys = oy + np.arange(rows) * res
+    X, Y = np.meshgrid(xs, ys)
+    from shapely import contains_xy, prepare
+    prepare(region)
+    footprint = contains_xy(region, X.ravel(), Y.ravel()).reshape(rows, cols)
+    mask = footprint & band & (cls < ceiling - params.skim_epsilon_mm)
+    if not mask.any():
+        return op
+    step = sculpt_stepover(tool, cusp_mm)
+    machining = relief.partition.body.buffer(band_mm, join_style="round")
+    d_in = distance_transform_edt(inside, sampling=res)
+    d_max = float(d_in[mask & inside].max()) + band_mm + step if (mask & inside).any() else band_mm + step
+    rings = contour_parallel_rings(machining, step, max_depth_mm=d_max)
+    gap_cells = max(1, int(round(params.relief_link_gap_mm / res)))
+    min_cells = max(2, int(round(params.relief_min_run_mm / res)))
+    _emit_rings(op, cls, mask, rings, ox, oy, res, gap_cells, min_cells,
+                params.relief_link_max_rise_mm, params.simplify_tol_mm)
+    op.paths = _stitch_close_paths(order_paths_for_travel(op.paths), cls, ox, oy, res,
+                                   params.relief_link_gap_mm, params.relief_link_max_rise_mm)
+    return op
+
+
 def generate_castle_program(
     relief: CastleRelief,
     castle: CastleParams,
@@ -1545,6 +1628,16 @@ def generate_castle_program(
     # order these rings occupied inside Fine Relief.
     if features.paths:
         ops.append(features)
+
+    # 3b — the fine pass over the sculpts (M22 §7.5), off unless the maker
+    # ticks it: the band under a sculpt is finished by Features already.
+    if (relief.sculpt_footprints and params.is_op_enabled("Sculpt Finish")
+            and any(s.mount.face != "anterior" for s in castle.resolved_sculpts())):
+        sculpt_tool = _tool_for("Sculpt Finish")
+        op3b = sculpt_finish_op(relief, stock, sculpt_tool, params, relief.sculpt_footprints)
+        if op3b.paths:
+            op3b.tool = sculpt_tool
+            ops.append(op3b)
 
     # 3a — inlay seats (§8a): after the relief has finished the surface each
     # seat is measured from, before the eyewires open the apertures. One list

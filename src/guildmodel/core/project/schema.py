@@ -323,6 +323,65 @@ class EdgeFeature(BaseModel):
         })
 
 
+#: The slope a sculpt on the back is finished as (M22): steep, so the
+#: feature pass under it steps at its floor.
+SCULPT_SLOPE_DEG = 75.0
+
+
+class SculptMount(BaseModel):
+    """Where a sculpt's flat back sits on the frame (BUILDPLAN M22 §7.3)."""
+    face: Literal["anterior", "posterior", "rim", "pick"] = "posterior"
+    # The snap point in the castle frame (x, y[, z]); None is the host's center.
+    point: list[float] | None = None
+    # The host's outward normal at the point, as the snap read it; a scale or
+    # spin edit recomputes the placement from these two without the host.
+    normal: list[float] | None = None
+    # How far the back is sunk into the host, so the union is one body; the
+    # snap sets it to the sag under the back plus the minimum.
+    overlap_mm: float = Field(0.05, ge=0)
+    flush: bool = False            # coplanar on a flat host (overlap 0)
+    conform: bool = False          # warp the back onto a curved host (2.0)
+
+
+class SculptFeature(BaseModel):
+    """One sculpt — an STL the maker made elsewhere — embossed onto or
+    debossed into the frame (BUILDPLAN M22).
+
+    The bytes are not here: they live in the project file as
+    ``features/<id>.stl`` and are found again by `source_sha256`. `transform`
+    is the whole placement of the source mesh into the castle frame, scale
+    and spin included, as sixteen row-major floats: the snap computes it and
+    the viewer's widget edits it after. `mirror` derives the x-mirrored twin
+    at build time, as `EdgeFeature.mirror` does; the twin is never stored.
+    """
+    id: str = ""
+    label: str = ""
+    enabled: bool = True
+    source_name: str = ""
+    source_sha256: str = ""
+    transform: list[float] = Field(default_factory=lambda: [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    mount: SculptMount = Field(default_factory=SculptMount)
+    op: Literal["emboss", "deboss"] = "emboss"
+    mirror: bool = False
+    scale: float = Field(1.0, gt=0)
+    spin_deg: float = 0.0          # the turn about the host normal, at the snap
+    simplify_tol: float = Field(0.0, ge=0)   # recorded when import simplified it
+    triangles: int = 0             # of the loaded source, for the panel
+
+    def transform_matrix(self):
+        """The placement as a 4 x 4 numpy array."""
+        import numpy as np
+        t = list(self.transform) if len(self.transform) == 16 else [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        return np.asarray(t, dtype=float).reshape(4, 4)
+
+    def with_transform(self, matrix) -> "SculptFeature":
+        import numpy as np
+        flat = [float(x) for x in np.asarray(matrix, dtype=float).reshape(16)]
+        return self.model_copy(update={"transform": flat})
+
+
 class InlayFeature(BaseModel):
     """One seat for a plaque, a laminate or a plate: a closed INLAY curve from the
     drawing, with what the drawing does not carry (BUILDPLAN §8a, 2026-10-15).
@@ -514,6 +573,13 @@ class CastleParams(BaseModel):
     # first; index-aligned with the polygons the intake derived. Empty for every
     # drawing without the layer, so nothing before 2.0 changes.
     inlays: list[InlayFeature] = Field(default_factory=list)
+    # The maker's own meshes on the frame (M22), embossed or debossed; their
+    # bytes travel in the project file. Empty for every project before 1.9.
+    sculpts: list[SculptFeature] = Field(default_factory=list)
+
+    def resolved_sculpts(self) -> list[SculptFeature]:
+        """Every enabled sculpt; the mirror twin is derived where it is baked."""
+        return [s for s in self.sculpts if s.enabled]
 
     def resolved_edge_features(self) -> list[EdgeFeature]:
         """Every enabled edge feature, each followed by its mirrored twin where
@@ -537,11 +603,12 @@ class CastleParams(BaseModel):
 
     def cuts_posterior_features(self) -> bool:
         """True when any posterior finishing feature is on — the condition for
-        there being a feature band at all (M13/M17)."""
+        there being a feature band at all (M13/M17), a sculpt among them (M22)."""
         return (self.pad_splay.enabled or self.eyewire_bezel.cuts_posterior()
                 or self.bridge_relief.enabled
                 or any(f.face == "posterior"
-                       for f in self.resolved_edge_features()))
+                       for f in self.resolved_edge_features())
+                or any(s.mount.face != "anterior" for s in self.resolved_sculpts()))
 
     def posterior_feature_slope(self) -> float:
         """The steepest enabled posterior finishing feature, in degrees.
@@ -574,6 +641,11 @@ class CastleParams(BaseModel):
             # The U's straight ramp: both arcs are tangent to it at one end and
             # to a horizontal at the other, so nothing on the scoop is steeper.
             slope = max(slope, scoop.max_slope_deg())
+        # A sculpt on the back (M22): its walls can stand at any angle, so the
+        # band under it is finished at the finest stepover the feature pass
+        # has; the Sculpt Finish op, when on, goes finer still.
+        if any(s.mount.face != "anterior" for s in self.resolved_sculpts()):
+            slope = max(slope, SCULPT_SLOPE_DEG)
         for f in self.resolved_edge_features():
             if f.face != "posterior":
                 continue
@@ -603,7 +675,11 @@ POSTERIOR_OPS: tuple[str, ...] = (
 # 3.175 mm default leave ~1.6 mm corners instead of ~1 mm. An explicit op_tools
 # entry always overrides this; it only changes the otherwise-global fallback.
 DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm",
-                                    "Inlays": "flat_2mm"}
+                                    "Inlays": "flat_2mm",
+                                    "Sculpt Finish": "ball_1mm"}   # fine detail (M22)
+#: Ops a job does not post unless the maker ticks them: the Sculpt Finish
+#: pass is for fine detail the feature pass under it does not need (M22).
+OFF_BY_DEFAULT_OPS: frozenset[str] = frozenset({"Sculpt Finish"})
 
 
 class ProgramZero(BaseModel):
@@ -737,8 +813,9 @@ class CastleCamParams(BaseModel):
         return len(self.tools_in_use()) > 1
 
     def is_op_enabled(self, op_name: str) -> bool:
-        """Whether `op_name` should be emitted (M16). Unknown/absent = enabled."""
-        return bool(self.op_enabled.get(op_name, True))
+        """Whether `op_name` should be emitted (M16). Unknown/absent = enabled,
+        but for the ops in `OFF_BY_DEFAULT_OPS`, which the maker switches on."""
+        return bool(self.op_enabled.get(op_name, op_name not in OFF_BY_DEFAULT_OPS))
 
     def enabled_ops(self, ops: list) -> list:
         """`ops` minus the operations the maker has switched off."""

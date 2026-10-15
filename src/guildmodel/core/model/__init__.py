@@ -13,6 +13,9 @@ from .edges import CREASE_ANGLE_DEG, feature_edges
 from .kernel import (ManifoldError, cross_section, drop_degenerate, extrude,
                      hull_chain, intersect_all, subtract_all, to_trimesh,
                      union_all, volume)
+from .sculpt import (PlacedSculpt, SculptSource, bake, flat_back, load_sculpt,
+                     mirror_twin, mount_transform, placed_sculpts, snap_target,
+                     undercuts)
 from .zmap import mesh_cam_relief, mesh_to_relief, mesh_to_zmap
 
 __all__ = [
@@ -27,6 +30,16 @@ __all__ = [
     "footing_tools",
     "hinge_pockets",
     "inlay_pockets",
+    "PlacedSculpt",
+    "SculptSource",
+    "bake",
+    "flat_back",
+    "load_sculpt",
+    "mirror_twin",
+    "mount_transform",
+    "placed_sculpts",
+    "snap_target",
+    "undercuts",
     "drop_degenerate",
     "hull_chain",
     "intersect_all",

@@ -188,7 +188,8 @@ def relief_for_spec(spec: dict, *, resolution: float, kernel: str = "raster", pr
         from ..zmap import castle_relief
         return castle_relief(spec["partition"], spec["castle"], spec["hinge"],
                              kernel=kernel, resolution=resolution, progress=progress,
-                             inlays=spec.get("inlay", ()))
+                             inlays=spec.get("inlay", ()),
+                             sculpt_sources=spec.get("sculpt_sources"))
     if mode == "temple":
         from ..relief.flat import (
             build_temple_relief, place_temple_curves, place_temple_on_blank,

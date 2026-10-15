@@ -52,7 +52,7 @@ from ..zmap import (cam_relief, grid_for, groove_body, relief_from_zmap,
 
 ProgressFn = Callable[[str, float], None]
 
-__all__ = ["mesh_cam_relief", "mesh_to_relief", "mesh_to_zmap"]
+__all__ = ["mesh_cam_relief", "mesh_to_relief", "mesh_to_zmap", "sculpt_footprints"]
 
 
 def mesh_to_zmap(mesh, origin: tuple[float, float], rows: int, cols: int,
@@ -89,12 +89,18 @@ def mesh_to_relief(model, partition: CastlePartition, castle: CastleParams,
 
 
 def _triangles(partition: CastlePartition, castle: CastleParams, hinges,
-               inlays=()):
+               inlays=(), sculpt_sources=None):
     from .build import build_castle_model
     from .kernel import to_trimesh
+    from .sculpt import placed_sculpts
 
+    # The sculpts (M22) ride on the castle's records; a build handed a castle
+    # with none (the unfeatured one the band is found against) bakes none.
+    sculpts = None
+    if sculpt_sources and getattr(castle, "sculpts", None):
+        sculpts = placed_sculpts(castle.resolved_sculpts(), sculpt_sources)
     mesh = to_trimesh(build_castle_model(partition, castle, list(hinges),
-                                         inlays=list(inlays)))
+                                         inlays=list(inlays), sculpts=sculpts))
     return mesh.vertices, mesh.faces
 
 
@@ -102,13 +108,47 @@ def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
                     hinges=(), resolution: float = CUT_RES_MM,
                     margin: float = GRID_MARGIN_MM,
                     progress: Optional[ProgressFn] = None,
-                    inlays=()) -> CastleRelief:
+                    inlays=(), sculpt_sources=None) -> CastleRelief:
     """The complete relief the CAM posts from, built by Manifold.
 
     Takes the *parameters* rather than a model, because filling
     `surface_field` and `feature_band` means building the part more than once —
     see `core.zmap.cam_relief`, which owns that and knows nothing about which
-    kernel is answering.
+    kernel is answering. `sculpt_sources` maps a sculpt's sha256 to its
+    source (bytes or loaded), so the castle's sculpts bake into the surface
+    the CAM posts (M22 §7.5).
     """
-    return cam_relief(_triangles, partition, castle, hinges, resolution,
-                      margin, progress, inlays=inlays)
+    def build(partition, castle, hinges, inlays):
+        return _triangles(partition, castle, hinges, inlays, sculpt_sources)
+
+    relief = cam_relief(build, partition, castle, hinges, resolution,
+                        margin, progress, inlays=inlays)
+    if sculpt_sources and getattr(castle, "sculpts", None):
+        relief.sculpt_footprints = sculpt_footprints(castle, sculpt_sources)
+    return relief
+
+
+def sculpt_footprints(castle: CastleParams, sculpt_sources: dict) -> list:
+    """The shadows of the castle's sculpts on the back, as polygons: what the
+    Sculpt Finish op rides over (M22 §7.5). A sculpt on the front casts none."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    from .sculpt import placed_sculpts
+
+    out = []
+    on_back = [s for s in castle.resolved_sculpts() if s.mount.face != "anterior"]
+    for p in placed_sculpts(on_back, dict(sculpt_sources)):
+        try:
+            rings = p.manifold.project().to_polygons()
+        except Exception:                                    # noqa: BLE001
+            continue
+        polys = [Polygon(np.asarray(r)) for r in rings if len(r) >= 3]
+        polys = [q.buffer(0) for q in polys if q.is_valid or q.buffer(0).area > 0]
+        if not polys:
+            continue
+        shadow = unary_union(polys)
+        shadow = shadow if shadow.geom_type == "Polygon" else max(shadow.geoms, key=lambda g: g.area)
+        if shadow.area > 0:
+            out.append(shadow)
+    return out

@@ -54,7 +54,8 @@ from guildmodel.gui.widgets.param_slider import ParamSlider
 from guildmodel.core.post.machine import available_machines
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, BridgeReliefParams, CastleCamParams, CastleParams,
-    ComponentCamOverrides, ComponentKind, DEFAULT_OP_TOOLS, EdgeFeature,
+    ComponentCamOverrides, ComponentKind, DEFAULT_OP_TOOLS, EdgeFeature, OFF_BY_DEFAULT_OPS,
+    SculptFeature,
     EyewireBezelParams, FootingFillet, FootingSchedule, HoldingParams, LensGrooveParams,
     PadSplayParams, POSTERIOR_OPS, ProgramZero, StockDefinition, TempleParams,
     ToolFeeds, ZoneThicknesses,
@@ -262,6 +263,11 @@ class ParamsPanel(QTabWidget):
     cam_changed = Signal()         # tool / material / allowances / fallback
     temple_apply_both = Signal()   # Temple tab ▸ Apply to both temples (2026-09-27)
     fold_changed = Signal()        # a section folded or unfolded (2026-10-15)
+    # Sculpts (M22): the window owns the files, the host mesh and the snap.
+    sculpt_add_requested = Signal()              # "+ Add STL…"
+    sculpt_mount_changed = Signal(int, bool)     # row; True when the face moved (re-read the host)
+    sculpt_resnap_requested = Signal(int)        # row: read the host again at the stored point
+    sculpt_handle_requested = Signal(int, bool)  # row, on: the transform widget in the 3D view
     front_placement_changed = Signal(bool)   # Stock tab ▸ Origin from drawing (2026-10-14)
     zone_hovered = Signal(str)     # zone name under the cursor, "" on leave
     # A Model-tab handle is being dragged: the value is not settled, but the
@@ -550,6 +556,7 @@ class ParamsPanel(QTabWidget):
         self._build_castle_group(lay)
         self._build_posterior_finishing_group(lay)
         self._build_edge_features_group(lay)      # partial-span chamfers/fillets (M17)
+        self._build_sculpts_group(lay)            # the maker's own meshes, baked in (M22)
         # The seats the drawing carries on its INLAY layer (§8a): one row per
         # curve, the derived facts shown; the depth a new one starts at is the
         # Model Properties' inlay depth.
@@ -835,6 +842,268 @@ class ParamsPanel(QTabWidget):
 
     def edge_features(self) -> list[EdgeFeature]:
         return [f.model_copy() for f in self._edge_features]
+
+    # ------------------------------------------------------------- sculpts (M22)
+
+    def _build_sculpts_group(self, lay: QVBoxLayout) -> None:
+        """The maker's own meshes on the frame (BUILDPLAN M22 §7.4): a list
+        and one editor, as Edge Features. The file, the host surface and the
+        snap belong to the window (it has the model and the dialogs); the
+        panel keeps the records and says when one moved.
+        """
+        grp = self._fold(
+            "Sculpts  (your own meshes, embossed or debossed)", lay,
+            "Drop an .stl on the 3D view or add one here. GuildModel repairs it, "
+            "finds its flat back and snaps it to the frame; Emboss adds it, Deboss "
+            "cuts it. A sculpt on the back is machined by the posterior program; "
+            "one on the front is modeled and exported until the flip setup.")
+        v = QVBoxLayout(grp)
+
+        self.sculpt_list = QListWidget()
+        self.sculpt_list.setFixedHeight(96)
+        self.sculpt_list.currentRowChanged.connect(self._on_sculpt_selected)
+        v.addWidget(self.sculpt_list)
+
+        row = QHBoxLayout()
+        add = QPushButton("+ Add STL…")
+        add.clicked.connect(self.sculpt_add_requested)
+        row.addWidget(add)
+        for text, slot in (("Duplicate", self._on_sculpt_duplicate),
+                           ("Remove", self._on_sculpt_remove)):
+            btn = QPushButton(text)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        v.addLayout(row)
+
+        self._sculpt_editor = QWidget()
+        form = QFormLayout(self._sculpt_editor)
+        form.setContentsMargins(8, 4, 0, 0)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.sc_enabled = QCheckBox("Enabled")
+        self.sc_enabled.setChecked(True)
+        form.addRow("", self.sc_enabled)
+        self.sc_label = QLineEdit()
+        self.sc_label.setPlaceholderText("Crest")
+        form.addRow("Name:", self.sc_label)
+        self.sc_face = QComboBox()
+        self.sc_face.addItems(["Posterior (back)", "Anterior (front)", "Rim (outline wall)"])
+        self.sc_face.setToolTip(
+            "Where the sculpt's flat back sits. A sculpt on the back is cut by the "
+            "posterior program; one on the front or the rim is modeled and exported "
+            "until the flip setup.")
+        form.addRow("Snap to:", self.sc_face)
+        self.sc_op = QComboBox()
+        self.sc_op.addItems(["Emboss (add)", "Deboss (cut)"])
+        form.addRow("Operation:", self.sc_op)
+        self.sc_scale = _slider(1.0, 0.1, 10.0, step=0.05, decimals=2, suffix="×")
+        self.sc_scale.setToolTip("The sculpt's size, about its back.")
+        form.addRow("Scale:", self.sc_scale)
+        self.sc_spin = _slider(0.0, -180.0, 180.0, step=1.0, decimals=0, suffix="°")
+        self.sc_spin.setToolTip("Turn the sculpt about the surface it sits on.")
+        form.addRow("Spin:", self.sc_spin)
+        self.sc_overlap = _slider(0.05, 0.0, 3.0, step=0.05, decimals=2, suffix=" mm")
+        self.sc_overlap.setToolTip(
+            "How far the back is sunk into the frame, so the two are one body. The "
+            "snap sets it to the sag under the back plus 0.05 mm; a back that "
+            "spans a terrace step needs the step.")
+        form.addRow("Overlap:", self.sc_overlap)
+        self.sc_flush = QCheckBox("Flush (coplanar on a flat surface)")
+        form.addRow("", self.sc_flush)
+        self.sc_mirror = QCheckBox("Mirror to the other side")
+        self.sc_mirror.setToolTip("The twin across the center line, derived and never stored.")
+        form.addRow("", self.sc_mirror)
+        btns = QHBoxLayout()
+        self.sc_resnap = QPushButton("Re-snap")
+        self.sc_resnap.setToolTip("Read the frame again under the sculpt and sit it there.")
+        self.sc_resnap.clicked.connect(self._on_sculpt_resnap)
+        btns.addWidget(self.sc_resnap)
+        self.sc_handle = QPushButton("Move in 3D")
+        self.sc_handle.setCheckable(True)
+        self.sc_handle.setToolTip(
+            "Arrows to move, rings to turn, in the 3D view; the model rebuilds "
+            "when you let go.")
+        self.sc_handle.toggled.connect(self._on_sculpt_handle_toggled)
+        btns.addWidget(self.sc_handle)
+        form.addRow("", btns)
+        self.sc_info = QLabel("")
+        self.sc_info.setWordWrap(True)
+        self.sc_info.setObjectName("hintLabel")
+        form.addRow("", self.sc_info)
+        v.addWidget(self._sculpt_editor)
+
+        self._sculpts: list[SculptFeature] = []
+        self._sculpt_loading = False
+        for chk in (self.sc_enabled, self.sc_mirror):
+            chk.toggled.connect(self._on_sculpt_edited)
+        self.sc_label.textEdited.connect(self._on_sculpt_edited)
+        self.sc_op.currentIndexChanged.connect(self._on_sculpt_edited)
+        self.sc_face.currentIndexChanged.connect(lambda *_: self._on_sculpt_mount_edited(True))
+        for w in (self.sc_scale, self.sc_spin, self.sc_overlap):
+            w.valueChanged.connect(lambda *_: self._on_sculpt_mount_edited(False))
+        self.sc_flush.toggled.connect(lambda *_: self._on_sculpt_mount_edited(False))
+        self._refresh_sculpt_list()
+
+    _SC_FACES = ("posterior", "anterior", "rim")
+    _SC_OPS = ("emboss", "deboss")
+
+    def _sculpt_summary(self, f: SculptFeature) -> str:
+        where = {"posterior": "back", "anterior": "front", "rim": "rim", "pick": "placed"}
+        name = f.label or f.source_name or f.id
+        flag = "" if f.enabled else "  (off)"
+        return (f"{name} — {f.op} · {where.get(f.mount.face, f.mount.face)}"
+                f"{'  ⇔' if f.mirror else ''}{flag}")
+
+    def _refresh_sculpt_list(self) -> None:
+        row = self.sculpt_list.currentRow()
+        self.sculpt_list.blockSignals(True)
+        self.sculpt_list.clear()
+        for f in self._sculpts:
+            self.sculpt_list.addItem(self._sculpt_summary(f))
+        self.sculpt_list.blockSignals(False)
+        if self._sculpts:
+            self.sculpt_list.setCurrentRow(min(max(row, 0), len(self._sculpts) - 1))
+        self._sculpt_editor.setEnabled(bool(self._sculpts))
+
+    def _on_sculpt_selected(self, row: int) -> None:
+        if not (0 <= row < len(self._sculpts)):
+            return
+        f = self._sculpts[row]
+        self._sculpt_loading = True
+        self.sc_enabled.setChecked(f.enabled)
+        self.sc_label.setText(f.label)
+        face = f.mount.face if f.mount.face in self._SC_FACES else "posterior"
+        self.sc_face.setCurrentIndex(self._SC_FACES.index(face))
+        self.sc_op.setCurrentIndex(self._SC_OPS.index(f.op))
+        self.sc_scale.setValue(f.scale)
+        self.sc_spin.setValue(f.spin_deg)
+        self.sc_overlap.setValue(f.mount.overlap_mm)
+        self.sc_flush.setChecked(f.mount.flush)
+        self.sc_mirror.setChecked(f.mirror)
+        self.sc_overlap.setEnabled(not f.mount.flush)
+        self.sc_handle.setChecked(False)
+        self._sculpt_loading = False
+
+    def _on_sculpt_edited(self, *_a) -> None:
+        """The record's own fields: nothing about where it sits changes."""
+        if self._sculpt_loading:
+            return
+        row = self.sculpt_list.currentRow()
+        if not (0 <= row < len(self._sculpts)):
+            return
+        self._sculpts[row] = self._sculpts[row].model_copy(update=dict(
+            enabled=self.sc_enabled.isChecked(),
+            label=self.sc_label.text(),
+            op=self._SC_OPS[self.sc_op.currentIndex()],
+            mirror=self.sc_mirror.isChecked(),
+        ))
+        self._refresh_sculpt_list()
+        self.castle_changed.emit()
+
+    def _on_sculpt_mount_edited(self, face_moved: bool) -> None:
+        """Scale, spin, overlap, flush or the face: the placement must be
+        recomputed, which the window does with the host in hand."""
+        if self._sculpt_loading:
+            return
+        row = self.sculpt_list.currentRow()
+        if not (0 <= row < len(self._sculpts)):
+            return
+        f = self._sculpts[row]
+        flush = self.sc_flush.isChecked()
+        self.sc_overlap.setEnabled(not flush)
+        self._sculpts[row] = f.model_copy(update=dict(
+            scale=self.sc_scale.value(),
+            spin_deg=self.sc_spin.value(),
+            mount=f.mount.model_copy(update=dict(
+                face=self._SC_FACES[self.sc_face.currentIndex()] if face_moved else f.mount.face,
+                overlap_mm=0.0 if flush else self.sc_overlap.value(),
+                flush=flush)),
+        ))
+        self._refresh_sculpt_list()
+        self.sculpt_mount_changed.emit(row, face_moved)
+
+    def _on_sculpt_resnap(self) -> None:
+        row = self.sculpt_list.currentRow()
+        if 0 <= row < len(self._sculpts):
+            self.sculpt_resnap_requested.emit(row)
+
+    def _on_sculpt_handle_toggled(self, on: bool) -> None:
+        if self._sculpt_loading:
+            return
+        row = self.sculpt_list.currentRow()
+        if 0 <= row < len(self._sculpts):
+            self.sculpt_handle_requested.emit(row, bool(on))
+
+    def _unique_sculpt_id(self, base: str = "sculpt") -> str:
+        taken = {f.id for f in self._sculpts}
+        n = 1
+        while f"{base}_{n}" in taken:
+            n += 1
+        return f"{base}_{n}"
+
+    def add_sculpt(self, feature: SculptFeature) -> int:
+        """Append a sculpt the window imported and snapped; returns its row."""
+        if not feature.id or feature.id in {f.id for f in self._sculpts}:
+            feature = feature.model_copy(update={"id": self._unique_sculpt_id()})
+        self._sculpts.append(feature)
+        self._refresh_sculpt_list()
+        self.sculpt_list.setCurrentRow(len(self._sculpts) - 1)
+        self.castle_changed.emit()
+        return len(self._sculpts) - 1
+
+    def sculpt_at(self, row: int) -> SculptFeature | None:
+        return self._sculpts[row].model_copy() if 0 <= row < len(self._sculpts) else None
+
+    def set_sculpt(self, row: int, feature: SculptFeature) -> None:
+        """Replace one record (a new transform, after a snap or a drag);
+        says nothing — the caller decides whether the model rebuilds."""
+        if not (0 <= row < len(self._sculpts)):
+            return
+        self._sculpts[row] = feature.model_copy()
+        self._refresh_sculpt_list()
+        if self.sculpt_list.currentRow() == row:
+            was = self._sculpt_loading
+            self._sculpt_loading = True
+            self.sc_overlap.setValue(feature.mount.overlap_mm)
+            self.sc_scale.setValue(feature.scale)
+            self.sc_spin.setValue(feature.spin_deg)
+            self._sculpt_loading = was
+
+    def set_sculpt_info(self, row: int, text: str) -> None:
+        if self.sculpt_list.currentRow() == row:
+            self.sc_info.setText(text)
+
+    def _on_sculpt_duplicate(self) -> None:
+        row = self.sculpt_list.currentRow()
+        if not (0 <= row < len(self._sculpts)):
+            return
+        src = self._sculpts[row]
+        self._sculpts.insert(row + 1, src.model_copy(update={
+            "id": self._unique_sculpt_id(),
+            "label": f"{src.label} copy" if src.label else "",
+        }))
+        self._refresh_sculpt_list()
+        self.sculpt_list.setCurrentRow(row + 1)
+        self.castle_changed.emit()
+
+    def _on_sculpt_remove(self) -> None:
+        row = self.sculpt_list.currentRow()
+        if not (0 <= row < len(self._sculpts)):
+            return
+        self._sculpts.pop(row)
+        self._refresh_sculpt_list()
+        if self._sculpts:
+            self._on_sculpt_selected(self.sculpt_list.currentRow())
+        self.castle_changed.emit()
+
+    def sculpts(self) -> list[SculptFeature]:
+        return [f.model_copy() for f in self._sculpts]
+
+    def set_sculpts(self, features: list[SculptFeature]) -> None:
+        self._sculpts = [f.model_copy() for f in (features or [])]
+        self._refresh_sculpt_list()
+        if self._sculpts:
+            self._on_sculpt_selected(self.sculpt_list.currentRow())
 
     def set_edge_features(self, features: list[EdgeFeature]) -> None:
         self._edge_features = [f.model_copy() for f in (features or [])]
@@ -2202,7 +2471,7 @@ class ParamsPanel(QTabWidget):
         # multi-tool — the same reasoning that keeps "Lens Groove" out). It gets
         # a selector regardless, because picking a ball for the features and an
         # end mill for everything else is the everyday multi-tool job.
-        for op in (*POSTERIOR_OPS, "Features", "Inlays"):
+        for op in (*POSTERIOR_OPS, "Features", "Sculpt Finish", "Inlays"):
             cb = QComboBox()
             cb.addItem(_SAME_AS_GLOBAL)
             cb.addItems(names)
@@ -2217,6 +2486,10 @@ class ParamsPanel(QTabWidget):
             "relief, edge features). '(same as Tool)' follows Fine Relief — the "
             "tool these were cut with before they became their own operation. "
             "A ball is what finishes a chamfer toe or a scoop trough.")
+        self.op_tool_combos["Sculpt Finish"].setToolTip(
+            "The fine pass over a sculpt's footprint (M22), off unless ticked under "
+            "Operations: a ball nose at a stepover from the cusp target. The "
+            "Features pass already finishes the band under a sculpt.")
         self.op_tool_combos["Inlays"].setToolTip(
             "The end mill that pockets the inlay seats (the plaque and plate seats "
             "drawn on the INLAY layer). A seat may name its own tool in the Inlays "
@@ -2556,8 +2829,8 @@ class ParamsPanel(QTabWidget):
     # never appears in the program, and its checkbox is harmless.
     _KIND_OPS: dict = {
         "frame_front": ("Hinge Pockets", "Rough Relief", "Fine Relief",
-                        "Features", "Inlays", "Eyewires", "Holes", "Lens Groove",
-                        "Perimeter"),
+                        "Features", "Sculpt Finish", "Inlays", "Eyewires", "Holes",
+                        "Lens Groove", "Perimeter"),
         "temple": ("Hinge Pockets", "Engraving", "Inlays", "Holes", "Temple Profile"),
         "block": ("Drill Holes", "Block Profile"),
     }
@@ -2580,7 +2853,7 @@ class ParamsPanel(QTabWidget):
         for name in dict.fromkeys(
                 n for names in self._KIND_OPS.values() for n in names):
             cb = QCheckBox(name)
-            cb.setChecked(True)
+            cb.setChecked(name not in OFF_BY_DEFAULT_OPS)
             cb.toggled.connect(self._on_op_toggled)
             v.addWidget(cb)
             self.op_checks[name] = cb
@@ -2879,6 +3152,7 @@ class ParamsPanel(QTabWidget):
                 anterior_angle_deg=self.bezel_ant_angle.value(),
             ),
             edge_features=self.edge_features(),
+            sculpts=self.sculpts(),
             bridge_relief=BridgeReliefParams(
                 enabled=self.bridge_relief_enable.isChecked(),
                 width_mm=self.bridge_relief_width.value(),
@@ -2984,6 +3258,7 @@ class ParamsPanel(QTabWidget):
         self.bezel_face.blockSignals(False)
         self._on_bezel_toggled()
         self.set_edge_features(c.edge_features)          # M17 chamfers / fillets
+        self.set_sculpts(c.sculpts)                      # M22 sculpts
         self.inlays_front.set_features(c.inlays)         # §8a seats
         self.set_holding_params(c.holding)
         self._update_passes_readout()  # the restored stock drives the pass count
@@ -3031,8 +3306,8 @@ class ParamsPanel(QTabWidget):
             contour_ramp_angle_deg=self.contour_ramp_angle.value(),
             contour_lead_in="plunge" if self.contour_lead_in.currentIndex() else "ramp",
             cut_direction="conventional" if self.cut_direction.currentIndex() else "climb",
-            op_enabled={n: False for n, cb in self.op_checks.items()
-                        if not cb.isChecked()},
+            op_enabled={n: cb.isChecked() for n, cb in self.op_checks.items()
+                        if cb.isChecked() != (n not in OFF_BY_DEFAULT_OPS)},
             arc_tolerance_mm=self.arc_tolerance.value(),
             feed_rate_mmpm=_opt(self.feed_override.value()),
             plunge_rate_mmpm=_opt(self.plunge_override.value()),

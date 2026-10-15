@@ -14,6 +14,7 @@ gSender fork. Layout:
     cut_report.json    cut-simulation verification (completeness / gouge + time)
     model.stl          (optional) cut-piece mesh for inspection
     preview.png        (optional) render thumbnail
+    features/<id>.stl  the sculpts' source meshes (M22), one per SculptFeature
 
 The **gSender-fork hand-off subset** is ``program/*.nc`` + ``machine.yaml`` +
 ``setup.json`` (+ ``manifest.json`` for the two-file flip). See
@@ -34,7 +35,9 @@ import yaml
 
 from .schema import MachineProfile, ProjectSchema
 
-FORMAT_VERSION = 1
+#: 2 since M22: a `features/` folder may hold the sculpts' STL bytes. A reader
+#: tolerates its absence, so a version-1 file loads with no sculpts.
+FORMAT_VERSION = 2
 
 _MANIFEST = "manifest.json"
 _PROJECT = "project.json"
@@ -46,6 +49,7 @@ _REPORT = "cut_report.json"
 _STL = "model.stl"
 _PREVIEW = "preview.png"
 _PROGRAM_DIR = "program"
+_FEATURES_DIR = "features"
 # Every component's own program set, so a whole-model project keeps the
 # temple programs as well as the front's: ``components/<id>/program/*.nc``
 # plus that component's setup / machine / cut report. The worktable program
@@ -96,6 +100,8 @@ class GModelBundle:
     report: dict | None = None
     stl_bytes: bytes | None = None
     preview_bytes: bytes | None = None
+    #: ``features/<id>.stl`` by feature id: the sculpts' sources (M22).
+    features: dict[str, bytes] = field(default_factory=dict)
 
     @property
     def run_mode(self) -> str:
@@ -126,6 +132,7 @@ def save_gmodel(
     run_mode: str = "two_file",
     created: str | None = None,
     component_artifacts: dict[str, dict] | None = None,
+    features: dict[str, bytes] | None = None,
 ) -> None:
     """Write a ``.gmodel`` container. Only ``project`` is required; pass whatever of
     the rest exists at this stage. Written atomically (temp file + replace)."""
@@ -162,6 +169,8 @@ def save_gmodel(
         files[_STL] = bytes(stl_bytes)
     if preview_bytes is not None:
         files[_PREVIEW] = bytes(preview_bytes)
+    for fid, data in (features or {}).items():
+        files[f"{_FEATURES_DIR}/{component_key(fid)}.stl"] = bytes(data)
 
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     manifest = {
@@ -218,6 +227,10 @@ def load_gmodel(path, verify: bool = True) -> GModelBundle:
             n[len(_PROGRAM_DIR) + 1:]: zf.read(n).decode("utf-8")
             for n in names if n.startswith(_PROGRAM_DIR + "/") and not n.endswith("/")
         }
+        features = {
+            n[len(_FEATURES_DIR) + 1:-4]: zf.read(n)
+            for n in names if n.startswith(_FEATURES_DIR + "/") and n.endswith(".stl")
+        }
         component_artifacts: dict[str, dict] = {}
         for n in sorted(names):
             if not n.startswith(_COMPONENTS_DIR + "/") or n.endswith("/"):
@@ -248,6 +261,7 @@ def load_gmodel(path, verify: bool = True) -> GModelBundle:
             report=json.loads(zf.read(_REPORT)) if _REPORT in names else None,
             stl_bytes=zf.read(_STL) if _STL in names else None,
             preview_bytes=zf.read(_PREVIEW) if _PREVIEW in names else None,
+            features=features,
         )
 
 

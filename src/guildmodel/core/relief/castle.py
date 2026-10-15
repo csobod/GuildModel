@@ -73,6 +73,9 @@ class CastleRelief:
     # Seats cut into the FRONT (§8a inlays): their walls stand on the anterior
     # surface, so the mesher conforms them on the anterior twins.
     anterior_pocket_polys: list[Polygon] = dc_field(default_factory=list)
+    # The sculpts' shadows on the back (M22), for the Sculpt Finish op; the
+    # mesh kernel fills it, the others leave it empty.
+    sculpt_footprints: list[Polygon] = dc_field(default_factory=list)
     # The posterior surface BEFORE the pockets are carved (M8): the relief passes
     # follow this so they sail OVER the already-cut pockets instead of re-diving to the
     # floor — the Hinge Pockets op cuts the pockets, the sim verifies the full `field`.

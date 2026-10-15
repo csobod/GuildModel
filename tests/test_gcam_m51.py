@@ -84,7 +84,9 @@ def test_manifest_inventory_and_checksums(tmp_path):
     with zipfile.ZipFile(path) as zf:
         manifest = json.loads(zf.read("manifest.json"))
         names = set(zf.namelist())
-    assert manifest["format"] == "gmodel" and manifest["format_version"] == 1
+    from guildmodel.core.project.gmodel import FORMAT_VERSION
+    # 2 since M22, when the sculpts' meshes joined the file under features/
+    assert manifest["format"] == "gmodel" and manifest["format_version"] == FORMAT_VERSION == 2
     assert "project.json" in manifest["contents"]
     assert "program/posterior_cut.nc" in manifest["contents"]
     # manifest is not listed in its own inventory; every listed file is present

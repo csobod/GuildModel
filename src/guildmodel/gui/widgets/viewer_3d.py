@@ -222,6 +222,13 @@ class Viewer3D(QWidget):
 
         # model-mode scene cache
         self._model_pv = None                     # pv.PolyData (computed normals)
+        # The sculpt handle (M22 §7.4): a translucent overlay of the placed
+        # sculpt with pyvista's affine widget on it; re-added after every
+        # model render, since a render clears the plotter.
+        self._sculpt_pv = None
+        self._sculpt_actor = None
+        self._sculpt_widget = None
+        self._sculpt_release = None
         self._model_stock = None
         self._model_core_guide = None
         self._model_zero = None
@@ -865,12 +872,75 @@ class Viewer3D(QWidget):
                 color="#7a7a7a", opacity=0.45, show_edges=True, edge_color="#555555")
 
         self._draw_program_zero(self._model_zero, stock)
+        self._add_sculpt_handle()
         if reset_camera:
             self._plotter.reset_camera(render=False)
         else:
             self._camera_restore(cam)
         self._safe_render()
         self._mesh_label.setText(self._model_label_text)
+
+    # -------------------------------------------------------- sculpt handle (M22)
+
+    def show_sculpt_handle(self, mesh, on_release) -> None:
+        """The transform widget on a sculpt (BUILDPLAN M22 §7.4): `mesh` is
+        the placed sculpt as a trimesh, drawn translucent over the model with
+        pyvista's affine widget attached — arrows to move, rings to turn.
+        `on_release(matrix)` gets the 4 x 4 the drag applied on top of the
+        placement when the button goes up; the caller rebuilds and calls
+        this again with the new placement, so the handle rides along.
+        """
+        if not self._ensure_plotter():
+            return
+        self.clear_sculpt_handle()
+        self._sculpt_pv, _ = self._polydata(mesh)
+        self._sculpt_release = on_release
+        self._add_sculpt_handle()
+        self._safe_render()
+
+    def _add_sculpt_handle(self) -> None:
+        if self._plotter is None or self._sculpt_pv is None:
+            return
+        try:
+            self._sculpt_actor = self._plotter.add_mesh(
+                self._sculpt_pv, name="sculptHandle", color=self._palette.measure,
+                opacity=0.45, smooth_shading=True, pickable=True)
+            self._sculpt_widget = self._plotter.add_affine_transform_widget(
+                self._sculpt_actor, release_callback=self._on_sculpt_released)
+        except Exception:                                   # noqa: BLE001
+            self._sculpt_widget = None                      # a plotter without widgets
+
+    def _on_sculpt_released(self, matrix) -> None:
+        cb = self._sculpt_release
+        if cb is None:
+            return
+        try:
+            M = np.asarray(matrix, dtype=float).reshape(4, 4)
+        except Exception:                                   # noqa: BLE001
+            return
+        cb(M)
+
+    def clear_sculpt_handle(self) -> None:
+        """Take the widget and its overlay down (the sculpt is baked, or the
+        maker is done moving it)."""
+        w, self._sculpt_widget = self._sculpt_widget, None
+        if w is not None:
+            try:
+                w.remove()
+            except Exception:                               # noqa: BLE001
+                pass
+        self._sculpt_pv = None
+        self._sculpt_actor = None
+        self._sculpt_release = None
+        if self._plotter is not None:
+            try:
+                self._plotter.remove_actor("sculptHandle", render=False)
+            except Exception:                               # noqa: BLE001
+                pass
+
+    @property
+    def sculpt_handle_active(self) -> bool:
+        return self._sculpt_pv is not None
 
     # -------------------------------------------------------- section (M7.13)
     def _on_toggle_section(self, on: bool) -> None:
@@ -1436,6 +1506,7 @@ class Viewer3D(QWidget):
     # ------------------------------------------------------------------ clear
 
     def clear(self) -> None:
+        self.clear_sculpt_handle()
         """Drop the model scene (called when the active component has no mesh). The
         sim scene is left cached; sim isn't shared across tabs anyway."""
         self._model_pv = None

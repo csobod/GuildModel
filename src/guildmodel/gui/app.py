@@ -238,11 +238,13 @@ class MeshWorker(_ProgressWorker):
     def __init__(
         self, partition, castle, hinge_polys=(), stage: str = "pockets",
         resolution: float = 0.3, kernel: str = "raster", inlay_polys=(),
+        sculpt_sources=None,
     ) -> None:
         super().__init__()
         self.spec = {"mode": "castle", "partition": partition, "castle": castle,
                      "hinge": list(hinge_polys), "stage": stage,
-                     "inlay": list(inlay_polys)}
+                     "inlay": list(inlay_polys),
+                     "sculpt_sources": dict(sculpt_sources or {})}   # the sculpts' STL bytes (M22)
         self.stage_name = stage
         self.resolution = resolution
         self.kernel = kernel
@@ -662,7 +664,7 @@ class GCodeWorker(_ProgressWorker):
         self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
         engraving=(), temple=None, is_temple=False, graphics=(),
-        inlay_polys=(),
+        inlay_polys=(), sculpt_sources=None,
     ) -> None:
         super().__init__()
         self.outline = outline
@@ -672,6 +674,7 @@ class GCodeWorker(_ProgressWorker):
         self.partition = partition
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)   # the INLAY seats (§8a)
+        self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
         self.engraving = list(engraving)     # ENGRAVING text contours (M6.3 temples)
         self.graphics = list(graphics)       # ENGRAVING curves drawn by hand (engraved as drawn)
         self.temple = temple                 # TempleParams | None
@@ -737,7 +740,7 @@ class GCodeWorker(_ProgressWorker):
         relief = castle_relief(
             self.partition, castle, self.hinge_polys, kernel=self.kernel,
             resolution=CUT_RES_MM, progress=self._progress,
-            inlays=self.inlay_polys,
+            inlays=self.inlay_polys, sculpt_sources=self.sculpt_sources,
         )
         self.progress.emit("[gcode] Castle: generating five operations…")
         ops = require_ops(generate_castle_program(
@@ -1453,13 +1456,15 @@ class SimWorker(_ProgressWorker):
 
     def __init__(self, partition, castle, cam_params, hinge_polys=(),
                  material_name="acetate", resolution: float = 0.3,
-                 inlay_polys=(), program_text: str | None = None) -> None:
+                 inlay_polys=(), program_text: str | None = None,
+                 sculpt_sources=None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
         self.cam_params = cam_params
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)
+        self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
         self.material_name = material_name
         # The stored program, when the tab has a fresh one (M21 §6.5): the
         # simulation then reads it at the posting grid, `CUT_RES_MM`, and
@@ -1499,6 +1504,7 @@ class SimWorker(_ProgressWorker):
                 self.partition, self.castle, self.hinge_polys,
                 kernel=self.kernel, resolution=res,
                 progress=self._progress, inlays=self.inlay_polys,
+                sculpt_sources=self.sculpt_sources,
             )
             ops = None
             if self.program_text:
@@ -1867,7 +1873,8 @@ class PartsWorker(_ProgressWorker):
                     spec["partition"], spec["castle"], spec["hinge"],
                     kernel=self.kernel, resolution=CUT_RES_MM,
                     progress=lambda lbl, f, b=base: self._progress(lbl, b + f / n),
-                    inlays=spec.get("inlay", ()))
+                    inlays=spec.get("inlay", ()),
+                    sculpt_sources=spec.get("sculpt_sources"))
                 ops = generate_castle_program(
                     relief, spec["castle"], spec["hinge"], default_tool,
                     params=cam_i, tools_cfg=tools,
@@ -6706,7 +6713,7 @@ class MainWindow(QMainWindow):
             return None
         for url in mime.urls():
             p = url.toLocalFile()
-            if p and p.lower().endswith((".gdraw", ".gmodel", ".dxf", ".svg")):
+            if p and p.lower().endswith((".gdraw", ".gmodel", ".dxf", ".svg", ".stl")):
                 return p
         return None
 
@@ -6727,6 +6734,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         event.acceptProposedAction()
+        if p.lower().endswith(".stl"):
+            self._add_sculpt_from_path(p)        # a sculpt onto the frame (M22)
+            return
         if self._confirm_discard():
             self.open_path(p)
 
@@ -6735,7 +6745,9 @@ class MainWindow(QMainWindow):
         drawing, or a DXF. Used by the recent-files menu and by a file passed on
         the command line (the installer's file association)."""
         lower = path.lower()
-        if lower.endswith(".gmodel"):
+        if lower.endswith(".stl"):
+            self._add_sculpt_from_path(path)
+        elif lower.endswith(".gmodel"):
             self._open_project(Path(path))
         elif lower.endswith((".gdraw", ".svg")):
             self._load_model(Path(path))
@@ -6834,6 +6846,7 @@ class MainWindow(QMainWindow):
             programs=top_programs or None,
             machine=top_machine, setup=top_setup, report=top_report,
             component_artifacts=component_artifacts or None,
+            features=self._sculpt_feature_bytes() or None,
         )
 
     def _save_gmodel_to(self, path: Path, announce: bool = True) -> bool:
@@ -6987,6 +7000,15 @@ class MainWindow(QMainWindow):
         # file.
         self._pending_artifacts = top if (top and top["programs"]) else None
         self._pending_component_artifacts = comp_art
+        # The sculpts' bytes (M22), by sha256: every castle workspace rebuilt
+        # below takes the whole set, and finds its own by the records' hashes.
+        self._pending_sculpt_sources = {}
+        for comp in (proj.components or []):
+            castle = getattr(comp, "castle", None)
+            for f in (castle.sculpts if castle is not None else []):
+                data = bundle.features.get(f.id)
+                if data and f.source_sha256:
+                    self._pending_sculpt_sources[f.source_sha256] = data
         self._pending_flagged = [c.id for c in (proj.components or []) if c.has_program]
         self._project_path = path
         # Readiness: a stored program means the reopened job is transmittable
@@ -7101,6 +7123,10 @@ class MainWindow(QMainWindow):
 
         # Live parametric rebuild (debounced; only while the 3D view is up)
         self.params.castle_changed.connect(self._on_castle_params_changed)
+        self.params.sculpt_add_requested.connect(self._on_sculpt_add)        # M22
+        self.params.sculpt_mount_changed.connect(self._on_sculpt_mount_changed)
+        self.params.sculpt_resnap_requested.connect(self._on_sculpt_resnap)
+        self.params.sculpt_handle_requested.connect(self._on_sculpt_handle)
         self.params.castle_sliding.connect(self._on_castle_sliding)
         self.params.stock_changed.connect(self._on_stock_changed)
         self.params.zone_hovered.connect(self._on_zone_hover)
@@ -7934,6 +7960,7 @@ class MainWindow(QMainWindow):
             field = component_param_field(ws.kind)
             setattr(ws, ws_attr[field], getattr(comp, field))
             seed_inlay_features(ws)                     # the saved seats follow the drawing (§8a)
+            ws.sculpt_sources.update(getattr(self, "_pending_sculpt_sources", {}))   # M22
             self._seed_workspace_artifacts(ws, comp)
         self._pending_artifacts = None
         self._pending_component_artifacts = {}
@@ -8231,6 +8258,7 @@ class MainWindow(QMainWindow):
                     "castle": ws.castle_params or self.params.castle_params(),
                     "hinge": list(ws.hinge_polys), "stage": ws.stage,
                     "inlay": list(ws.inlay_polys),
+                    "sculpt_sources": dict(ws.sculpt_sources),
                     "cam_overrides": ws.cam_overrides}
         if ws.is_temple:
             text, graphics = ws.engraving_split()
@@ -8397,6 +8425,256 @@ class MainWindow(QMainWindow):
         self._invalidate_program()
         if self.stack.currentIndex() == 1 and self._castle_ready():
             self._rebuild_timer.start()
+
+    # ------------------------------------------------------------------ sculpts (M22)
+
+    def _sculpt_ws(self):
+        """The active frame-front workspace, which owns the sculpts' bytes."""
+        i = self._active_ws
+        if 0 <= i < len(self._workspaces):
+            ws = self._workspaces[i]
+            from guildmodel.core.project.schema import ComponentKind
+            if ws.kind == ComponentKind.FRAME_FRONT:
+                return ws
+        return None
+
+    def _sculpt_sources(self) -> dict:
+        """The active front's sculpt sources by sha256, bytes as they came in;
+        a build gets a copy so loading never replaces the bytes a save needs."""
+        ws = self._sculpt_ws()
+        return dict(ws.sculpt_sources) if ws is not None else {}
+
+    def _sculpt_feature_bytes(self) -> dict:
+        """``features/<id>.stl`` for the project file: every castle's sculpts
+        with the bytes their workspace holds."""
+        out: dict = {}
+        for ws in self._workspaces:
+            castle = getattr(ws, "castle_params", None)
+            for f in (castle.sculpts if castle is not None else []):
+                data = (ws.sculpt_sources or {}).get(f.source_sha256)
+                if isinstance(data, (bytes, bytearray)):
+                    out[f.id] = bytes(data)
+        return out
+
+    def _sculpt_source(self, feature):
+        """The loaded `SculptSource` for a record, with its flat back found
+        once and kept on it; None when the bytes are not in hand."""
+        from guildmodel.core.model.sculpt import flat_back, load_sculpt
+        cache = getattr(self, "_sculpt_cache", None)
+        if cache is None:
+            cache = self._sculpt_cache = {}
+        src = cache.get(feature.source_sha256)
+        if src is None:
+            data = self._sculpt_sources().get(feature.source_sha256)
+            if not isinstance(data, (bytes, bytearray)):
+                return None
+            src = load_sculpt(bytes(data), feature.source_name,
+                              simplify_tol=feature.simplify_tol)
+            src.back = flat_back(src.mesh)[0]
+            cache[feature.source_sha256] = src
+        return src
+
+    def _sculpt_host_mesh(self):
+        """The model as it stands, for a snap; None before the first build."""
+        return self._stage_cache.get(self._stage)
+
+    def _sculpt_target(self, feature, point_xy=None):
+        """Where the sculpt's back goes, read off the host for the mount's
+        face: the model under the point when one is built, else a flat
+        target on the tallest terrace of the castle parameters."""
+        import numpy as np
+        from guildmodel.core.model.sculpt import SnapTarget, snap_target
+        mount = feature.mount
+        face = mount.face if mount.face in ("posterior", "anterior", "rim") else "posterior"
+        p = point_xy if point_xy is not None else (mount.point[:2] if mount.point else None)
+        host = self._sculpt_host_mesh()
+        if host is not None:
+            return snap_target(host, face, p, outline=self._outline_poly)
+        castle = self.params.castle_params()
+        z = castle.zones
+        top = max(z.endpiece_mm, z.bridge_mm, z.nosepad_mm, z.eyewire_superior_mm,
+                  z.eyewire_inferior_mm)
+        if p is None:
+            c = self._partition.body.centroid if self._partition is not None else None
+            p = (c.x, c.y) if c is not None else (0.0, 0.0)
+        if face == "anterior":
+            return SnapTarget("anterior", np.array([p[0], p[1], 0.0]), np.array([0.0, 0.0, -1.0]))
+        return SnapTarget("posterior", np.array([p[0], p[1], float(top)]), np.array([0.0, 0.0, 1.0]))
+
+    def _place_sculpt(self, feature, src, target, *, read_sag: bool):
+        """The record with its transform from `target`: sunk by the mount's
+        overlap, or, with `read_sag`, by the sag the host shows under the
+        back plus the minimum, which the mount then keeps."""
+        from guildmodel.core.model.sculpt import (default_overlap, mount_transform,
+                                                  sag_under)
+        mount = feature.mount
+        overlap = 0.0 if mount.flush else mount.overlap_mm
+        if read_sag and not mount.flush:
+            host = self._sculpt_host_mesh()
+            T0 = mount_transform(src.back, target, overlap_mm=0.0)
+            sag = sag_under(host, src.back, src.mesh, T0, target) if host is not None else 0.0
+            overlap = default_overlap(sag)
+        T = mount_transform(src.back, target, overlap_mm=overlap,
+                            spin_deg=feature.spin_deg, scale=feature.scale)
+        new_mount = mount.model_copy(update=dict(
+            face=target.face, point=[float(v) for v in target.point],
+            normal=[float(v) for v in target.normal], overlap_mm=float(overlap)))
+        return feature.with_transform(T).model_copy(update={"mount": new_mount})
+
+    def _add_sculpt_from_path(self, path: str) -> None:
+        """An STL from a drop or the dialog: loaded, repaired, snapped to the
+        posterior at the frame's center, and added to the active front."""
+        from guildmodel.core.model.kernel import ManifoldError
+        from guildmodel.core.model.sculpt import SIMPLIFY_ABOVE, flat_back, load_sculpt
+        from guildmodel.core.project.schema import SculptFeature, SculptMount
+        ws = self._sculpt_ws()
+        if ws is None or not self._castle_ready():
+            QMessageBox.information(
+                self, "Sculpts", "Open a frame front first; a sculpt sits on the front.")
+            return
+        try:
+            data = Path(path).read_bytes()
+            src = load_sculpt(data, Path(path).name)
+        except (ManifoldError, OSError, ValueError) as exc:
+            self._report_failure("Sculpt import", "sculpt", f"{Path(path).name}: {exc}")
+            return
+        tol = 0.0
+        if src.triangles > SIMPLIFY_ABOVE:
+            ans = QMessageBox.question(
+                self, "A large sculpt",
+                f"{Path(path).name} has {src.triangles:,} triangles. Simplify it to "
+                "0.02 mm? The tolerance is recorded with the sculpt.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans == QMessageBox.StandardButton.Yes:
+                tol = 0.02
+                src = load_sculpt(data, Path(path).name, simplify_tol=tol)
+        src.back = flat_back(src.mesh)[0]
+        ws.sculpt_sources[src.sha256] = data
+        cache = getattr(self, "_sculpt_cache", None)
+        if cache is None:
+            cache = self._sculpt_cache = {}
+        cache[src.sha256] = src
+        feature = SculptFeature(
+            id="", label=Path(path).stem, source_name=Path(path).name,
+            source_sha256=src.sha256, simplify_tol=tol, triangles=src.triangles,
+            mount=SculptMount(face="posterior"))
+        feature = self._place_sculpt(feature, src, self._sculpt_target(feature), read_sag=True)
+        row = self.params.add_sculpt(feature)
+        notes = "; ".join(src.notes())
+        self.append_log(f"[sculpt] {Path(path).name}: {src.triangles:,} triangles, "
+                        f"{src.volume:.1f} mm³" + (f" ({notes})" if notes else "")
+                        + f"; snapped to the back, sunk {feature.mount.overlap_mm:.2f} mm")
+        self.params.set_sculpt_info(row, f"{src.triangles:,} triangles"
+                                    + (f"; {notes}" if notes else ""))
+        self._mark_dirty()
+
+    def _on_sculpt_add(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add a sculpt", "", "Meshes (*.stl);;All files (*)")
+        if path:
+            self._add_sculpt_from_path(path)
+
+    def _on_sculpt_mount_changed(self, row: int, requery: bool) -> None:
+        """Scale, spin, overlap, flush or the face moved on a record: the
+        placement is recomputed from the stored target, or from the host
+        again when the face changed or no target was kept."""
+        import numpy as np
+        from guildmodel.core.model.sculpt import SnapTarget
+        f = self.params.sculpt_at(row)
+        src = self._sculpt_source(f) if f is not None else None
+        if src is None:
+            return
+        m = f.mount
+        if requery or not m.point or not m.normal or len(m.point) < 3:
+            target = self._sculpt_target(f)
+            placed = self._place_sculpt(f, src, target, read_sag=True)
+        else:
+            target = SnapTarget(m.face, np.asarray(m.point, dtype=float),
+                                np.asarray(m.normal, dtype=float))
+            placed = self._place_sculpt(f, src, target, read_sag=False)
+        self.params.set_sculpt(row, placed)
+        self._on_castle_params_changed()
+        self._mark_dirty()
+        self._refresh_sculpt_handle(row)
+
+    def _on_sculpt_resnap(self, row: int) -> None:
+        """Read the host again under the sculpt's point and sit it there."""
+        f = self.params.sculpt_at(row)
+        src = self._sculpt_source(f) if f is not None else None
+        if src is None:
+            return
+        placed = self._place_sculpt(f, src, self._sculpt_target(f), read_sag=True)
+        self.params.set_sculpt(row, placed)
+        self.append_log(f"[sculpt] {f.label or f.id}: re-snapped, sunk "
+                        f"{placed.mount.overlap_mm:.2f} mm")
+        self._on_castle_params_changed()
+        self._mark_dirty()
+        self._refresh_sculpt_handle(row)
+
+    def _on_sculpt_handle(self, row: int, on: bool) -> None:
+        """The transform widget on the sculpt, in the 3D view."""
+        self._sculpt_handle_row = row if on else None
+        if not on:
+            self.view3d.clear_sculpt_handle()
+            return
+        self._switch_view(1)
+        self._refresh_sculpt_handle(row)
+
+    def _refresh_sculpt_handle(self, row: int) -> None:
+        if getattr(self, "_sculpt_handle_row", None) != row:
+            return
+        f = self.params.sculpt_at(row)
+        src = self._sculpt_source(f) if f is not None else None
+        if src is None:
+            self.view3d.clear_sculpt_handle()
+            return
+        placed = src.mesh.copy()
+        placed.apply_transform(f.transform_matrix())
+        self.view3d.show_sculpt_handle(placed, lambda M, r=row: self._on_sculpt_dragged(r, M))
+
+    def _on_sculpt_dragged(self, row: int, M) -> None:
+        """The widget let go: the drag rides on top of the placement, the
+        mount becomes the point and normal the back now sits at, and the
+        model rebuilds."""
+        import numpy as np
+        from guildmodel.core.model.sculpt import transform_points
+        f = self.params.sculpt_at(row)
+        src = self._sculpt_source(f) if f is not None else None
+        if src is None:
+            return
+        M = np.asarray(M, dtype=float).reshape(4, 4)
+        if np.allclose(M, np.eye(4), atol=1e-9):
+            return
+        T = M @ f.transform_matrix()
+        R = T[:3, :3] / max(f.scale, 1e-9)
+        normal = -(R @ src.back.normal)
+        normal = normal / max(np.linalg.norm(normal), 1e-12)
+        point = transform_points(src.back.point[None, :], T)[0] + normal * f.mount.overlap_mm
+        placed = f.with_transform(T).model_copy(update={"mount": f.mount.model_copy(update=dict(
+            face="pick", point=[float(v) for v in point], normal=[float(v) for v in normal]))})
+        self.params.set_sculpt(row, placed)
+        self._on_castle_params_changed()
+        self._mark_dirty()
+        self._refresh_sculpt_handle(row)
+
+    def _report_sculpts(self, mesh) -> None:
+        """After a build with sculpts: what a three-axis tool cannot reach."""
+        castle = self.params.castle_params()
+        if not castle.resolved_sculpts():
+            return
+        try:
+            from guildmodel.core.model.sculpt import undercuts
+            rep = undercuts(mesh, max(0.3, float(self._prefs.get("preview_resolution_mm", 0.3))))
+        except Exception:                                    # noqa: BLE001
+            return
+        row = self.params.sculpt_list.currentRow()
+        if rep:
+            self.append_log(f"[sculpt] {rep.area_mm2:.1f} mm² of the sculpted surface faces "
+                            "down between the envelopes: a three-axis tool cannot reach "
+                            "it, and the program cuts the envelope over it.")
+            self.params.set_sculpt_info(row, f"Undercut: {rep.area_mm2:.1f} mm² unreachable")
+        else:
+            self.params.set_sculpt_info(row, "No undercut: every face is reachable")
 
     def _on_stage_changed(self, stage: str) -> None:
         self._stage = stage
@@ -8646,6 +8924,7 @@ class MainWindow(QMainWindow):
             hinge_polys=self._hinge_polys, stage=self._stage,
             resolution=self._prefs["preview_resolution_mm"],
             kernel=self._model_kernel(), inlay_polys=self._inlay_polys,
+            sculpt_sources=self._sculpt_sources(),
         )
         self._mesh_thread = QThread()
         self._mesh_worker.moveToThread(self._mesh_thread)
@@ -8770,6 +9049,7 @@ class MainWindow(QMainWindow):
         self._edge_cache[stage] = edges
         if stage == self._stage:
             self._show_stage_mesh(mesh, edges)
+            self._report_sculpts(mesh)
         if not self._live_preview:
             self.append_log(
                 f"[3D] Done ({stage}) — {len(mesh.vertices):,} verts, "
@@ -9104,7 +9384,8 @@ class MainWindow(QMainWindow):
         self._formed_worker = MeshWorker(
             self._partition, castle, hinge_polys=self._hinge_polys,
             stage="pockets", resolution=self._prefs["preview_resolution_mm"],
-            kernel=self._model_kernel(), inlay_polys=self._inlay_polys)
+            kernel=self._model_kernel(), inlay_polys=self._inlay_polys,
+            sculpt_sources=self._sculpt_sources())
         self._formed_thread = QThread()
         self._formed_worker.moveToThread(self._formed_thread)
         self._formed_thread.started.connect(self._formed_worker.run)
@@ -9323,7 +9604,8 @@ class MainWindow(QMainWindow):
             self._sim_worker = SimWorker(
                 self._partition, self.params.castle_params(), cam_params=cam,
                 hinge_polys=self._hinge_polys, material_name=mat, resolution=res,
-                inlay_polys=self._inlay_polys, program_text=program)
+                inlay_polys=self._inlay_polys, program_text=program,
+                sculpt_sources=self._sculpt_sources())
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
@@ -9413,6 +9695,7 @@ class MainWindow(QMainWindow):
             partition=self._partition,
             hinge_polys=self._hinge_polys,
             inlay_polys=self._inlay_polys,                   # the seats (§8a)
+            sculpt_sources=self._sculpt_sources(),           # the sculpts (M22)
             cam_params=self.params.effective_cam_params(),   # per-component CAM (M16)
             engraving=self._engraving_curves,
             graphics=self._engraving_graphics,

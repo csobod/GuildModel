@@ -159,11 +159,16 @@ def _build_castle_mesh(spec, progress):
     detector finds there. BUILDPLAN-NEW §8.2 carries the table.
     """
     from guildmodel.core.model import (build_castle_model, feature_edges,
-                                       to_trimesh)
+                                       placed_sculpts, to_trimesh)
 
+    # The sculpts (M22): the castle's records under their transforms, from
+    # the sources the spec carries by sha256 (bytes or loaded).
+    castle = spec["castle"]
+    sculpts = (placed_sculpts(castle.resolved_sculpts(), spec.get("sculpt_sources") or {})
+               if getattr(castle, "sculpts", None) else None)
     model = build_castle_model(
-        spec["partition"], spec["castle"], spec["hinge"], progress=progress,
-        inlays=spec.get("inlay", ()))
+        spec["partition"], castle, spec["hinge"], progress=progress,
+        inlays=spec.get("inlay", ()), sculpts=sculpts)
     if progress is not None:
         progress("Edges", 0.97)
     mesh = to_trimesh(model)

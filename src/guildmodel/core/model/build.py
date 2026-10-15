@@ -424,9 +424,13 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
                        hinges: list | None = None,
                        heights: dict[str, float] | None = None,
                        progress: ProgressFn = None,
-                       inlays: list | None = None) -> Manifold:
+                       inlays: list | None = None,
+                       sculpts: list | None = None) -> Manifold:
     """The whole castle: terraces, footing blends, every finishing feature,
-    hinge pockets, inlay seats (`inlays`, index-aligned with `castle.inlays`).
+    hinge pockets, inlay seats (`inlays`, index-aligned with `castle.inlays`),
+    and the sculpts baked in last (`sculpts`, `PlacedSculpt`s from
+    `sculpt.placed_sculpts`; M22), so a deboss can cut a pocket wall and an
+    emboss stands on the finished surface.
 
     Order mirrors the B-Rep path exactly — terraces, footings, surface features
     one at a time, then everything that can share a pass — because parity is the
@@ -501,6 +505,11 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     tools.extend(hinge_pockets(hinges, castle, top))
     tools.extend(inlay_pockets(inlays, castle, hinges, partition, h, top))
     solid = subtract_all(solid, tools)
+
+    if sculpts:
+        from .sculpt import bake
+        _report(progress, "Sculpts", 0.92)
+        solid = bake(solid, list(sculpts))
 
     # Once more at the end, for the reason `build_base` gives. With the blends
     # in, every later feature has a finely triangulated curved surface to be

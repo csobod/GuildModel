@@ -167,6 +167,39 @@ mirrored feature is one edit instead of two.
 > because a program you have already stored keeps the readiness dot green on
 > its own.
 
+### Sculpts — your own meshes, embossed or debossed
+
+A sculpt is a mesh you made elsewhere: a crest, a rivet head, a plaque, a
+channel. Drop an `.stl` on the 3D view, or use **+ Add STL…** in the
+**Sculpts** section of the Model tab. GuildModel repairs the mesh (a
+duplicated-vertex soup is welded, an inside-out shell is turned, an open
+shell is mended, two overlapping shells become one), finds its flat back,
+and snaps it to the back of the frame at the center, sunk 0.05 mm so the
+two are one body; where the back spans a terrace step the sink grows by the
+step. The log names what the repair did. A sculpt over 250,000 triangles is
+offered a simplification, and the tolerance is recorded with it.
+
+Each row has a name, the face it snaps to (back, front or the rim), the
+operation (**Emboss** adds the mesh, **Deboss** cuts it as a tool), a scale
+about the back, a spin about the surface, the overlap, **Flush** for a
+coplanar seat on a flat terrace, and **Mirror** for the twin across the
+center line. **Re-snap** reads the frame again under the sculpt. **Move in
+3D** puts a handle on it in the 3D view: arrows to move, rings to turn; the
+model rebuilds when you let go, and a scale or spin edit afterward keeps the
+place you moved it to. A sculpt lifted clear of the frame is refused with
+the gap named: the union would be two bodies.
+
+After each build the log reports any undercut: a face that points down
+between the top and the bottom of the part, which a three-axis tool cannot
+reach. The program cuts the envelope over it. A sculpt on the back is
+machined by the posterior program: its footprint joins the feature band, so
+the Features pass finishes it at its cusp stepover, and the **Sculpt
+Finish** operation on the Cut tab, off unless you tick it, runs a ball over
+the footprint at a finer one. A sculpt on the front or the rim is modeled
+and exported, and not posted until the flip setup. The project file carries
+the mesh bytes, so a saved project reopens with its sculpts and no external
+files; the mesh kernel builds them, the raster and B-Rep kernels do not.
+
 ### Seats and plaques — the INLAY layer
 
 A closed curve drawn on GuildDraw's `INLAY` layer, on the front or on a
@@ -664,7 +697,8 @@ beside it, and so do your presses (`presses.yaml`, §2).
 ## 9. Files and data safety
 
 - **`.gmodel` is self-contained.** The embedded drawing means a project reopens
-  identically, even if the original `.gdraw` moved.
+  identically, even if the original `.gdraw` moved; the sculpts' meshes ride
+  in the file too.
 - **Autosave** snapshots unsaved work every 3 minutes to
   `~/.guildmodel/autosave/`. After a crash or a power cut, the next launch
   offers to restore it. Recovered work reopens against your original project

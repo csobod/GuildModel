@@ -73,6 +73,10 @@ class ComponentWorkspace:
     # `geometry.inlays.ordered` gives, and index-aligned with the part's
     # `inlays` features once `seed_inlay_features` has reconciled them.
     inlay_polys: list = field(default_factory=list)
+    # The sculpts' sources (M22) by sha256: the STL bytes as they came in, or
+    # the `SculptSource` once loaded. The features that place them are on
+    # `castle_params.sculpts`; the bytes travel in the project file.
+    sculpt_sources: dict = field(default_factory=dict)
     engraving_curves: list = field(default_factory=list)
     # The glyph contours the GUI outlined from ``texts`` (fonts need Qt, so the
     # pure derive cannot make them). Kept apart from ``engraving_curves`` — what
