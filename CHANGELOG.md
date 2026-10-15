@@ -186,6 +186,14 @@ the bounding box of its cuts, as a blank-end-snapped temple already did; the
 fixture's front moves 0.24 mm on the bed for it, and the blocks less than a
 thousandth.
 
+### No app launches another (2026-10-15)
+
+The *Open in GuildSend* action, its launcher and its finder, retired from the
+menu in rc2 and kept disconnected since, are removed, and nothing in the
+application starts another program. The three apps never find or launch each
+other: GuildSend opens the saved `.gmodel`, as GuildModel opens a `.gdraw`,
+and the handoff is always a file you open.
+
 ## v1.8.1 — a drawn logo is engraved as a filled shape
 
 A maker drew a six-armed logo on a temple's ENGRAVING layer as one closed

@@ -5724,22 +5724,10 @@ class MainWindow(QMainWindow):
         self._act_block.setEnabled(False)
         self._act_block.triggered.connect(self._on_generate_block)
 
-        # "Open in GuildSend" RETIRED from the menu (rc2, user decision): the
-        # three tools stand alone — GuildSend natively opens .gmodel jobs, just
-        # as GuildModel natively opens .gdraw drawings — so a cross-launch
-        # button is unnecessary coupling. The action, its launcher
-        # (_on_open_in_guildsend / _find_guildsend), and the hotkey-registry row
-        # are kept but disconnected in case the decision is revisited.
-        self._act_send = QAction("Open in GuildSend", self)
-        self._act_send.setToolTip(
-            "Hand the saved .gmodel job to GuildSend, the ecosystem's sender —\n"
-            "programs, setup sheet, tools, and the tagged worktable travel whole")
-        self._act_send.setEnabled(False)          # tracks Export G-code
-        self._act_send.triggered.connect(self._on_open_in_guildsend)
-        # A stored program enables both actions — mirror the single authority
-        # instead of duplicating every setEnabled site.
-        self._act_export_nc.changed.connect(
-            lambda: self._act_send.setEnabled(self._act_export_nc.isEnabled()))
+        # There is no "Open in GuildSend" (retired in rc2, removed 2026-10-15):
+        # the three apps never find or start each other. GuildSend opens the
+        # saved .gmodel itself, as GuildModel opens a .gdraw — the handoff is
+        # always a file the user opens.
 
         self._act_view2d = QAction("2D Outline", self, checkable=True)
         self._act_view2d.setChecked(True)
@@ -6027,7 +6015,6 @@ class MainWindow(QMainWindow):
             # maker reaches for while iterating), but rebindable like the rest.
             ("export_all", self._act_export_all, "Export All STL", "build", False),
             ("export_formed", self._act_export_formed, "Export Formed STL", "build", False),
-            # ("send_guildsend", self._act_send, "Open in GuildSend", "build", False),  # retired rc2
             ("block", self._act_block, "Generate Base-Curve Block", "build", False),
             ("view2d", self._act_view2d, "2D View", "view", True),
             ("view3d", self._act_view3d, "3D View", "view", True),
@@ -6104,8 +6091,6 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_export_all)
         file_menu.addAction(self._act_export_formed)
         file_menu.addSeparator()
-        # file_menu.addAction(self._act_send)   # retired rc2 — see _act_send note
-        # file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
         quit_act.setShortcut("Ctrl+Q")
         quit_act.triggered.connect(self.close)
@@ -9521,59 +9506,29 @@ class MainWindow(QMainWindow):
         overlay = getattr(w, "op_overlay", None) if w is not None else None
         if overlay:
             self._show_toolpath_overlay(overlay, rows)
-        if rows:
+        then, self._gcode_then = getattr(self, "_gcode_then", None), None
+        if then is not None:
+            # a simulation asked for the program: it follows, without the sheet
+            QTimer.singleShot(0, then)
+        elif rows:
             OpSummaryDialog(rows, summary, self).exec()
         else:
             QMessageBox.information(self, "G-code generated", summary)
 
     def _on_gcode_error(self, tb: str) -> None:
         self._close_progress()
+        self._gcode_then = None
         self._report_failure("G-code generation", "gcode", tb)
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
 
     def _on_gcode_canceled(self) -> None:
         self._close_progress()
+        self._gcode_then = None
         self.append_log("[gcode] Canceled.")
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
         self.status_lbl.setText("G-code canceled")
-
-    def _on_open_in_guildsend(self) -> None:
-        """Hand the job to GuildSend (the ecosystem's sender). The saved
-        .gmodel travels whole — GuildSend reads it natively: programs, setup
-        sheet, tools, material, and the tagged worktable (its M7.2 bundle
-        path), so nothing is lost to a loose .nc export."""
-        self._commit_typed_value()
-        if not self._last_programs:
-            QMessageBox.information(
-                self, "Open in GuildSend",
-                "Generate a program first — GuildSend runs the stored G-code.")
-            return
-        if self._z_profile_hold("hand off anyway"):
-            return
-        if self._project_path is None or self._dirty:
-            # The handoff is the file on disk; make sure it holds this session.
-            self._on_save_project()
-            if self._project_path is None or self._dirty:
-                return                            # save dialog canceled
-        cmd = _find_guildsend()
-        if cmd is None:
-            QMessageBox.warning(
-                self, "GuildSend not found",
-                "GuildSend isn't installed (or isn't in its usual place).\n\n"
-                "Install GuildSend, then use File ▸ Open in GuildSend again —\n"
-                "or open the saved .gmodel from GuildSend's File ▸ Open Job.")
-            return
-        import subprocess
-        try:
-            subprocess.Popen(cmd + [str(self._project_path)])
-        except OSError as exc:
-            QMessageBox.warning(self, "Open in GuildSend",
-                                f"Could not launch GuildSend:\n{exc}")
-            return
-        self.append_log(f"[send] Opened {self._project_path.name} in GuildSend.")
-        self.status_lbl.setText(f"Sent to GuildSend — {self._project_path.name}")
 
     def _z_profile_hold(self, what: str) -> bool:
         """Ask before a program with a flagged Z profile leaves the app (M-Z1).
@@ -9930,39 +9885,6 @@ class _FboProbe(logging.Handler):
             QTimer.singleShot(0, lambda m=msg: w.append_log(m))
         except Exception:
             pass   # a diagnostic must never break a render
-
-
-def _find_guildsend() -> Optional[list]:
-    """Locate GuildSend as a launchable command, or None.
-
-    Tried in order: the per-user install (Inno's ``{localappdata}\\Programs``
-    default), a ``guildsend`` on PATH (pip/venv install), then — for
-    developers — the sibling source checkout run through its own venv."""
-    import shutil
-    local = os.environ.get("LOCALAPPDATA", "")
-    if local:
-        exe = Path(local) / "Programs" / "GuildSend" / "GuildSend.exe"
-        if exe.is_file():
-            return [str(exe)]
-    which = shutil.which("guildsend")
-    if which:
-        return [which]
-    sibling = Path(__file__).resolve().parents[3].parent / "GuildSend"
-    main_py = sibling / "main.py"
-    # Linux (M20): the launcher's venv first — GuildSend's .venv is the synced
-    # Windows one, .venv-linux the one its desktop entry runs — then Windows.
-    for venv in (".venv-linux", ".venv"):
-        exe = sibling / venv / "bin" / "guildsend"
-        if exe.is_file():
-            return [str(exe)]
-        py = sibling / venv / "bin" / "python"
-        if py.is_file() and main_py.is_file():
-            return [str(py), str(main_py)]
-    for py_name in ("pythonw.exe", "python.exe"):
-        py = sibling / ".venv" / "Scripts" / py_name
-        if py.is_file() and main_py.is_file():
-            return [str(py), str(main_py)]
-    return None
 
 
 def _app_icon():

@@ -128,4 +128,6 @@ def test_the_marker_is_not_over_applied():
     # first drive (the bed sim reading the posted program, the panel quiet
     # and iconed with the screws folded, a tab walk that stays in 3D).
     # …and one for the zone's stop: Snap registering a flipped, shorter blank.
-    assert marked == 66, f"{marked} tests marked `gui`, expected 66"
+    # One fewer on 2026-10-15: the retired Open in GuildSend action went, and
+    # its enable-mirroring window test in `test_ecosystem_c` with it.
+    assert marked == 65, f"{marked} tests marked `gui`, expected 65"

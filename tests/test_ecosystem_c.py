@@ -1,6 +1,8 @@
-"""Ecosystem-glue round (V1-prep cluster c): the Ctrl+, Preferences shortcut,
-the File ▸ Open in GuildSend handoff action, and the retirements from cluster d
-(io_import.svg / mesh.twosided / mesh.stl_export are gone; mesh.section stays).
+"""Ecosystem-glue round (V1-prep cluster c): the Ctrl+, Preferences shortcut
+and the retirements from cluster d (io_import.svg / mesh.twosided /
+mesh.stl_export are gone; mesh.section stays). The File ▸ Open in GuildSend
+handoff this round added was retired in rc2 and removed on 2026-10-15: the
+apps never launch each other, and nothing of it is left to test.
 """
 import os
 
@@ -32,24 +34,14 @@ def test_preferences_shortcut_is_ctrl_comma(qapp, tmp_path, monkeypatch):
     assert win._act_prefs.shortcut() == QKeySequence("Ctrl+,")
 
 
-@pytest.mark.gui
-def test_send_action_mirrors_export_enable(qapp, tmp_path, monkeypatch):
-    win = _window(tmp_path, monkeypatch)
-    assert win._act_send.isEnabled() is False      # no program yet
-    win._act_export_nc.setEnabled(True)            # a program lands
-    assert win._act_send.isEnabled() is True
-    win._act_export_nc.setEnabled(False)           # fresh design resets
-    assert win._act_send.isEnabled() is False
-
-
-def test_find_guildsend_dev_fallback_shape(monkeypatch, tmp_path):
-    """Without an install or PATH entry, the sibling-checkout fallback returns
-    [python, main.py] — or None on a machine with neither. Shape-check only."""
-    from guildmodel.gui.app import _find_guildsend
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))   # no install here
-    cmd = _find_guildsend()
-    assert cmd is None or (isinstance(cmd, list) and len(cmd) in (1, 2)
-                           and all(isinstance(p, str) for p in cmd))
+def test_no_app_launches_another():
+    """The apps never find or start each other (2026-10-15): no launcher, no
+    finder, no subprocess in the GUI module."""
+    import inspect
+    import guildmodel.gui.app as app_mod
+    assert not hasattr(app_mod, "_find_guildsend")
+    assert not hasattr(app_mod.MainWindow, "_on_open_in_guildsend")
+    assert "subprocess" not in inspect.getsource(app_mod)
 
 
 def test_retired_modules_are_gone():
