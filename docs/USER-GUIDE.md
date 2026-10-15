@@ -75,7 +75,8 @@ The eyewire walls run between them. Rolling-ball footing fillets ease every
 wall into the floor.
 
 The sidebar shows what the active component needs. A frame front has
-**Info · Model · Stock · Cut · Machine**.
+**Info · Model · Stock · Cut · Machine**. Every section on every tab folds
+under its header with a click; GuildModel remembers which you folded.
 
 ### The Model tab
 
@@ -642,8 +643,8 @@ width. A number you type into any field applies when you press Enter, Tab or
 click away; the sliders update live while they move.
 
 The Preferences window opens sized to its content within your screen and
-remembers the size you leave it at. Your preferences, window layout and recent
-files persist in `~/.guildmodel/prefs.json`. The material, tool and frame-style overrides live
+remembers the size you leave it at. Your preferences, window layout, folded
+sidebar sections and recent files persist in `~/.guildmodel/prefs.json`. The material, tool and frame-style overrides live
 beside it, and so do your presses (`presses.yaml`, §2).
 
 ## 9. Files and data safety

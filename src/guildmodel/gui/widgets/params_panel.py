@@ -261,6 +261,7 @@ class ParamsPanel(QTabWidget):
     stock_changed = Signal()       # blank / pad block dimensions
     cam_changed = Signal()         # tool / material / allowances / fallback
     temple_apply_both = Signal()   # Temple tab ▸ Apply to both temples (2026-09-27)
+    fold_changed = Signal()        # a section folded or unfolded (2026-10-15)
     front_placement_changed = Signal(bool)   # Stock tab ▸ Origin from drawing (2026-10-14)
     zone_hovered = Signal(str)     # zone name under the cursor, "" on leave
     # A Model-tab handle is being dragged: the value is not settled, but the
@@ -295,6 +296,10 @@ class ParamsPanel(QTabWidget):
         self._tool_feeds: dict = {}
         self._tool_rows: dict = {}
         self._tool_rows_key = None
+        # Every section of the dock folds under its header (2026-10-15), by
+        # title; the window saves which are folded with the rest of its layout.
+        self._folds: dict[str, CollapsibleBox] = {}
+        self._fold_defaults: dict[str, bool] = {}
         self._tab_info = self.addTab(self._scroll_tab(self._build_info_tab), "Info")
         self._tab_castle = self.addTab(self._scroll_tab(self._build_castle_tab), "Model")
         self._tab_stock = self.addTab(self._scroll_tab(self._build_stock_tab), "Stock")
@@ -396,6 +401,46 @@ class ParamsPanel(QTabWidget):
         if not self.isTabVisible(self.currentIndex()):
             self.setCurrentIndex(self._tab_info)
 
+    # ------------------------------------------------------------------ sections
+
+    def _fold(self, title: str, lay: QVBoxLayout, tip: str = "") -> QWidget:
+        """A section of the dock: a collapsible box added to `lay` now, so the
+        builders' order holds, whose bare body the caller lays out as it laid
+        out the group box this replaces. `tip` goes on the header."""
+        box = CollapsibleBox(title)
+        if tip:
+            box.header.setToolTip(tip)
+        self._register_fold(title, box)
+        lay.addWidget(box)
+        return box.body
+
+    def _register_fold(self, title: str, box: CollapsibleBox) -> None:
+        self._folds[title] = box
+        self._fold_defaults[title] = box.is_expanded()
+        box.toggled.connect(lambda _on: self.fold_changed.emit())
+
+    def _fold_inlays(self, title: str, lay: QVBoxLayout, group: InlaysGroup) -> None:
+        """An Inlays section: the group in a fold, its explanation on the
+        header, and its own *Cut details* fold remembered beside it."""
+        body = self._fold(title, lay, tip=InlaysGroup.TIP)
+        inner = QVBoxLayout(body)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.addWidget(group)
+        self._register_fold(f"{title} · cut details", group.details)
+
+    def fold_state(self) -> dict:
+        """The sections whose fold differs from how they open the first time,
+        by title — only those, so a section added later still opens as it
+        was built to, and a fold the maker never touched is not written down."""
+        return {title: box.is_expanded() for title, box in self._folds.items()
+                if box.is_expanded() != self._fold_defaults[title]}
+
+    def set_fold_state(self, state: dict | None) -> None:
+        """Fold or open the sections `state` names; the rest as built."""
+        state = state or {}
+        for title, box in self._folds.items():
+            box.set_expanded(bool(state.get(title, self._fold_defaults[title])))
+
     # ------------------------------------------------------------------ tab scaffold
 
     def _scroll_tab(self, build) -> QScrollArea:
@@ -420,7 +465,7 @@ class ParamsPanel(QTabWidget):
         self._build_boxing_group(lay)
 
     def _build_file_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("File")
+        grp = self._fold("File", lay)
         glay = QVBoxLayout(grp)
 
         self.source_label = QLabel("No file loaded")
@@ -444,7 +489,6 @@ class ParamsPanel(QTabWidget):
             self._layer_checks[layer] = cb
         self._tint_layer_checks(dark=False)
 
-        lay.addWidget(grp)
 
     def _tint_layer_checks(self, dark: bool) -> None:
         for layer, cb in self._layer_checks.items():
@@ -464,10 +508,10 @@ class ParamsPanel(QTabWidget):
     # ------------------------------------------------------------------ boxing
 
     def _build_boxing_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Boxing Dimensions  (ISO 8624)")
+        grp = self._fold("Boxing Dimensions  (ISO 8624)", lay)
         # Lens-only measurements — hidden on temple / base-curve components, which
         # have no lens outline (set_component_kind).
-        self._boxing_group = grp
+        self._boxing_group = self._folds["Boxing Dimensions  (ISO 8624)"]
         glay = QVBoxLayout(grp)
 
         form = QFormLayout()
@@ -489,7 +533,6 @@ class ParamsPanel(QTabWidget):
         note.setWordWrap(True)
         glay.addWidget(note)
 
-        lay.addWidget(grp)
 
     def update_boxing(
         self, a: float, b: float, dbl: float, ed: float
@@ -526,7 +569,7 @@ class ParamsPanel(QTabWidget):
         once. The span is chosen by castle zone (see `EdgeFeature`), so the list
         reads in the maker's own vocabulary and mirrors by name.
         """
-        grp = QGroupBox("Edge Features  (chamfers && fillets)")
+        grp = self._fold("Edge Features  (chamfers && fillets)", lay)
         v = QVBoxLayout(grp)
 
         hint = QLabel(
@@ -642,7 +685,6 @@ class ParamsPanel(QTabWidget):
         self.ef_label.textEdited.connect(self._on_edge_edited)
         self.ef_zones.itemSelectionChanged.connect(self._on_edge_edited)
         self._refresh_edge_list()
-        lay.addWidget(grp)
 
     _EF_FACES = ("anterior", "posterior")
     _EF_EDGES = ("outline", "lens_od", "lens_os")
@@ -806,7 +848,7 @@ class ParamsPanel(QTabWidget):
         """Save / recall a whole CastleParams as a named house style (BUILDPLAN M7.16).
         Selecting a preset seeds the dock (one live rebuild); Save as… / Update / Delete
         manage the maker's library (shipped 'Guild demo' is the reference)."""
-        grp = QGroupBox("Frame style")
+        grp = self._fold("Frame style", lay)
         v = QVBoxLayout(grp)
 
         self.style_combo = QComboBox()
@@ -829,7 +871,6 @@ class ParamsPanel(QTabWidget):
         row.addWidget(self._style_delete_btn)
         v.addLayout(row)
 
-        lay.addWidget(grp)
         self._refresh_style_combo()
 
     def _refresh_style_combo(self, select: str | None = None) -> None:
@@ -902,7 +943,7 @@ class ParamsPanel(QTabWidget):
         self._refresh_style_combo()
 
     def _build_castle_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Model Properties")
+        grp = self._fold("Model Properties", lay)
         glay = QVBoxLayout(grp)
 
         # --- Towers: the high load-bearing masses ---
@@ -984,7 +1025,6 @@ class ParamsPanel(QTabWidget):
         for sb in self._castle_spinboxes():
             sb.valueChanged.connect(self._on_castle_spin)
 
-        lay.addWidget(grp)
 
     # ------------------------------------------ posterior finishing (M13)
 
@@ -992,7 +1032,7 @@ class ParamsPanel(QTabWidget):
         """Pad splay / eyewire bezel / bridge relief — the posterior features a
         maker otherwise cuts by hand (BUILDPLAN M13). Each is off by default."""
         d = PadSplayParams()
-        grp = QGroupBox("Posterior Finishing")
+        grp = self._fold("Posterior Finishing", lay)
         glay = QVBoxLayout(grp)
 
         # --- Pad splay: chamfer under the bridge (M13.1) ---
@@ -1168,10 +1208,9 @@ class ParamsPanel(QTabWidget):
         self._on_bridge_relief_toggled(g.enabled)
         self._refresh_bridge_relief_shape()
 
-        lay.addWidget(grp)
 
         # --- Lens bevel groove (V1): the drageoir V in each eyewire wall ---
-        grp = QGroupBox("Lens Bevel Groove")
+        grp = self._fold("Lens Bevel Groove", lay)
         glay = QVBoxLayout(grp)
         lg = LensGrooveParams()
         self.groove_enable = QCheckBox("Cut lens bevel groove")
@@ -1224,7 +1263,6 @@ class ParamsPanel(QTabWidget):
         self._on_groove_toggled(lg.enabled)
         self._update_groove_angle()
 
-        lay.addWidget(grp)
 
     def _on_groove_toggled(self, on: bool) -> None:
         """Gray out the groove controls when the groove is off."""
@@ -1544,7 +1582,6 @@ class ParamsPanel(QTabWidget):
         self.use_pad_block.toggled.connect(self._on_pad_block_toggled)
         self.use_pad_block.toggled.connect(self.stock_changed)
 
-        lay.addWidget(grp)
 
     def _on_pad_block_toggled(self, on: bool) -> None:
         """Gray out the pad-block dimensions when the pad block is off."""
@@ -1562,7 +1599,7 @@ class ParamsPanel(QTabWidget):
 
     def _build_temple_tab(self, lay: QVBoxLayout) -> None:
         d = TempleParams()
-        grp = QGroupBox("Temple")
+        grp = self._fold("Temple", lay)
         grp.setToolTip("A flat temple: ENGRAVING grooves on top + an OUTLINE through-cut.")
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -1730,9 +1767,8 @@ class ParamsPanel(QTabWidget):
         form.addRow("Onion skin:", self.block_onion)
         self.block_allowance = _spinbox(d.hand_finishing_allowance_mm, 0.0, 1.0, step=0.05, decimals=2)
         form.addRow("Hand allowance:", self.block_allowance)
-        lay.addWidget(grp)
 
-        hg = QGroupBox("Mounting holes  (M4 clearance)")
+        hg = self._fold("Mounting holes  (M4 clearance)", lay)
         hf = QFormLayout(hg)
         hf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.block_hole_count = QSpinBox()
@@ -1756,7 +1792,6 @@ class ParamsPanel(QTabWidget):
         hf.addRow("Peck depth:", self.block_peck_depth)
         self.block_breakthrough = _spinbox(d.drill_breakthrough_mm, 0.0, 5.0, step=0.1, decimals=2)
         hf.addRow("Breakthrough:", self.block_breakthrough)
-        lay.addWidget(hg)
 
         for w in (self.block_blank_length, self.block_blank_width,
                   self.block_blank_thickness,
@@ -1771,7 +1806,7 @@ class ParamsPanel(QTabWidget):
     # ------------------------------------------------------------------ zones
 
     def _build_zones_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Zones")
+        grp = self._fold("Zones", lay)
         glay = QVBoxLayout(grp)
 
         self.zones_status = QLabel("No SCULPT zones — load a frame DXF.")
@@ -1799,7 +1834,6 @@ class ParamsPanel(QTabWidget):
         self.zone_reset_btn.clicked.connect(self._clear_zone_overrides)
         glay.addWidget(self.zone_reset_btn)
 
-        lay.addWidget(grp)
 
     def _on_zone_double_clicked(self, item) -> None:
         """Edit one zone's height, overriding the per-kind default. Keyed by zone
@@ -2069,7 +2103,7 @@ class ParamsPanel(QTabWidget):
     def _build_program_zero_group(self, lay: QVBoxLayout) -> None:
         """Where the program's G54 work zero lands (BUILDPLAN M6.2)."""
         d = ProgramZero()
-        grp = QGroupBox("Program Zero  (G54 work datum)")
+        grp = self._fold("Program Zero  (G54 work datum)", lay)
         grp.setToolTip(
             "Where you touch off work zero — a stock-box corner/center, or fixture.")
         form = QFormLayout(grp)
@@ -2092,7 +2126,6 @@ class ParamsPanel(QTabWidget):
         form.addRow("X datum:", self.pz_x)
         form.addRow("Y datum:", self.pz_y)
         form.addRow("Z datum:", self.pz_z)
-        lay.addWidget(grp)
         self._sync_program_zero_enabled()
 
     def _sync_program_zero_enabled(self) -> None:
@@ -2124,7 +2157,7 @@ class ParamsPanel(QTabWidget):
         self._sync_program_zero_enabled()
 
     def _build_machine_tool_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Machine && Tool")
+        grp = self._fold("Machine && Tool", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2147,7 +2180,6 @@ class ParamsPanel(QTabWidget):
         # tabs can be built in either order (BUILDPLAN UX pass — split CAM tab).
         self.machine.currentIndexChanged.connect(self.cam_changed)
         self.cam_tool.currentIndexChanged.connect(self.cam_changed)
-        lay.addWidget(grp)
 
     def _build_op_tools_group(self, lay: QVBoxLayout) -> None:
         """Per-operation tool selectors (BUILDPLAN M6.1 multi-tool jobs).
@@ -2156,8 +2188,9 @@ class ParamsPanel(QTabWidget):
         at op boundaries where the tool differs (a small tool for the hinge
         pockets, the bulk tool for relief / eyewires / perimeter is the everyday
         case)."""
-        grp = QGroupBox("Per-operation tools  (multi-tool jobs)")
-        self._op_tools_group = grp        # frame-only — hidden on temple / base curve
+        grp = self._fold("Per-operation tools  (multi-tool jobs)", lay)
+        # frame-only — hidden on temple / base curve: the whole fold, header and all
+        self._op_tools_group = self._folds["Per-operation tools  (multi-tool jobs)"]
         grp.setToolTip(
             "Assign a tool per operation ('(same as Tool)' uses the default above).")
         form = QFormLayout(grp)
@@ -2248,7 +2281,6 @@ class ParamsPanel(QTabWidget):
             w.valueChanged.connect(self.cam_changed)
         # Selecting a material repopulates feeds/speeds/stepover/stepdown.
         self.material.currentIndexChanged.connect(self._on_material_changed)
-        lay.addWidget(grp)
 
     def _build_feeds_group(self, lay: QVBoxLayout) -> None:
         """Feeds & speeds (2026-09-27): the material row — the program's own
@@ -2259,7 +2291,7 @@ class ParamsPanel(QTabWidget):
         feeds — an engraving bit — used to win silently over this tab; now the
         tab shows it and lets the project have the last word. Rapid clearances
         follow."""
-        og = QGroupBox("Feeds && Speeds")
+        og = self._fold("Feeds && Speeds", lay)
         og.setToolTip(
             "Feeds in mm/min, spindle in RPM. The material row is the program's own "
             "feeds; each tool below shows what it will cut at \u2014 this project's "
@@ -2317,7 +2349,6 @@ class ParamsPanel(QTabWidget):
                   self.safe_z_clearance, self.hold_down_height):
             w.valueChanged.connect(self.cam_changed)
         self.spindle_override.valueChanged.connect(self.cam_changed)
-        lay.addWidget(og)
 
     def _build_depth_group(self, lay: QVBoxLayout) -> None:
         """How deep each pass bites — the everyday depth choice, on the Cut tab.
@@ -2330,7 +2361,7 @@ class ParamsPanel(QTabWidget):
         4.0 mm default was one full-depth pass.
         """
         d = CastleCamParams()
-        grp = QGroupBox("Depth per pass")
+        grp = self._fold("Depth per pass", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2358,7 +2389,6 @@ class ParamsPanel(QTabWidget):
         for w in (self.contour_stepdown, self.pocket_stepdown):
             w.valueChanged.connect(self.cam_changed)
         self.cam_changed.connect(self._update_passes_readout)
-        lay.addWidget(grp)
 
     def _update_passes_readout(self) -> None:
         """Show the pass count the active component's blank works out to, so a
@@ -2458,7 +2488,7 @@ class ParamsPanel(QTabWidget):
         the per-kind `*_params()` snapshot reads them, `set_*_params` restores them.
         """
         d = HoldingParams()
-        grp = QGroupBox("Holding  (how the part stays put)")
+        grp = self._fold("Holding  (how the part stays put)", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2495,7 +2525,6 @@ class ParamsPanel(QTabWidget):
         for w in self._tab_rows:
             w.valueChanged.connect(self.cam_changed)
         self._on_hold_strategy_changed()
-        lay.addWidget(grp)
 
     def _on_hold_strategy_changed(self, *_a) -> None:
         """Gray the tab fields out on the skin strategy — they cut nothing there."""
@@ -2544,8 +2573,8 @@ class ParamsPanel(QTabWidget):
         now, release the part after the inserts go in) or re-running a single
         operation after a tool change both needed this.
         """
-        grp = QGroupBox("Operations  (uncheck to skip)")
-        self._operations_group = grp
+        grp = self._fold("Operations  (uncheck to skip)", lay)
+        self._operations_group = self._folds["Operations  (uncheck to skip)"]
         v = QVBoxLayout(grp)
         self.op_checks: dict[str, QCheckBox] = {}
         for name in dict.fromkeys(
@@ -2559,7 +2588,6 @@ class ParamsPanel(QTabWidget):
         self._ops_hint.setWordWrap(True)
         self._ops_hint.setObjectName("mutedSmallLabel")
         v.addWidget(self._ops_hint)
-        lay.addWidget(grp)
 
     def _on_op_toggled(self, *_a) -> None:
         self._refresh_operations_hint()
@@ -2604,7 +2632,7 @@ class ParamsPanel(QTabWidget):
         depth-of-cut ceiling is half. Before this the block inherited the frame's
         depth per pass and only its feeds re-read its own material.
         """
-        grp = QGroupBox("This component only  (overrides)")
+        grp = self._fold("This component only  (overrides)", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2636,7 +2664,6 @@ class ParamsPanel(QTabWidget):
         self.ov_material.currentIndexChanged.connect(self.cam_changed)
         for w in (self.ov_stepdown, self.ov_feed, self.ov_spindle):
             w.valueChanged.connect(self.cam_changed)
-        lay.addWidget(grp)
 
     def _material_names(self) -> list:
         try:
@@ -2678,8 +2705,8 @@ class ParamsPanel(QTabWidget):
         controls that apply to every kind live in `_build_depth_group` (Cut tab) and
         `_build_leadin_group` below."""
         d = CastleCamParams()
-        grp = QGroupBox("Relief Strategy  (time / finish)")
-        self._strategy_group = grp
+        grp = self._fold("Relief Strategy  (time / finish)", lay)
+        self._strategy_group = self._folds["Relief Strategy  (time / finish)"]
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2694,14 +2721,13 @@ class ParamsPanel(QTabWidget):
 
         for w in (self.relief_stepover, self.rough_axial_stock):
             w.valueChanged.connect(self.cam_changed)
-        lay.addWidget(grp)
 
     def _build_leadin_group(self, lay: QVBoxLayout) -> None:
         """Through-cut lead-in + arc output. **Universal**: both already applied to
         every component kind at post time — they were simply invisible on a temple
         or base-curve block, so those parts inherited whatever the frame was set to."""
         d = CastleCamParams()
-        grp = QGroupBox("Through-cut lead-in && output")
+        grp = self._fold("Through-cut lead-in && output", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2740,7 +2766,6 @@ class ParamsPanel(QTabWidget):
         self.cut_direction.currentIndexChanged.connect(self.cam_changed)
         for w in (self.contour_ramp_angle, self.arc_tolerance):
             w.valueChanged.connect(self.cam_changed)
-        lay.addWidget(grp)
 
     def _on_lead_in_changed(self, *_a) -> None:
         """The ramp angle means nothing on a plunge entry — gray it out."""
@@ -2749,8 +2774,8 @@ class ParamsPanel(QTabWidget):
 
     def _build_fallback_group(self, lay: QVBoxLayout) -> None:
         """Legacy profile cut for frame DXFs without SCULPT zones. Frame-only."""
-        grp = QGroupBox("Profile fallback  (no SCULPT)")
-        self._fallback_group = grp
+        grp = self._fold("Profile fallback  (no SCULPT)", lay)
+        self._fallback_group = self._folds["Profile fallback  (no SCULPT)"]
         fb = QFormLayout(grp)
         fb.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2779,7 +2804,6 @@ class ParamsPanel(QTabWidget):
                 w.valueChanged.connect(self.cam_changed)
             else:
                 w.currentIndexChanged.connect(self.cam_changed)
-        lay.addWidget(grp)
 
     # ------------------------------------------------------------------ schema
 

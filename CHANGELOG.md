@@ -65,6 +65,19 @@ does not say, and cuts it.
   simulates exactly as before: the tests pin the posted programs
   byte-identical. A project from 1.8 opens with no seats and the defaults.
 
+### The sidebar folds (2026-10-15)
+
+Every section of the parameter dock — Model Properties, Posterior Finishing,
+Edge Features, Inlays, Zones, and the sections of every other tab — now folds
+under its header with a click, the way the Worktable panel's sections have
+since M20. GuildModel remembers which sections you folded, with the rest of
+the window layout, and opens a section it has not seen before. The Inlays
+section lost its paragraph to the header's tooltip and keeps only what a seat
+needs every time in view — enabled and its name, what it is relative to, the
+face, the depth, step or island — with the flush, the tool, the depth per
+pass and the minimum thickness under a *Cut details* fold.
+
+
 ### The Worktable, redone (BUILDPLAN M20, 2026-10-14)
 
 The nest was not saved; nesting rebuilt every program behind a modal; a nest

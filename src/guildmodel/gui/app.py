@@ -6271,6 +6271,9 @@ class MainWindow(QMainWindow):
             self._act_sidebar.setChecked(self._right_dock.isVisible())
             self._act_log.setChecked(self._log_dock.isVisible())
         self._style_toolbar_separators()          # match the restored dock orientation
+        # The dock's folded sections, remembered with the layout (2026-10-15).
+        if hasattr(self, "params"):
+            self.params.set_fold_state(self._prefs.get("dock_folds") or {})
 
     def _save_window_state(self) -> None:
         self._prefs["main_window_geometry"] = bytes(
@@ -6280,6 +6283,7 @@ class MainWindow(QMainWindow):
             self.saveState(_DOCK_STATE_VERSION).toBase64()
         ).decode()
         self._prefs["turntable_speed"] = self.view3d.turntable_speed()
+        self._prefs["dock_folds"] = self.params.fold_state()
         prefs_mod.save(self._prefs)
 
     def closeEvent(self, event) -> None:  # noqa: N802

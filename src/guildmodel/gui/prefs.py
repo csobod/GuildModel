@@ -133,6 +133,10 @@ DEFAULTS: dict = {
     # The Preferences window's last size, [w, h] px; [] = size it to its content
     # within the screen (2026-09-27). Clamped to the screen on the way back in.
     "prefs_dialog_size":     [],
+    # Which sections of the parameter dock are folded, by title (2026-10-15):
+    # {"Zones": false, ...}. Only the folded ones are listed, so a section that
+    # is new to a release opens, as every section does the first time.
+    "dock_folds":            {},
     # Main-window geometry + dock/toolbar state (base64 QByteArray strings;
     # "" = first run, fall back to the coded default layout) — M4.6 Part A.5
     "main_window_geometry":  "",
