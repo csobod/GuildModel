@@ -404,6 +404,62 @@ Bench die 6:
 
 A row with a shipped label replaces it; `{_deleted: true}` hides one.
 
+### Press dies — the molds for the formed front
+
+**Export Dies…** on the Forming panel writes the molds for the press, cut
+to the forming you have set, as STL files to print or to machine: the
+**posterior die**, a convex dome under a flange, and the **anterior die**, a
+cup in a block; in post-cut mode also a **bridge punch** and a **V anvil**
+for setting the bridge at the bench. **Dies with Export All** adds them to
+Export All STL.
+
+The dies are made from the forming map and the silhouette, never from the
+modeled front: hinge pockets, seats, chamfers and sculpts play no part in a
+mold, and the less a die carries the better it presses. The dome follows
+the eyewire terrace, the surface most of the back rests on, and is cut away
+under every zone that stands taller than it, the nosepads first, by the
+zone's extra height plus a clearance and out past the footing blend's
+reach onto the terrace, so the die holds the frame on its rims and never
+presses the pads. The anterior die is the plain negative at
+the base curve and face form, set back by the **silicone mat** you roll
+over the dome and by the **clearance**; the mat gives the compliance and
+the die gives the curve. The closed gap between the faces is the terrace's
+height plus the mat plus the clearance, and the dies close flange to
+flange, two 6 mm dowels on the diagonal locating them. The log and the
+panel report the gap, the cutaways, the outer size, and the formed sizes
+against the flat ones: the DBL, the lens width, the frame PD and the
+overall width, which the curve and the bridge both shorten.
+
+- **Mode** — *Post-cut* trims the faces to the outline plus a margin and
+  relieves the inside of each eyewire so only a rim band is supported and
+  the aperture edge is not marked. *Pre-cut* covers the blank plus a
+  margin and carries no eyewire geometry; the formed blank it makes is the
+  stock the pre-curved program (2.0) machines.
+- **Mat thickness** and **Clearance** — what sets the closed gap. Hot
+  acetate grows about 0.08 mm on a 6 mm front, and the mat is yours.
+- **Over-bend** — a radius multiplier for the springback, 0.97 to 1.00. No
+  eyewear source quantifies it; press the first part and move it if the
+  curve opens.
+- **Face form in die** — off leaves the wrap to the bench.
+- **Bridge in die** — the projection as a ridge in the dome and a valley
+  in the cup, for a pre-cut blank; post-cut, the punch and anvil set it.
+- **Cutaways** and their clearance; **Relief depth** and the **rim band**
+  for post-cut; **Trim** and **Margin**; the **flange**, its thickness and
+  draft; the **dowel** and its fit; the **vent**; the **mounting pattern**,
+  the three M4 holes the base-curve blocks use, so a die bolts to the same
+  jig; the **punch radius** and the **V angle**, both following the forming
+  view unless you set them.
+
+Heat the front to 110 °C for standard and M49 acetate, 125 to 130 °C for
+HX; below 110 °C the curve relaxes. Hold 10 to 30 s under closure and
+quench. A printed die in Rigid 10K, post-cured and used with silicone
+release, lasts dozens of pressings when the contact stress is low, which
+is what the large faces and the mat are for; FDM only in annealed
+PAHT/PPA-CF, PC or PEEK. Condition the sheet two days at 45 to 55 % RH and
+pre-bake fresh stock. Check the first part's curve and face form before
+the batch and move the over-bend if it opens. The pre-cut route is the
+less documented one; you are the test case.
+
 ## 3. Temples and base-curve blocks
 
 **Temple.** The outline extruded on the blank, with hinge blind-pockets from

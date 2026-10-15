@@ -5,6 +5,25 @@ and the current release's note; everything else lives here.
 
 ## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
 
+### Press dies: the molds for the formed front (BUILDPLAN M23, 2026-10-15)
+
+*Export Dies…* on the Forming panel writes the press's molds, cut to the
+forming you set: a posterior die, a convex dome under a flange; an anterior
+die, a cup in a block; and, post-cut, a bridge punch and a V anvil for the
+bench. The dies are made from the forming map and the silhouette, never
+from the modeled front: hinge pockets, seats, chamfers and sculpts play no
+part in a mold. The dome follows the eyewire terrace and is cut away under
+every taller zone, the nosepads first; the anterior die is the plain
+negative set back by the silicone mat rolled over the dome and by the
+clearance. The closed gap is terrace + mat + clearance over the whole face,
+and the dies close flange to flange on two dowels. Post-cut dies relieve
+the inside of each eyewire so only the rim band is supported; pre-cut dies
+cover the blank and carry no eyewire geometry. The panel and the log report
+the gap, the cutaways, the outer size, and the formed DBL, lens width,
+frame PD and overall width against the flat ones. The parameters live
+with the forming in the project file; a file from before opens with the
+defaults. The guide's §2 says how to press.
+
 ### Sculpts: your own meshes on the frame (BUILDPLAN M22, 2026-10-15)
 
 Drop an `.stl` on the 3D view and it is on the frame: repaired, its flat

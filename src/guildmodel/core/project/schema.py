@@ -1220,6 +1220,41 @@ def radius_for(base_curve: float) -> float:
     return DIOPTER_MM / base_curve if base_curve and base_curve > 0 else 0.0
 
 
+class PressDieParams(BaseModel):
+    """The press dies cut to a project's forming (BUILDPLAN M23 §8).
+
+    The dies come from the forming map and the silhouette, never from the
+    featured model (the maker, 2026-10-15): the posterior die follows the
+    eyewire terrace with a cutaway under any taller zone, the nosepads
+    first; the anterior die is the plain negative, set back by the silicone
+    mat rolled over the dome and by the clearance. The closed gap is the
+    terrace height plus `mat_thickness_mm` plus `clearance_mm`, and the dies
+    close flange to flange.
+    """
+    mode: Literal["post_cut", "pre_cut"] = "post_cut"
+    clearance_mm: float = Field(0.08, ge=0)          # hot acetate grows about this much
+    mat_thickness_mm: float = Field(3.0, ge=0)       # the silicone mat over the dome
+    over_bend: float = Field(1.0, gt=0.9, le=1.0)    # radius multiplier; no source quantifies it
+    face_form_in_die: bool = True
+    bridge_in_die: bool = False                      # the projection as a ridge and a valley (pre-cut)
+    cutaways: bool = True                            # pockets under the zones taller than the terrace
+    cutaway_clearance_mm: float = Field(1.0, ge=0)
+    relief_depth_mm: float = Field(1.0, ge=0)        # post-cut: inside each eyewire
+    relief_rim_mm: float = Field(8.0, ge=0)          # the rim band left supported
+    trim_mm: float = Field(6.0, ge=0)                # post-cut: the face past the silhouette
+    margin_mm: float = Field(10.0, ge=0)             # pre-cut: the face past the blank
+    flange_mm: float = Field(12.0, ge=4)             # the flange's width
+    flange_thickness_mm: float = Field(12.0, ge=4)
+    draft_deg: float = Field(2.0, ge=0, le=15)
+    dowel_mm: float = Field(6.0, gt=0)
+    dowel_fit_mm: float = Field(0.1, ge=0)           # the anterior's clearance on the dowel
+    vent_mm: float = Field(1.0, gt=0)
+    mounting_pattern: bool = False                   # the base-curve block's three M4 holes
+    punch_radius_mm: float = Field(0.0, ge=0)        # 0 = the forming view's die radius
+    v_angle_deg: float = Field(0.0, ge=0, lt=180)    # 0 = the forming view's crease angle
+    export_with_all: bool = False                    # the dies ride with Export All STL
+
+
 class FormingMetadata(BaseModel):
     """How the frame front is formed after cutting (BUILDPLAN M18).
 
@@ -1269,6 +1304,9 @@ class FormingMetadata(BaseModel):
     crease_blend_mm: float = 0.0     # fillet at each crease; 0 = a sharp fold
     formed_groove: bool = True       # the formed export carries the lens bevel groove
     press_preset: str = ""           # the press row these values came from; "" = custom
+    # The press dies (M23); every default makes the dies the maker described,
+    # and a file from before opens with them.
+    dies: PressDieParams = Field(default_factory=PressDieParams)
 
     @model_validator(mode="after")
     def _forward_only(self) -> "FormingMetadata":

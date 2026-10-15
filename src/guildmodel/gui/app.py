@@ -7149,6 +7149,8 @@ class MainWindow(QMainWindow):
         self._forming_panel.groove_toggled.connect(self._on_forming_groove)
         self._forming_panel.ghost_toggled.connect(self.view3d.set_formed_ghost)
         self._forming_panel.export_requested.connect(self._on_export_formed_stl)
+        self._forming_panel.dies_changed.connect(self._on_dies_changed)           # M23
+        self._forming_panel.dies_export_requested.connect(self._on_export_dies)
 
         # Restore persisted material + CAM params (machine / tool / strategy /
         # feeds). Set the material first (without repopulating), then apply the
@@ -9353,6 +9355,114 @@ class MainWindow(QMainWindow):
         if self._forming_applies():
             self._show_formed()
 
+    # ------------------------------------------------------------------ press dies (M23)
+
+    def _on_dies_changed(self) -> None:
+        """A die parameter moved: it belongs to the component's forming now,
+        and the readout follows. Nothing on screen rebuilds: the dies are
+        not the model."""
+        ws = self._active_workspace()
+        if ws is None:
+            return
+        forming = self._active_forming()
+        if ws.forming != forming:
+            ws.forming = forming
+            self._mark_dirty()
+        self._refresh_die_readout()
+
+    def _refresh_die_readout(self) -> None:
+        ws = self._active_workspace()
+        if ws is None or not ws.castle_ready or ws.partition is None:
+            self._forming_panel.set_die_readout("")
+            return
+        try:
+            from guildmodel.core.forming import die_map, forming_readouts
+            from guildmodel.core.geometry.heights import zone_heights
+            forming = self._active_forming()
+            castle = ws.castle_params or self.params.castle_params()
+            fmap = die_map(forming, ws.partition, ws.lens_od, ws.lens_os)
+            h = zone_heights(ws.partition, castle, None)
+            eyewires = [v for k, v in h.items() if k.startswith("eyewire")]
+            t = max(eyewires) if eyewires else max(h.values())
+            d = forming.dies
+            r = forming_readouts(fmap, ws.partition, ws.lens_od, ws.lens_os)
+            text = (f"Closed gap {t + d.mat_thickness_mm + d.clearance_mm:.2f} mm "
+                    f"(terrace {t:.2f} + mat {d.mat_thickness_mm:g} + {d.clearance_mm:g})")
+            if "dbl_flat_mm" in r:
+                text += (f" · DBL {r['dbl_flat_mm']:g} → {r['dbl_formed_mm']:g}"
+                         f" · PD {r['pd_flat_mm']:g} → {r['pd_formed_mm']:g}")
+            text += f" · width {r['width_flat_mm']:g} → {r['width_formed_mm']:g}"
+            self._forming_panel.set_die_readout(text)
+        except Exception:                                    # noqa: BLE001
+            self._forming_panel.set_die_readout("")
+
+    def _write_dies(self, i: int, folder: Path) -> list[Path]:
+        """Build component *i*'s dies and write them to `folder`; the
+        written paths, or an empty list with the failure reported."""
+        from guildmodel.core.forming import build_dies
+        from guildmodel.core.model.kernel import to_trimesh
+        from guildmodel.core.project.schema import FormingMetadata
+        ws = self._workspaces[i]
+        if not ws.castle_ready or ws.partition is None:
+            return []
+        forming = ws.forming if ws.forming is not None else FormingMetadata()
+        if i == self._active_ws:
+            forming = self._active_forming()
+        castle = ws.castle_params or self.params.castle_params()
+        try:
+            ds = build_dies(ws.partition, castle, forming, ws.lens_od, ws.lens_os)
+        except Exception:                                    # noqa: BLE001
+            self._report_failure("Die build", "dies", traceback.format_exc())
+            return []
+        stem = self._export_filenames()[i].replace(".stl", "")
+        written = []
+        for name, man in ds.parts().items():
+            path = folder / f"{stem}_{name}.stl"
+            mesh = to_trimesh(man)
+            mesh.export(str(path))
+            self.append_log(f"[dies] {path.name}: {len(mesh.faces):,} tris, "
+                            f"{man.volume():.0f} mm³")
+            written.append(path)
+        r = ds.report
+        cut = ", ".join(f"{c[0]} {c[1]:g} mm" for c in r.get("cutaways", []))
+        self.append_log(f"[dies] {ds.label}")
+        self.append_log(f"[dies] closed gap {r['closed_gap_mm']:.2f} mm "
+                        f"(terrace {r['terrace_mm']:.2f} + mat {r['mat_mm']:g} + "
+                        f"{r['clearance_mm']:g}); outer {r['outer_mm'][0]:g} × {r['outer_mm'][1]:g} mm"
+                        + (f"; cutaways: {cut}" if cut else "; no cutaways")
+                        + (f"; eyewires relieved" if r.get("eyewire_relief") else ""))
+        if "dbl_flat_mm" in r:
+            self.append_log(f"[dies] flat → formed: DBL {r['dbl_flat_mm']:g} → {r['dbl_formed_mm']:g}, "
+                            f"A {r['a_flat_mm']:g} → {r['a_formed_mm']:g}, PD {r['pd_flat_mm']:g} → "
+                            f"{r['pd_formed_mm']:g}, width {r['width_flat_mm']:g} → {r['width_formed_mm']:g}")
+        return written
+
+    def _on_export_dies(self) -> None:
+        """Export Dies… (M23): the active front's dies to a folder."""
+        self._commit_typed_value()
+        i = self._active_ws
+        ws = self._workspaces[i] if 0 <= i < len(self._workspaces) else None
+        if ws is None or not ws.castle_ready:
+            QMessageBox.information(
+                self, "Export Dies",
+                "The dies are cut to a frame front with its SCULPT zone layout. "
+                + self._export_blocked_reason(ws))
+            return
+        self._sync_active_workspace()
+        folder = QFileDialog.getExistingDirectory(
+            self, "Export the press dies", self._prefs["last_output_dir"] or ".")
+        if not folder:
+            return
+        self._prefs["last_output_dir"] = folder
+        prefs_mod.save(self._prefs)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            written = self._write_dies(i, Path(folder))
+        finally:
+            QApplication.restoreOverrideCursor()
+        if written:
+            self.status_lbl.setText(f"Wrote {len(written)} die file(s) to {folder}")
+
     def _on_forming_groove(self, _on: bool) -> None:
         """The groove override flipped: the base is rebuilt once with it."""
         self._formed_source = None
@@ -10291,6 +10401,13 @@ class MainWindow(QMainWindow):
             return
         self._prefs["last_output_dir"] = folder
         prefs_mod.save(self._prefs)
+        # The dies ride along when a front asks for them (M23): written here,
+        # before the parts' builds start off-thread.
+        for i in targets:
+            ws = self._workspaces[i]
+            forming = ws.forming
+            if ws.castle_ready and forming is not None and forming.dies.export_with_all:
+                self._write_dies(i, Path(folder))
         self._start_export(specs, paths, title="Exporting STL files")
 
     def _formed_filename(self, i: int) -> str:

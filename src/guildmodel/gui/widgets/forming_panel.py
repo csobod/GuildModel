@@ -28,6 +28,7 @@ from guildmodel.core.forming.presses import on_row
 from guildmodel.core.forming import (CUSTOM_LABEL, FLAT_LABEL, ThermoformMap,
                                      find_press, matching_press, press_rows,
                                      radius_for)
+from guildmodel.gui.widgets.collapsible import CollapsibleBox
 from guildmodel.gui.widgets.param_slider import ParamSlider
 
 #: Lens base curve on the slider, diopters, in the quarter steps a frame is
@@ -72,6 +73,8 @@ class FormingPanel(QFrame):
     #: The flat ghost under the formed part.
     ghost_toggled = Signal(bool)
     export_requested = Signal()
+    dies_changed = Signal()              # a die parameter moved (M23)
+    dies_export_requested = Signal()     # Export Dies…
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -214,6 +217,7 @@ class FormingPanel(QFrame):
         self.export_btn.clicked.connect(self.export_requested)
         row.addWidget(self.export_btn)
         grid.addWidget(tail, 3, 0, 1, 8)
+        grid.addWidget(self._build_dies_fold(), 4, 0, 1, 8)
         grid.setColumnStretch(3, 2)
         grid.setColumnStretch(6, 2)
 
@@ -234,6 +238,210 @@ class FormingPanel(QFrame):
 
         self.set_presses()
         self._refresh_readouts()
+
+    # ------------------------------------------------------------ the dies (M23)
+
+    def _build_dies_fold(self) -> CollapsibleBox:
+        """The press dies' parameters, folded under the forming (BUILDPLAN
+        M23 §8.2). The dies come from the map and the silhouette: nothing
+        here reaches the model or the CAM."""
+        fold = CollapsibleBox("Press dies", expanded=False)
+        fold.setToolTip(
+            "The molds for the press, cut to this forming: a convex posterior\n"
+            "die under a flange, the anterior die as a cup in a block, and for a\n"
+            "post-cut front the bridge punch and V anvil. Made from the forming\n"
+            "map and the outline, never from the modeled front: the dome follows\n"
+            "the eyewire terrace with cutaways under the taller zones, the\n"
+            "nosepads first; the anterior die is the plain negative set back by\n"
+            "the silicone mat you roll over the dome.")
+        g = QGridLayout(fold.body)
+        g.setContentsMargins(8, 2, 8, 4)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(2)
+
+        def slider(v, lo, hi, step, dec, suffix="", tip=""):
+            w = ParamSlider(v, lo, hi, step=step, decimals=dec, suffix=suffix)
+            if tip:
+                w.setToolTip(tip)
+            return w
+
+        self.die_mode = QComboBox()
+        self.die_mode.addItems(["Post-cut (the outline, relieved)", "Pre-cut (the blank)"])
+        self.die_mode.setToolTip(
+            "Post-cut: faces trimmed to the outline, the inside of each eyewire\n"
+            "relieved so only a rim band is supported. Pre-cut: faces over the\n"
+            "blank with no eyewire geometry; the formed blank is the stock the\n"
+            "pre-curved program machines.")
+        g.addWidget(QLabel("Mode"), 0, 0)
+        g.addWidget(self.die_mode, 0, 1)
+        self.die_mat = slider(3.0, 0.0, 10.0, 0.5, 1, " mm",
+                              "The silicone mat rolled over the dome: its thickness is in the closed gap.")
+        g.addWidget(QLabel("Mat thickness"), 0, 2)
+        g.addWidget(self.die_mat, 0, 3)
+        self.die_clearance = slider(0.08, 0.0, 0.5, 0.01, 2, " mm",
+                                    "Hot acetate grows about 0.08 mm on a 6 mm front.")
+        g.addWidget(QLabel("Clearance"), 0, 4)
+        g.addWidget(self.die_clearance, 0, 5)
+        self.die_over_bend = slider(1.0, 0.95, 1.0, 0.005, 3, "×",
+                                    "A radius multiplier for the springback. No eyewear source\n"
+                                    "quantifies it; press the first part and move it if the curve opens.")
+        g.addWidget(QLabel("Over-bend"), 0, 6)
+        g.addWidget(self.die_over_bend, 0, 7)
+
+        self.die_face_form = QCheckBox("Face form in die")
+        self.die_face_form.setChecked(True)
+        self.die_face_form.setToolTip("Off leaves the wrap to the bench.")
+        g.addWidget(self.die_face_form, 1, 0, 1, 2)
+        self.die_bridge = QCheckBox("Bridge in die")
+        self.die_bridge.setToolTip(
+            "The projection as a ridge in the dome and a valley in the cup, for a\n"
+            "pre-cut blank; post-cut, the punch and the anvil set it.")
+        g.addWidget(self.die_bridge, 1, 2, 1, 2)
+        self.die_cutaways = QCheckBox("Cutaways under taller zones")
+        self.die_cutaways.setChecked(True)
+        self.die_cutaways.setToolTip(
+            "A pocket under every zone that stands taller than the eyewire terrace,\n"
+            "the nosepads first, so the die holds the frame on its rims.")
+        g.addWidget(self.die_cutaways, 1, 4, 1, 2)
+        self.die_mounting = QCheckBox("Mounting pattern")
+        self.die_mounting.setToolTip("The three M4 holes the base-curve blocks use, so a die bolts to the same jig.")
+        g.addWidget(self.die_mounting, 1, 6, 1, 2)
+
+        self.die_cutaway_clear = slider(1.0, 0.0, 5.0, 0.25, 2, " mm", "Added to a cutaway's depth.")
+        g.addWidget(QLabel("Cutaway clearance"), 2, 0)
+        g.addWidget(self.die_cutaway_clear, 2, 1)
+        self.die_relief = slider(1.0, 0.0, 3.0, 0.25, 2, " mm",
+                                 "Post-cut: how deep the inside of each eyewire is relieved.")
+        g.addWidget(QLabel("Relief depth"), 2, 2)
+        g.addWidget(self.die_relief, 2, 3)
+        self.die_rim = slider(8.0, 2.0, 15.0, 0.5, 1, " mm", "Post-cut: the rim band left supported.")
+        g.addWidget(QLabel("Rim band"), 2, 4)
+        g.addWidget(self.die_rim, 2, 5)
+        self.die_trim = slider(6.0, 0.0, 15.0, 0.5, 1, " mm", "Post-cut: the face past the outline.")
+        g.addWidget(QLabel("Trim"), 2, 6)
+        g.addWidget(self.die_trim, 2, 7)
+
+        self.die_margin = slider(10.0, 0.0, 25.0, 1.0, 0, " mm", "Pre-cut: the face past the blank.")
+        g.addWidget(QLabel("Margin"), 3, 0)
+        g.addWidget(self.die_margin, 3, 1)
+        self.die_flange = slider(12.0, 4.0, 25.0, 1.0, 0, " mm", "The flange's width.")
+        g.addWidget(QLabel("Flange"), 3, 2)
+        g.addWidget(self.die_flange, 3, 3)
+        self.die_flange_t = slider(12.0, 4.0, 25.0, 1.0, 0, " mm", "The flange's thickness.")
+        g.addWidget(QLabel("Flange thickness"), 3, 4)
+        g.addWidget(self.die_flange_t, 3, 5)
+        self.die_draft = slider(2.0, 0.0, 10.0, 0.5, 1, "°", "Draft on the flange walls.")
+        g.addWidget(QLabel("Draft"), 3, 6)
+        g.addWidget(self.die_draft, 3, 7)
+
+        self.die_dowel = slider(6.0, 3.0, 10.0, 0.5, 1, " mm",
+                                "Two dowels on the diagonal: a press fit in the posterior die.")
+        g.addWidget(QLabel("Dowel"), 4, 0)
+        g.addWidget(self.die_dowel, 4, 1)
+        self.die_dowel_fit = slider(0.1, 0.0, 0.5, 0.05, 2, " mm", "The anterior die's clearance on the dowel.")
+        g.addWidget(QLabel("Dowel fit"), 4, 2)
+        g.addWidget(self.die_dowel_fit, 4, 3)
+        self.die_vent = slider(1.0, 0.5, 3.0, 0.25, 2, " mm", "Vents through the cup at its low points.")
+        g.addWidget(QLabel("Vent"), 4, 4)
+        g.addWidget(self.die_vent, 4, 5)
+        self.die_punch = slider(0.0, 0.0, 60.0, 0.5, 1, " mm",
+                                "The bridge punch's radius; Auto is the forming view's die.")
+        self.die_punch.setSpecialValueText("Auto")
+        g.addWidget(QLabel("Punch radius"), 4, 6)
+        g.addWidget(self.die_punch, 4, 7)
+
+        self.die_v_angle = slider(0.0, 0.0, 120.0, 1.0, 0, "°",
+                                  "The anvil's V angle; Auto is the forming view's crease angle.")
+        self.die_v_angle.setSpecialValueText("Auto")
+        g.addWidget(QLabel("V angle"), 5, 0)
+        g.addWidget(self.die_v_angle, 5, 1)
+        self.die_with_all = QCheckBox("Dies with Export All")
+        self.die_with_all.setToolTip("Write the dies beside the parts in Export All STL.")
+        g.addWidget(self.die_with_all, 5, 2, 1, 2)
+        self.die_readout = QLabel("")
+        self.die_readout.setObjectName("mutedSmallLabel")
+        self.die_readout.setWordWrap(True)
+        g.addWidget(self.die_readout, 5, 4, 1, 3)
+        self.dies_btn = QPushButton("Export Dies…")
+        self.dies_btn.setToolTip("Write the dies, and post-cut the punch and anvil, as STL files.")
+        self.dies_btn.clicked.connect(self.dies_export_requested)
+        g.addWidget(self.dies_btn, 5, 7)
+
+        self._die_sliders = (self.die_mat, self.die_clearance, self.die_over_bend,
+                             self.die_cutaway_clear, self.die_relief, self.die_rim, self.die_trim,
+                             self.die_margin, self.die_flange, self.die_flange_t, self.die_draft,
+                             self.die_dowel, self.die_dowel_fit, self.die_vent, self.die_punch,
+                             self.die_v_angle)
+        self._die_checks = (self.die_face_form, self.die_bridge, self.die_cutaways,
+                            self.die_mounting, self.die_with_all)
+        for w in self._die_sliders:
+            w.valueChanged.connect(self._on_die_edited)
+        for w in self._die_checks:
+            w.toggled.connect(self._on_die_edited)
+        self.die_mode.currentIndexChanged.connect(self._on_die_edited)
+        return fold
+
+    def _on_die_edited(self, *_a) -> None:
+        if self._applying:
+            return
+        self.dies_changed.emit()
+
+    def dies(self):
+        """The panel's die parameters as a `PressDieParams`."""
+        from guildmodel.core.project.schema import PressDieParams
+        return PressDieParams(
+            mode="pre_cut" if self.die_mode.currentIndex() == 1 else "post_cut",
+            clearance_mm=float(self.die_clearance.value()),
+            mat_thickness_mm=float(self.die_mat.value()),
+            over_bend=float(self.die_over_bend.value()),
+            face_form_in_die=self.die_face_form.isChecked(),
+            bridge_in_die=self.die_bridge.isChecked(),
+            cutaways=self.die_cutaways.isChecked(),
+            cutaway_clearance_mm=float(self.die_cutaway_clear.value()),
+            relief_depth_mm=float(self.die_relief.value()),
+            relief_rim_mm=float(self.die_rim.value()),
+            trim_mm=float(self.die_trim.value()),
+            margin_mm=float(self.die_margin.value()),
+            flange_mm=float(self.die_flange.value()),
+            flange_thickness_mm=float(self.die_flange_t.value()),
+            draft_deg=float(self.die_draft.value()),
+            dowel_mm=float(self.die_dowel.value()),
+            dowel_fit_mm=float(self.die_dowel_fit.value()),
+            vent_mm=float(self.die_vent.value()),
+            mounting_pattern=self.die_mounting.isChecked(),
+            punch_radius_mm=float(self.die_punch.value()),
+            v_angle_deg=float(self.die_v_angle.value()),
+            export_with_all=self.die_with_all.isChecked(),
+        )
+
+    def set_dies(self, d) -> None:
+        """Push a `PressDieParams` into the controls without emitting."""
+        self._applying += 1
+        try:
+            for w in (*self._die_sliders, *self._die_checks, self.die_mode):
+                w.blockSignals(True)
+            self.die_mode.setCurrentIndex(1 if d.mode == "pre_cut" else 0)
+            for w, v in ((self.die_mat, d.mat_thickness_mm), (self.die_clearance, d.clearance_mm),
+                         (self.die_over_bend, d.over_bend),
+                         (self.die_cutaway_clear, d.cutaway_clearance_mm),
+                         (self.die_relief, d.relief_depth_mm), (self.die_rim, d.relief_rim_mm),
+                         (self.die_trim, d.trim_mm), (self.die_margin, d.margin_mm),
+                         (self.die_flange, d.flange_mm), (self.die_flange_t, d.flange_thickness_mm),
+                         (self.die_draft, d.draft_deg), (self.die_dowel, d.dowel_mm),
+                         (self.die_dowel_fit, d.dowel_fit_mm), (self.die_vent, d.vent_mm),
+                         (self.die_punch, d.punch_radius_mm), (self.die_v_angle, d.v_angle_deg)):
+                w.setValue(float(v))
+            for w, v in ((self.die_face_form, d.face_form_in_die), (self.die_bridge, d.bridge_in_die),
+                         (self.die_cutaways, d.cutaways), (self.die_mounting, d.mounting_pattern),
+                         (self.die_with_all, d.export_with_all)):
+                w.setChecked(bool(v))
+        finally:
+            for w in (*self._die_sliders, *self._die_checks, self.die_mode):
+                w.blockSignals(False)
+            self._applying -= 1
+
+    def set_die_readout(self, text: str) -> None:
+        self.die_readout.setText(text)
 
     # ------------------------------------------------------------ presses
 
@@ -397,7 +605,8 @@ class FormingPanel(QFrame):
             die_radius_mm=float(self.die_radius.value()),
             crease_blend_mm=float(self.crease_blend.value()),
             formed_groove=self.groove.isChecked(),
-            press_preset=label)
+            press_preset=label,
+            dies=self.dies().model_dump())
 
     def set_forming(self, forming) -> None:
         """Push a component's forming into the controls without emitting."""
@@ -416,6 +625,8 @@ class FormingPanel(QFrame):
             self.die_radius.setValue(float(getattr(forming, "die_radius_mm", 0.0)))
             self.crease_blend.setValue(float(getattr(forming, "crease_blend_mm", 0.0)))
             self.groove.setChecked(bool(forming.formed_groove))
+            self.set_dies(getattr(forming, "dies", None) or __import__(
+                "guildmodel.core.project.schema", fromlist=["PressDieParams"]).PressDieParams())
             label = forming.press_preset or ""
             if label and self.press.findText(label) >= 0:
                 self.press.blockSignals(True)

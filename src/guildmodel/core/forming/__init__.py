@@ -8,6 +8,7 @@ cannot reach this package (`test_forming_m18` pins it by AST), the readiness
 dot never reads a forming value, and the posted program is byte-identical
 with forming on and off.
 """
+from .dies import DieSet, build_dies, die_map, forming_readouts
 from .presses import CUSTOM_LABEL, FLAT_LABEL, Press
 from .presses import effective as press_rows
 from .presses import find as find_press
@@ -33,6 +34,10 @@ __all__ = [
     "PREVIEW_REFINE_MM",
     "SIMPLIFY_TOL_MM",
     "BridgeGeometry",
+    "DieSet",
+    "build_dies",
+    "die_map",
+    "forming_readouts",
     "FormingMesh",
     "weld_for_file",
     "Press",
