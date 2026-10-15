@@ -42,41 +42,27 @@ class ToolProfile:
 
     def kernel(self, resolution: float):
         """Return (di, dj, dz) integer cell offsets within the tool radius and
-        the drop-profile height at each, for a grid of the given resolution."""
+        the drop-profile height at each, for a grid of the given resolution.
+
+        The stock engine's `ToolShape.footprint` since M21, which carries the
+        same arithmetic; the groove form, whose occupancy has a top, stamps
+        nothing here — the Lens Groove op is verified geometrically
+        (castle_ops.verify_groove_op) and the stock engine simulates it."""
+        from ..stock.tools import ToolShape
         if self.kind == "groove":
-            # Side-cutting form (the lens-bevel drageoir, V1): its removal is
-            # an UNDERCUT a top-down Z-buffer cannot represent — sweeping it
-            # as any drop profile would falsely shave the rim lip from above.
-            # It stamps NOTHING here; the Lens Groove op is verified
-            # geometrically instead (castle_ops.verify_groove_op) and marked
-            # explicitly in the sim view.
             e = np.zeros(0, dtype=np.intp)
             return e, e.copy(), np.zeros(0, dtype=np.float64)
-        R = self.radius_mm
-        r_px = max(1, int(round(R / resolution)))
-        jj, ii = np.mgrid[-r_px:r_px + 1, -r_px:r_px + 1]
-        d = np.hypot(ii, jj) * resolution
-        inside = d <= R + 1e-9
-        di = ii[inside].astype(np.intp)
-        dj = jj[inside].astype(np.intp)
-        dd = np.minimum(d[inside], R)
-        if self.kind == "ball":
-            dz = R - np.sqrt(np.maximum(0.0, R * R - dd * dd))
-        elif self.kind == "toroid" and self.corner_radius_mm > 0:
-            rc = self.corner_radius_mm
-            Rf = max(0.0, R - rc)
-            dz = np.where(
-                dd <= Rf, 0.0,
-                rc - np.sqrt(np.maximum(0.0, rc * rc - (dd - Rf) ** 2)),
-            )
-        elif self.kind == "vbit" and self.included_angle_deg > 0:
-            # a cone: the surface rises dz = d / tan(half-angle) above the tip, so
-            # the groove width = 2·depth·tan(half-angle) (engraving / V-carving).
-            t = math.tan(math.radians(self.included_angle_deg / 2.0))
-            dz = dd / t if t > 1e-9 else np.zeros_like(dd)
-        else:                      # flat (and toroid with rc=0)
-            dz = np.zeros_like(dd)
-        return di, dj, dz.astype(np.float64)
+        fp = ToolShape(kind=self.kind, radius_mm=self.radius_mm,
+                       corner_radius_mm=self.corner_radius_mm,
+                       included_angle_deg=self.included_angle_deg).footprint(resolution)
+        return fp.di, fp.dj, fp.z_lo
+
+    def shape(self):
+        """The stock engine's shape for this profile."""
+        from ..stock.tools import ToolShape
+        return ToolShape(kind=self.kind, radius_mm=self.radius_mm,
+                         corner_radius_mm=self.corner_radius_mm,
+                         included_angle_deg=self.included_angle_deg)
 
 
 def densify(path: list[Point3], spacing: float) -> np.ndarray:
@@ -147,21 +133,15 @@ def achieved_floor(
     """Lowest Z the tool reaches at each cell over all cutting `paths`.
 
     Cells the tool never passes over keep `init_z`. `paths` are cutting moves
-    only (rapids excluded). Vectorised disc/profile stamping per path.
+    only (rapids excluded).
+
+    A facade over the stock engine since M21: a one-interval stock with no
+    bottom, cut by `core.stock.cut` (the C++ kernel where installed), reads
+    back as the floor this stamped — the same array, bit for bit
+    (`test_stock_reference`), at a fraction of the time.
     """
-    floor = np.full(shape, float(init_z), dtype=np.float64)
-    kernel = tool.kernel(resolution)
-    spacing = point_spacing or resolution
-    n = len(paths) or 1
-    for idx, path in enumerate(paths):
-        if len(path) < 1:
-            continue
-        _stamp_path(floor, path, kernel, origin, resolution, shape, spacing)
-        if progress is not None and (idx % 16 == 0):
-            progress(idx / n)
-    if progress is not None:
-        progress(1.0)
-    return floor
+    return achieved_floor_grouped([(p, None) for p in paths], {}, tool, origin, shape,
+                                  resolution, init_z, point_spacing, progress)
 
 
 def achieved_floor_grouped(
@@ -179,31 +159,43 @@ def achieved_floor_grouped(
 
     `groups` is ``(path, key)`` per cutting move; each path is stamped with the
     tool profile ``profiles.get(key, default)`` — so a small tool's pocket and
-    the bulk tool's relief are simulated with their own geometry. Kernels are
-    cached per distinct profile.
+    the bulk tool's relief are simulated with their own geometry.
+
+    `init_z` may be a heightfield of the grid's shape (M20): a bed of blanks of
+    different thicknesses starts each cell at its own stock top.
+
+    Through the stock engine since M21 (see `achieved_floor`); the groove
+    form stamps nothing here, as it never did.
     """
-    # `init_z` may be a heightfield of the grid's shape (M20): a bed of blanks of
-    # different thicknesses starts each cell at its own stock top.
-    floor = (np.array(init_z, dtype=np.float64, copy=True) if np.ndim(init_z) == 2
-             else np.full(shape, float(init_z), dtype=np.float64))
+    from ..relief.heightfield import Heightfield
+    from ..stock.cutting import cut, poses_from_path
+    from ..stock.dexel import DexelStock
+
+    rows, cols = shape
+    if np.ndim(init_z) == 2:
+        field = Heightfield(z=np.array(init_z, dtype=np.float64), origin=origin,
+                            resolution=resolution)
+    else:
+        field = Heightfield(z=np.full((rows, cols), float(init_z)), origin=origin,
+                            resolution=resolution)
+    stock = DexelStock.from_heightfield(field, z_bottom=-np.inf, k=1)
     spacing = point_spacing or resolution
-    kernels: dict = {}
-
-    def _kern(prof: ToolProfile):
-        key = (prof.kind, prof.radius_mm, prof.corner_radius_mm,
-               prof.included_angle_deg)
-        if key not in kernels:
-            kernels[key] = prof.kernel(resolution)
-        return kernels[key]
-
+    footprints: dict = {}
     n = len(groups) or 1
     for idx, (path, k) in enumerate(groups):
         if len(path) < 1:
             continue
         prof = profiles.get(k, default)
-        _stamp_path(floor, path, _kern(prof), origin, resolution, shape, spacing)
+        if prof.kind == "groove":
+            continue                              # stamps nothing, as it never did
+        shp = prof.shape()
+        if shp not in footprints:
+            footprints[shp] = shp.footprint(resolution)
+        if len(footprints[shp]) == 0:
+            continue
+        cut(stock, poses_from_path(path, spacing), shp, footprint=footprints[shp])
         if progress is not None and (idx % 16 == 0):
             progress(idx / n)
     if progress is not None:
         progress(1.0)
-    return floor
+    return stock.top().z

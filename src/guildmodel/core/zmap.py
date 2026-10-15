@@ -201,6 +201,66 @@ def triangle_envelopes(vertices, faces, origin: tuple[float, float],
     return up, dn
 
 
+def triangle_crossings(vertices, faces, origin: tuple[float, float],
+                       rows: int, cols: int, resolution: float
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every crossing of a vertical column through the triangle soup, as
+    three flat arrays: the cell index, the z, and whether the triangle faces
+    up. `triangle_envelopes` keeps the extremes of these per cell; the stock
+    engine's `DexelStock.from_mesh` keeps them all and pairs them into
+    intervals (BUILDPLAN M21 §6.6). Same cells, same barycentric test, same
+    batching, so the two agree on every cell they both report."""
+    v = np.asarray(vertices, dtype=np.float64)
+    f = np.asarray(faces, dtype=np.int64)
+    empty = (np.zeros(0, dtype=np.int64), np.zeros(0), np.zeros(0, dtype=bool))
+    if len(f) == 0:
+        return empty
+    ox, oy = origin
+    tri = v[f]
+    gx = (tri[:, :, 0] - ox) / resolution
+    gy = (tri[:, :, 1] - oy) / resolution
+    tz = tri[:, :, 2]
+    lo_c = np.maximum(np.floor(gx.min(axis=1)).astype(np.int64), 0)
+    hi_c = np.minimum(np.ceil(gx.max(axis=1)).astype(np.int64) + 1, cols)
+    lo_r = np.maximum(np.floor(gy.min(axis=1)).astype(np.int64), 0)
+    hi_r = np.minimum(np.ceil(gy.max(axis=1)).astype(np.int64) + 1, rows)
+    x0, x1, x2 = gx[:, 0], gx[:, 1], gx[:, 2]
+    y0, y1, y2 = gy[:, 0], gy[:, 1], gy[:, 2]
+    denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+    nw = np.maximum(hi_c - lo_c, 0)
+    ncell = nw * np.maximum(hi_r - lo_r, 0)
+    live = np.flatnonzero((ncell > 0) & (np.abs(denom) >= 1e-12))
+    cells, zs, ups = [], [], []
+    start = 0
+    while start < len(live):
+        end, taken = start, 0
+        while end < len(live) and (taken == 0 or taken + ncell[live[end]] <= _MAX_PAIRS):
+            taken += ncell[live[end]]
+            end += 1
+        batch, start = live[start:end], end
+        counts = ncell[batch]
+        t = np.repeat(batch, counts)
+        ends = np.cumsum(counts)
+        kk = np.arange(ends[-1], dtype=np.int64) - np.repeat(ends - counts, counts)
+        w = nw[t]
+        px = (lo_c[t] + kk % w).astype(np.float64)
+        py = (lo_r[t] + kk // w).astype(np.float64)
+        d = denom[t]
+        w0 = ((y1[t] - y2[t]) * (px - x2[t]) + (x2[t] - x1[t]) * (py - y2[t])) / d
+        w1 = ((y2[t] - y0[t]) * (px - x2[t]) + (x0[t] - x2[t]) * (py - y2[t])) / d
+        w2 = 1.0 - w0 - w1
+        hit = (w0 >= -1e-9) & (w1 >= -1e-9) & (w2 >= -1e-9)
+        if not hit.any():
+            continue
+        t, w0, w1, w2 = t[hit], w0[hit], w1[hit], w2[hit]
+        cells.append(py[hit].astype(np.int64) * cols + px[hit].astype(np.int64))
+        zs.append(w0 * tz[t, 0] + w1 * tz[t, 1] + w2 * tz[t, 2])
+        ups.append(denom[t] > 0)
+    if not cells:
+        return empty
+    return np.concatenate(cells), np.concatenate(zs), np.concatenate(ups)
+
+
 def triangles_to_zmap(vertices, faces, origin: tuple[float, float],
                       rows: int, cols: int, resolution: float,
                       background: float = 0.0,

@@ -417,8 +417,31 @@ def build_removal_plan(
                        seg_kernel, seg_label, seg_cut=seg_cut, keyframes=keyframes_list)
 
 
-def plan_stamp_forward(plan: RemovalPlan, floor: np.ndarray, a: int, b: int) -> None:
-    """Stamp ``plan.positions[a:b]`` into ``floor`` in place (spanning segments)."""
+def plan_initial_floor(plan) -> np.ndarray:
+    """The uncut stock's top, a fresh copy, for a replay from the start —
+    whichever plan the viewer holds (a `RemovalPlan`, or the stock engine's
+    `StockPlan` since M21)."""
+    return np.array(plan.stock_top, dtype=np.float64, copy=True)
+
+
+def plan_final_floor(plan) -> np.ndarray:
+    """The fully cut top, a fresh copy: the rest state."""
+    if hasattr(plan, "final_top"):
+        return np.array(plan.final_top(), dtype=np.float64, copy=True)
+    return plan.keyframes[-1][1].copy()
+
+
+def plan_stamp_forward(plan, floor: np.ndarray, a: int, b: int) -> None:
+    """Stamp ``plan.positions[a:b]`` into ``floor`` in place (spanning segments).
+
+    For a `StockPlan` the stock carries the state: it is carved forward and
+    its top written into `floor`, so the viewer's array stays the one it
+    draws from."""
+    if hasattr(plan, "stock0"):
+        from ..stock.playback import stamp_forward
+        stamp_forward(plan, a, b)
+        floor[...] = plan.stock.top(empty=plan.z_bottom).z
+        return
     a = max(0, int(a))
     b = min(plan.n_positions, int(b))
     if a >= b:
@@ -433,8 +456,11 @@ def plan_stamp_forward(plan: RemovalPlan, floor: np.ndarray, a: int, b: int) -> 
                           plan.origin, plan.resolution, plan.shape)
 
 
-def plan_floor_to(plan: RemovalPlan, target: float) -> np.ndarray:
+def plan_floor_to(plan, target: float) -> np.ndarray:
     """A fresh floor stamped up to position `target`, from the nearest keyframe."""
+    if hasattr(plan, "stock0"):
+        from ..stock.playback import floor_to
+        return floor_to(plan, target)
     target = max(0, min(int(round(target)), plan.n_positions))
     kf_idx, kf_floor = plan.keyframes[0]
     for ki, kfl in plan.keyframes:

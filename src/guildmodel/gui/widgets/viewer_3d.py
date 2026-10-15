@@ -248,8 +248,9 @@ class Viewer3D(QWidget):
         # playback scrubber — volumetric removal (BUILDPLAN M7.12.1, was M7.12 sheet)
         self._plan = None                         # core.sim.RemovalPlan (positions)
         self._floor = None                        # current remaining-stock heightfield
-        self._removal_grid = None                 # pv.StructuredGrid (2-layer solid block)
-        self._removal_n = 0                        # points per layer (top layer = [n:])
+        self._removal_grid = None                 # pv.PolyData: the closed block (M21 §6.4)
+        self._removal_n = 0                        # points on the top sheet (= [:n])
+        self._solid_actor = None                   # the Flying Edges solid at a pause (M21)
         self._removal_zmax = 1.0                   # stock height — fixes the elevation ramp
         self._tool_actor = None                    # the moving cutter+holder (M7.12.2)
         self._tool_op = None                       # op whose tool is currently built
@@ -339,6 +340,15 @@ class Viewer3D(QWidget):
         self._chk_uncut.toggled.connect(self._refresh_colors)
         self._chk_gouge.toggled.connect(self._refresh_colors)
         lay.addWidget(self._chk_uncut); lay.addWidget(self._chk_gouge)
+        # The solid stock at a pause (M21 §6.4): the walls and the undercuts a
+        # top sheet cannot show. Offered when the cut has an undercut.
+        self._chk_solid = QCheckBox("Solid"); self._chk_solid.setChecked(True)
+        self._chk_solid.setToolTip(
+            "At a pause and at the end, show the stock as a solid — its walls and "
+            "any undercut, such as the lens groove's slot — instead of its top.")
+        self._chk_solid.toggled.connect(self._on_solid_toggled)
+        self._chk_solid.setVisible(False)
+        lay.addWidget(self._chk_solid)
 
         # ---- playback scrubber (BUILDPLAN M7.12) — hidden until snapshots set ----
         self._play_btn = QPushButton("▶")
@@ -996,7 +1006,7 @@ class Viewer3D(QWidget):
         # was cleared, so rebuild the block actors before re-carving to the cursor.
         if self._plan is not None:
             self._build_block_scene(self._plan)
-            self._render_pos(self._play_pos, reset_camera=reset_camera)
+            self._render_pos(self._play_pos, reset_camera=reset_camera, solid=True)
             return
         if self._sim_mesh is None or self._report is None:
             self._plotter.clear()
@@ -1046,10 +1056,13 @@ class Viewer3D(QWidget):
         self._reset_playback()
         if plan is None or plan.n_positions == 0 or not self._ensure_plotter():
             return
+        from guildmodel.core.sim.playback import plan_final_floor
         self._plan = plan
-        self._floor = plan.keyframes[-1][1].copy()    # the fully-cut floor (rest state)
+        self._floor = plan_final_floor(plan)          # the fully-cut floor (rest state)
         self._chk_uncut.setVisible(False)             # the block has no uncut/gouge tint
         self._chk_gouge.setVisible(False)
+        has_under = bool(getattr(plan, "has_undercut", lambda: False)())
+        self._chk_solid.setVisible(has_under)
         last = plan.n_positions
         self._play_idx = last
         self._play_pos = float(last)
@@ -1069,7 +1082,7 @@ class Viewer3D(QWidget):
             self._badge.setText("⚠  tool fouls a hold-down")
             self._badge.setStyleSheet("color: #c0392b; font-weight: 600;")
         if self._mode == "sim":
-            self._render_pos(self._play_pos, reset_camera=True)
+            self._render_pos(self._play_pos, reset_camera=True, solid=True)
         self._update_step_label()
 
     def clear_sim(self) -> None:
@@ -1088,7 +1101,9 @@ class Viewer3D(QWidget):
         self._plan = None
         self._floor = None
         self._removal_grid = None
+        self._solid_actor = None
         self._tool_actor = None
+        self._chk_solid.setVisible(False)
         self._tool_op = None
         self._play_idx = 0
         self._play_pos = 0.0
@@ -1099,39 +1114,38 @@ class Viewer3D(QWidget):
             wdg.setVisible(False)
 
     def _build_block_scene(self, pb) -> None:
-        """Build the stock as ONE watertight opaque solid (BUILDPLAN M7.12.1): a
-        two-layer structured grid — a flat bottom at z=0 and the carved top — so VTK
-        renders a closed block (top + bottom + 4 walls), no translucency. Only the
-        top layer's Z is updated per frame (the bottom/walls stay put)."""
+        """Build the stock as ONE closed opaque solid (BUILDPLAN M7.12.1, M21 §6.4):
+        a PolyData of the carved top sheet, a flat bottom and the walls along the
+        sheet's rim, from `core.stock.surface`. Only the top's Z is rewritten per
+        tick, in place, which renders at about twice the rate of the structured
+        grid this was. A column cut through drops onto the bottom, so the block
+        stays closed; a column holding an undercut is tinted."""
         import pyvista as pv
+        from guildmodel.core.stock.surface import block_faces, block_points
         self._plotter.clear()
         self._tool_actor = None                   # cleared with the scene; rebuilt on next frame
         self._tool_op = None
-        rows, cols = pb.stock_top.shape
-        ox, oy = pb.origin
-        res = pb.resolution
-        xs = ox + np.arange(cols) * res
-        ys = oy + np.arange(rows) * res
-        X, Y = np.meshgrid(xs, ys)                # (rows, cols), C-order ravel below
-        base = np.column_stack([X.ravel(order="C"), Y.ravel(order="C")])
+        self._solid_actor = None
+        stock_top = np.asarray(pb.stock_top, dtype=np.float64)
+        rows, cols = stock_top.shape
+        z_bottom = float(getattr(pb, "z_bottom", 0.0))
+        pts = block_points(self._floor, pb.origin, pb.resolution, z_bottom)
         n = rows * cols
         self._removal_n = n
-
-        grid = pv.StructuredGrid()
-        grid.points = np.vstack([
-            np.column_stack([base, np.zeros(n)]),                       # k=0 bottom @ z=0
-            np.column_stack([base, self._floor.ravel(order="C")]),      # k=1 carved top
-        ]).astype(np.float64)
-        grid.dimensions = (cols, rows, 2)
-        self._removal_grid = grid
-        self._removal_zmax = float(pb.stock_top.max())
+        footprint = stock_top > z_bottom + 1e-9
+        if not footprint.any():
+            footprint = np.ones((rows, cols), dtype=bool)
+        poly = pv.PolyData(pts, block_faces(footprint))
+        self._removal_grid = poly
+        self._removal_zmax = float(stock_top.max())
         # Color by elevation so cut depth reads at a glance (deep = dark, uncut =
         # bright); a fixed ramp means a region visibly darkens as it's carved away.
-        grid["colors"] = self._elev_colors(grid.points[:, 2], self._removal_zmax)
+        poly["colors"] = self._block_colors(pb)
         lit = not self._flat_shaded()
-        self._plotter.add_mesh(grid, scalars="colors", rgb=True,
+        self._plotter.add_mesh(poly, scalars="colors", rgb=True,
                                smooth_shading=True, show_edges=False, lighting=lit,
-                               specular=0.15 if lit else 0.0, specular_power=12)
+                               specular=0.15 if lit else 0.0, specular_power=12,
+                               name="stockBlock")
         self._apply_scene_lights()
 
         # Hold-downs (keep-outs) as red posts on the bed at the set hold-down height,
@@ -1143,10 +1157,9 @@ class Viewer3D(QWidget):
             self._plotter.add_mesh(post, color="#c83c32", opacity=0.9,
                                    smooth_shading=True)
 
-        # Verified lens-groove rings (V1): the side-cut V is an undercut the
-        # Z-buffer block can't show, so its true path — the groove bottom ON
-        # the lens contour at apex height — is marked as a thin ring, in the
-        # measure blue so it reads as annotation, not as material.
+        # Verified lens-groove rings (V1): the groove bottom ON the lens contour
+        # at apex height, as a thin ring in the measure blue — annotation, not
+        # material; the solid view (M21) shows the slot itself.
         for k, ring in enumerate(getattr(pb, "groove_rings", None) or []):
             pts = np.asarray(ring, dtype=np.float64)
             if len(pts) >= 2 and np.allclose(pts[0], pts[-1]):
@@ -1157,6 +1170,67 @@ class Viewer3D(QWidget):
             self._plotter.add_mesh(tube, color=self._palette.measure,
                                    opacity=0.95, name=f"grooveRing{k}",
                                    smooth_shading=True)
+
+    def _block_colors(self, pb) -> np.ndarray:
+        """The block's per-point colors: the elevation ramp, and the undercut
+        tint on a stock plan's split columns (M21 §6.4)."""
+        from guildmodel.core.stock.surface import elevation_colors, undercut_tint
+        colors = elevation_colors(self._removal_grid.points[:, 2], self._removal_zmax)
+        stock = getattr(pb, "stock", None)
+        if stock is not None and hasattr(stock, "undercut"):
+            undercut_tint(colors, stock, self._removal_n)
+        return colors
+
+    def _solid_wanted(self) -> bool:
+        plan = self._plan
+        return (plan is not None and not self._chk_solid.isHidden() and self._chk_solid.isChecked()
+                and getattr(plan, "stock", None) is not None
+                and not self._play_timer.isActive())
+
+    def _show_solid(self) -> None:
+        """At a pause: the stock as a solid through Flying Edges over its
+        occupancy (M21 §6.4), in place of the top sheet; the sheet comes back
+        when play resumes. Skipped, with the sheet kept, when the volume would
+        be too large to contour at the grid's pitch."""
+        import pyvista as pv
+        from guildmodel.core.stock.surface import occupancy_grid
+        if self._removal_grid is None or self._plan is None:
+            return
+        got = occupancy_grid(self._plan.stock)
+        if got is None:
+            return
+        occ, origin3, spacing = got
+        nz, rows, cols = occ.shape
+        img = pv.ImageData(dimensions=(cols, rows, nz), spacing=spacing, origin=origin3)
+        img.point_data["occ"] = occ.transpose(2, 1, 0).ravel(order="F").astype(np.float32)
+        try:
+            surf = img.contour([0.5], scalars="occ", method="flying_edges")
+        except Exception:                                     # noqa: BLE001
+            return
+        if surf.n_points == 0:
+            return
+        surf["colors"] = self._elev_colors(surf.points[:, 2], self._removal_zmax)
+        self._plotter.remove_actor("stockBlock", render=False)
+        self._solid_actor = self._plotter.add_mesh(
+            surf, scalars="colors", rgb=True, smooth_shading=True, show_edges=False,
+            lighting=not self._flat_shaded(), name="stockSolid")
+
+    def _hide_solid(self) -> None:
+        if self._solid_actor is None or self._removal_grid is None:
+            return
+        self._plotter.remove_actor("stockSolid", render=False)
+        self._solid_actor = None
+        lit = not self._flat_shaded()
+        self._plotter.add_mesh(self._removal_grid, scalars="colors", rgb=True,
+                               smooth_shading=True, show_edges=False, lighting=lit,
+                               specular=0.15 if lit else 0.0, specular_power=12,
+                               name="stockBlock")
+
+    def _on_solid_toggled(self, on: bool) -> None:
+        if self._plotter is None or self._plan is None:
+            return
+        self._render_pos(self._play_pos, solid=on)
+        self._safe_render()
 
     def _update_step_label(self) -> None:
         if self._plan is None:
@@ -1199,15 +1273,23 @@ class Viewer3D(QWidget):
             self._scrub.setValue(idx)
         return True
 
-    def _render_pos(self, pos: float, reset_camera: bool = False) -> None:
+    def _render_pos(self, pos: float, reset_camera: bool = False,
+                    solid: bool = False) -> None:
         """Draw the block at the current floor (carved up to the playhead) + the tool
-        at its exact toolpath position (BUILDPLAN M7.12 — tool & removal in sync)."""
+        at its exact toolpath position (BUILDPLAN M7.12 — tool & removal in sync).
+        With `solid`, a pause or the rest state, the stock is contoured as a
+        solid where the cut has an undercut (M21 §6.4); a scrub and a play tick
+        draw the sheet, which is what keeps them quick."""
         if (self._plotter is None or self._plan is None or self._removal_grid is None
                 or self._floor is None):
             return
-        self._removal_grid.points[self._removal_n:, 2] = self._floor.ravel(order="C")
-        self._removal_grid["colors"] = self._elev_colors(
-            self._removal_grid.points[:, 2], self._removal_zmax)
+        self._removal_grid.points[:self._removal_n, 2] = self._floor.ravel(order="C")
+        self._removal_grid["colors"] = self._block_colors(self._plan)
+        self._removal_grid.Modified()
+        if solid and self._solid_wanted():
+            self._show_solid()
+        elif self._solid_actor is not None:
+            self._hide_solid()
         self._update_cut_tool_at(pos)
         if reset_camera:
             self._plotter.reset_camera(render=False)
@@ -1304,11 +1386,13 @@ class Viewer3D(QWidget):
         if self._play_timer.isActive():
             self._play_timer.stop()
             self._play_btn.setText("▶")
+            self._render_pos(self._play_pos, solid=True)   # the pause shows the solid
             return
         if self._play_pos >= self._plan.n_positions:     # replay from the uncut block
+            from guildmodel.core.sim.playback import plan_floor_to
             self._play_idx = 0
             self._play_pos = 0.0
-            self._floor = self._plan.stock_top.copy()
+            self._floor = plan_floor_to(self._plan, 0)
             self._scrub.blockSignals(True)
             self._scrub.setValue(0)
             self._scrub.blockSignals(False)
@@ -1327,6 +1411,7 @@ class Viewer3D(QWidget):
         old = int(self._play_pos)
         target = min(self._play_pos + self._play_speed, float(m))
         new = int(target)
+        ends = target >= m                                 # the last tick rests on the solid
         # Pause + warn on the rising edge into a hold-down collision run (M7.12.3) —
         # checks the whole [old, new) span so a fast jump can't skip past it.
         cp = plan.collision_pos
@@ -1335,7 +1420,7 @@ class Viewer3D(QWidget):
             first = old + int(np.argmax(cp[old:new]))
             plan_stamp_forward(plan, self._floor, old, first + 1)
             self._play_pos = float(first + 1)
-            self._render_pos(self._play_pos)
+            self._render_pos(self._play_pos, solid=True)   # a pause, so the solid
             self._sync_progress(first)
             self._play_timer.stop()
             self._play_btn.setText("▶")
@@ -1344,7 +1429,7 @@ class Viewer3D(QWidget):
         if new > old:
             plan_stamp_forward(plan, self._floor, old, new)    # incremental, in place
         self._play_pos = target
-        self._render_pos(self._play_pos)
+        self._render_pos(self._play_pos, solid=ends)
         if new != self._play_idx:
             self._sync_progress(min(new, m))
 

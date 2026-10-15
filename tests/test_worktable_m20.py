@@ -724,9 +724,10 @@ def test_a_flat_simulation_carves_the_blank_as_listed(tmp_path, monkeypatch):
 @pytest.mark.gui
 def test_the_bed_sim_reads_the_posted_program_and_carves_the_blanks(tmp_path, monkeypatch):
     """After Generate the bed simulation takes the posted worktable.nc and the
-    cached reliefs: `simulate_component` is never called, the playback stock
-    spans the placed blanks, and the temple sits snapped at its blank's end
-    on the bed as it does on its own tab."""
+    cached reliefs: `simulate_component` is never called, the one cut on the
+    posting grid is the playback (M21 §6.5), its stock spans the placed
+    blanks, and the temple sits snapped at its blank's end on the bed as it
+    does on its own tab."""
     import guildmodel.core.sim as sim_pkg
     import guildmodel.gui.app as app_mod
     from guildmodel.core.cam.placement import placed
@@ -766,16 +767,19 @@ def test_the_bed_sim_reads_the_posted_program_and_carves_the_blanks(tmp_path, mo
     report, plan = done[0]
     assert report.completeness.body_cells > 0
     assert report.status() in {"ok", "warn", "fail"}
-    assert plan.resolution == pytest.approx(PREVIEW_RES_MM)
+    from guildmodel.core.relief.castle import CUT_RES_MM
+    assert plan.resolution == pytest.approx(CUT_RES_MM)      # the verdict's cut, played
+    assert report.resolution == pytest.approx(CUT_RES_MM)
     # the playback stock spans every placed blank (the temples' 170 mm, the blocks' 70)
     x0, y0 = plan.origin
-    rows, cols = plan.floor_at(0).shape if hasattr(plan, "floor_at") else plan.stock_top.shape
+    rows, cols = plan.stock_top.shape
     for w in targets:
         f = win._footprint_for(w)
         p = win._wt_nest.get(win._component_id(w))
         bx0, by0, bx1, by1 = placed(f.blank, p).bounds
         assert x0 <= bx0 + 1e-6 and y0 <= by0 + 1e-6
-        assert x0 + cols * PREVIEW_RES_MM >= bx1 - 1e-6 and y0 + rows * PREVIEW_RES_MM >= by1 - 1e-6
+        assert x0 + cols * plan.resolution >= bx1 - 1e-6
+        assert y0 + rows * plan.resolution >= by1 - 1e-6
 
 
 @pytest.mark.gui

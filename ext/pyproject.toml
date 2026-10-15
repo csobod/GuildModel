@@ -1,0 +1,23 @@
+# The stock engine's C++ kernel (BUILDPLAN M21 §6.3): `guildmodel_stock`, a
+# nanobind extension built with scikit-build-core. Consumed only by the
+# bundles — the release workflows run `pip install ./ext` — and never
+# published to PyPI. A run-from-source install compiles it with the system
+# compiler, or does without: `core.stock.cutting` falls back to the NumPy
+# reference with one log line, and the two are bit-identical by test.
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "guildmodel-stock"
+version = "0.1.0"
+description = "Band-parallel dexel cutting for GuildModel's stock engine"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.12"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+# One wheel per platform on the stable ABI from 3.12 up, so the Windows and
+# the two macOS release jobs each build once for every Python they bundle.
+wheel.py-api = "cp312"

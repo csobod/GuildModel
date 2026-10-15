@@ -500,10 +500,24 @@ The **readiness dot** in the status bar tracks the job:
 | amber | the model is built |
 | green | the program is stored in the saved `.gmodel` |
 
-**Simulation (Ctrl+Shift+S)** machines the program into a virtual blank and
-verifies the result against the target. **Uncut** highlights material left
-proud, **Gouge** highlights cuts below target, and the badge gives a ✓ / ⚠ / ✕
-verdict.
+**Simulation (Ctrl+Shift+S)** machines the stored program into a virtual
+blank and verifies the result against the target. It simulates the program
+the machine will run: the one stored on the tab, read at the cutting grid.
+With no fresh program stored, GuildModel generates it first and the
+simulation follows. **Uncut** highlights material left proud, **Gouge**
+highlights cuts below target, and the badge gives a ✓ / ⚠ / ✕ verdict; the
+log and the Simulation page add the volumes left standing and taken, in
+cubic millimeters.
+
+The stock is a true solid, not a surface: every column of the blank keeps
+the intervals of material it still holds, so a side-cutting form such as the
+lens groove's drageoir takes its slot out of the eyewire wall and leaves the
+rim above it standing. A column holding such an undercut is tinted blue on
+the block, and **Solid**, offered when the cut has one, shows the stock as a
+solid at a pause and at the end, slot and all; playing and scrubbing draw the
+top surface, which keeps them quick. A rapid that would pass through stock,
+or a tool's shank entering it, is never cut: the verdict fails, and the log
+names the operation and counts the positions.
 
 The playback scrubber replays the cut, operation by operation. Use play/pause
 (▶), drag to any boundary, and watch the moving tool. Playback pauses with a
@@ -583,11 +597,11 @@ the program, on any tab or on the bed, marks the part *needs Generate*; the
 Program line says whether the bed program is current. The setup sheet names
 the parts left off as *not on this bed* and lists the keep-outs any
 operation reaches. **Simulate Bed** runs the whole-bed cut simulation over
-the same parts, generating the program first when it is stale, and
-composites every placement, rotation included, into one verdict. The verdict
-is read from the posted `worktable.nc` itself, and the playback carves each
-part's blank as listed, placed on the bed among the hold-downs, so what you
-see is the stock on the bench.
+the same parts, generating the program first when it is stale. The posted
+`worktable.nc` is cut once into the placed blanks, rotation included, and
+that one result is both the verdict and the playback: each part's blank as
+listed, placed on the bed among the hold-downs, so what you see is the stock
+on the bench.
 
 ## 7. Send the job
 

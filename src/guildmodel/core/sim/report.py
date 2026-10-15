@@ -40,8 +40,16 @@ class CutReport:
     origin: tuple[float, float] = (0.0, 0.0)
     resolution: float = 0.3
     complete_tol_mm: float = 0.5
+    #: Lines from a richer verdict (the stock engine's, with the volumes),
+    #: shown in place of the computed ones when given (M21 §6.5).
+    lines: tuple = ()
+    #: What the program would do beyond the cut itself: a rapid through
+    #: stock, a shank in it. Any one fails the verdict.
+    faults: tuple = ()
 
     def status(self) -> str:
+        if self.faults:
+            return "fail"
         c, g = self.completeness, self.gouge
         if c.uncut_fraction > 0.10 or g.max_depth_mm > 0.5:
             return "fail"
@@ -50,6 +58,8 @@ class CutReport:
         return "ok"
 
     def summary_lines(self) -> list[str]:
+        if self.lines:
+            return list(self.lines) + list(self.faults)
         c, g = self.completeness, self.gouge
         lines = [
             f"Cut completeness: {100 * (1 - c.uncut_fraction):.1f}% reached "
@@ -64,7 +74,7 @@ class CutReport:
             if d["cells"]:
                 lines.append(f"  {kind}: {d['cells']} uncut, "
                              f"worst {d['max_excess_mm']:.2f} mm")
-        return lines
+        return lines + list(self.faults)
 
 
 def _per_zone(partition, xs, ys, excess) -> dict:

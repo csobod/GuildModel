@@ -65,6 +65,47 @@ does not say, and cuts it.
   simulates exactly as before: the tests pin the posted programs
   byte-identical. A project from 1.8 opens with no seats and the defaults.
 
+### The stock engine, under the hood (BUILDPLAN M21, 2026-10-15)
+
+The cut simulation's floor is becoming a **stock**: a grid whose every column
+holds a list of solid intervals instead of one height, so a side-cutting form
+can take a slot out of a wall and leave the material above it, a tool can cut
+from below, and a half-finished blank can be carried from one setup to the
+next. Nothing on screen changes yet; this release carries the engine and its
+proofs.
+
+* `core/stock/`: the dexel grid, the tool shapes (the drageoir's V form among
+  them), the cutter, the posted program read once into runs, and the report
+  that compares a stock to a target cast from the model mesh, with the
+  volumes left standing and taken.
+* A C++ kernel, `guildmodel_stock`, built by the release workflows and
+  installed from `ext/`; without it the NumPy reference answers, bit for bit
+  the same and several times slower, and the log says so once.
+* The gabriel front's program sweeps in 0.045 s where it took 0.66 s, at a
+  third of the memory, and the floor is the same array. A rapid through
+  stock, or a shank entering it, is found and reported rather than stamped.
+
+And on screen, the same night:
+
+* **Simulate reads the stored program.** The simulation is of the program the
+  machine will run, the one stored on the tab, read at the cutting grid; it
+  generates the program first when none is fresh, as Simulate Bed has since
+  M20.
+  The verdict is today's, cell for cell, with the volumes left standing and
+  taken added to the log and the Simulation page; a rapid through stock or a
+  shank in it fails the verdict, with the operation named.
+* **The bed is cut once.** `worktable.nc` goes into the placed blanks on the
+  posting grid, and that one result is the verdict and the playback: no
+  second build, no compositing of floors, the rotation right by construction.
+* **The block is a closed solid in one piece**, its top rewritten in place as
+  the playhead moves, which renders at about twice the old rate. A column
+  holding an undercut is tinted, and **Solid**, offered when the cut has one,
+  shows the stock through Flying Edges at a pause and at the end: the lens
+  groove's slot in the eyewire wall, which the top surface could not show.
+* `core/sim` keeps its names as a facade over the engine: the parsers are one
+  walk of the program, and the floor sweep every test and tool reads is the
+  stock engine's, so the whole suite verifies the new path.
+
 ### The sidebar folds (2026-10-15)
 
 Every section of the parameter dock — Model Properties, Posterior Finishing,

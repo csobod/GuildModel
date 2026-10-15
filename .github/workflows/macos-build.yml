@@ -46,6 +46,7 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e ".[dev,packaging]"
           .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
+          .venv/bin/pip install ./ext   # the stock engine's C++ kernel (BUILDPLAN M21 §6.3)
 
       # The gate, minus the tests that build a real MainWindow. offscreen keeps
       # Qt off the window server; the thread timeout method turns any

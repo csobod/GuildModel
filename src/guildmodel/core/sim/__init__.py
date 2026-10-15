@@ -15,12 +15,13 @@ from .paths import (
 from .report import Completeness, Gouge, CutReport, verify
 from .playback import (
     FloorSnapshot, RemovalPlan, RemovalPlayback, build_removal_plan, plan_collisions,
-    plan_floor_to, plan_stamp_forward, simulate_removal, simulate_steps, steps_from_ops,
+    plan_final_floor, plan_floor_to, plan_initial_floor, plan_stamp_forward, simulate_removal, simulate_steps, steps_from_ops,
     motion_steps_from_program,
     tool_envelope, tool_profile_dims, tool_radius_below,
 )
 from .bed import (
     BedRemovalPart, ComponentSim, bed_collision_frames, bed_report_from_program,
+    bed_stock_plan,
     build_bed_removal_plan, composite_bed_report, composite_bed_targets,
     flat_blank_heightfield, placed_fields, relief_for_spec, simulate_bed_removal,
     simulate_component, stock_for_spec,
@@ -31,13 +32,15 @@ __all__ = [
     "cutting_paths_from_program", "cutting_paths_from_program_grouped",
     "cutting_paths_from_ops",
     "Completeness", "Gouge", "CutReport", "verify",
-    "ComponentSim", "composite_bed_report", "composite_bed_targets", "placed_fields",
+    "ComponentSim", "bed_stock_plan", "composite_bed_report", "composite_bed_targets",
+    "placed_fields",
     "simulate_component", "bed_report_from_program", "relief_for_spec", "stock_for_spec",
     "flat_blank_heightfield",
     "BedRemovalPart", "simulate_bed_removal", "bed_collision_frames",
     "build_bed_removal_plan",
     "FloorSnapshot", "RemovalPlayback", "simulate_removal", "simulate_steps",
     "steps_from_ops", "motion_steps_from_program", "tool_envelope", "tool_profile_dims", "tool_radius_below",
-    "RemovalPlan", "build_removal_plan", "plan_floor_to", "plan_stamp_forward",
+    "RemovalPlan", "build_removal_plan", "plan_final_floor", "plan_floor_to",
+    "plan_initial_floor", "plan_stamp_forward",
     "plan_collisions",
 ]

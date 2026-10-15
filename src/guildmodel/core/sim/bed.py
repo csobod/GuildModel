@@ -464,6 +464,45 @@ def bed_report_from_program(
                   partition=None, complete_tol_mm=complete_tol_mm)
 
 
+def bed_stock_plan(
+    program_text: str,
+    stock_parts: list,
+    *,
+    resolution: float,
+    tools_cfg: dict,
+    fallback_tool: dict,
+    margin_mm: float = 8.0,
+    keyframes: int = 16,
+    progress=None,
+):
+    """The bed cut once, for the verdict and the playback (BUILDPLAN M21 §6.5):
+    ``worktable.nc`` parsed into runs, the stock built from the placed blanks on
+    the machine grid, the stock engine's plan over it. Nothing is regenerated
+    and nothing composited but the targets. Returns the `StockPlan`; its final
+    top is the floor `verify` reads."""
+    from ..stock import DexelStock, ToolShape, parse_program
+    from ..stock.playback import build_stock_plan
+
+    bed_stock, bed_origin = _bed_stock(stock_parts, resolution, margin_mm)
+    from ..relief.heightfield import Heightfield
+    field = Heightfield(z=bed_stock, origin=bed_origin, resolution=resolution)
+    stock = DexelStock.from_heightfield(field, z_bottom=0.0)
+    runs = []
+    shapes: dict = {}
+    for run in parse_program(program_text):
+        tool = tools_cfg.get(run.tool) if run.tool else None
+        key = run.tool or ""
+        if key not in shapes:
+            shapes[key] = ToolShape.from_tool(tool or fallback_tool)
+        runs.append((run, shapes[key]))
+    if progress is not None:
+        progress(0.2)
+    plan = build_stock_plan(runs, stock, keyframes=keyframes)
+    if progress is not None:
+        progress(1.0)
+    return plan
+
+
 # ------------------------------------------------------------------ M7.12.3 bed removal
 
 @dataclass

@@ -61,7 +61,10 @@ def test_a_batch_stays_within_the_budget(monkeypatch):
     tool = ToolProfile(kind="flat", radius_mm=1.0)
     res = 0.05
     path = [(0.0, 0.0, -1.0), (200.0, 0.0, -1.0)]      # 4,000 positions x 1,257 cells
-    achieved_floor([path], tool, (-2.0, -2.0), (80, 4080), res, init_z=9.0)
+    # `achieved_floor` goes through the stock engine since M21; the stamp
+    # still serves the removal playback, and this is its batching.
+    floor = np.full((80, 4080), 9.0)
+    toolsim._stamp_path(floor, path, tool.kernel(res), (-2.0, -2.0), res, floor.shape, res)
     assert len(seen) > 1
     assert max(seen) <= toolsim._STAMP_BUDGET
 

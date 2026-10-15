@@ -526,6 +526,128 @@ def _op_tool_geom(ops, default_tool: dict | None) -> dict:
     return out
 
 
+def _run_tool_geom(runs, tools_cfg: dict, default_tool: dict | None) -> dict:
+    """`_op_tool_geom` for a program's runs: the op labels the post wrote, each
+    with the geometry of the tool announced over it."""
+    class _Op:
+        def __init__(self, name, tool):
+            self.name, self.tool = name, tool
+    seen: dict = {}
+    for r in runs:
+        if r.label and r.label not in seen:
+            seen[r.label] = tools_cfg.get(r.tool) if r.tool else None
+    return _op_tool_geom([_Op(n, t) for n, t in seen.items()], default_tool)
+
+
+#: Where the verdict's stock and target both end, below the part: the volumes
+#: are measured between the two, so what lies under both counts for nothing,
+#: and a column cut below it is cut through.
+VERDICT_BOTTOM_MM = -1.0
+#: How closely a rapid is tested against the stock, mm along its path; a
+#: rapid through stock crosses far more than this.
+RAPID_CHECK_MM = 0.5
+#: How closely a cut's shank is tested, mm along the cut; the shank is a
+#: cylinder wider than this, so what it enters it enters for longer.
+SHANK_CHECK_MM = 1.0
+
+
+def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict, *,
+                      init_z: float, stock_field, feed_mmpm: float, partition=None,
+                      progress=None):
+    """The simulation of a posted program (BUILDPLAN M21 §6.5): the verdict on
+    the relief's grid, and the playback over the blank, both from one parse.
+
+    The verdict stock starts at `init_z` over the relief grid, with its
+    bottom where the target's is, and is compared with the
+    relief's surface by `core.stock.compare` — today's `CutReport`, cell for
+    cell, with the volumes added. On the way, each rapid is tested against the
+    stock as it stands and each cut's shank against what its flutes left: a
+    rapid through stock or a shank in it is a fault that fails the verdict
+    (§6.5), reported, never stamped. The playback is a `StockPlan` over
+    `stock_field`, the blank as listed, cut by the same runs; the viewer plays
+    it. Returns ``(report, lines, plan, runs)``.
+    """
+    import numpy as np
+    from guildmodel.core.relief.heightfield import Heightfield
+    from guildmodel.core.stock import (DexelStock, ToolShape, collisions, compare, cut,
+                                       parse_program, poses_for_run, shank_shape)
+    from guildmodel.core.stock.playback import build_stock_plan
+
+    runs = parse_program(program)
+    shapes: dict = {}
+    shanks: dict = {}
+
+    def tool_of(name):
+        t = tools_cfg.get(name) if name else None
+        return t or default_tool
+
+    def shape_of(name):
+        if name not in shapes:
+            shapes[name] = ToolShape.from_tool(tool_of(name))
+        return shapes[name]
+
+    def shank_of(name):
+        if name not in shanks:
+            shanks[name] = shank_shape(tool_of(name))
+        return shanks[name]
+
+    f = relief.field
+    rows, cols = f.z.shape
+    if progress is not None:
+        progress("Reading the program onto the stock", 0.6)
+    verdict = DexelStock.from_box(-1e9, -1e9, 1e9, 1e9, VERDICT_BOTTOM_MM, float(init_z),
+                                  f.resolution, origin=f.origin, shape=(rows, cols))
+    footprints: dict = {}
+
+    def footprint_of(shp):
+        if shp not in footprints:
+            footprints[shp] = shp.footprint(f.resolution)
+        return footprints[shp]
+
+    rapid_spacing = max(f.resolution, RAPID_CHECK_MM)
+    shank_stride = max(1, int(round(SHANK_CHECK_MM / f.resolution)))
+    rapid_hits: dict = {}
+    shank_hits: dict = {}
+    for i, run in enumerate(runs):
+        shp = shape_of(run.tool)
+        if not run.is_cut:
+            if i == 0:
+                continue        # from the parser's assumed start, not a move the machine makes
+            hit = collisions(verdict, poses_for_run(run, rapid_spacing), shp,
+                             footprint=footprint_of(shp))
+            if hit.any():
+                rapid_hits[run.label] = rapid_hits.get(run.label, 0) + int(hit.sum())
+            continue
+        poses = poses_for_run(run, f.resolution)
+        cut(verdict, poses, shp, footprint=footprint_of(shp))
+        shank = shank_of(run.tool)
+        if shank is not None:
+            hit = collisions(verdict, poses[::shank_stride], shank, lift=shank.flute_length_mm,
+                             footprint=footprint_of(shank))
+            if hit.any():
+                shank_hits[run.label] = shank_hits.get(run.label, 0) + int(hit.sum())
+    faults = []
+    if rapid_hits:
+        faults.append(f"Rapid through stock: {sum(rapid_hits.values())} positions in "
+                      + ", ".join(rapid_hits))
+    if shank_hits:
+        faults.append(f"Shank in stock: {sum(shank_hits.values())} positions in "
+                      + ", ".join(shank_hits))
+    inside = relief.inside
+    target = DexelStock.from_heightfield(
+        Heightfield(z=np.where(inside, f.z, 0.0), origin=f.origin, resolution=f.resolution),
+        inside=inside, z_bottom=VERDICT_BOTTOM_MM, k=1)
+    sreport = compare(verdict, target, inside, partition=partition)
+    report = sreport.to_cut_report(np.where(inside, f.z, np.nan), verdict.top(empty=init_z).z,
+                                   faults=faults)
+    if progress is not None:
+        progress("Building playback", 0.85)
+    blank = DexelStock.from_heightfield(stock_field, z_bottom=0.0)
+    plan = build_stock_plan([(r, shape_of(r.tool)) for r in runs], blank, feed_mmpm=feed_mmpm)
+    plan.op_tool_geom = _run_tool_geom(runs, tools_cfg, default_tool)
+    return report, report.summary_lines(), plan, runs
+
+
 # ------------------------------------------------------------------ G-code generation worker
 
 class GCodeWorker(_ProgressWorker):
@@ -1330,13 +1452,20 @@ class SimWorker(_ProgressWorker):
     error = Signal(str)
 
     def __init__(self, partition, castle, cam_params, hinge_polys=(),
-                 material_name="acetate", resolution: float = 0.3) -> None:
+                 material_name="acetate", resolution: float = 0.3,
+                 inlay_polys=(), program_text: str | None = None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
         self.cam_params = cam_params
         self.hinge_polys = list(hinge_polys)
+        self.inlay_polys = list(inlay_polys)
         self.material_name = material_name
+        # The stored program, when the tab has a fresh one (M21 §6.5): the
+        # simulation then reads it at the posting grid, `CUT_RES_MM`, and
+        # regenerates nothing. Without it the program is generated here, as
+        # before, at `resolution`.
+        self.program_text = program_text
         self.resolution = resolution
 
     def run(self) -> None:
@@ -1363,117 +1492,87 @@ class SimWorker(_ProgressWorker):
             tool = tools_cfg.get(cam.tool_name, tools_cfg.get("flat_3175"))
             mat = mats_cfg.get(self.material_name.split()[0].lower(), mats_cfg["acetate"])
 
-            self.progress.emit(f"[sim] Building relief at {self.resolution} mm "
-                               f"({self.kernel})…")
+            from guildmodel.core.relief.castle import CUT_RES_MM
+            res = CUT_RES_MM if self.program_text else self.resolution
+            self.progress.emit(f"[sim] Building relief at {res} mm ({self.kernel})…")
             relief = castle_relief(
                 self.partition, self.castle, self.hinge_polys,
-                kernel=self.kernel, resolution=self.resolution,
-                progress=self._progress,
+                kernel=self.kernel, resolution=res,
+                progress=self._progress, inlays=self.inlay_polys,
             )
-            self._progress("Generating program", 0.55)
-            ops = generate_castle_program(
-                relief, self.castle, self.hinge_polys, tool, params=cam,
-                tools_cfg=tools_cfg)
+            ops = None
+            if self.program_text:
+                program = self.program_text
+                feed_mmpm = float(cam.feed_rate_mmpm or mat["feed_rate_mmpm"])
+                self.progress.emit("[sim] Simulating the stored program…")
+            else:
+                self._progress("Generating program", 0.55)
+                ops = generate_castle_program(
+                    relief, self.castle, self.hinge_polys, tool, params=cam,
+                    tools_cfg=tools_cfg, inlay_polys=self.inlay_polys)
+                resolved, _ = build_tool_settings(
+                    ops, tools_cfg,
+                    default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                    default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                    default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+                    tool_feeds=cam.tool_feeds)
+                tool_settings = None
+                if (cam.is_multi_tool() or getattr(relief, "groove", None) is not None
+                        or len({op.tool_name for op in ops if op.tool_name}) > 1):
+                    tool_settings = resolved
+                first = resolved.get(ops[0].tool_name) if ops else None
+                post = GRBLPost(
+                    job_name="sim", material=self.material_name,
+                    tool_diameter_mm=(first.diameter_mm if first else tool["diameter_mm"]),
+                    spindle_rpm=(first.spindle_rpm if first else mat["spindle_rpm"]),
+                    feed_rate_mmpm=(first.feed_rate_mmpm if first else mat["feed_rate_mmpm"]),
+                    plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
+                    safe_z_mm=cam.safe_z_for(self.castle.stock.total_pad_height_mm),
+                )
+                if cam.link_retracts:
+                    from guildmodel.core.cam.castle_ops import work_holding_keepouts
+                    post.link_clearance_z_mm = self.castle.stock.total_pad_height_mm + cam.link_clearance_mm
+                    post.link_keepouts = tuple(work_holding_keepouts(
+                        relief.partition.body, self.castle.stock,
+                        (first.diameter_mm if first else tool["diameter_mm"]) / 2.0,
+                        screw_head_diameter_mm=cam.screw_head_diameter_mm,
+                        margin_mm=cam.screw_keepout_margin_mm,
+                        is_hole=relief.partition.is_hole))
+                write_castle_program(
+                    ops, post, arc_tol_mm=cam.arc_tolerance_mm,
+                    contour_stepdown_mm=cam.contour_stepdown_mm,
+                    contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                    contour_lead_in=cam.contour_lead_in,
+                    tool_settings=tool_settings)
+                program = post.to_string()
+                feed_mmpm = float(post.feed_rate_mmpm)
 
-            # Multi-tool jobs (M6.1): post with per-tool change blocks and sweep
-            # each move with its own tool profile, so the sim matches the real
-            # cut. A lens-groove job is ALWAYS multi-tool (see GCodeWorker).
-            # Feeds as the post resolves them (2026-09-27): the project's row for
-            # the tool, else the library's, else the Cut tab's material row, else
-            # the preset — for a single-tool job too, which posts no tool block.
-            resolved, _ = build_tool_settings(
-                ops, tools_cfg,
-                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
-                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
-                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
-                tool_feeds=cam.tool_feeds)
-            tool_settings = None
-            if cam.is_multi_tool() or getattr(relief, "groove", None) is not None:
-                tool_settings = resolved
-            first = resolved.get(ops[0].tool_name) if ops else None
-            post = GRBLPost(
-                job_name="sim", material=self.material_name,
-                tool_diameter_mm=(first.diameter_mm if first else tool["diameter_mm"]),
-                spindle_rpm=(first.spindle_rpm if first else mat["spindle_rpm"]),
-                feed_rate_mmpm=(first.feed_rate_mmpm if first else mat["feed_rate_mmpm"]),
-                plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
-                safe_z_mm=cam.safe_z_for(self.castle.stock.total_pad_height_mm),
-            )
-            if cam.link_retracts:
-                from guildmodel.core.cam.castle_ops import work_holding_keepouts
-                post.link_clearance_z_mm = self.castle.stock.total_pad_height_mm + cam.link_clearance_mm
-                post.link_keepouts = tuple(work_holding_keepouts(
-                    relief.partition.body, self.castle.stock,
-                    (first.diameter_mm if first else tool["diameter_mm"]) / 2.0,
-                    screw_head_diameter_mm=cam.screw_head_diameter_mm,
-                    margin_mm=cam.screw_keepout_margin_mm,
-                    is_hole=relief.partition.is_hole))
-            write_castle_program(
-                ops, post, arc_tol_mm=cam.arc_tolerance_mm,
-                contour_stepdown_mm=cam.contour_stepdown_mm,
-                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
-                contour_lead_in=cam.contour_lead_in,
-                tool_settings=tool_settings)
-
-            self.progress.emit("[sim] Sweeping tool along the toolpaths…")
+            # The stock engine (M21): the verdict on the relief grid and the
+            # playback over the blank as listed on the Stock tab, from one parse
+            # of the program the machine will run.
             f = relief.field
             init_z = self.castle.stock.total_pad_height_mm + 1.0
-            _swp = lambda p: self._progress("Simulating", 0.6 + 0.35 * p)
-            if tool_settings:
-                groups = cutting_paths_from_program_grouped(post.to_string())
-                # The lens-groove drageoir cuts SIDEWAYS: a top-down Z-buffer
-                # sweep of its loop would falsely carve the rim lip from above.
-                # Drop groove-tool moves — the channel it rides in is verified
-                # by the eyewire sweep; the V itself is geometry (V1).
-                groups = [
-                    (p, t) for p, t in groups
-                    if not (t and tools_cfg.get(t, {}).get("type") == "groove")]
-                profiles = {n: ToolProfile.from_tool(tools_cfg[n])
-                            for n in {t for _, t in groups if t and t in tools_cfg}}
-                floor = achieved_floor_grouped(
-                    groups, profiles, ToolProfile.from_tool(tool),
-                    f.origin, f.z.shape, f.resolution, init_z, progress=_swp)
-            else:
-                paths = cutting_paths_from_program(post.to_string())
-                floor = achieved_floor(
-                    paths, ToolProfile.from_tool(tool), f.origin, f.z.shape,
-                    f.resolution, init_z, progress=_swp)
-            report = verify(
-                floor, np.where(relief.inside, f.z, np.nan), relief.inside,
-                f.origin, f.resolution, partition=self.partition)
-
-            # Position-based removal plan (M7.12): the full toolpath + sparse
-            # keyframes — the 3D block carves along the path in sync with the tool.
-            self._progress("Building playback", 0.96)
-            # The blank as listed on the Stock tab — its full size, the pad block on
-            # it — not the relief grid cropped to the cut (session two of M20):
-            # the block carved on screen is the one on the bench.
             stock_hf = stock_top_heightfield(self.castle.stock, resolution=f.resolution)
-            plan = build_removal_plan(
-                motion_steps_from_program(
-                    post.to_string(), ToolProfile.from_tool(tool),
-                    profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
-                    rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
-                    base_spacing=f.resolution),
-                stock_hf.z, stock_hf.origin, f.resolution)
-            plan.op_tool_geom = _op_tool_geom(ops, tool)
+            report, lines, plan, runs = _simulate_program(
+                program, relief, tools_cfg, tool, init_z=init_z, stock_field=stock_hf,
+                feed_mmpm=feed_mmpm, partition=self.partition, progress=self._progress)
+            if ops is not None:
+                plan.op_tool_geom = _op_tool_geom(ops, tool)
 
-            # Lens groove (V1): the side-cut op is outside the Z-buffer sweep
-            # (its ToolProfile kernel stamps nothing) — verify it geometrically
-            # instead and hand the viewer its true rings to mark in the scene.
-            lines = report.summary_lines()
-            g_op = next((o for o in ops if o.name == "Lens Groove"), None)
-            if g_op is not None and getattr(relief, "groove", None) is not None:
-                from guildmodel.core.cam.castle_ops import verify_groove_op
-                issues = verify_groove_op(
-                    g_op, relief.groove_lens_polys, relief.groove,
-                    g_op.tool or tool)
-                if issues:
+            # Lens groove (V1 → M21): the side-cut V is simulated as an undercut
+            # now — the Solid view shows the slot — and still checked
+            # geometrically where the ops are in hand.
+            if getattr(relief, "groove", None) is not None:
+                g_op = next((o for o in (ops or []) if o.name == "Lens Groove"), None)
+                if g_op is not None:
+                    from guildmodel.core.cam.castle_ops import verify_groove_op
+                    issues = verify_groove_op(
+                        g_op, relief.groove_lens_polys, relief.groove,
+                        g_op.tool or tool)
                     lines += [f"⚠ {w}" for w in issues]
-                else:
-                    lines.append(
-                        "Lens Groove: side-cut op verified geometrically "
-                        "(apex on the lens contour; outside the top-down sweep)")
+                if plan.has_undercut():
+                    lines.append("Lens Groove: the side-cut V is simulated as an "
+                                 "undercut (see Solid in the Simulation view)")
                 z_apex = float(relief.groove.anterior_offset_mm)
                 plan.groove_rings = [
                     [(float(x), float(y), z_apex)
@@ -1557,6 +1656,9 @@ class FlatSimWorker(_ProgressWorker):
             except Exception:
                 pass                     # unknown machine: simulate unclamped, as before
 
+            if self.program_text:
+                from guildmodel.core.relief.castle import CUT_RES_MM
+                self.resolution = CUT_RES_MM   # the posting grid, as the program was cut
             self.progress.emit(f"[sim] Building the {self.mode} relief at {self.resolution} mm…")
             if self.mode == "temple":
                 t = self.temple
@@ -1601,59 +1703,51 @@ class FlatSimWorker(_ProgressWorker):
                 blank_length, blank_width = b.blank_length_mm, b.blank_width_mm
                 fallback_tool = resolve_tool(b.profile_tool, tools_cfg)
 
-            self._progress("Posting the program", 0.55)
-            tool_settings, _ = build_tool_settings(
-                ops, tools_cfg,
-                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
-                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
-                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
-                tool_feeds=cam.tool_feeds)
-            first = tool_settings[ops[0].tool_name]
-            post = GRBLPost(
-                job_name="sim", material=self.material_name,
-                tool_diameter_mm=first.diameter_mm, spindle_rpm=first.spindle_rpm,
-                feed_rate_mmpm=first.feed_rate_mmpm, plunge_rate_mmpm=first.plunge_rate_mmpm,
-                safe_z_mm=cam.safe_z_for(top_z))                 # work_offset (0,0,0): sim stays in the design frame
-            write_castle_program(
-                ops, post, arc_tol_mm=cam.arc_tolerance_mm,
-                contour_stepdown_mm=cam.contour_stepdown_mm,
-                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
-                contour_lead_in=cam.contour_lead_in,
-                tool_settings=tool_settings, contour_op_names=contour_names,
-                drill_op_names=drill_names, peck_depth_mm=peck)
+            if self.program_text:
+                program = self.program_text
+                feed_mmpm = float(cam.feed_rate_mmpm or mat["feed_rate_mmpm"])
+                self.progress.emit("[sim] Simulating the stored program…")
+            else:
+                self._progress("Posting the program", 0.55)
+                tool_settings, _ = build_tool_settings(
+                    ops, tools_cfg,
+                    default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                    default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                    default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+                    tool_feeds=cam.tool_feeds)
+                first = tool_settings[ops[0].tool_name]
+                post = GRBLPost(
+                    job_name="sim", material=self.material_name,
+                    tool_diameter_mm=first.diameter_mm, spindle_rpm=first.spindle_rpm,
+                    feed_rate_mmpm=first.feed_rate_mmpm, plunge_rate_mmpm=first.plunge_rate_mmpm,
+                    safe_z_mm=cam.safe_z_for(top_z))                 # work_offset (0,0,0): sim stays in the design frame
+                write_castle_program(
+                    ops, post, arc_tol_mm=cam.arc_tolerance_mm,
+                    contour_stepdown_mm=cam.contour_stepdown_mm,
+                    contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                    contour_lead_in=cam.contour_lead_in,
+                    tool_settings=tool_settings, contour_op_names=contour_names,
+                    drill_op_names=drill_names, peck_depth_mm=peck)
+                program = post.to_string()
+                feed_mmpm = float(post.feed_rate_mmpm)
 
-            self.progress.emit("[sim] Sweeping the tools along the toolpaths…")
+            # The stock engine (M21): the verdict on the relief grid, the
+            # playback over the single-level blank as listed on the part's tab,
+            # centered on the design origin the ops are in (a snapped temple
+            # sits at its end), from one parse of the program.
             f = relief.field
-            init_z = top_z                                        # the uncut flat top = the target top
-            _swp = lambda p: self._progress("Simulating", 0.6 + 0.35 * p)
-            groups = cutting_paths_from_program_grouped(post.to_string())
-            profiles = {n: ToolProfile.from_tool(tools_cfg[n])
-                        for n in {t for _, t in groups if t and t in tools_cfg}}
-            floor = achieved_floor_grouped(
-                groups, profiles, ToolProfile.from_tool(fallback_tool),
-                f.origin, f.z.shape, f.resolution, init_z, progress=_swp)
-            report = verify(
-                floor, np.where(relief.inside, f.z, np.nan), relief.inside,
-                f.origin, f.resolution, partition=None)
-
-            # Position-based removal plan (M7.12): single-level blank (temple /
-            # base-curve block) carved along the toolpath in sync with the tool.
-            self._progress("Building playback", 0.96)
-            # The blank as listed on the part's tab, centered on the design origin
-            # the ops are in (a snapped temple sits at its end), not the relief
-            # grid cropped to the cut (session two of M20).
+            from guildmodel.core.relief.heightfield import Heightfield
             from guildmodel.core.sim.bed import flat_blank_heightfield
             stock_top, stock_origin = flat_blank_heightfield(
                 blank_length, blank_width, float(top_z), f.resolution)
-            plan = build_removal_plan(
-                motion_steps_from_program(
-                    post.to_string(), ToolProfile.from_tool(fallback_tool),
-                    profiles={n: ToolProfile.from_tool(c) for n, c in tools_cfg.items()},
-                    rapid_mmpm=3000.0, feed_mmpm=post.feed_rate_mmpm,
-                    base_spacing=f.resolution),
-                stock_top, stock_origin, f.resolution)
-            plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
-            self.finished.emit(report, report.summary_lines(), plan)
+            report, lines, plan, runs = _simulate_program(
+                program, relief, tools_cfg, fallback_tool, init_z=float(top_z),
+                stock_field=Heightfield(z=stock_top, origin=stock_origin,
+                                        resolution=f.resolution),
+                feed_mmpm=feed_mmpm, progress=self._progress)
+            if self.program_text is None:
+                plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
+            self.finished.emit(report, lines, plan)
         except _Canceled:
             self.canceled.emit()
         except Exception:
@@ -1870,13 +1964,14 @@ class BedSimWorker(_ProgressWorker):
     (`bed_report_from_program`). The front's relief comes from Generate's cache
     (`reliefs`, by label); a temple's or a block's is a flat build. Nothing is
     regenerated, which is what made the bed simulation sluggish: it used to
-    rebuild every relief and every program a second time. The playback carves
-    each part's blank as listed — the pad block on the front's — placed on the
-    bed, on the preview grid (`playback_resolution`): the verdict stays on the
-    posting grid, the block on screen need not.
+    rebuild every relief and every program a second time. Since M21 the
+    program is cut once, into each part's blank as listed — the pad block on
+    the front's — placed on the bed on the posting grid, and that one cut is
+    the verdict and the playback.
 
     Without `program_text` (the one-shot tests) it falls back to the pre-M20
-    path, `simulate_component` per part, composited.
+    path, `simulate_component` per part, composited, with the playback on
+    `playback_resolution`.
     """
 
     finished = Signal(object, object, object)   # CutReport, summary lines, RemovalPlayback
@@ -1902,9 +1997,10 @@ class BedSimWorker(_ProgressWorker):
             import yaml
             from guildmodel.core.cam.castle_ops import CastleCamParams
             from guildmodel.core.sim import (
-                BedRemovalPart, ComponentSim, ToolProfile, bed_report_from_program,
-                build_bed_removal_plan, composite_bed_report, relief_for_spec,
-                simulate_component, steps_from_ops, stock_for_spec,
+                BedRemovalPart, ComponentSim, ToolProfile, bed_stock_plan,
+                build_bed_removal_plan, composite_bed_report, composite_bed_targets,
+                relief_for_spec, simulate_component, steps_from_ops, stock_for_spec,
+                verify,
             )
             from guildmodel.core.relief.castle import CUT_RES_MM
 
@@ -1964,17 +2060,24 @@ class BedSimWorker(_ProgressWorker):
                                                 pl.dx, pl.dy, rotation_deg=pl.rotation_deg))
 
             if self.program_text:
+                # The stock engine (M21 §6.5): ``worktable.nc`` cut once over the
+                # placed blanks on the posting grid, the verdict read off the
+                # result against the composited targets, the same plan played.
                 self._progress("Reading the program onto the bed", 0.6)
-                fallback = ToolProfile.from_tool(tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"]))
-                report = bed_report_from_program(
-                    self.program_text, comps, stock_parts, resolution=CUT_RES_MM,
-                    tools_cfg=tools_cfg, fallback=fallback,
-                    progress=lambda fr: self._progress("Sweeping the tools", 0.6 + 0.3 * fr))
+                fallback = tools_cfg.get(cam.tool_name, tools_cfg["flat_3175"])
+                plan = bed_stock_plan(
+                    self.program_text, stock_parts, resolution=CUT_RES_MM,
+                    tools_cfg=tools_cfg, fallback_tool=fallback,
+                    progress=lambda fr: self._progress("Cutting the bed", 0.6 + 0.3 * fr))
+                bed_target, bed_inside = composite_bed_targets(
+                    comps, plan.origin, plan.shape, CUT_RES_MM)
+                report = verify(plan.final_top(), bed_target, bed_inside, plan.origin,
+                                CUT_RES_MM, partition=None)
             else:
                 self._progress("Compositing the bed", 0.9)
                 report = composite_bed_report(comps, self.work_area, resolution=CUT_RES_MM)
-            self._progress("Building playback", 0.95)
-            plan = build_bed_removal_plan(bed_parts, resolution=play_res)
+                self._progress("Building playback", 0.95)
+                plan = build_bed_removal_plan(bed_parts, resolution=play_res)
             plan.op_tool_geom = geom
             self.finished.emit(report, report.summary_lines(), plan)
         except _Canceled:
@@ -7112,6 +7215,8 @@ class MainWindow(QMainWindow):
             "warn": ("⚠ Cut needs attention", "#c08a00"),
             "fail": ("✗ Cut incomplete", "#c0392b"),
         }.get(status, ("Cut result", ""))
+        if getattr(report, "faults", ()):
+            text = "✗ Tool meets stock"
         self._sim_verdict_lbl.setText(text)
         self._sim_verdict_lbl.setStyleSheet(
             f"font-weight: 700; color: {color};" if color else "font-weight: 700;")
@@ -9191,6 +9296,16 @@ class MainWindow(QMainWindow):
         self.append_log(f"[sim] Simulating the machined result ({mode or 'frame'})…")
 
         res = self._prefs["preview_resolution_mm"]
+        # The simulation simulates the posted program (M21 §6.5): the stored
+        # one when it is fresh, read at the posting grid; otherwise the program
+        # is generated first and the simulation follows, as the bed's does.
+        key = {"temple": "temple_cut.nc", "block": "base_curve_block.nc"}.get(
+            mode, "posterior_cut.nc")
+        program = self._last_programs.get(key) if self._program_stored else None
+        if program is None and self._outline_poly is not None:
+            self.append_log("[sim] No fresh program stored — generating it first.")
+            self._on_generate(then=self._start_component_sim)
+            return
         # The sim must simulate the program the tab posts, overrides and all (M16).
         cam = self.params.effective_cam_params()
         mat = self.params.effective_material_name()
@@ -9198,16 +9313,17 @@ class MainWindow(QMainWindow):
             self._sim_worker = FlatSimWorker(
                 "temple", outline=self._outline_poly, temple=self.params.temple_params(),
                 hinge_polys=self._hinge_polys, engraving=self._engraving_curves,
-                graphics=self._engraving_graphics,
-                cam_params=cam, material_name=mat, resolution=res)
+                graphics=self._engraving_graphics, inlay_polys=self._inlay_polys,
+                cam_params=cam, material_name=mat, resolution=res, program_text=program)
         elif mode == "block":
             self._sim_worker = FlatSimWorker(
                 "block", lens=self._lens_od, block=self.params.block_params(),
-                cam_params=cam, material_name=mat, resolution=res)
+                cam_params=cam, material_name=mat, resolution=res, program_text=program)
         else:
             self._sim_worker = SimWorker(
                 self._partition, self.params.castle_params(), cam_params=cam,
-                hinge_polys=self._hinge_polys, material_name=mat, resolution=res)
+                hinge_polys=self._hinge_polys, material_name=mat, resolution=res,
+                inlay_polys=self._inlay_polys, program_text=program)
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
@@ -9237,11 +9353,12 @@ class MainWindow(QMainWindow):
         self._update_view_toggles()
         for line in lines:
             self.append_log("[sim] " + line)
-        self.status_lbl.setText({
-            "ok": "Cut verified — surface fully reached",
-            "warn": "Cut simulated — review the flagged regions",
-            "fail": "Cut incomplete — see the flagged regions",
-        }.get(report.status(), "Cut simulated"))
+        self.status_lbl.setText(
+            "Tool meets stock — see the log" if getattr(report, "faults", ()) else {
+                "ok": "Cut verified — surface fully reached",
+                "warn": "Cut simulated — review the flagged regions",
+                "fail": "Cut incomplete — see the flagged regions",
+            }.get(report.status(), "Cut simulated"))
         # Keep a serializable summary for the .gmodel (no numpy masks).
         c, g = report.completeness, report.gouge
         self._last_report = {
@@ -9267,10 +9384,13 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Simulation canceled")
         self._update_view_toggles()
 
-    def _on_generate(self) -> None:
+    def _on_generate(self, _checked: bool = False, *, then=None) -> None:
+        """Generate the active component's program. ``then`` runs once it is
+        stored (the simulation that asked for it, M21)."""
         self._commit_typed_value()
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
+        self._gcode_then = then
         if self._outline_poly is None:
             QMessageBox.warning(
                 self,

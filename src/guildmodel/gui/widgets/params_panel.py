@@ -1539,7 +1539,7 @@ class ParamsPanel(QTabWidget):
         self._build_stock_group(lay)
 
     def _build_stock_group(self, lay: QVBoxLayout) -> None:
-        grp = QGroupBox("Stock")
+        grp = self._fold("Stock", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 

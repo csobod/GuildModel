@@ -486,8 +486,7 @@ def build_castle_relief(
 
     # ---- Hinge pockets: sharp-walled cut below the endpiece height ----
     _report(progress, "Hinge pockets", 0.88)
-    from ..geometry.pocket_floor import castle_pocket_floors
-    for poly, floor in castle_pocket_floors(hinge_polys, castle):
+    for poly, floor in hinge_floors:
         prepare(poly)
         m = contains_xy(poly, flat_x, flat_y).reshape(rows, cols) & inside
         if floor.flat:
