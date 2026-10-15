@@ -160,6 +160,18 @@ A saved project whose temple was not drawn on the origin will show it placed
 differently on reopen: the blank box in the 2D view shows where, and
 unchecking the box restores the old placement.
 
+### Fixes (2026-10-15)
+
+* **The largest front in the library builds on the B-Rep kernel.** On one
+  drawing, 165 mm across, the footing carve's multi-tool cut reported that it
+  did not complete, and the build stopped there with an error; the raster
+  and the default mesh kernel built the same front without remark. The flat
+  rebuild that already rescues a curved base that does not close now also
+  covers a curved base whose boolean fails: the front builds flat, closes,
+  and agrees with the raster within 0.02%. Found by the new corpus sweep
+  (`tests/test_frame_corpus.py`), which reads a local folder of the maker's
+  designs when one is there and ships none of them.
+
 ### What posts the same, and what to re-post
 
 The release check (`scripts/probe_release_compare.py`, which now drives the

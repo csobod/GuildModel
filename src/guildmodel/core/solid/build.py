@@ -486,8 +486,21 @@ def build_castle_solid(partition: CastlePartition, castle: CastleParams,
     is the same principle `castle_relief` applies to an unknown kernel name:
     fall back rather than refuse.
     """
-    solid = _build_castle_solid(partition, castle, hinges, heights, progress,
-                                return_surface, curved=None)
+    try:
+        solid = _build_castle_solid(partition, castle, hinges, heights, progress,
+                                    return_surface, curved=None)
+    except BooleanError:
+        # The curved base can also fail outright: on the largest front in the
+        # maker's library (165 mm across, 2026-10-15) the footing carve's
+        # multi-tool cut reports "did not complete", while the flat base builds
+        # in a third of the time and closes. The raster and the mesh kernel
+        # build the same drawing without remark. Same fallback, one step
+        # earlier; a flat build that fails too raises on its own.
+        if not CURVED_TERRACES:
+            raise
+        _report(progress, "Rebuilding without curved terraces", 0.95)
+        return _build_castle_solid(partition, castle, hinges, heights,
+                                   progress, return_surface, curved=False)
     check = solid[0] if return_surface else solid
     if CURVED_TERRACES and not closes(check):
         _report(progress, "Rebuilding without curved terraces", 0.95)
