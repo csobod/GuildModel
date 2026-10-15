@@ -650,7 +650,12 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     target = DexelStock.from_heightfield(
         Heightfield(z=np.where(inside, f.z, 0.0), origin=f.origin, resolution=f.resolution),
         inside=inside, z_bottom=VERDICT_BOTTOM_MM, k=1)
-    sreport = compare(verdict, target, inside, partition=partition)
+    # On a pressed blank (M25) the three-axis cut makes the walls vertical at
+    # the front edge where the formed part's lean; the back's rim loses that
+    # much by design, and the verdict's rim band allows it.
+    lean = float(getattr(relief, "wall_lean_mm", 0.0) or 0.0)
+    sreport = compare(verdict, target, inside, partition=partition,
+                      gouge_rim_margin_mm=1.7 + lean)
     report = sreport.to_cut_report(np.where(inside, f.z, np.nan), verdict.top(empty=init_z).z,
                                    faults=faults)
     if progress is not None:
@@ -678,11 +683,15 @@ class GCodeWorker(_ProgressWorker):
         self, outline, castle, params: dict,
         partition=None, hinge_polys=(), cam_params=None,
         engraving=(), temple=None, is_temple=False, graphics=(),
-        inlay_polys=(), sculpt_sources=None,
+        inlay_polys=(), sculpt_sources=None, forming=None, bridge=None,
     ) -> None:
         super().__init__()
         self.outline = outline
         self.castle = castle
+        # The project's forming (M25): with a pre-formed blank the target is
+        # the formed model and the stock the pressed slab.
+        self.forming = forming
+        self.bridge = bridge
         self.params = params
         self.cam_params = cam_params
         self.partition = partition
@@ -722,6 +731,7 @@ class GCodeWorker(_ProgressWorker):
     def _generate_castle(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
         """Five-op posterior program: hinge pockets -> rough -> fine ->
         eyewires -> perimeter, single .nc, onion skin instead of tabs."""
+        import numpy as np
         import yaml
         from guildmodel.core.cam.castle_ops import (
             CastleCamParams, fixture_clearance_violations, generate_castle_program,
@@ -755,11 +765,59 @@ class GCodeWorker(_ProgressWorker):
             self.partition, castle, self.hinge_polys, kernel=self.kernel,
             resolution=CUT_RES_MM, progress=self._progress,
             inlays=self.inlay_polys, sculpt_sources=self.sculpt_sources,
+            forming=self.forming, bridge=self.bridge,
         )
+        flat_programs: dict = {}
+        flat_setups: list = []
+        if relief.preformed:
+            # A pressed blank (M25): the pressed slab is the stock, the formed
+            # model the target, the walls lean, the groove waits. A second
+            # side on the curved blank waits for the nest fixture work.
+            self.progress.emit(
+                f"[gcode] Pre-formed blank: the target is the formed model; the walls lean "
+                f"{relief.wall_lean_mm:.2f} mm between the front's edge and the back's, and "
+                "a three-axis cut makes them vertical at the front's.")
+            if cam.two_sided != "off":
+                cam = cam.model_copy(update={"two_sided": "off"})
+                self.progress.emit("[gcode] Two-sided on a pressed blank comes with the "
+                                   "nest fixture; one setup posted.")
+            if getattr(castle.stock, "apertures_first", False):
+                # The hybrid: the eyewires, the holes and the groove cut flat
+                # before pressing, in a program of their own; the pressed
+                # blank arrives with its apertures open.
+                flat_castle = castle.model_copy(update={"stock": castle.stock.model_copy(
+                    update={"preformed": False, "apertures_first": False})})
+                flat_relief = castle_relief(
+                    self.partition, flat_castle, self.hinge_polys, kernel=self.kernel,
+                    resolution=CUT_RES_MM, progress=self._progress,
+                    inlays=self.inlay_polys, sculpt_sources=self.sculpt_sources)
+                keep = {"Eyewires", "Holes", "Lens Groove"}
+                flat_cam = cam.model_copy(update={"op_enabled": {
+                    **{n: False for n in ("Hinge Pockets", "Rough Relief", "Fine Relief",
+                                          "Features", "Sculpt Finish", "Inlays", "Perimeter")},
+                    **{n: True for n in keep}}})
+                flat_ops = generate_castle_program(
+                    flat_relief, flat_castle, self.hinge_polys, tool, params=flat_cam,
+                    progress=self._progress, tools_cfg=tools_cfg, inlay_polys=self.inlay_polys)
+                flat_ops = [op for op in flat_ops if op.paths]
+                if flat_ops:
+                    flat_programs["apertures_cut.nc"] = flat_ops
+                    from guildmodel.core.project.schema import Setup
+                    flat_setups.append(Setup(
+                        side="posterior", wcs="G54", program="apertures_cut.nc",
+                        stock_top_mm=flat_castle.stock.total_pad_height_mm,
+                        notes=["flat, before pressing: the apertures and the groove"]))
+                    self.progress.emit("[gcode] Apertures first: eyewires, holes and the groove "
+                                       "cut flat in apertures_cut.nc, before pressing.")
+                cam = cam.model_copy(update={"op_enabled": {
+                    **cam.op_enabled, "Eyewires": False, "Holes": False, "Lens Groove": False}})
         self.progress.emit("[gcode] Castle: generating the operations…")
         from guildmodel.core.cam.two_sided import plan_two_sided
         job = plan_two_sided(relief, castle, self.hinge_polys, tool, cam, tools_cfg,
                              inlay_polys=self.inlay_polys, progress=self._progress)
+        if flat_setups:
+            job.setups = flat_setups + job.setups
+            job.setups[-1].notes = list(job.setups[-1].notes) + ["on the pressed blank, in the nest"]
         for note in job.notes:
             self.progress.emit(f"[gcode] {note}")
         ops = require_ops(job.side_one, "The frame front")
@@ -882,6 +940,10 @@ class GCodeWorker(_ProgressWorker):
             f"offset ({work_offset[0]:+.2f}, {work_offset[1]:+.2f}, {work_offset[2]:+.2f}) mm"
         )
 
+        # The stock's top: the slab and its pad block, or on a pressed blank
+        # (M25) the slab's own highest point, which the safe plane must clear.
+        stock_top_mm = (float(np.nanmax(relief.stock_top.z)) if relief.preformed
+                        else castle.stock.total_pad_height_mm)
         post = GRBLPost(
             job_name="posterior_cut",
             material=p["material_name"],
@@ -889,13 +951,13 @@ class GCodeWorker(_ProgressWorker):
             spindle_rpm=post_spindle,
             feed_rate_mmpm=post_feed,
             plunge_rate_mmpm=post_plunge,
-            safe_z_mm=cam.safe_z_for(castle.stock.total_pad_height_mm),
-            feed_plane_mm=castle.stock.total_pad_height_mm + 1.0,   # rapid-descent floor
+            safe_z_mm=cam.safe_z_for(stock_top_mm),
+            feed_plane_mm=stock_top_mm + 1.0,   # rapid-descent floor
             work_offset=work_offset,
         )
         if cam.link_retracts:
             from guildmodel.core.cam.castle_ops import work_holding_keepouts
-            post.link_clearance_z_mm = castle.stock.total_pad_height_mm + cam.link_clearance_mm
+            post.link_clearance_z_mm = stock_top_mm + cam.link_clearance_mm
             post.link_keepouts = tuple(work_holding_keepouts(
                 relief.partition.body, castle.stock, post_dia / 2.0,
                 screw_head_diameter_mm=cam.screw_head_diameter_mm,
@@ -956,6 +1018,28 @@ class GCodeWorker(_ProgressWorker):
 
         # Stash artifacts for the .gmodel container (M5.1); read on the GUI thread.
         self.programs = {"posterior_cut.nc": text}
+        for name, flat_ops in flat_programs.items():
+            # the hybrid's flat program (M25), posted with the same settings
+            post_f = GRBLPost(
+                job_name=name.replace(".nc", ""), material=p["material_name"],
+                tool_diameter_mm=post_dia, spindle_rpm=post_spindle,
+                feed_rate_mmpm=post_feed, plunge_rate_mmpm=post_plunge,
+                safe_z_mm=cam.safe_z_for(castle.stock.total_pad_height_mm),
+                feed_plane_mm=castle.stock.total_pad_height_mm + 1.0, work_offset=work_offset)
+            settings_f, _ = build_tool_settings(
+                flat_ops, tools_cfg,
+                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                default_spindle=cam.spindle_rpm or mat["spindle_rpm"], tool_feeds=cam.tool_feeds)
+            write_castle_program(
+                flat_ops, post_f, side="Apertures Cut (flat, before pressing)",
+                arc_tol_mm=clamp.arc_tol_mm, contour_stepdown_mm=cam.contour_stepdown_mm,
+                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
+                tool_settings=settings_f if len(settings_f) > 1 else None,
+                tool_change_mode=machine.tool_change_mode)
+            self.programs[name] = post_f.to_string()
+            self.progress.emit(f"[gcode] {name} generated ({len(self.programs[name]):,} bytes)")
         self.machine_dump = machine.model_dump()
         flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
         for s in job.setups:
@@ -1545,11 +1629,14 @@ class SimWorker(_ProgressWorker):
     def __init__(self, partition, castle, cam_params, hinge_polys=(),
                  material_name="acetate", resolution: float = 0.3,
                  inlay_polys=(), program_text: str | None = None,
-                 sculpt_sources=None, back_program_text: str | None = None) -> None:
+                 sculpt_sources=None, back_program_text: str | None = None,
+                 forming=None, bridge=None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
         self.cam_params = cam_params
+        self.forming = forming           # the project's forming, for a pre-formed blank (M25)
+        self.bridge = bridge
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)
         self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
@@ -1596,6 +1683,7 @@ class SimWorker(_ProgressWorker):
                 kernel=self.kernel, resolution=res,
                 progress=self._progress, inlays=self.inlay_polys,
                 sculpt_sources=self.sculpt_sources,
+                forming=self.forming, bridge=self.bridge,
             )
             ops = None
             if self.program_text:
@@ -1624,11 +1712,15 @@ class SimWorker(_ProgressWorker):
                     spindle_rpm=(first.spindle_rpm if first else mat["spindle_rpm"]),
                     feed_rate_mmpm=(first.feed_rate_mmpm if first else mat["feed_rate_mmpm"]),
                     plunge_rate_mmpm=(first.plunge_rate_mmpm if first else mat["plunge_rate_mmpm"]),
-                    safe_z_mm=cam.safe_z_for(self.castle.stock.total_pad_height_mm),
+                    safe_z_mm=cam.safe_z_for(
+                        float(np.nanmax(relief.stock_top.z)) if relief.preformed
+                        else self.castle.stock.total_pad_height_mm),
                 )
                 if cam.link_retracts:
                     from guildmodel.core.cam.castle_ops import work_holding_keepouts
-                    post.link_clearance_z_mm = self.castle.stock.total_pad_height_mm + cam.link_clearance_mm
+                    post.link_clearance_z_mm = (
+                        (float(np.nanmax(relief.stock_top.z)) if relief.preformed
+                         else self.castle.stock.total_pad_height_mm) + cam.link_clearance_mm)
                     post.link_keepouts = tuple(work_holding_keepouts(
                         relief.partition.body, self.castle.stock,
                         (first.diameter_mm if first else tool["diameter_mm"]) / 2.0,
@@ -1651,10 +1743,34 @@ class SimWorker(_ProgressWorker):
             init_z = self.castle.stock.total_pad_height_mm + 1.0
             stock_hf = stock_top_heightfield(self.castle.stock, resolution=f.resolution)
             carry: dict = {}
+            pressed: dict = {}
+            if relief.preformed and self.forming is not None:
+                # The pressed slab is the stock (M25): the verdict and the
+                # playback both start from its mesh, apertures open on a hybrid.
+                import numpy as np
+                from shapely.geometry import Polygon
+                from guildmodel.core.forming import ThermoformMap
+                from guildmodel.core.forming.blank import formed_blank_mesh
+                from guildmodel.core.stock import DexelStock
+                fmap = ThermoformMap.from_metadata(self.forming, bridge=self.bridge)
+                apertures = ()
+                if getattr(self.castle.stock, "apertures_first", False):
+                    is_hole = self.partition.is_hole
+                    apertures = [Polygon(r) for r in self.partition.body.interiors
+                                 if not is_hole(r)]
+                mesh = formed_blank_mesh(self.castle.stock, fmap, apertures=apertures)
+                v, fc = np.asarray(mesh.vertices), np.asarray(mesh.faces)
+                rows, cols = f.z.shape
+                pressed["verdict0"] = DexelStock.from_mesh(v, fc, f.origin, rows, cols, f.resolution)
+                pressed["blank0"] = DexelStock.from_mesh(v, fc, stock_hf.origin, *stock_hf.z.shape,
+                                                         f.resolution)
+                init_z = float(np.nanmax(relief.stock_top.z)) + 0.5
+                self.progress.emit("[sim] The stock is the pressed slab; the walls lean "
+                                   f"{relief.wall_lean_mm:.2f} mm and the rim band allows it.")
             report, lines, plan, runs = _simulate_program(
                 program, relief, tools_cfg, tool, init_z=init_z, stock_field=stock_hf,
                 feed_mmpm=feed_mmpm, partition=self.partition, progress=self._progress,
-                carry=carry)
+                carry=carry, **pressed)
             if ops is not None:
                 plan.op_tool_geom = _op_tool_geom(ops, tool)
 
@@ -1988,6 +2104,11 @@ class PartsWorker(_ProgressWorker):
             self.progress.emit(f"[nest] {spec['label']}: generating program…")
             mode = spec["mode"]
             cid = spec.get("component_id", "")
+            if mode == "castle" and getattr(spec["castle"].stock, "preformed", False):
+                self.progress.emit(f"[nest] {spec['label']}: a pre-formed front is cut in its "
+                                   "nest, not on the bed; take it off the bed or press after")
+                raise ValueError(f"{spec['label']} is a pre-formed front: cut it in its nest, "
+                                 "not on the bed (uncheck On the bed)")
             if mode == "castle":
                 relief = castle_relief(
                     spec["partition"], spec["castle"], spec["hinge"],
@@ -9130,8 +9251,12 @@ class MainWindow(QMainWindow):
 
     def _show_stage_mesh(self, mesh, edges=None) -> None:
         zero, _ = self._active_program_zero_3d()
+        try:
+            stock_mesh = self._pressed_blank_mesh()
+        except Exception:                                    # noqa: BLE001
+            stock_mesh = None
         self.view3d.show_mesh(mesh, stock=self.params.castle_params().stock,
-                              program_zero=zero, edges=edges)
+                              program_zero=zero, edges=edges, stock_mesh=stock_mesh)
         if self._forming_applies():
             self._show_formed()             # a rebuilt base re-forms (M18)
         n_v = len(mesh.vertices)
@@ -9303,6 +9428,36 @@ class MainWindow(QMainWindow):
         base = (ws.forming if ws is not None and ws.forming is not None
                 else FormingMetadata())
         return self._forming_panel.forming(base)
+
+    def _preformed_forming(self):
+        """The active front's forming when its blank is pressed first (M25),
+        else None: the workers then cut the flat blank as always."""
+        ws = self._active_workspace()
+        if ws is None or not ws.castle_ready:
+            return None
+        castle = self.params.castle_params()
+        if not getattr(castle.stock, "preformed", False):
+            return None
+        from guildmodel.core.project.schema import FormingMetadata
+        return self._active_forming() if ws.forming is not None else FormingMetadata()
+
+    def _preformed_bridge(self):
+        ws = self._active_workspace()
+        if ws is None or not ws.castle_ready or ws.partition is None:
+            return None
+        return self._bridge_geometry()
+
+    def _pressed_blank_mesh(self):
+        """The pressed slab as a trimesh, for the 3D view's stock ghost on a
+        pre-formed blank (M25); None on a flat one."""
+        forming = self._preformed_forming()
+        if forming is None or forming.is_flat:
+            return None
+        from guildmodel.core.forming import ThermoformMap
+        from guildmodel.core.forming.blank import formed_blank_mesh
+        castle = self.params.castle_params()
+        fmap = ThermoformMap.from_metadata(forming, bridge=self._preformed_bridge())
+        return formed_blank_mesh(castle.stock, fmap)
 
     def _bridge_geometry(self):
         """Where the active front's bends live, read off its partition."""
@@ -9837,7 +9992,8 @@ class MainWindow(QMainWindow):
                 inlay_polys=self._inlay_polys, program_text=program,
                 sculpt_sources=self._sculpt_sources(),
                 back_program_text=(self._last_programs.get("back_cut.nc")
-                                   if program and self._program_stored else None))
+                                   if program and self._program_stored else None),
+                forming=self._preformed_forming(), bridge=self._preformed_bridge())
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
@@ -9928,6 +10084,8 @@ class MainWindow(QMainWindow):
             hinge_polys=self._hinge_polys,
             inlay_polys=self._inlay_polys,                   # the seats (§8a)
             sculpt_sources=self._sculpt_sources(),           # the sculpts (M22)
+            forming=self._preformed_forming(),               # a pressed blank (M25)
+            bridge=self._preformed_bridge(),
             cam_params=self.params.effective_cam_params(),   # per-component CAM (M16)
             engraving=self._engraving_curves,
             graphics=self._engraving_graphics,

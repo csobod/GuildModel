@@ -609,7 +609,7 @@ class Viewer3D(QWidget):
             btn.setChecked(True)
 
     def show_mesh(self, mesh, stock=None, core_guide=None, program_zero=None,
-                  edges=None) -> None:
+                  edges=None, stock_mesh=None) -> None:
         """Cache a trimesh.Trimesh as the model scene and draw it if model mode is
         current. `stock`/`core_guide`/`program_zero` match the old Preview3D API.
 
@@ -630,6 +630,9 @@ class Viewer3D(QWidget):
 
         self._model_pv = pv_mesh
         self._model_stock = stock
+        # A pressed blank's slab (M25), drawn in place of the stock box.
+        self._model_stock_mesh = (self._polydata(stock_mesh)[0] if stock_mesh is not None
+                                  else None)
         self._model_core_guide = core_guide
         self._model_zero = tuple(program_zero) if program_zero is not None else None
         self._model_label_text = f"{len(verts):,} verts · {len(faces):,} tris"
@@ -845,7 +848,13 @@ class Viewer3D(QWidget):
             return
 
         stock = self._model_stock
-        if stock is not None:
+        stock_mesh = getattr(self, "_model_stock_mesh", None)
+        if stock_mesh is not None:
+            self._plotter.add_mesh(stock_mesh, color=self._palette.stock_ghost, opacity=0.18,
+                                   lighting=False, pickable=False)
+            self._plotter.add_mesh(stock_mesh.extract_feature_edges(feature_angle=30.0),
+                                   color=self._palette.stock_ghost, line_width=1, pickable=False)
+        elif stock is not None:
             half_l = stock.blank_length_mm / 2.0
             half_w = stock.blank_width_mm / 2.0
             boxes = [pv.Box(bounds=(

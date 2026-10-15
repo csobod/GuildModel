@@ -98,8 +98,7 @@ def _mask(polys, origin, rows, cols, res) -> np.ndarray:
 def needs_second_side(relief: CastleRelief) -> bool:
     """True when the front takes material off the anterior, or carries a
     seat there: something for side two to cut."""
-    a = relief.anterior
-    if a is not None and bool((a > ANTERIOR_BAND_MM).any()):
+    if relief.anterior is not None and bool((relief.anterior_depth > ANTERIOR_BAND_MM).any()):
         return True
     return bool(relief.anterior_pocket_polys)
 
@@ -124,13 +123,22 @@ def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
     ox, oy = f.origin
     T = float(castle.stock.blank_thickness_mm)
     a = relief.anterior_z
+    depth = relief.anterior_depth
     z2 = np.fliplr(T - a)
     ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
     origin2 = (float(ox2), float(oy))
     seats2 = [mirror_polygon(p, mirror_x) for p in relief.anterior_pocket_polys]
     seat_mask = _mask(seats2, origin2, rows, cols, res)
-    surface2 = np.where(seat_mask, T, z2)         # the passes sail over the seats
-    band = np.fliplr(a > ANTERIOR_BAND_MM) & ~seat_mask
+    # the new top: the former front, flat at T, or the pressed slab's own
+    # bottom turned over (M25)
+    if relief.stock_bottom is not None:
+        new_top = np.fliplr(T - relief.stock_bottom.z)
+        new_bottom = np.fliplr(T - relief.stock_top.z)
+    else:
+        new_top = np.full((rows, cols), T)
+        new_bottom = None
+    surface2 = np.where(seat_mask, new_top, z2)   # the passes sail over the seats
+    band = np.fliplr(depth > ANTERIOR_BAND_MM) & ~seat_mask
     slope = float(castle.anterior_feature_slope()) if band.any() else 0.0
     return CastleRelief(
         field=Heightfield(z=z2, origin=origin2, resolution=res),
@@ -141,6 +149,10 @@ def anterior_setup_relief(relief: CastleRelief, castle: CastleParams, *,
         surface_field=Heightfield(z=surface2, origin=origin2, resolution=res),
         feature_band=band if band.any() else None,
         feature_max_slope_deg=slope,
+        stock_top=(Heightfield(z=new_top, origin=origin2, resolution=res)
+                   if relief.stock_bottom is not None else None),
+        stock_bottom=(Heightfield(z=new_bottom, origin=origin2, resolution=res)
+                      if new_bottom is not None else None),
     )
 
 

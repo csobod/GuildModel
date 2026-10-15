@@ -1832,6 +1832,29 @@ class ParamsPanel(QTabWidget):
         self.front_origin_from_drawing.toggled.connect(self.front_placement_changed)
         form.addRow("", self.front_origin_from_drawing)
 
+        # The pre-formed blank (M25): the sheet pressed to the Forming view's
+        # curve before it is cut; the target is the formed model, the stock
+        # the formed slab, and the eyewires and the perimeter follow the curve.
+        self.preformed = QCheckBox("Pre-formed blank (pressed to the Forming curve first)")
+        self.preformed.setToolTip(
+            "Cut the front after pressing: the blank is the slab pressed to the\n"
+            "Forming view's base curve and face form, the target the formed model,\n"
+            "and the eyewires and the perimeter follow the curve, so nothing\n"
+            "ovalizes and the bridge does not draw in. A pressed sheet carries no\n"
+            "pad block. The lens groove cannot follow a curved rim in three axes:\n"
+            "groove by hand after forming, or cut the apertures first.")
+        self.preformed.toggled.connect(self._on_preformed_toggled)
+        self.preformed.toggled.connect(self.stock_changed)
+        form.addRow("", self.preformed)
+        self.apertures_first = QCheckBox("Apertures and groove first (hybrid)")
+        self.apertures_first.setToolTip(
+            "Cut the eyewires and the groove flat, press the part in the post-cut\n"
+            "dies, and nest the curved blank for the rest. Trades the bridge's\n"
+            "draw-in for a correct groove.")
+        self.apertures_first.setEnabled(False)
+        self.apertures_first.toggled.connect(self.stock_changed)
+        form.addRow("", self.apertures_first)
+
         self.use_pad_block = QCheckBox("Add nosepad pad block")
         self.use_pad_block.setChecked(True)
         self.use_pad_block.setToolTip(
@@ -1851,6 +1874,13 @@ class ParamsPanel(QTabWidget):
         self.use_pad_block.toggled.connect(self._on_pad_block_toggled)
         self.use_pad_block.toggled.connect(self.stock_changed)
 
+
+    def _on_preformed_toggled(self, on: bool) -> None:
+        """A pressed sheet carries no pad block; the hybrid is its option."""
+        self.apertures_first.setEnabled(bool(on))
+        if on and self.use_pad_block.isChecked():
+            self.use_pad_block.setChecked(False)
+        self.use_pad_block.setEnabled(not on)
 
     def _on_pad_block_toggled(self, on: bool) -> None:
         """Gray out the pad-block dimensions when the pad block is off."""
@@ -3138,6 +3168,8 @@ class ParamsPanel(QTabWidget):
             pad_block_width_mm=self.pad_width.value(),
             pad_block_thickness_mm=self.pad_thickness.value(),
             use_pad_block=self.use_pad_block.isChecked(),
+            preformed=self.preformed.isChecked(),
+            apertures_first=self.apertures_first.isChecked(),
         )
 
     def castle_params(self) -> CastleParams:
@@ -3228,6 +3260,15 @@ class ParamsPanel(QTabWidget):
             (self.pad_length, c.stock.pad_block_length_mm),
             (self.pad_width, c.stock.pad_block_width_mm),
             (self.pad_thickness, c.stock.pad_block_thickness_mm),
+        ]
+        for w, v in ((self.preformed, getattr(c.stock, "preformed", False)),
+                     (self.apertures_first, getattr(c.stock, "apertures_first", False))):
+            w.blockSignals(True)
+            w.setChecked(bool(v))
+            w.blockSignals(False)
+        self.apertures_first.setEnabled(self.preformed.isChecked())
+        self.use_pad_block.setEnabled(not self.preformed.isChecked())
+        pairs += [
         ]
         for canonical, (ext_sb, int_sb) in self.footing_spins.items():
             f = c.footing.for_edge(canonical)

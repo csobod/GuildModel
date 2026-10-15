@@ -5,6 +5,25 @@ and the current release's note; everything else lives here.
 
 ## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
 
+### The pre-formed blank: cut after pressing (BUILDPLAN M25, 2026-10-15)
+
+*Pre-formed blank* on the Stock tab cuts the front after it is pressed to
+the Forming view's curve: the stock is the slab pressed by the same map
+that makes the pre-cut dies, the target the formed model, and the masks,
+the hinge pockets and the seats are taken at the back's footprint while
+the eyewires and the perimeter are taken at the front's, where a
+three-axis cut makes the walls vertical. Each through-cut pass sits a
+stepdown below the local top and stops a skin above the local bottom,
+the skin measured along the surface's normal; the tabs ride the local
+floor; the hinge pocket floors follow the curve at their depth. The 3D
+view shows the pressed slab; the simulation starts from its mesh, and its
+verdict allows the walls' lean in the rim band and says how much it is.
+The lens groove is left out with a sentence, or cut flat first by the
+hybrid, *Apertures and groove first*, which posts the apertures and the
+groove in a program of their own before pressing. A flat project is
+byte-identical. A pre-formed front is cut in its nest, not on the bed, and
+a second side on it waits for the nest fixture work.
+
 ### Two-sided jobs: the flip (BUILDPLAN M24, 2026-10-15)
 
 A front that takes material off the front, a brow chamfer, an anterior

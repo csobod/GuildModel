@@ -678,9 +678,11 @@ def relief_ops(
     res = f.resolution
     ox, oy = f.origin
     inside = relief.inside
-    stock_hf = stock_top_heightfield(
-        stock, resolution=res, origin=f.origin, shape=f.z.shape
-    )
+    # A pre-formed blank (M25) brings its own top on the relief; a flat one
+    # is the Stock tab's slab and pad block.
+    stock_hf = (relief.stock_top if relief.stock_top is not None
+                else stock_top_heightfield(stock, resolution=res, origin=f.origin,
+                                           shape=f.z.shape))
 
     # Machining region = body grown by a finishing-tool-radius band; the band's
     # target is the relief level of the nearest body cell (so the rim floor is
@@ -868,8 +870,17 @@ def contour_op(
     skin_z: float,
     params: CastleCamParams,
     holding: "HoldingParams | None" = None,
+    surface_top=None,
+    surface_bottom=None,
 ) -> CamOp:
     """Depth-stacked offset contour passes.
+
+    On a pre-formed blank (M25) `surface_top` and `surface_bottom` are the
+    pressed slab's envelopes (`Heightfield`s on the relief grid): each pass
+    then follows the curve, a stepdown below the local top, and stops a skin
+    above the local bottom — the skin measured along the local normal, so a
+    tilted wall keeps the thickness the maker asked for. The tabs ride the
+    local floor the same way. Without them the stack is flat, as before.
 
     `holding` (M16) applies only where the caller passes it — the op that RELEASES
     the part. With ``strategy="tabs"`` the stack runs to the anterior face (z = 0)
@@ -910,6 +921,9 @@ def contour_op(
                 "smaller tool")
 
     tabs = holding is not None and holding.tabs_on()
+    if surface_top is not None and surface_bottom is not None:
+        _curved_contour(op, rings, surface_top, surface_bottom, skin_z, params, holding, tabs)
+        return op
     # Tabs hold the part instead of the skin, so the stack must reach the anterior
     # face. Never below it: the fixture's blank zone and hold-down screws are there.
     floor_z = 0.0 if tabs else skin_z
@@ -930,6 +944,96 @@ def contour_op(
                 pts = [(x, y, z) for x, y in ring]
             op.paths.append(_rdp(pts, params.simplify_tol_mm))
     return op
+
+
+def _surface_along(field, xy: np.ndarray) -> np.ndarray:
+    """A heightfield sampled along a ring, the cells outside it filled with
+    the ring's own extreme so a point past the blank's edge rides level."""
+    ox, oy = field.origin
+    z = _bilinear_sample(field.z, xy[:, 0], xy[:, 1], ox, oy, field.resolution)
+    if np.isnan(z).any():
+        fill = np.nanmax(z) if np.isfinite(z).any() else 0.0
+        z = np.where(np.isnan(z), fill, z)
+    return z
+
+
+def _curved_contour(op: CamOp, rings, surface_top, surface_bottom, skin_mm: float,
+                    params: CastleCamParams, holding, tabs: bool) -> None:
+    """The depth stack on a curved blank (M25): see `contour_op`."""
+    res = float(surface_bottom.resolution)
+    gy, gx = np.gradient(surface_bottom.z, res)
+    tilt = np.sqrt(np.nan_to_num(gx) ** 2 + np.nan_to_num(gy) ** 2)
+    from ..relief.heightfield import Heightfield
+    tilt_field = Heightfield(z=tilt, origin=surface_bottom.origin, resolution=res)
+    step = params.contour_stepdown_mm if params.contour_stepdown_mm > 1e-9 else 1e9
+    for ring in rings:
+        xy = np.asarray([(x, y) for x, y, *_ in ring], dtype=np.float64)
+        top = _surface_along(surface_top, xy)
+        bottom = _surface_along(surface_bottom, xy)
+        normal_skin = skin_mm * np.sqrt(1.0 + _surface_along(tilt_field, xy) ** 2)
+        floor = bottom if tabs else bottom + normal_skin
+        depth = float(np.max(top - floor))
+        if depth <= 1e-9:
+            continue
+        n = max(1, int(math.ceil(depth / step - 1e-9)))
+        passes = [np.maximum(top - k * step, floor) for k in range(1, n + 1)]
+        passes[-1] = floor
+        tab_h = 0.0
+        if tabs:
+            prev = passes[-2] if n >= 2 else top
+            tab_h = max(0.0, min(holding.tab_height_mm, float(np.min(prev - floor))))
+        for i, z in enumerate(passes):
+            if tabs and i == n - 1 and tab_h > 0.0:
+                raised = insert_tabs([(float(x), float(y)) for x, y in xy], holding.tab_count,
+                                     holding.tab_width_mm, tab_h, 0.0)
+                rxy = np.asarray([(x, y) for x, y, _ in raised], dtype=np.float64)
+                local = _surface_along(surface_bottom, rxy)
+                pts = [(float(x), float(y), float(local[k] + dz)) for k, (x, y, dz) in enumerate(raised)]
+            else:
+                pts = [(float(x), float(y), float(zk)) for (x, y), zk in zip(xy, z)]
+            op.paths.append(_rdp(pts, params.simplify_tol_mm))
+
+
+def formed_pocket_floors(hinges, castle, relief: CastleRelief) -> list:
+    """The hinge pockets' floors on a pre-formed blank (M25): the pocket as
+    the formed model carries it, read off the relief's own surface over each
+    pocket and fit as a plane, so the pocket op follows the curve at the
+    pocket's depth. ``[(polygon, PocketFloor)]`` like `castle_pocket_floors`."""
+    from shapely import contains_xy, prepare
+    from ..geometry.pocket_floor import PocketFloor, castle_pocket_floors
+    f = relief.field
+    rows, cols = f.z.shape
+    ox, oy = f.origin
+    res = f.resolution
+    out = []
+    for poly, flat_floor in castle_pocket_floors(hinges, castle):
+        x0, y0, x1, y1 = poly.bounds
+        c0, c1 = max(0, int((x0 - ox) / res)), min(cols, int((x1 - ox) / res) + 2)
+        r0, r1 = max(0, int((y0 - oy) / res)), min(rows, int((y1 - oy) / res) + 2)
+        xs = ox + np.arange(c0, c1) * res
+        ys = oy + np.arange(r0, r1) * res
+        X, Y = np.meshgrid(xs, ys)
+        prepare(poly)
+        inside = contains_xy(poly.buffer(-0.3), X.ravel(), Y.ravel())
+        Z = f.z[r0:r1, c0:c1].ravel()
+        ok = inside & np.isfinite(Z)
+        if ok.sum() < 6:
+            out.append((poly, flat_floor))
+            continue
+        A = np.column_stack([X.ravel()[ok], Y.ravel()[ok], np.ones(int(ok.sum()))])
+        (a, b, c), *_ = np.linalg.lstsq(A, Z[ok], rcond=None)
+        g = math.hypot(a, b)
+        if g < 1e-6:
+            out.append((poly, PocketFloor(z_fixed=float(c))))
+            continue
+        axis = (-a / g, -b / g)
+        vx, vy = np.asarray(poly.exterior.coords).T
+        along = vx * axis[0] + vy * axis[1]
+        k = int(np.argmin(along))
+        edge = float(along[k])
+        z_fixed = float(a * vx[k] + b * vy[k] + c)
+        out.append((poly, PocketFloor(z_fixed=z_fixed, axis=axis, edge=edge, slope=g)))
+    return out
 
 
 def tab_height_for(passes: list[float], top_z: float, requested_mm: float) -> float:
@@ -1307,8 +1411,9 @@ def unmachined_top_warnings(
     where the zone sits.
     """
     f = relief.field
-    stock = stock_top_heightfield(castle.stock, resolution=f.resolution,
-                                  origin=f.origin, shape=f.z.shape)
+    stock = (relief.stock_top if relief.stock_top is not None
+             else stock_top_heightfield(castle.stock, resolution=f.resolution,
+                                        origin=f.origin, shape=f.z.shape))
     at_top = relief.inside & (f.z >= stock.z - 1e-9)
     if not at_top.any():
         return []
@@ -1517,7 +1622,8 @@ def sculpt_finish_op(relief: CastleRelief, stock, tool: dict, params: CastleCamP
     ox, oy = f.origin
     inside = relief.inside
     r = float(tool["radius_mm"])
-    stock_hf = stock_top_heightfield(stock, resolution=res, origin=f.origin, shape=f.z.shape)
+    stock_hf = (relief.stock_top if relief.stock_top is not None
+                else stock_top_heightfield(stock, resolution=res, origin=f.origin, shape=f.z.shape))
     band_mm = max(r, params.relief_stepover_mm)
     dist, (iy, ix) = distance_transform_edt(~inside, sampling=res, return_indices=True)
     band = inside | (dist <= band_mm + 1e-9)
@@ -1574,6 +1680,12 @@ def generate_castle_program(
     """
     params = params or CastleCamParams()
     stock = castle.stock
+    if relief.hinge_polys_formed is not None:
+        # a pre-formed blank (M25): the pockets and the seats where the
+        # pressed part has them, not where the flat drawing had them
+        hinge_polys = list(relief.hinge_polys_formed)
+        if relief.inlay_polys_formed is not None and inlay_polys:
+            inlay_polys = list(relief.inlay_polys_formed)
     body = relief.mask_body           # aperture holes when the lens groove is on
     groove = relief.groove            # LensGrooveParams | None (V1)
     skin = castle.onion_skin_mm
@@ -1598,11 +1710,23 @@ def generate_castle_program(
     _p("Hinge pockets", 1)
     hinge_tool = _tool_for("Hinge Pockets")
     floor_z = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
+    preformed = relief.stock_top is not None
+    if preformed:
+        # The pressed blank (M25): the pocket floor follows the curve as the
+        # formed model carries it, and the pocket starts above the local top.
+        floors_formed = formed_pocket_floors(hinge_polys, castle, relief)
+        floors = aligned(floors_formed, hinge_polys)
+        lows = [fl.extremes(p)[0] for p, fl in floors_formed]
+        floor_z = min(lows) if lows else floor_z
+        start_z = float(np.nanmax(relief.stock_top.z)) + 0.5
+    else:
+        floors = aligned(castle_pocket_floors(hinge_polys, castle), hinge_polys)
+        start_z = stock.blank_thickness_mm + 0.5
     op1 = hinge_pocket_op(
         hinge_polys, floor_z,
-        start_z=stock.blank_thickness_mm + 0.5,
+        start_z=start_z,
         tool_radius_mm=hinge_tool["radius_mm"], params=params,
-        floors=aligned(castle_pocket_floors(hinge_polys, castle), hinge_polys),
+        floors=floors,
     )
     op1.tool = hinge_tool
     ops.append(op1)
@@ -1690,11 +1814,18 @@ def generate_castle_program(
                 contour_polys.append(inner)
     else:
         contour_polys = apertures
+    surfaces = ({"surface_top": relief.stock_top, "surface_bottom": relief.stock_bottom}
+                if preformed else {})
     op4 = contour_op(
         "Eyewires", contour_polys, "inside", eyewire_tool["radius_mm"],
-        allowance, top_z, skin, params,
+        allowance, top_z, skin, params, **surfaces,
     )
     op4.tool = eyewire_tool
+    if preformed and groove is not None and not getattr(castle.stock, "apertures_first", False):
+        op4.notes.append(
+            "Lens Groove left out: the drageoir cannot follow a curved rim in three axes. "
+            "Groove by hand after forming, or cut the apertures flat first (Stock tab, "
+            "Apertures and groove first).")
     ops.append(op4)
 
     # 4a — decorative OUTLINE holes, cut with the eyewire strategy right after
@@ -1709,7 +1840,7 @@ def generate_castle_program(
                       if pinned else eyewire_tool)
         op4a = contour_op(
             "Holes", hole_polys, "inside", holes_tool["radius_mm"],
-            allowance, top_z, skin, params,
+            allowance, top_z, skin, params, **surfaces,
         )
         op4a.tool = holes_tool
         ops.append(op4a)
@@ -1718,7 +1849,7 @@ def generate_castle_program(
     # with the drageoir, bottoming exactly on the original LENS contour. Runs
     # AFTER the eyewires open the channel, BEFORE the perimeter releases the
     # part. Not a contour op: entry is a radial feed, never a ramp.
-    if groove is not None and relief.groove_lens_polys:
+    if groove is not None and relief.groove_lens_polys and not preformed:
         op4b = lens_groove_op(relief.groove_lens_polys, groove, _groove_tool())
         if op4b.paths:
             ops.append(op4b)
@@ -1731,7 +1862,7 @@ def generate_castle_program(
     op5 = contour_op(
         "Perimeter", [Polygon(body.exterior)], "outside",
         perimeter_tool["radius_mm"], allowance, top_z, skin, params,
-        holding=castle.holding,
+        holding=castle.holding, **surfaces,
     )
     op5.tool = perimeter_tool
     ops.append(op5)

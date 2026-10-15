@@ -88,6 +88,14 @@ class StockDefinition(BaseModel):
     # Pad block center offset from the blank center (0,0 = centrally located).
     pad_block_dx_mm: float = 0.0
     pad_block_dy_mm: float = 0.0
+    # The blank is pressed to the project's forming before it is cut (M25):
+    # the stock is the formed slab, the target the formed model, and the
+    # eyewires and the perimeter follow the curve. The pad block does not
+    # ride on a pressed sheet. `apertures_first` is the hybrid: the eyewires
+    # and the groove are cut flat first, the part is pressed, and the curved
+    # blank is nested for the rest.
+    preformed: bool = False
+    apertures_first: bool = False
     # Whether the raised nosepad pad-block sits on the blank (M11). Off ⇒ a single
     # flat blank whose thickness the user sets directly (mill the model to the blank
     # alone). When off, total_pad_height and the stock-top surface are blank-only.
@@ -762,6 +770,23 @@ class ToolFeeds(BaseModel):
 
     def is_empty(self) -> bool:
         return not self.model_dump(exclude_none=True)
+
+
+class Setup(BaseModel):
+    """One setup of a component's program (BUILDPLAN M24 §9.2): which face is
+    up, which work offset the side runs in, how the blank got there, and
+    what to re-probe after the flip. A one-setup job is the posterior in
+    G54, as every program before 2.0."""
+    side: Literal["posterior", "anterior"] = "posterior"
+    wcs: Literal["G54", "G55"] = "G54"
+    program: str = "posterior_cut.nc"
+    flip: Literal["none", "manual", "rotary"] = "none"
+    flip_axis_x_mm: float | None = None      # the fixture's flip line, machine X
+    mirror_x_mm: float = 0.0                 # the flip line in the design frame
+    reprobe: list[str] = Field(default_factory=list)   # "Z", "XY"
+    a_deg: float | None = None               # the rotary's angle (M26)
+    stock_top_mm: float = 0.0                # the stock top this side cuts from
+    notes: list[str] = Field(default_factory=list)
 
 
 class CastleCamParams(BaseModel):

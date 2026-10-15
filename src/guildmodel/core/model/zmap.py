@@ -89,7 +89,7 @@ def mesh_to_relief(model, partition: CastlePartition, castle: CastleParams,
 
 
 def _triangles(partition: CastlePartition, castle: CastleParams, hinges,
-               inlays=(), sculpt_sources=None):
+               inlays=(), sculpt_sources=None, fmap=None):
     from .build import build_castle_model
     from .kernel import to_trimesh
     from .sculpt import placed_sculpts
@@ -99,8 +99,14 @@ def _triangles(partition: CastlePartition, castle: CastleParams, hinges,
     sculpts = None
     if sculpt_sources and getattr(castle, "sculpts", None):
         sculpts = placed_sculpts(castle.resolved_sculpts(), sculpt_sources)
-    mesh = to_trimesh(build_castle_model(partition, castle, list(hinges),
-                                         inlays=list(inlays), sculpts=sculpts))
+    model = build_castle_model(partition, castle, list(hinges), inlays=list(inlays),
+                               sculpts=sculpts)
+    if fmap is not None:
+        # The pre-formed blank's target is the formed model (M25): the flat
+        # castle through the forming map, as the viewer and the export form it.
+        from ..forming import formed_model
+        model = formed_model(model, fmap)
+    mesh = to_trimesh(model)
     return mesh.vertices, mesh.faces
 
 
@@ -108,8 +114,14 @@ def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
                     hinges=(), resolution: float = CUT_RES_MM,
                     margin: float = GRID_MARGIN_MM,
                     progress: Optional[ProgressFn] = None,
-                    inlays=(), sculpt_sources=None) -> CastleRelief:
+                    inlays=(), sculpt_sources=None, fmap=None,
+                    masks=None) -> CastleRelief:
     """The complete relief the CAM posts from, built by Manifold.
+
+    With `fmap` (M25) the kernel builds the flat castle and warps it; `masks`
+    is then ``(partition, hinges, inlays)`` as the formed part lies, which the
+    grid, the masks and the seat references are taken from, while the build
+    itself keeps the drawing's own polygons.
 
     Takes the *parameters* rather than a model, because filling
     `surface_field` and `feature_band` means building the part more than once —
@@ -118,9 +130,16 @@ def mesh_cam_relief(partition: CastlePartition, castle: CastleParams,
     source (bytes or loaded), so the castle's sculpts bake into the surface
     the CAM posts (M22 §7.5).
     """
-    def build(partition, castle, hinges, inlays):
-        return _triangles(partition, castle, hinges, inlays, sculpt_sources)
+    flat_partition, flat_hinges, flat_inlays = partition, list(hinges), list(inlays)
 
+    def build(_partition, castle, hinges_in, inlays_in):
+        # the kernel always builds the drawing's own geometry; a caller that
+        # asked for no pockets or no seats gets none
+        return _triangles(flat_partition, castle, flat_hinges if hinges_in else (),
+                          flat_inlays if inlays_in else (), sculpt_sources, fmap)
+
+    if masks is not None:
+        partition, hinges, inlays = masks
     relief = cam_relief(build, partition, castle, hinges, resolution,
                         margin, progress, inlays=inlays)
     if sculpt_sources and getattr(castle, "sculpts", None):

@@ -292,6 +292,33 @@ caches its own model. The view strip carries:
 
 A parameter edit rebuilds the model live and keeps your zoom.
 
+### The pre-formed blank — cut after pressing
+
+**Pre-formed blank** on the Stock tab cuts the front after it is pressed:
+the blank is the slab pressed to the Forming view's base curve and face
+form (the press's pre-cut dies make it), the target is the formed model,
+and the eyewires, the holes and the perimeter follow the curve, so nothing
+ovalizes and the bridge does not draw in. The 3D view shows the pressed
+slab in place of the stock box. A pressed sheet carries no pad block. The
+hinge pockets follow the curve at their depth; each pass of a through-cut
+sits a stepdown below the local top and stops an onion skin above the local
+bottom, the skin measured along the surface's normal; the tabs ride the
+local floor.
+
+A formed part's walls lean with the curve, and a three-axis cut makes them
+vertical at the front's edge, where the lens seats and the visible edge
+are. The back's rim therefore loses the lean, up to a few millimeters at
+the temporal ends of a steep front; the simulation says how much and
+allows it in its verdict; the fourth axis (2.0) cuts the walls as formed.
+The lens groove cannot follow a curved rim in three axes: the program
+leaves it out and says so. **Apertures and groove first** is the hybrid:
+the eyewires, the holes and the groove are cut flat first, in a program of
+their own, the part is pressed in the post-cut dies, and the pressed blank
+is nested for the rest. It trades the bridge's draw-in for a correct
+groove. A pre-formed front is cut in its nest, not on the worktable; take
+it off the bed. A second side on the pressed blank waits for the nest
+fixture work.
+
 ### Export STL
 
 **File ▸ Export STL (Ctrl+E)** writes the component you are looking at.

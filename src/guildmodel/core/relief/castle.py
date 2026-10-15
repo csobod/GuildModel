@@ -101,6 +101,21 @@ class CastleRelief:
     # Machining this needs the flip setup (M9/V2). It is modeled and previewed
     # now so the shape can be designed and checked before the fixture work lands.
     anterior: "np.ndarray | None" = None
+    # A pre-formed blank's envelopes on this grid (M25): the stock top the
+    # roughing starts from and the stock bottom the through-cuts stop at.
+    # None on a flat blank, where the Stock tab's slab is the stock.
+    stock_top: "Heightfield | None" = None
+    stock_bottom: "Heightfield | None" = None
+    # On a pre-formed blank the partition above is the formed part's own
+    # footprint, and these are the hinge and seat polygons mapped the same
+    # way (at the anterior face), for the ops that cut them; None on a flat
+    # blank, where the drawing's polygons are the ones.
+    hinge_polys_formed: "list | None" = None
+    inlay_polys_formed: "list | None" = None
+    # How far the formed part's walls lean, mm in XY, between the front's
+    # footprint and the back's: what a vertical three-axis cut at the front
+    # edge takes off the back's rim, and what the verdict's rim band allows.
+    wall_lean_mm: float = 0.0
 
     @property
     def anterior_z(self) -> np.ndarray:
@@ -108,6 +123,19 @@ class CastleRelief:
         if self.anterior is None:
             return np.zeros_like(self.field.z)
         return self.anterior
+
+    @property
+    def anterior_depth(self) -> np.ndarray:
+        """Material taken off the front, mm: the anterior surface less the
+        stock's own front. On a flat blank that is `anterior_z` itself; on a
+        pre-formed blank the front is the pressed slab's bottom (M25)."""
+        if self.stock_bottom is None:
+            return self.anterior_z
+        return np.clip(self.anterior_z - self.stock_bottom.z, 0.0, None)
+
+    @property
+    def preformed(self) -> bool:
+        return self.stock_top is not None
 
     def thickness(self) -> np.ndarray:
         """Remaining material at each cell — what a two-sided design must keep

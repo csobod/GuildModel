@@ -490,12 +490,46 @@ def cam_relief(build, partition: CastlePartition, castle: CastleParams,
                                if not seat.posterior])
 
 
+#: A pre-formed part's body, for the relief and the verdict, is where it is
+#: at least this thick (M25): the tilted walls' slivers are left out.
+FORMED_WALL_MM = 1.0
+
+
+def map_polygon_xy(fmap, poly: Polygon, z: float = 0.0) -> Polygon:
+    """`poly`'s rings through the forming map at height `z`, as the polygon
+    their formed x, y make: the formed part's footprint of a flat ring (M25).
+    At the anterior face by default, where the lens seats and the front's
+    edge are what a three-axis cut must get right."""
+    def ring(coords):
+        pts = np.array([(x, y, z) for x, y in coords], dtype=np.float64)
+        out = fmap(pts)[:, :2]
+        return [tuple(p) for p in out]
+    mapped = Polygon(ring(poly.exterior.coords), [ring(r.coords) for r in poly.interiors])
+    return mapped if mapped.is_valid else mapped.buffer(0)
+
+
+def formed_partition(partition: CastlePartition, fmap, z: float = 0.0) -> CastlePartition:
+    """The partition as the pressed part lies on the nest (M25): every
+    polygon through the map at height `z` (the anterior face by default,
+    the back at the blank's thickness), the zones keeping their names, the
+    seams dropped (the footings are already in the formed model), the holes
+    mapped so `is_hole` still tells an opening from an aperture."""
+    from .geometry.regions import Zone
+    zones = [Zone(zn.name, zn.kind, zn.side, map_polygon_xy(fmap, zn.polygon, z))
+             for zn in partition.zones]
+    return CastlePartition(
+        body=map_polygon_xy(fmap, partition.body, z), zones=zones, edges=[],
+        matched=partition.matched,
+        holes=[map_polygon_xy(fmap, h, z) for h in partition.holes])
+
+
 def castle_relief(partition: CastlePartition, castle: CastleParams,
                   hinges=(), kernel: str = "mesh",
                   resolution: float = CUT_RES_MM,
                   margin: float = GRID_MARGIN_MM,
                   progress: Optional[ProgressFn] = None,
-                  inlays=(), sculpt_sources=None) -> CastleRelief:
+                  inlays=(), sculpt_sources=None, forming=None,
+                  bridge=None) -> CastleRelief:
     """The relief every G-code path posts from — one entry point, one choice.
 
     `kernel` is `gui.mesh_build.KERNELS`: "raster" is the M17 heightfield,
@@ -523,6 +557,67 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     CAM's.
     """
     kernel = resolve_kernel(kernel)
+    # A pre-formed blank (M25): the target is the formed model, so the mesh
+    # kernel builds it whatever the preference says (it is the one that
+    # warps), and the pressed slab's envelopes ride on the relief.
+    fmap = None
+    if forming is not None and getattr(castle.stock, "preformed", False):
+        from .forming import ThermoformMap, bridge_geometry
+        fmap = ThermoformMap.from_metadata(
+            forming, bridge=bridge if bridge is not None else bridge_geometry(partition))
+        if fmap.is_flat:
+            fmap = None
+    if fmap is not None:
+        from .forming.blank import formed_blank_envelopes
+        from .model.zmap import mesh_cam_relief
+        # The formed part's walls lean with the curve, so its footprint at
+        # the back sits inside its footprint at the front by the thickness
+        # times the sine of the tilt. The masks, the hinge pockets and the
+        # seats are cut from the back and take the drawing's polygons
+        # through the map at the blank's thickness; the apertures and the
+        # perimeter, which a three-axis cut makes vertical, take them at the
+        # anterior face, where the lens seats and the front's edge are what
+        # must be right. The wall's own sliver between the two is nobody's.
+        T = float(castle.stock.blank_thickness_mm)
+        fp_back = formed_partition(partition, fmap, z=T)
+        fp_front = formed_partition(partition, fmap, z=0.0)
+        hinges_f = [map_polygon_xy(fmap, h, z=T) for h in hinges]
+        inlays_f = [map_polygon_xy(fmap, p, z=T) for p in inlays]
+        relief = mesh_cam_relief(partition, castle, hinges, resolution, margin,
+                                 progress, inlays=inlays,
+                                 sculpt_sources=sculpt_sources, fmap=fmap,
+                                 masks=(fp_back, hinges_f, inlays_f))
+        relief.partition = fp_front
+        relief.hinge_polys_formed = hinges_f
+        relief.inlay_polys_formed = inlays_f
+        relief.wall_lean_mm = float(fp_front.body.exterior.hausdorff_distance(
+            fp_back.body.exterior))
+        f = relief.field
+        rows, cols = f.z.shape
+        apertures = ()
+        if getattr(castle.stock, "apertures_first", False):
+            is_hole = partition.is_hole
+            apertures = [Polygon(r) for r in partition.body.interiors if not is_hole(r)]
+        top, bottom = formed_blank_envelopes(castle.stock, fmap, f.origin, rows, cols,
+                                             f.resolution, apertures=apertures)
+        # Where the slab has no material (past its edge, or an aperture cut
+        # before pressing) the stock reads far below everything, so a pass
+        # finds nothing to cut there and no NaN reaches a toolpath.
+        low = float(np.nanmin(bottom)) - 1.0 if np.isfinite(bottom).any() else -1.0
+        top = np.where(np.isfinite(top), top, low)
+        bottom = np.where(np.isfinite(bottom), bottom, low)
+        relief.stock_top = Heightfield(z=top, origin=f.origin, resolution=f.resolution)
+        relief.stock_bottom = Heightfield(z=bottom, origin=f.origin, resolution=f.resolution)
+        # The formed part's walls tilt with the curve, so the footprint at the
+        # anterior face runs outside the posterior edge by the thickness times
+        # the sine of the tilt. A three-axis cut makes the wall vertical at the
+        # front edge; the sliver between is not a surface the relief can reach
+        # or the verdict should ask for, so the body is where the part has
+        # real thickness (the wall's own cells excepted).
+        thick = (relief.field.z - relief.anterior_z) > FORMED_WALL_MM
+        relief.inside = relief.inside & thick
+        relief.zone_index = np.where(relief.inside, relief.zone_index, -1)
+        return relief
     if kernel == "mesh":
         from .model.zmap import mesh_cam_relief
         return mesh_cam_relief(partition, castle, hinges, resolution, margin,
