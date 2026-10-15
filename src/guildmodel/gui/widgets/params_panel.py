@@ -2861,9 +2861,46 @@ class ParamsPanel(QTabWidget):
         self._ops_hint.setWordWrap(True)
         self._ops_hint.setObjectName("mutedSmallLabel")
         v.addWidget(self._ops_hint)
+        # Two-sided machining of the front (M24): the second setup, the flip.
+        two = QFormLayout()
+        two.setContentsMargins(0, 6, 0, 0)
+        two.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.two_sided = QComboBox()
+        self.two_sided.addItems(["Auto (when the front is cut)", "Off", "On"])
+        self.two_sided.setToolTip(
+            "A second setup machines the anterior after the blank is flipped on\n"
+            "the fixture's dowel pins: brow chamfers, the anterior bezel, seats and\n"
+            "sculpts on the front. Auto posts it when the front takes material off\n"
+            "the anterior; Off posts the posterior alone, as before; On posts two\n"
+            "sides whatever the front carries.")
+        self.two_sided.currentIndexChanged.connect(self._on_two_sided_changed)
+        two.addRow("Two-sided:", self.two_sided)
+        self.through_cuts_side = QComboBox()
+        self.through_cuts_side.addItems(["Side two (the blank stays rigid)", "Side one (as today)"])
+        self.through_cuts_side.setToolTip(
+            "Where the eyewires, the holes and the perimeter are cut on a two-sided\n"
+            "job. Side two, last, keeps the blank rigid for both faces and releases\n"
+            "the part on tabs; side one keeps them with the skin or the tabs you\n"
+            "chose. A grooved front keeps them on side one: the groove is cut from\n"
+            "the back through the open apertures.")
+        self.through_cuts_side.currentIndexChanged.connect(self.cam_changed)
+        two.addRow("Through-cuts:", self.through_cuts_side)
+        self.probe_block = QCheckBox("Probe Z after the flip (G38.2 block)")
+        self.probe_block.setToolTip(
+            "Side two begins with a touch-off on the stock top that sets G55's Z0;\n"
+            "needs a probe plate on the machine. Off, the sheet tells you to re-zero.")
+        self.probe_block.toggled.connect(self.cam_changed)
+        two.addRow("", self.probe_block)
+        v.addLayout(two)
 
     def _on_op_toggled(self, *_a) -> None:
         self._refresh_operations_hint()
+        self.cam_changed.emit()
+
+    def _on_two_sided_changed(self, *_a) -> None:
+        off = self.two_sided.currentIndex() == 1
+        self.through_cuts_side.setEnabled(not off)
+        self.probe_block.setEnabled(not off)
         self.cam_changed.emit()
 
     def _visible_op_names(self) -> tuple:
@@ -3308,6 +3345,9 @@ class ParamsPanel(QTabWidget):
             cut_direction="conventional" if self.cut_direction.currentIndex() else "climb",
             op_enabled={n: cb.isChecked() for n, cb in self.op_checks.items()
                         if cb.isChecked() != (n not in OFF_BY_DEFAULT_OPS)},
+            two_sided=("auto", "off", "on")[self.two_sided.currentIndex()],
+            through_cuts_side="one" if self.through_cuts_side.currentIndex() == 1 else "two",
+            probe_block=self.probe_block.isChecked(),
             arc_tolerance_mm=self.arc_tolerance.value(),
             feed_rate_mmpm=_opt(self.feed_override.value()),
             plunge_rate_mmpm=_opt(self.plunge_override.value()),
@@ -3351,6 +3391,16 @@ class ParamsPanel(QTabWidget):
             cb.setChecked(cp.is_op_enabled(name))
             cb.blockSignals(False)
         self._refresh_operations_hint()
+        for w in (self.two_sided, self.through_cuts_side, self.probe_block):
+            w.blockSignals(True)
+        self.two_sided.setCurrentIndex(("auto", "off", "on").index(getattr(cp, "two_sided", "auto")))
+        self.through_cuts_side.setCurrentIndex(
+            1 if getattr(cp, "through_cuts_side", "two") == "one" else 0)
+        self.probe_block.setChecked(bool(getattr(cp, "probe_block", False)))
+        for w in (self.two_sided, self.through_cuts_side, self.probe_block):
+            w.blockSignals(False)
+        self.through_cuts_side.setEnabled(self.two_sided.currentIndex() != 1)
+        self.probe_block.setEnabled(self.two_sided.currentIndex() != 1)
         self.arc_tolerance.setValue(cp.arc_tolerance_mm)
         self.feed_override.setValue(cp.feed_rate_mmpm or 0.0)
         self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)

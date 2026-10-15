@@ -555,7 +555,7 @@ SHANK_CHECK_MM = 1.0
 
 def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict, *,
                       init_z: float, stock_field, feed_mmpm: float, partition=None,
-                      progress=None):
+                      progress=None, verdict0=None, blank0=None, carry: dict | None = None):
     """The simulation of a posted program (BUILDPLAN M21 §6.5): the verdict on
     the relief's grid, and the playback over the blank, both from one parse.
 
@@ -568,6 +568,12 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     (§6.5), reported, never stamped. The playback is a `StockPlan` over
     `stock_field`, the blank as listed, cut by the same runs; the viewer plays
     it. Returns ``(report, lines, plan, runs)``.
+
+    For side two of a two-sided job (M24) `verdict0` and `blank0` are the
+    stock side one left, flipped: the verdict and the playback start from
+    them rather than from a box and the listed blank. `carry`, when given,
+    receives the finished verdict stock and the playback's final stock so a
+    caller can hand them on.
     """
     import numpy as np
     from guildmodel.core.relief.heightfield import Heightfield
@@ -597,8 +603,13 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     rows, cols = f.z.shape
     if progress is not None:
         progress("Reading the program onto the stock", 0.6)
-    verdict = DexelStock.from_box(-1e9, -1e9, 1e9, 1e9, VERDICT_BOTTOM_MM, float(init_z),
-                                  f.resolution, origin=f.origin, shape=(rows, cols))
+    if verdict0 is not None:
+        if verdict0.shape != (rows, cols):
+            raise ValueError("the carried stock is not on the relief's grid")
+        verdict = verdict0
+    else:
+        verdict = DexelStock.from_box(-1e9, -1e9, 1e9, 1e9, VERDICT_BOTTOM_MM, float(init_z),
+                                      f.resolution, origin=f.origin, shape=(rows, cols))
     footprints: dict = {}
 
     def footprint_of(shp):
@@ -644,9 +655,12 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
                                    faults=faults)
     if progress is not None:
         progress("Building playback", 0.85)
-    blank = DexelStock.from_heightfield(stock_field, z_bottom=0.0)
+    blank = blank0 if blank0 is not None else DexelStock.from_heightfield(stock_field, z_bottom=0.0)
     plan = build_stock_plan([(r, shape_of(r.tool)) for r in runs], blank, feed_mmpm=feed_mmpm)
     plan.op_tool_geom = _run_tool_geom(runs, tools_cfg, default_tool)
+    if carry is not None:
+        carry["verdict"] = verdict
+        carry["stock"] = plan.stock
     return report, report.summary_lines(), plan, runs
 
 
@@ -742,12 +756,18 @@ class GCodeWorker(_ProgressWorker):
             resolution=CUT_RES_MM, progress=self._progress,
             inlays=self.inlay_polys, sculpt_sources=self.sculpt_sources,
         )
-        self.progress.emit("[gcode] Castle: generating five operations…")
-        ops = require_ops(generate_castle_program(
-            relief, castle, self.hinge_polys, tool, params=cam,
-            progress=self._progress, tools_cfg=tools_cfg,
-            inlay_polys=self.inlay_polys,
-        ), "The frame front")
+        self.progress.emit("[gcode] Castle: generating the operations…")
+        from guildmodel.core.cam.two_sided import plan_two_sided
+        job = plan_two_sided(relief, castle, self.hinge_polys, tool, cam, tools_cfg,
+                             inlay_polys=self.inlay_polys, progress=self._progress)
+        for note in job.notes:
+            self.progress.emit(f"[gcode] {note}")
+        ops = require_ops(job.side_one, "The frame front")
+        if job.two_sided:
+            self.progress.emit(
+                f"[gcode] Two-sided job: side one {len(ops)} ops in G54, side two "
+                f"{len(job.side_two)} ops in G55 after the flip ("
+                + ", ".join(job.setups[1].notes) + ")")
         for op in ops:
             zmin, zmax = op.z_range()
             tag = f" · {op.tool_name}" if (cam.is_multi_tool() and op.tool_name) else ""
@@ -938,6 +958,70 @@ class GCodeWorker(_ProgressWorker):
         self.programs = {"posterior_cut.nc": text}
         self.machine_dump = machine.model_dump()
         flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
+        for s in job.setups:
+            s.flip_axis_x_mm = flip
+        side_two_report = None
+        if job.two_sided:
+            # Side two (M24): the anterior in G55 after the flip, its own
+            # program with the pause text GuildSend parses and the re-probe.
+            from guildmodel.core.cam.two_sided import flip_pause_text
+            castle_two = job.castle_two
+            settings_two, resolved_two = build_tool_settings(
+                job.side_two, tools_cfg,
+                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
+                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
+                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+                tool_feeds=cam.tool_feeds)
+            multi_two = (cam.is_multi_tool()
+                         or len({op.tool_name for op in job.side_two if op.tool_name}) > 1)
+            first_two = settings_two.get(job.side_two[0].tool_name)
+            offset_two = cam.program_zero.work_offset(castle_two.stock)
+            post2 = GRBLPost(
+                job_name="back_cut", material=p["material_name"],
+                tool_diameter_mm=first_two.diameter_mm if first_two else post_dia,
+                spindle_rpm=first_two.spindle_rpm if first_two else post_spindle,
+                feed_rate_mmpm=first_two.feed_rate_mmpm if first_two else post_feed,
+                plunge_rate_mmpm=first_two.plunge_rate_mmpm if first_two else post_plunge,
+                safe_z_mm=cam.safe_z_for(castle_two.stock.total_pad_height_mm),
+                feed_plane_mm=castle_two.stock.total_pad_height_mm + 1.0,
+                work_offset=offset_two, wcs="G55")
+            post2.preamble = ["; " + flip_pause_text(job.setups[1])]
+            if cam.probe_block:
+                post2.preamble += post2.probe_z_block()
+            else:
+                post2.preamble.append("; Re-zero Z on the stock top (the former front) before cutting")
+            if cam.link_retracts:
+                from guildmodel.core.cam.castle_ops import work_holding_keepouts
+                post2.link_clearance_z_mm = (castle_two.stock.total_pad_height_mm
+                                             + cam.link_clearance_mm)
+                post2.link_keepouts = tuple(work_holding_keepouts(
+                    job.relief_two.partition.body, castle_two.stock, post2.tool_diameter_mm / 2.0,
+                    screw_head_diameter_mm=cam.screw_head_diameter_mm,
+                    margin_mm=cam.screw_keepout_margin_mm,
+                    is_hole=job.relief_two.partition.is_hole))
+            write_castle_program(
+                job.side_two, post2, side="Anterior Cut (side two)", arc_tol_mm=clamp.arc_tol_mm,
+                contour_stepdown_mm=cam.contour_stepdown_mm,
+                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
+                tool_settings=settings_two if multi_two else None,
+                tool_change_mode=machine.tool_change_mode)
+            text2 = post2.to_string()
+            self.progress.emit(f"[gcode] back_cut.nc generated ({len(text2):,} bytes)")
+            for w in lint_program(text2, machine):
+                self.progress.emit(f"[gcode] ⚠ machine (side two): {w}")
+            side_two_report = estimate_program(
+                text2, MachineDynamics.from_profile(machine),
+                tool_change_seconds=machine.tool_change_seconds)
+            self.progress.emit("[gcode] Side two, estimated cut time —\n"
+                               + format_report(side_two_report))
+            self.programs["back_cut.nc"] = text2
+            summary += (f"\n\nTwo-sided job: back_cut.nc cuts the anterior in G55 after the "
+                        f"flip ({', '.join(job.setups[1].notes)}); "
+                        f"side two {side_two_report.cycle_seconds / 60:.1f} min.")
+            rows += [dict(r, name=f"Side two · {r['name']}")
+                     for r in op_summaries(job.side_two, feed_rate_mmpm=clamp.feed_rate_mmpm,
+                                           tool_settings=settings_two)]
         self.setup_dict = {
             "tool": tool.get("display_name", cam.tool_name),
             "tool_name": cam.tool_name,
@@ -950,6 +1034,10 @@ class GCodeWorker(_ProgressWorker):
             "onion_skin_mm": castle.onion_skin_mm,
             "hand_finishing_allowance_mm": castle.hand_finishing_allowance_mm,
             "flip_axis_x_mm": flip,
+            "setups": [s.model_dump() for s in job.setups],
+            "two_sided": job.two_sided,
+            "est_cycle_min_side_two": (round(side_two_report.cycle_seconds / 60, 2)
+                                       if side_two_report is not None else None),
             "inlays": _inlay_sheet(seats, thin),
             "program_zero": cam.program_zero.label(),
             "program_zero_mode": cam.program_zero.mode,
@@ -1457,7 +1545,7 @@ class SimWorker(_ProgressWorker):
     def __init__(self, partition, castle, cam_params, hinge_polys=(),
                  material_name="acetate", resolution: float = 0.3,
                  inlay_polys=(), program_text: str | None = None,
-                 sculpt_sources=None) -> None:
+                 sculpt_sources=None, back_program_text: str | None = None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
@@ -1465,6 +1553,9 @@ class SimWorker(_ProgressWorker):
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)
         self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
+        # Side two's stored program (M24): simulated after side one, from the
+        # stock side one left, flipped about the blank's center line.
+        self.back_program_text = back_program_text
         self.material_name = material_name
         # The stored program, when the tab has a fresh one (M21 §6.5): the
         # simulation then reads it at the posting grid, `CUT_RES_MM`, and
@@ -1559,9 +1650,11 @@ class SimWorker(_ProgressWorker):
             f = relief.field
             init_z = self.castle.stock.total_pad_height_mm + 1.0
             stock_hf = stock_top_heightfield(self.castle.stock, resolution=f.resolution)
+            carry: dict = {}
             report, lines, plan, runs = _simulate_program(
                 program, relief, tools_cfg, tool, init_z=init_z, stock_field=stock_hf,
-                feed_mmpm=feed_mmpm, partition=self.partition, progress=self._progress)
+                feed_mmpm=feed_mmpm, partition=self.partition, progress=self._progress,
+                carry=carry)
             if ops is not None:
                 plan.op_tool_geom = _op_tool_geom(ops, tool)
 
@@ -1584,6 +1677,33 @@ class SimWorker(_ProgressWorker):
                     [(float(x), float(y), z_apex)
                      for x, y in lens.exterior.coords]
                     for lens in relief.groove_lens_polys]
+
+            # Two-sided (M24): side two is cut from the stock side one left,
+            # flipped about the blank's center line, against the anterior as
+            # a relief of its own; the lines carry both verdicts and a failed
+            # side one fails the whole.
+            if self.program_text and self.back_program_text:
+                from guildmodel.core.cam.two_sided import anterior_setup_relief
+                relief_two = anterior_setup_relief(relief, self.castle)
+                if relief_two is not None:
+                    import dataclasses
+                    T = float(self.castle.stock.blank_thickness_mm)
+                    on_grid = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
+                                                    origin=f.origin, shape=f.z.shape)
+                    verdict2 = carry["verdict"].clipped(0.0, on_grid.z).mirrored(0.0, z_flip=T)
+                    blank2 = carry["stock"].mirrored(0.0, z_flip=T)
+                    lines_one = [f"Side one: {ln}" for ln in lines]
+                    status_one = report.status()
+                    self.progress.emit("[sim] Side two: the anterior after the flip…")
+                    report, lines, plan, _ = _simulate_program(
+                        self.back_program_text, relief_two, tools_cfg, tool, init_z=T,
+                        stock_field=stock_hf, feed_mmpm=feed_mmpm,
+                        partition=relief_two.partition, progress=self._progress,
+                        verdict0=verdict2, blank0=blank2)
+                    lines = lines_one + [f"Side two: {ln}" for ln in lines]
+                    if status_one == "fail" and report.status() != "fail":
+                        report = dataclasses.replace(
+                            report, faults=tuple(report.faults) + ("Side one: the cut is incomplete",))
 
             self.finished.emit(report, lines, plan)
         except _Canceled:
@@ -9715,7 +9835,9 @@ class MainWindow(QMainWindow):
                 self._partition, self.params.castle_params(), cam_params=cam,
                 hinge_polys=self._hinge_polys, material_name=mat, resolution=res,
                 inlay_polys=self._inlay_polys, program_text=program,
-                sculpt_sources=self._sculpt_sources())
+                sculpt_sources=self._sculpt_sources(),
+                back_program_text=(self._last_programs.get("back_cut.nc")
+                                   if program and self._program_stored else None))
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)

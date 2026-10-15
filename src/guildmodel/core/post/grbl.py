@@ -96,6 +96,12 @@ class GRBLPost:
     # keeps the full safe Z. None disables it (always safe Z, the original behavior).
     link_clearance_z_mm: float | None = None
     link_keepouts: tuple = ()      # (cx, cy, radius) screw keep-outs, design coords
+    # The work coordinate system this program runs in (M24): G54 as every
+    # program before 2.0, which is not written; side two runs in G55.
+    wcs: str = "G54"
+    # Lines emitted after the header's modal block, before the first move: a
+    # side's re-probe instruction (M24).
+    preamble: list[str] = field(default_factory=list)
 
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
     _last_xy: tuple | None = field(default=None, init=False, repr=False)
@@ -123,6 +129,9 @@ class GRBLPost:
             "G21" if self.units == "mm" else "G20",
             "G17  ; XY arc plane",
         ]
+        if self.wcs and self.wcs != "G54":
+            self._lines.append(f"{self.wcs}  ; work offset for this side")
+        self._lines += list(self.preamble)
         # The first cutting pass always takes a full safe-Z retract before any XY move
         # (its prior position is unknown), so a header retract is redundant. On an
         # auto-tool-change machine (mode "m6") the M6 that follows raises Z itself — so
@@ -293,6 +302,19 @@ class GRBLPost:
         self._lines.append(f"; {message}")
         self._lines.append("M0")
         self._last_z = None           # operator may have jogged Z during the pause
+        self._last_xy = None
+
+    def probe_z_block(self, depth_mm: float = 25.0, feed_mmpm: float = 100.0,
+                      wcs_slot: int = 2) -> list[str]:
+        """The G38.2 touch-off that re-establishes a side's Z after the flip
+        (M24): probe down to the plate on the stock top, set that as the work
+        offset's Z0, retract. Lines, for the preamble."""
+        return [
+            "; Re-probe Z: the touch plate on the stock top, the tool over it",
+            f"G38.2 Z-{depth_mm:.1f} F{feed_mmpm:.0f}",
+            f"G10 L20 P{wcs_slot} Z0",
+            f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}",
+        ]
 
     def apply_tool(self, ts: "ToolSetting") -> None:
         """Adopt a tool's geometry/feeds as the current output context, without

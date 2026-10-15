@@ -626,6 +626,38 @@ back and forth over it.
 The turntable works in the cut simulation too. It parks itself while you are on
 another view, so you do not have to re-arm it when you come back.
 
+### Two-sided jobs — the flip
+
+A front that takes material off the front, a brow chamfer, an anterior
+bezel, a seat or a sculpt on the front, is cut in two setups. **Side one**
+is the posterior program as always, in G54, less the eyewires, the holes
+and the perimeter. Then the blank is flipped about the fixture's flip line,
+the station's vertical center line, onto its two dowel pins, Z is re-zeroed
+on the new top, and **side two** cuts the anterior in G55: the relief where
+the front carries material to remove, the Features pass over it, the seats
+and sculpts on the front, and the through-cuts last, so the blank stays
+rigid for both faces; the part is released on tabs. A front that takes
+nothing off the front posts one setup, byte for byte as before.
+
+The Cut tab's **Operations** group has the choice: **Two-sided** *Auto*
+posts the second side when the front is cut, *Off* never, *On* always;
+**Through-cuts** on side two (the default) or on side one with the skin or
+the tabs you chose; a grooved front keeps them on side one, since the
+groove is cut from the back through the open apertures. **Probe Z after the
+flip** begins side two with a G38.2 touch-off on the stock top that sets
+G55's Z0, for a machine with a probe plate; without it the program says to
+re-zero Z. The project holds both programs, `posterior_cut.nc` and
+`back_cut.nc`, Export G-code writes both to a folder, and the setup sheet
+lists the two setups, the flip line and what to re-probe. The simulation
+reads both: side two is cut from the stock side one left, flipped, and the
+log carries both verdicts; a side one that fails fails the job.
+
+Registration on this class of machine is 0.05 to 0.1 mm, and every error is
+doubled in a two-sided cut: press-fit pins in the wasteboard, a slip fit in
+the stock, and the flip the way the program assumes. The bench test is a
+through-hole pattern from side one and a matching counterbore from side two
+in a scrap blank, measured at four corners under a loupe.
+
 ## 6. The worktable — cut the whole model in one setup
 
 The **Worktable** tab is the machine bed. Its panel has four groups, each of

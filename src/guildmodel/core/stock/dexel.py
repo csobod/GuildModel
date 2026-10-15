@@ -228,6 +228,67 @@ class DexelStock:
         return Heightfield(z=np.nan_to_num(z, nan=float(empty)), origin=self.origin,
                            resolution=self.resolution)
 
+    def clipped(self, z_lo, z_hi) -> "DexelStock":
+        """The stock with every interval cut back to ``[z_lo, z_hi]`` (each a
+        number or a ``(rows, cols)`` array), the intervals that vanish
+        dropped and the rest compacted top first (M24: the verdict's box
+        clipped to the blank before it is carried to the other side)."""
+        rows, cols = self.shape
+        k = self.k
+        lo = np.broadcast_to(np.asarray(z_lo, dtype=np.float64), (rows, cols))
+        hi = np.broadcast_to(np.asarray(z_hi, dtype=np.float64), (rows, cols))
+        live = np.arange(k)[:, None, None] < self.count[None]
+        top = np.where(live, np.minimum(self.z_top, hi[None]), np.nan)
+        bot = np.where(live, np.maximum(self.z_bot, lo[None]), np.nan)
+        keep = live & (top > bot + 1e-12)
+        new_top = np.full_like(top, np.nan)
+        new_bot = np.full_like(bot, np.nan)
+        count = np.zeros((rows, cols), dtype=np.uint8)
+        for i in range(k):
+            sel = keep[i]
+            if not sel.any():
+                continue
+            slot = count[sel].astype(np.intp)
+            rr, cc = np.nonzero(sel)
+            new_top[slot, rr, cc] = top[i][sel]
+            new_bot[slot, rr, cc] = bot[i][sel]
+            count[sel] += 1
+        out = DexelStock(new_top, new_bot, count, self.origin, self.resolution)
+        out.overflow_merges = self.overflow_merges
+        return out
+
+    def mirrored(self, mirror_x: float = 0.0, z_flip: float | None = None) -> "DexelStock":
+        """The stock flipped over (M24): mirrored in X about ``x = mirror_x``
+        and, with `z_flip`, turned upside down so that ``z -> z_flip - z`` —
+        every interval's top becomes its bottom and the columns' intervals
+        are read in the new top-first order. Bit for bit reversible: flipping
+        twice returns the stock."""
+        rows, cols = self.shape
+        res = self.resolution
+        ox, oy = self.origin
+        ox2 = 2.0 * float(mirror_x) - (ox + (cols - 1) * res)
+        top = self.z_top[:, :, ::-1].copy()
+        bot = self.z_bot[:, :, ::-1].copy()
+        count = self.count[:, ::-1].copy()
+        if z_flip is not None:
+            zf = float(z_flip)
+            k = self.k
+            new_top = np.full_like(top, np.nan)
+            new_bot = np.full_like(bot, np.nan)
+            # interval i (top first) becomes interval count-1-i, upside down
+            for n in range(1, k + 1):
+                sel = count == n
+                if not sel.any():
+                    continue
+                for i in range(n):
+                    j = n - 1 - i
+                    new_top[j][sel] = zf - bot[i][sel]
+                    new_bot[j][sel] = zf - top[i][sel]
+            top, bot = new_top, new_bot
+        out = DexelStock(top, bot, count, (ox2, oy), res)
+        out.overflow_merges = self.overflow_merges
+        return out
+
     def thickness(self) -> np.ndarray:
         """Material per column, summed over its intervals, mm."""
         live = np.arange(self.k)[:, None, None] < self.count[None, :, :]

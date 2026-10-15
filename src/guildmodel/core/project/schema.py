@@ -610,6 +610,24 @@ class CastleParams(BaseModel):
                        for f in self.resolved_edge_features())
                 or any(s.mount.face != "anterior" for s in self.resolved_sculpts()))
 
+    def anterior_feature_slope(self) -> float:
+        """The steepest enabled feature on the front, in degrees: what side
+        two's Features pass steps for (M24). The bezel's anterior angle, the
+        anterior edge features, a sculpt on the front."""
+        slope = 0.0
+        bezel = self.eyewire_bezel
+        if bezel.enabled and bezel.cuts_anterior():
+            slope = max(slope, float(getattr(bezel, "anterior_angle_deg", bezel.angle_deg)))
+        for f in self.resolved_edge_features():
+            if f.face != "anterior":
+                continue
+            slope = max(slope, 90.0 if f.profile == "fillet" else float(f.angle_deg))
+        if any(s.mount.face == "anterior" for s in self.resolved_sculpts()):
+            slope = max(slope, SCULPT_SLOPE_DEG)
+        if any(i.enabled and i.face == "anterior" for i in self.inlays):
+            slope = max(slope, 90.0)
+        return slope
+
     def posterior_feature_slope(self) -> float:
         """The steepest enabled posterior finishing feature, in degrees.
 
@@ -772,6 +790,17 @@ class CastleCamParams(BaseModel):
     # re-posting one operation after a tool change without re-cutting the rest.
     # Disabling the releasing profile deliberately leaves the part in the blank.
     op_enabled: dict[str, bool] = Field(default_factory=dict)
+
+    # Two-sided machining (M24): ``auto`` posts a second side when the front
+    # takes material off the anterior or seats something there; ``on`` always;
+    # ``off`` never. The through-cuts go last, on side two, so the blank stays
+    # rigid for both faces; ``one`` keeps them on side one with the skin or
+    # the tabs. The probe block emits a G38.2 touch-off for side two's Z when
+    # the machine has a probe; XY re-registration is the pins' job.
+    two_sided: Literal["auto", "off", "on"] = "auto"
+    through_cuts_side: Literal["two", "one"] = "two"
+    probe_block: bool = False
+    reprobe_xy: bool = False
 
     # Program zero / G54 work datum (BUILDPLAN M6.2). Default = stock-box
     # center/center, bottom (anterior) face — i.e. the blank center, which is the

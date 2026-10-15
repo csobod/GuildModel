@@ -1926,9 +1926,15 @@ def write_castle_program(
     drill_op_names: set | None = None,
     peck_depth_mm: float = 1.5,
     contour_lead_in: str = _DEFAULT_CAM.contour_lead_in,
+    start: bool = True,
+    end: bool = True,
 ) -> None:
     """Emit the ops into a single GRBL program (the castle's five ops, or any
     op list — e.g. a temple's engrave + profile, BUILDPLAN M6.3).
+
+    `start` and `end` (M24) let a two-sided single-file program carry both
+    sides: side one written with ``end=False``, the flip pause, side two
+    with ``start=False``.
 
     `contour_op_names` are the through-cut ops that get the partial-lap ramped
     lead-in (default the castle's Eyewires / Perimeter); every other op is emitted
@@ -1952,7 +1958,10 @@ def write_castle_program(
     # On an auto-tool-change machine the M6 that follows the header raises Z itself, so
     # the header's safe-Z retract is a wasted bob before the tool change — skip it there
     # (the first cutting pass still takes its own full retract after the M6).
-    post.header(side, initial_retract=(tool_change_mode != "m6"))
+    if start:
+        post.header(side, initial_retract=(tool_change_mode != "m6"))
+    else:
+        post.comment(f"Side: {side}")
     current: str | None = None
     first = ops[0].tool_name if ops else None
     if tool_settings and first in tool_settings:
@@ -1960,7 +1969,7 @@ def write_castle_program(
         current = first
     # Auto-tool-change machines (Carbide Motion + probe) want the first tool loaded
     # and measured up front — emit M6 so it probes before cutting (BUILDPLAN M8).
-    if tool_change_mode == "m6":
+    if start and tool_change_mode == "m6":
         n = tool_settings[first].number if (tool_settings and first in tool_settings) else 1
         post.initial_tool_load(n)
     post.spindle_on()
@@ -1994,4 +2003,5 @@ def write_castle_program(
             post.emit_polyline(path, arc_tol=arc_tol_mm, ramp_height=ramp,
                                ramp_angle_deg=ramp_angle)
         post.safe_retract()
-    post.end_program()
+    if end:
+        post.end_program()

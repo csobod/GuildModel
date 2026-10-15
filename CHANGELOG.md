@@ -5,6 +5,26 @@ and the current release's note; everything else lives here.
 
 ## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
 
+### Two-sided jobs: the flip (BUILDPLAN M24, 2026-10-15)
+
+A front that takes material off the front, a brow chamfer, an anterior
+bezel, a seat or a sculpt there, posts two setups. Side one is the
+posterior program as always, in G54, less the through-cuts; side two cuts
+the anterior in G55 after the blank is flipped about the fixture's flip
+line onto its dowel pins: the anterior Z-map becomes a relief of its own,
+mirrored and re-zeroed on the fixture plane, so the relief, the Features
+pass, the seats and the sculpts are cut by the same generators, and the
+eyewires, the holes and the perimeter go last with the part released on
+tabs. A front that takes nothing off the front posts one setup, byte for
+byte as before. `back_cut.nc` begins with G55, the flip pause GuildSend
+parses extended with the flip line and the work offset, and a G38.2 probe
+block when asked; the setup sheet carries the setups; Export G-code writes
+both files. The simulation reads both programs: side two is cut from the
+stock side one left, flipped bit for bit, and the log carries both verdicts.
+The Cut tab's Operations group chooses Two-sided (Auto, Off, On),
+Through-cuts (side two or side one) and the probe; the Guild bed's fixture
+file names the two pins on the flip line. The guide's §5 has the bench test.
+
 ### Press dies: the molds for the formed front (BUILDPLAN M23, 2026-10-15)
 
 *Export Dies…* on the Forming panel writes the press's molds, cut to the
