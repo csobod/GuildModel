@@ -426,6 +426,8 @@ def plan_initial_floor(plan) -> np.ndarray:
 
 def plan_final_floor(plan) -> np.ndarray:
     """The fully cut top, a fresh copy: the rest state."""
+    if getattr(plan, "is_setups", False):
+        plan.active = len(plan.plans) - 1
     if hasattr(plan, "final_top"):
         return np.array(plan.final_top(), dtype=np.float64, copy=True)
     return plan.keyframes[-1][1].copy()
@@ -436,7 +438,10 @@ def plan_stamp_forward(plan, floor: np.ndarray, a: int, b: int) -> None:
 
     For a `StockPlan` the stock carries the state: it is carved forward and
     its top written into `floor`, so the viewer's array stays the one it
-    draws from."""
+    draws from. A `SetupsPlan` carves each setup it spans (2.0)."""
+    if getattr(plan, "is_setups", False):
+        plan.stamp_forward(floor, a, b)
+        return
     if hasattr(plan, "stock0"):
         from ..stock.playback import stamp_forward
         stamp_forward(plan, a, b)
@@ -458,6 +463,8 @@ def plan_stamp_forward(plan, floor: np.ndarray, a: int, b: int) -> None:
 
 def plan_floor_to(plan, target: float) -> np.ndarray:
     """A fresh floor stamped up to position `target`, from the nearest keyframe."""
+    if getattr(plan, "is_setups", False):
+        return np.array(plan.floor_to(target), dtype=np.float64, copy=True)
     if hasattr(plan, "stock0"):
         from ..stock.playback import floor_to
         return floor_to(plan, target)

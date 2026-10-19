@@ -229,6 +229,15 @@ class FormingPanel(QFrame):
         self._handles = (self.base_curve, self.face_form, self.projection,
                          self.crease_gap, self.crease_angle, self.offset,
                          self.die_radius, self.crease_blend)
+        #: The bridge's own controls: off for a front with no bridge to
+        #: project (`set_bridge_projects`).
+        self._bridge_handles = (self.projection, self.crease_gap, self.crease_angle,
+                                self.offset, self.die_radius, self.crease_blend)
+        self._projects = True
+        self._projection_tip = self.projection.toolTip()
+        #: False on a monocle, which has no second eye to wrap toward.
+        self._wraps = True
+        self._face_form_tip = self.face_form.toolTip()
         for handle in self._handles:
             handle.valueChanged.connect(self._on_settled)
             if handle in self._layout_handles:
@@ -371,8 +380,9 @@ class FormingPanel(QFrame):
         self.nest_btn = QPushButton("Export Nest…")
         self.nest_btn.setToolTip(
             "The nest fixture for a pre-formed blank: the cup that holds the pressed\n"
-            "slab for side one and the dome that holds its carved back for side two,\n"
-            "both on the dowels, so the flip registers.")
+            "slab front down for the posterior, and the dome it lies on back down\n"
+            "while a two-sided job cuts the anterior first; both on the dowels, so\n"
+            "the flip registers.")
         self.nest_btn.clicked.connect(self.nest_export_requested)
         btns.addWidget(self.nest_btn)
         g.addLayout(btns, 5, 7)
@@ -583,7 +593,8 @@ class FormingPanel(QFrame):
         r = self._radius_in_use()
         self.radius_readout.setText(f"R {r:.0f} mm" if r > 0 else "flat")
         wrap = 180.0 - self.face_form.value()
-        self.face_form_readout.setText(f"{wrap:.0f}° wrap" if wrap > 0 else "flat")
+        self.face_form_readout.setText(
+            "no wrap" if not self._wraps else f"{wrap:.0f}° wrap" if wrap > 0 else "flat")
         die = self._die_in_use()
         if self.projection.value() == 0.0 or not die < float("inf"):
             self.die_readout.setText("")
@@ -608,7 +619,7 @@ class FormingPanel(QFrame):
         return base.with_base_curve(
             d, self.face_form.value(),
             radius_mm=row.radius_mm if row is not None else self._custom_radius(d),
-            bridge_projection_mm=float(self.projection.value()),
+            bridge_projection_mm=float(self.projection.value()) if self._projects else 0.0,
             crease_gap_mm=float(self.crease_gap.value()),
             crease_angle_deg=float(self.crease_angle.value()),
             bridge_offset_mm=float(self.offset.value()),
@@ -620,14 +631,21 @@ class FormingPanel(QFrame):
 
     def set_forming(self, forming) -> None:
         """Push a component's forming into the controls without emitting."""
-        self._carried = (float(forming.base_curve), float(forming.base_radius_mm))
+        # The radius is carried for a row this machine lacks. On a row it has,
+        # the row gives the die while the sliders are on it and the convention
+        # once they leave it, as for a project made here; carried, the radius
+        # off the row depended on how the project was opened (the 2.0 bug hunt).
+        bc, ff = float(forming.base_curve), 180.0 - float(forming.face_form_wrap_deg)
+        self._carried = ((0.0, 0.0) if matching_press(bc, ff) is not None
+                         else (bc, float(forming.base_radius_mm)))
         self._applying += 1
         try:
             for w in (*self._handles, self.groove):
                 w.blockSignals(True)
             self.base_curve.setValue(float(forming.base_curve))
             self.face_form.setValue(180.0 - float(forming.face_form_wrap_deg))
-            self.projection.setValue(float(forming.bridge_projection_mm))
+            self.projection.setValue(float(forming.bridge_projection_mm)
+                                     if self._projects else 0.0)
             if forming.crease_gap_mm > 0.0:
                 self.crease_gap.setValue(float(forming.crease_gap_mm))
             self.crease_angle.setValue(float(forming.crease_angle_deg))
@@ -648,6 +666,42 @@ class FormingPanel(QFrame):
             for w in (*self._handles, self.groove):
                 w.blockSignals(False)
             self._applying -= 1
+        self._refresh_readouts()
+
+    def set_bridge_projects(self, projects: bool, wraps: bool = True) -> None:
+        """Whether the active front has a bridge to project. Separated rims
+        on a metal bridge, and a monocle, form to the base curve and the face
+        form alone: the bridge's controls are disabled and the projection
+        reads 0. A monocle (``wraps`` False) has no second eye to wrap toward
+        either, so its face form is disabled too and the map forms it to the
+        base curve alone; the press row's face form is kept, so the row still
+        names the die. Call before `set_forming`."""
+        self._projects = bool(projects)
+        self._wraps = bool(wraps)
+        self.face_form.setEnabled(self._wraps)
+        self.face_form.setToolTip(
+            self._face_form_tip if self._wraps else
+            "No second eye to wrap toward: a monocle forms to its base\n"
+            "curve alone, whatever the press row's face form.")
+        w = getattr(self, "die_face_form", None)
+        if w is not None:
+            w.setEnabled(self._wraps)
+        for w in self._bridge_handles:
+            w.setEnabled(self._projects)
+        # the dies' bridge tooling too: the punch and the anvil press a
+        # projection a front without a bridge never takes (the 2.0 bug hunt)
+        for name in ("die_bridge", "die_punch", "die_v_angle"):
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setEnabled(self._projects)
+        self.projection.setToolTip(
+            self._projection_tip if self._projects else
+            "No bridge to project: separated rims on a metal bridge, or a\n"
+            "monocle, form to the base curve and the face form alone.")
+        if not self._projects:
+            self.projection.blockSignals(True)
+            self.projection.setValue(0.0)
+            self.projection.blockSignals(False)
         self._refresh_readouts()
 
     def set_readout(self, text: str) -> None:

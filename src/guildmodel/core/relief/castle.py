@@ -23,9 +23,10 @@ from typing import Callable, Optional
 
 import numpy as np
 from shapely import contains_xy, distance, points, prepare
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPolygon, Polygon
 
-from ..geometry.regions import TOWER_KINDS, CastlePartition
+from ..geometry.regions import (TOWER_KINDS, CastlePartition, body_exteriors,
+                                body_interiors, body_parts)
 from ..project.schema import CastleParams, StockDefinition
 from .heightfield import Heightfield
 
@@ -78,7 +79,7 @@ class CastleRelief:
     sculpt_footprints: list[Polygon] = dc_field(default_factory=list)
     # The posterior surface BEFORE the pockets are carved (M8): the relief passes
     # follow this so they sail OVER the already-cut pockets instead of re-diving to the
-    # floor — the Hinge Pockets op cuts the pockets, the sim verifies the full `field`.
+    # floor — the Component Pockets op cuts the pockets, the sim verifies the full `field`.
     surface_field: "Heightfield | None" = None
     # M13 posterior finishing features: mask of feature-carved cells (None when
     # every feature is off) + the steepest enabled feature angle. The CAM fine
@@ -116,6 +117,11 @@ class CastleRelief:
     # footprint and the back's: what a vertical three-axis cut at the front
     # edge takes off the back's rim, and what the verdict's rim band allows.
     wall_lean_mm: float = 0.0
+    # The stock past the part's edge stands uncut: the anterior, cut first with
+    # the front face up, before the posterior's through-cuts open anything
+    # (2.0). A tool finishes a feature at the edge only from past it, so the
+    # relief's band and the Features pass reach a tool's width beyond the part.
+    uncut_beyond_edge: bool = False
 
     @property
     def anterior_z(self) -> np.ndarray:
@@ -372,7 +378,7 @@ def build_castle_relief(
     if groove_on:
         # Only LENS apertures are grooved; decorative OUTLINE holes share
         # `body.interiors` but take no bevel (they are through-cuts, not rims).
-        groove_lens_polys = [Polygon(r) for r in body.interiors
+        groove_lens_polys = [Polygon(r) for r in body_interiors(body)
                              if not partition.is_hole(r)]
         body = _undersized_lens_body(body, groove.depth_mm, skip=partition.is_hole)
     minx, miny, maxx, maxy = body.bounds
@@ -464,16 +470,28 @@ def build_castle_relief(
 
     z = np.minimum(fill, carve)
 
+    # The features are carved against the rim lip when the groove is on, as
+    # the mesh and B-Rep build them: against the drawn lens line, the bezel
+    # bottomed out a lip-width inside the visible edge and left a 0.4 mm
+    # ridge at the aperture (the 2.0 bug hunt).
+    feature_partition = partition
+    if groove_on:
+        from ..geometry.rings import lip_partition
+        try:
+            feature_partition = lip_partition(partition, groove.depth_mm)
+        except Exception:                                    # noqa: BLE001
+            feature_partition = partition    # the lip did not re-partition: as before
+
     # ---- Posterior finishing features (M13): min-carves into the footed
     # surface, BEFORE the surface snapshot so the relief passes machine them.
     from .features import apply_posterior_features
     feature_band, feature_slope = apply_posterior_features(
-        z, partition, castle, inside, ox, oy, resolution, progress=progress)
+        z, feature_partition, castle, inside, ox, oy, resolution, progress=progress)
 
     # ---- Inlay seats (§8a): the one list every kernel reads, from the params.
     from ..geometry.inlays import inlay_cuts, zone_reference
     from ..geometry.pocket_floor import castle_pocket_floors
-    hinge_floors = castle_pocket_floors(hinge_polys, castle)
+    hinge_floors = castle_pocket_floors(hinge_polys, castle, partition, heights)
     seats = inlay_cuts(castle.inlays, list(inlay_polys), hinge_floors,
                        posterior_reference=zone_reference(partition, heights))
 
@@ -492,9 +510,9 @@ def build_castle_relief(
         # flip setup's job (M9/V2), and it will want its own band.
         if castle.eyewire_bezel.cuts_anterior():
             _report(progress, "Anterior eyewire chamfer", 0.883)
-            carve_anterior_bezel(z, anterior, pre_anterior, partition,
+            carve_anterior_bezel(z, anterior, pre_anterior, feature_partition,
                                  castle.eyewire_bezel, inside, ox, oy, resolution)
-        eb, es = apply_edge_features(z, anterior, partition, castle, inside,
+        eb, es = apply_edge_features(z, anterior, feature_partition, castle, inside,
                                      ox, oy, resolution, progress=progress)
         if eb is not None:
             feature_band = eb if feature_band is None else (feature_band | eb)
@@ -513,10 +531,10 @@ def build_castle_relief(
             anterior = None            # posterior-only edge features changed nothing here
 
     surface = z.copy()                # posterior surface BEFORE the pockets (relief
-                                      # passes sail over them; the Hinge Pockets op cuts)
+                                      # passes sail over them; the Component Pockets op cuts)
 
     # ---- Hinge pockets: sharp-walled cut below the endpiece height ----
-    _report(progress, "Hinge pockets", 0.88)
+    _report(progress, "Component pockets", 0.88)
     for poly, floor in hinge_floors:
         prepare(poly)
         m = contains_xy(poly, flat_x, flat_y).reshape(rows, cols) & inside
@@ -558,19 +576,26 @@ def _undersized_lens_body(body: Polygon, depth_mm: float,
     """The body with each lens hole shrunk inward by the groove depth — the
     rim lip. A hole that vanishes at this depth is kept closed (degenerate
     designs; the groove lint flags it). Rings for which ``skip`` is true are
-    decorative OUTLINE holes, which take no groove and so keep their size."""
-    holes = []
-    for ring in body.interiors:
-        if skip(ring):
-            holes.append(list(ring.coords))
-            continue
-        hole = Polygon(ring).buffer(-depth_mm)
-        if hole.is_empty:
-            continue
-        if hole.geom_type == "MultiPolygon":
-            hole = max(hole.geoms, key=lambda g: g.area)
-        holes.append(list(hole.exterior.coords))
-    return Polygon(list(body.exterior.coords), holes)
+    decorative OUTLINE holes, which take no groove and so keep their size.
+    Separated rims are shrunk rim by rim."""
+    def undersized(part: Polygon) -> Polygon:
+        holes = []
+        for ring in part.interiors:
+            if skip(ring):
+                holes.append(list(ring.coords))
+                continue
+            hole = Polygon(ring).buffer(-depth_mm)
+            if hole.is_empty:
+                continue
+            if hole.geom_type == "MultiPolygon":
+                hole = max(hole.geoms, key=lambda g: g.area)
+            holes.append(list(hole.exterior.coords))
+        return Polygon(list(part.exterior.coords), holes)
+
+    parts = [undersized(part) for part in body_parts(body)]
+    if not parts:
+        return body
+    return parts[0] if len(parts) == 1 else MultiPolygon(parts)
 
 
 # ------------------------------------------------------------------ stages
@@ -804,7 +829,7 @@ def _conform_rim(
     # Mask boundary (outline + lens-hole rims): move top and anterior twins
     # together so the rim wall stays a vertical ribbon.
     rim_ids = np.unique(boundary)
-    body_rings = [body.exterior] + list(body.interiors)
+    body_rings = body_exteriors(body) + body_interiors(body)
     snapped = _snap_to_rings(verts[rim_ids, :2], body_rings, max_snap)
     verts[rim_ids, 0:2] = snapped
     verts[rim_ids + n, 0:2] = snapped
@@ -994,13 +1019,18 @@ def _groove_rim(relief: CastleRelief, verts: np.ndarray,
     for vid_, k in slot.items():
         x, y = verts[vid_, 0], verts[vid_, 1]
         z_top = verts[vid_, 2]
+        # The rings stay in order down the wall, the flank's foot never under
+        # the anterior surface the rim stands on: a front chamfer raises that
+        # surface over the V's lower flank, and the strip folded over itself
+        # (the 2.0 bug hunt). A band the chamfer takes collapses to nothing.
+        z_bot = verts[vid_ + n, 2]
         z_gt = min(z_apex + half_w, max(z_top - 0.05, 0.05))
-        z_gb = max(z_apex - half_w, 0.05)
+        z_gb = min(max(z_apex - half_w, z_bot, 0.05), z_gt)
         near = nearest_points(
             relief.groove_lens_polys[lens_of[vid_]].exterior, Point(x, y))[0]
         gt[k] = (x, y, z_gt)
-        ap[k] = (near.x, near.y, min(z_apex, z_gt))
-        gb[k] = (x, y, min(z_gb, z_gt))
+        ap[k] = (near.x, near.y, max(min(z_apex, z_gt), z_gb))
+        gb[k] = (x, y, z_gb)
     verts = np.vstack([verts, gt, ap, gb])
 
     def _gt(i): return base + slot[i]

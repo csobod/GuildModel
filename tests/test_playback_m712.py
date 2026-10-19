@@ -127,8 +127,8 @@ def test_steps_from_ops_prefers_profiles_map():
 
 def test_steps_from_ops_preserves_order_and_count():
     default = _flat()
-    ops = [_op("Hinge Pockets", [_hline(6.0, 3.5)]),
+    ops = [_op("Component Pockets", [_hline(6.0, 3.5)]),
            _op("Rough", [_hline(8.0, 3.0)]),
            _op("Perimeter", [_hline(12.0, 0.4)])]
     steps = steps_from_ops(ops, default)
-    assert [s[0] for s in steps] == ["Hinge Pockets", "Rough", "Perimeter"]
+    assert [s[0] for s in steps] == ["Component Pockets", "Rough", "Perimeter"]

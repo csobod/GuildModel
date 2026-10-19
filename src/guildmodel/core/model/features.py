@@ -40,6 +40,7 @@ from shapely.geometry import LineString, Polygon
 
 from ..geometry.rings import (carry_anchors, inward_normals,
                              ring_stations, thickness_limit)
+from ..geometry.regions import body_interiors
 from ..project.schema import CastleParams
 from .kernel import (ManifoldError, surface_z_at, sweep_sections,
                      swept_profile)
@@ -223,13 +224,21 @@ def edge_feature_cutters(mesh, partition, feature, top: float) -> list[Manifold]
     `relief.edges.spans_whole_ring`, which is where the reasoning lives because
     the B-Rep path needs exactly the same exception for exactly the same reason.
     """
+    from ..relief.edges import rings_for
+
+    # A ring per rim on a front with separated rims; one otherwise.
+    return [cutter for ring in rings_for(partition, feature.edge)
+            for cutter in _edge_cutters_along(ring, mesh, partition, feature, top)]
+
+
+def _edge_cutters_along(ring, mesh, partition, feature, top: float) -> list[Manifold]:
+    """`edge_feature_cutters` along one ring."""
     import math
 
-    from ..relief.edges import (ring_for, span_intervals, spans_whole_ring,
+    from ..relief.edges import (span_intervals, spans_whole_ring,
                                 station_fraction, taper_weight)
 
-    ring = ring_for(partition, feature.edge)
-    if ring is None or ring.length <= 0:
+    if ring.length <= 0:
         return []
     intervals = span_intervals(ring, partition, feature.zones,
                                feature.trim_start_mm, feature.trim_end_mm)
@@ -400,7 +409,7 @@ def bezel_cutters(mesh, partition, castle: CastleParams,
         # the maker confirmed the filter is the correct behavior. Both kernels
         # now skip them.
         out.extend(bezel_cutter(mesh, partition.body, ring, bezel, top)
-                   for ring in partition.body.interiors
+                   for ring in body_interiors(partition.body)
                    if not partition.is_hole(ring))
     for feature in bezel.as_edge_features():
         out.extend(edge_feature_cutters(mesh, partition, feature, top))
@@ -459,7 +468,7 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
 
     from ..geometry.rings import crest_inside
     from ..relief.features import (_bottom_center_station, _splay_angles_deg,
-                                   splay_weight)
+                                   splay_seam, splay_section, splay_weight)
 
     ring, total, s0 = _bottom_center_station(body)
     run = min(float(p.run_mm), 0.45 * total)
@@ -498,7 +507,6 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
 
     tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
 
-    drops = np.maximum(crest * tan_t, MIN_TAPER_DROP_MM)
     widths = np.maximum(crest, MIN_TAPER_DROP_MM)
 
     anchors = surface_z_at(mesh, pts + into * np.maximum(crest,
@@ -508,8 +516,8 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
     # weight falls, so the cut runs out because the plane has left the material
     # rather than because the tool has run out of size.
     #
-    # `crest * tan_t`, not `drops`: the lift is this station's *own* depth, and
-    # `drops` has already been floored at `MIN_TAPER_DROP_MM`. Where the crest
+    # `crest * tan_t`, not a depth floored at `MIN_TAPER_DROP_MM`: the lift is
+    # this station's *own* depth. Where the crest
     # has gone to zero on its own — the outer run end with
     # `crest_deviation_end_mm = 0` — the floored value would lift a section that
     # has no depth to lift, off a surface it was sitting flush on, and hand the
@@ -533,15 +541,22 @@ def splay_cutter(mesh, body: Polygon, p, res_hint: float = 0.15,
     # collapses the section there; 0.0 would have cut the whole thickness away,
     # which is exactly the Gabriel failure.
     anchors = carry_anchors(anchors, floor)
-    drops = np.clip(drops, MIN_TAPER_DROP_MM,
-                    np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
     top = float(np.nanmax(anchors)) + CUT_MARGIN_MM
 
-    profiles = [
-        _edge_profile(float(w), float(d), 0.0, "chamfer", True)
-        + np.array([0.0, float(a)])
-        for w, d, a in zip(widths, drops, anchors)
-    ]
+    # The section all three kernels cut (`relief.features.splay_profile`): the
+    # angle kept and the cut floored at the clamp, where this path used to
+    # shallow the angle until the cut fit; the anterior seam rounded over.
+    # The floor is what keeps the Gabriel frame whole, as the shallowed drop
+    # did: no point of the section is below it but the seam's round-over,
+    # which the limits hold above the front face.
+    seam = (splay_seam(widths, tan_t, anchors, floor, p.seam_blend_mm)
+            if p.seam_blend_mm > 0.0 else None)
+    profiles = []
+    for i, (w, t, a) in enumerate(zip(widths, tan_t, anchors)):
+        d, z = splay_section(float(w), float(t), float(a), floor,
+                             None if seam is None else tuple(v[i] for v in seam))
+        d[0] = -EDGE_CROSS_MM            # off the wall — see the constant
+        profiles.append(np.vstack([[-CUT_MARGIN_MM, z[0]], np.column_stack([d, z])]))
     return swept_profile(pts, into, profiles, top, closed=False)
 
 
@@ -618,6 +633,10 @@ def surface_feature_cutters(mesh, body: Polygon,
     2.59 mm on the demo frame. The same is true here, and the caller applies
     them sequentially for the same reason — they are the one group that cannot
     be folded into a single pass.
+
+    Both sit under and in a one-piece front's bridge; the caller asks
+    `relief.features.bridge_features_apply` first, so separated rims and a
+    monocle take neither.
     """
     out = []
     splay = getattr(castle, "pad_splay", None)
@@ -642,4 +661,4 @@ def groove_cutters(partition, castle: CastleParams) -> list[Manifold]:
         return []
     lip = partition.body
     return [v_groove_cutter(lip, ring, groove)
-            for ring in lip.interiors if not partition.is_hole(ring)]
+            for ring in body_interiors(lip) if not partition.is_hole(ring)]

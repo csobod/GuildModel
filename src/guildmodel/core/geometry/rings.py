@@ -108,21 +108,30 @@ def lip_body(body: Polygon, depth_mm: float, is_hole=lambda r: False) -> Polygon
     cut back outward from it so its apex lands exactly on the original LENS
     contour — which is what keeps the boxed dimension honest. Decorative OUTLINE
     holes are through-cuts and take no groove, so they keep their size.
+    Separated rims are shrunk rim by rim.
     """
-    from shapely.geometry import Polygon as _P
+    from shapely.geometry import MultiPolygon as _M, Polygon as _P
 
-    holes = []
-    for ring in body.interiors:
-        if is_hole(ring):
-            holes.append(ring)
-            continue
-        shrunk = _P(ring).buffer(-abs(depth_mm))
-        if shrunk.is_empty:
-            holes.append(ring)                    # degenerate: keep it closed
-            continue
-        biggest = max(getattr(shrunk, "geoms", [shrunk]), key=lambda g: g.area)
-        holes.append(biggest.exterior)
-    return _P(body.exterior, holes)
+    from .regions import body_parts
+
+    def lip(part: Polygon) -> Polygon:
+        holes = []
+        for ring in part.interiors:
+            if is_hole(ring):
+                holes.append(ring)
+                continue
+            shrunk = _P(ring).buffer(-abs(depth_mm))
+            if shrunk.is_empty:
+                holes.append(ring)                # degenerate: keep it closed
+                continue
+            biggest = max(getattr(shrunk, "geoms", [shrunk]), key=lambda g: g.area)
+            holes.append(biggest.exterior)
+        return _P(part.exterior, holes)
+
+    parts = [lip(part) for part in body_parts(body)]
+    if not parts:
+        return body
+    return parts[0] if len(parts) == 1 else _M(parts)
 
 
 #: Chord tolerance for sampling an offset aperture back to points, in mm. The
@@ -212,15 +221,19 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
     partitioner on shrunk lens polygons instead produces zones that tile the lip
     body exactly, with no buffer artifacts, and it reuses code that is already
     proven: same nine zone names, still `classified`, same ten SCULPT edges.
+    Separated rims go through as they came, a rim per body.
     """
-    from .regions import curves_by_ring, partition_zones
-    from shapely.geometry import Polygon as _P
+    from .regions import body_interiors, curves_by_ring, partition_zones
+    from shapely.geometry import MultiPolygon as _M, Polygon as _P
 
-    holes = [r for r in partition.body.interiors if partition.is_hole(r)]
-    lens_rings = [r for r in partition.body.interiors if not partition.is_hole(r)]
+    lens_rings = [r for r in body_interiors(partition.body)
+                  if not partition.is_hole(r)]
     if not lens_rings:
         return partition
-    outline = _P(partition.body.exterior, holes)
+    # Each rim as drawn: its exterior and its decorative holes, the lenses out.
+    rims = [_P(part.exterior, [r for r in part.interiors if partition.is_hole(r)])
+            for part in partition.parts]
+    outline = rims[0] if len(rims) == 1 else _M(rims)
 
     shrunk, lip_points, lip_curves = [], [], []
     for ring in lens_rings:
@@ -240,7 +253,17 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
         # leave it alone rather than punch it out.
         shrunk.append(lens if buffered is None else buffered)
 
-    cuts = [list(e.cut.coords) for e in partition.edges]
+    # Each cut reaches a millimeter into the lens it ends at; the lip lies
+    # `depth_mm` further in, and a lip deeper than about a millimeter left the
+    # cuts short of it, so the re-partition failed and the groove's depth was
+    # capped by that failure, not the drawing (the 2.0 bug hunt). The cut's
+    # lens end is carried past the lip.
+    lenses = [_P(r) for r in lens_rings]
+    # The carry stops half a millimeter inside the shrunk aperture, so it may
+    # look far: a cut that meets its lens at a shallow angle reaches the lip
+    # only well past the depth, measured along the cut.
+    cuts = [_reach_past_lip(list(e.cut.coords), lenses, shrunk, 5.0 * (abs(depth_mm) + 1.0))
+            for e in partition.edges]
     # The outline exterior and the decorative holes are untouched by the shrink,
     # so their keys still match and they carry straight through — on the demo
     # frame that alone is 342 of the body's flattened vertices against the two
@@ -249,9 +272,53 @@ def lip_partition(partition: CastlePartition, depth_mm: float):
     source.update(curves_by_ring(lip_points, lip_curves))
 
     lip = partition_zones(outline, shrunk, cuts, source_curves=source)
-    if not lip.classified or len(lip.zones) != len(partition.zones):
+    # The same zones by name: counting them passed a lens that crossed the
+    # outline and came back with an endpiece renamed a bridge.
+    if (not lip.classified
+            or sorted(z.name for z in lip.zones) != sorted(z.name for z in partition.zones)):
         raise BooleanError("re-partitioning against the rim lip changed the castle")
     return lip
+
+
+def _reach_past_lip(coords, lenses, apertures, by: float) -> list:
+    """`coords` with an end inside a lens carried along the cut, at most `by`,
+    to half a millimeter inside that lens's shrunk aperture, so the cut
+    crosses the whole lip; the end at the outline is left where it is, and so
+    is an end in a lens the shrink left alone (one that would vanish)."""
+    import math
+    from shapely.geometry import LineString, Point
+    pts = [(float(p[0]), float(p[1])) for p in coords]
+    if len(pts) < 2 or by <= 0.0:
+        return pts
+
+    def carried(i, j):
+        end, prev = pts[i], pts[j]
+        dx, dy = end[0] - prev[0], end[1] - prev[1]
+        n = math.hypot(dx, dy)
+        if n < 1e-12:
+            return end
+        ux, uy = dx / n, dy / n
+        q = Point(end)
+        for lens, hole in zip(lenses, apertures):
+            if not lens.buffer(0.01).contains(q):
+                continue
+            if abs(hole.area - lens.area) < 1e-9 or hole.contains(q):
+                return end                    # left alone, or already past the lip
+            hit = LineString([end, (end[0] + ux * by, end[1] + uy * by)]).intersection(hole)
+            if hit.is_empty:
+                return end
+            pieces = [g for g in getattr(hit, "geoms", [hit]) if g.length > 0]
+            if not pieces:
+                return end
+            first = min(pieces, key=lambda g: q.distance(g))
+            t0 = min(math.hypot(x - end[0], y - end[1]) for x, y in first.coords)
+            t = t0 + min(0.5, first.length / 2.0)
+            return (end[0] + ux * t, end[1] + uy * t)
+        return end
+
+    head, tail = carried(0, 1), carried(-1, -2)
+    pts[0], pts[-1] = head, tail
+    return pts
 
 
 # ------------------------------------------------------------------ anchor rays

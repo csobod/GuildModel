@@ -254,9 +254,15 @@ def edge_feature_limits(castle: CastleParams,
     out["width_mm"] = Limit(
         0.0, budget / tan_a if tan_a > 0 else budget,
         f"a {angle:g}° chamfer any wider cuts through {wall}")
+    # A variable chamfer reaches its end width somewhere along the run: the
+    # same wall bounds it, and only the start was bounded (the 2.0 bug hunt).
+    out["width_end_mm"] = Limit(
+        0.0, budget / tan_a if tan_a > 0 else budget,
+        f"a {angle:g}° chamfer any wider at its end cuts through {wall}")
+    width = max(float(feature.width_mm), float(getattr(feature, "width_end_mm", 0.0) or 0.0),
+                1e-6)
     out["radius_mm"] = Limit(
         0.0, budget, f"a round-over any deeper cuts through {wall}")
-    width = max(float(feature.width_mm), 1e-6)
     out["angle_deg"] = Limit(
         0.0, math.degrees(math.atan(budget / width)),
         f"a {width:g} mm chamfer any steeper cuts through {wall}")
@@ -334,12 +340,26 @@ def castle_limits(castle: CastleParams, partition=None,
                 0.0, ceiling, f"{stack} gives {ceiling:g} mm of material over {name}")
 
     endpiece = float(castle.zones.endpiece_mm)
-    from ..geometry.pocket_floor import FRONT_AXIS, pocket_span
+    from ..geometry.pocket_floor import FRONT_AXIS, mount_pockets, pocket_span
+    # A mount (a pocket reaching no endpiece, the metal bridge of separated
+    # rims) is cut from its own terrace and does not tilt: the depth answers
+    # to the lowest terrace any pocket is cut from, the angle to the hinges.
+    heights = None
+    if partition is not None and getattr(partition, "classified", False):
+        from ..geometry.heights import zone_heights
+        heights = zone_heights(partition, castle, None)
+    mounts = mount_pockets(hinge_polys, partition, heights)
+    hinges_only = [p for p in (hinge_polys or [])
+                   if not any(p is m for m, _ in mounts)]
+    lowest, what = endpiece, f"a {endpiece:g} mm endpiece"
+    for _, ref in mounts:
+        if ref < lowest:
+            lowest, what = ref, f"the {ref:g} mm terrace the bridge mount sits in"
     out.update(pocket_limits(
         castle.hinge_pocket_depth_mm, castle.hinge_pocket_angle_deg,
-        max(0.0, endpiece - MIN_POCKET_FLOOR_MM),
-        pocket_span(hinge_polys, FRONT_AXIS),
-        f"a {endpiece:g} mm endpiece", "inferior"))
+        max(0.0, lowest - MIN_POCKET_FLOOR_MM),
+        pocket_span(hinges_only, FRONT_AXIS),
+        what, "inferior"))
 
     out.update(_groove_limits(castle, groove_ceiling))
     out.update(_finishing_limits(castle))
@@ -417,6 +437,23 @@ def _groove_limits(castle: CastleParams,
             0.0, float(groove_ceiling),
             "a deeper groove shrinks the apertures until the castle no longer "
             "partitions into the same zones")
+    bezel = castle.eyewire_bezel
+    if bezel.cuts_anterior():
+        # The front chamfer cuts down the rim by its width times its slope,
+        # and the V's front flank sits `offset - width/2` up it: past that the
+        # chamfer takes the flank, and the lens is held from the front by a
+        # sliver. The shipped pair did, with no word (the 2.0 bug hunt).
+        tan_a = math.tan(math.radians(max(float(bezel.anterior_angle_deg), 1e-6)))
+        cut = float(bezel.anterior_width_mm) * tan_a
+        flank = max(0.0, offset - half)
+        out["eyewire_bezel.anterior_width_mm"] = Limit(
+            0.0, flank / tan_a,
+            f"a wider front chamfer cuts into the lens groove's front flank, "
+            f"{flank:.2f} mm up the rim")
+        out["lens_groove.anterior_offset_mm"] = Limit(
+            max(half, cut + half), max(half, cut + half, wall - half),
+            f"the V's front flank has to clear the front chamfer, {cut:.2f} mm up "
+            f"the rim, and its back flank the {wall:g} mm wall top")
     return out
 
 
@@ -443,8 +480,15 @@ def _finishing_limits(castle: CastleParams) -> dict[str, Limit]:
               f"{scoop.width_mm:g} x {scoop.depth_mm:g} mm the two radii can "
               f"total {r_sum:.1f} mm before the U loses its straight wall")
     gap = "the gap would swallow the whole run, leaving nothing to cut"
+    clamp = float(castle.pad_splay.anterior_clamp_mm)
     return {
         "pad_splay.anterior_clamp_mm": Limit(0.0, splay, nothing),
+        # The round-over stands on the edge the angle cut leaves, at least the
+        # clamp high: a larger radius runs it out through the front face.
+        "pad_splay.seam_blend_mm": Limit(
+            0.0, clamp,
+            f"the round-over runs out through the front face past the "
+            f"{clamp:g} mm the splay leaves at the edge"),
         "pad_splay.gap_mm": Limit(0.0, 2.0 * castle.pad_splay.run_mm, gap),
         "eyewire_bezel.anterior_clamp_mm": Limit(0.0, rim, nothing),
         "bridge_relief.anterior_clamp_mm": Limit(0.0, float(z.bridge_mm), nothing),

@@ -100,7 +100,7 @@ def test_the_pre_pocket_surface_is_a_second_build_not_the_same_array(gabriel_pai
 
 
 def test_the_hinge_polygons_come_through(gabriel_pair, gabriel_front):
-    """The Hinge Pockets op cuts `pocket_polys`. An empty list is a program
+    """The Component Pockets op cuts `pocket_polys`. An empty list is a program
     that mills the pocket floors with the relief pass and never cuts them."""
     raster, mesh = gabriel_pair
     assert len(mesh.pocket_polys) == len(gabriel_front.hinge_polys) == 2

@@ -81,7 +81,7 @@ def test_the_temple_tab_is_applied_to_the_other_temple(tmp_path, monkeypatch):
     left.program_zero = ProgramZero(x_ref="left", y_ref="bottom", z_ref="top")
     left.mesh_built = True
     left.stage_cache = {"flat": object()}
-    left.program_stored = True
+    left.program_stored = left.program_fresh = True
     win._clear_dirty()
 
     # edit the right temple's tab the way a maker would

@@ -20,7 +20,7 @@ def test_posterior_flip_negates_x_only():
     anterior = import_dxf(DEMO_DXF, posterior=False)
     posterior = import_dxf(DEMO_DXF)  # default posterior=True
 
-    for layer in ("OUTLINE", "LENS", "SCULPT", "HINGE", "REF"):
+    for layer in ("OUTLINE", "LENS", "SCULPT", "COMPONENT", "REF"):
         assert len(anterior[layer]) == len(posterior[layer])
     a = anterior["OUTLINE"][0]
     p = posterior["OUTLINE"][0]

@@ -89,6 +89,9 @@ class GRBLPost:
     # chosen datum (e.g. the stock blank's lower-left/top) lands at G54 zero. Arc
     # I/J are center-relative and translation-invariant, so they are not offset.
     work_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # The dwell after an M3 that starts the spindle, seconds (`MachineProfile.
+    # spindle_spinup_s`): GRBL does not wait for the spindle to reach speed.
+    spindle_spinup_s: float = 0.0
     # Collision-aware pass linking (BUILDPLAN M8): between cutting passes, retract
     # only to `link_clearance_z_mm` (just above the stock) instead of the full safe
     # Z — UNLESS the straight hop to the next pass would pass within a `link_keepouts`
@@ -97,7 +100,8 @@ class GRBLPost:
     link_clearance_z_mm: float | None = None
     link_keepouts: tuple = ()      # (cx, cy, radius) screw keep-outs, design coords
     # The work coordinate system this program runs in (M24): G54 as every
-    # program before 2.0, which is not written; side two runs in G55.
+    # program before 2.0, which is not written; the anterior setup of a
+    # two-sided job runs in G55.
     wcs: str = "G54"
     # Lines emitted after the header's modal block, before the first move: a
     # side's re-probe instruction (M24).
@@ -156,8 +160,12 @@ class GRBLPost:
     def comment(self, text: str) -> None:
         self._lines.append(f"{self.comment_char} {text}")
 
-    def spindle_on(self) -> None:
+    def spindle_on(self, *, starting: bool = True) -> None:
+        """M3 at the current speed; a spindle that starts here is given its
+        spin-up before the first move, a speed change while running is not."""
         self._lines.append(f"M3 S{self.spindle_rpm}")
+        if starting and self.spindle_spinup_s > 0:
+            self._lines.append(f"G4 P{self.spindle_spinup_s:.1f}")
 
     def spindle_off(self) -> None:
         self._lines.append("M5")
@@ -311,6 +319,34 @@ class GRBLPost:
         self._lines.append(f"M6 T{number}")
         self._last_z = None           # the probe/macro re-establishes Z
 
+    def begin_side(self, side: str) -> None:
+        """The start of a setup that follows another in the same program (2.0):
+        its side, the rotary's turn when it indexes, its work offset named
+        (the setup before may have run in another), its preamble, and a safe
+        retract before any move."""
+        self.comment(f"Side: {side}")
+        if self.index_a_deg is not None:
+            self.rotary_index(self.index_a_deg)
+        self._lines.append(f"{self.wcs or 'G54'}  ; work offset for this side")
+        self._lines += list(self.preamble)
+        self._last_xy = None
+        self._last_z = None
+        self.rapid(z=self.safe_z_mm)
+
+    def end_side(self, pause: str | None = None) -> None:
+        """A setup's end when another follows in the same program (2.0): the
+        spindle stopped and the tool clear, the rotary turned back from the
+        top of travel when this side indexed it, then the pause GuildSend
+        reads as the flip when the blank is turned by hand."""
+        self._lines += ["M5", f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}"]
+        if self.index_a_deg is not None:
+            self._lines.append("G53 G0 Z0 ; the top of Z travel, clear of the blank's swing")
+            self.unwind()
+        if pause:
+            self.program_pause(pause)
+        self._last_xy = None
+        self._last_z = None
+
     def program_pause(self, message: str = "Flip stock and re-register on dowel pins") -> None:
         self._lines.append(f"; {message}")
         self._lines.append("M0")
@@ -334,9 +370,16 @@ class GRBLPost:
 
     def rotary_index(self, a_deg: float) -> None:
         """A rapid turn of the rotary alone (the indexed flip, `G0 A180`),
-        from a safe height."""
+        from the top of Z travel.
+
+        Never from the program's safe height: that is a few millimeters over
+        the stock, and the blank sweeps a radius of half its width about the
+        rotary's axis as it turns, through a tool parked there. `G53 G0 Z0` is
+        machine Z zero, the top of travel on a homed GRBL-family controller;
+        whether the swing clears the tool there is checked before posting
+        (`cam.two_sided.rotary_swing_problem`)."""
         self._lines.append(f"; Indexed flip: the rotary turns the blank to {self.rotary_letter}{a_deg:.3f}")
-        self._lines.append(f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}")
+        self._lines.append("G53 G0 Z0 ; the top of Z travel, clear of the blank's swing")
         self._lines.append(f"G0 {self._a_word(a_deg)}")
         self._last_z = self.safe_z_mm
         self._last_xy = None
@@ -407,17 +450,46 @@ class GRBLPost:
             self.g93_end()
         self._last_xy = (pts[-1][0], pts[-1][1])
 
-    def probe_z_block(self, depth_mm: float = 25.0, feed_mmpm: float = 100.0,
-                      wcs_slot: int = 2) -> list[str]:
+    def probe_z_block(self, stock_top_mm: float, plate_mm: float = 0.0,
+                      depth_mm: float = 25.0, feed_mmpm: float = 100.0,
+                      wcs_slot: int = 2, where: str = "the stock top") -> list[str]:
         """The G38.2 touch-off that re-establishes a side's Z after the flip
-        (M24): probe down to the plate on the stock top, set that as the work
-        offset's Z0, retract. Lines, for the preamble."""
+        (M24): probe down to the plate on the stock top, tell the work offset
+        where the probe stopped, retract. Lines, for the preamble.
+
+        The probe runs ``depth_mm`` down from wherever the operator left the
+        tool, in G91: under G90 it ran to Z-25 of the old offset, which may
+        lie above the plate or far below it. The point it touches is the
+        plate's top, ``stock_top_mm`` (the design frame) plus the plate, in
+        program coordinates: setting it as Z0 put the program's zero there,
+        when the program's zero is the program zero's face, the blank's new
+        bottom by default, and every cut ran the blank's thickness high.
+        """
+        z_touch = stock_top_mm + plate_mm + self.work_offset[2]
+        what = f"the touch plate ({plate_mm:.2f} mm)" if plate_mm > 0 else "the probe"
         return [
-            "; Re-probe Z: the touch plate on the stock top, the tool over it",
+            f"; Re-probe Z: {what} on {where}, the tool over it",
+            "G91",
             f"G38.2 Z-{depth_mm:.1f} F{feed_mmpm:.0f}",
-            f"G10 L20 P{wcs_slot} Z0",
+            "G90",
+            f"G10 L20 P{wcs_slot} Z{z_touch:.3f}",
             f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}",
         ]
+
+    def rezero_note(self, stock_top_mm: float, where: str = "the stock top",
+                    zero_is: str = "the blank's bottom") -> str:
+        """What the operator sets after a manual flip without the probe: the
+        stock top's height in program coordinates, which is Z0 only when the
+        program zero is the top face. The note said to zero Z on the stock
+        top whatever the program zero, and the default zero is the blank's
+        bottom: the program then ran a blank's thickness deep."""
+        z = stock_top_mm + self.work_offset[2]
+        if abs(z) < 5e-4:
+            return f"; Re-zero Z: touch off on {where}; it is Z0 in this offset"
+        tail = (f"; the program's Z0 is {zero_is}"
+                if abs(self.work_offset[2]) < 5e-4 else "")
+        return (f"; Re-zero Z: touch off on {where} and set it "
+                f"as Z{z:.3f}{tail}")
 
     def apply_tool(self, ts: "ToolSetting") -> None:
         """Adopt a tool's geometry/feeds as the current output context, without
@@ -437,7 +509,7 @@ class GRBLPost:
         self.plunge_rate_mmpm = float(cut.plunge_rate_mmpm)
         if int(cut.spindle_rpm) != int(self.spindle_rpm):
             self.spindle_rpm = int(cut.spindle_rpm)
-            self.spindle_on()
+            self.spindle_on(starting=False)
 
     def tool_change(self, ts: "ToolSetting", mode: str = "m0",
                     message: str | None = None) -> None:
@@ -469,6 +541,8 @@ class GRBLPost:
     def end_program(self) -> None:
         self._lines += ["M5", f"G0 Z{self.safe_z_mm + self.work_offset[2]:.3f}"]
         if self.index_a_deg is not None:
+            # the unwind turns the blank too: from the top of travel
+            self._lines.append("G53 G0 Z0 ; the top of Z travel, clear of the blank's swing")
             self.unwind()
         self._lines.append("M30")
 

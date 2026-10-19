@@ -30,7 +30,7 @@ def demo_inputs():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, CastleParams(), hinges
 
@@ -63,7 +63,7 @@ def test_demo_tool_and_feeds_in_config():
 
 def test_op_order(program):
     _, names, _ = program
-    assert names == ["Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter"]
+    assert names == ["Component Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter"]
 
 
 def test_contour_pass_stack():
@@ -79,7 +79,7 @@ def test_contour_pass_stack():
 def test_hinge_pockets_floor_and_ramp(program, demo_inputs):
     ops, _, _ = program
     _, castle, hinges = demo_inputs
-    op = ops["Hinge Pockets"]
+    op = ops["Component Pockets"]
     floor = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm   # 4.5
     zs = np.array([p[2] for path in op.paths for p in path])
     assert zs.min() == pytest.approx(floor, abs=1e-6)
@@ -294,9 +294,10 @@ def test_against_reference_nc(program):
     ref = (DEMO / "Demo Program.nc").read_text(errors="replace")
 
     # reference hinge floor == ours
+    # the Fusion program's own section name, from before the COMPONENT layer
     hinge_section = ref.split("(Hinge Pockets)")[1].split("(Rough Scallop)")[0]
     ref_floor = min(float(m) for m in re.findall(r"Z(-?[\d.]+)", hinge_section))
-    zmin, _ = ops["Hinge Pockets"].z_range()
+    zmin, _ = ops["Component Pockets"].z_range()
     assert zmin == pytest.approx(ref_floor, abs=1e-6)        # 4.5
 
     # reference contour pass stack == ours (eyewires section, held Z values)

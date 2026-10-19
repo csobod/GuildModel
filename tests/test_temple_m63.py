@@ -90,7 +90,7 @@ def test_temple_hinge_pockets_emitted_when_present():
     ops = generate_temple_program(OUTLINE, ENGRAVING, TempleParams(), TOOLS, hinge_polys=HINGE)
     # The engraving bit has the least work, so it runs first (2026-09-27, the
     # briefest-tool-first order); the pockets follow, the profile releases last.
-    assert [op.name for op in ops] == ["Engraving", "Hinge Pockets", "Temple Profile"]
+    assert [op.name for op in ops] == ["Engraving", "Component Pockets", "Temple Profile"]
     hp = ops[1]
     assert hp.tool_name == "flat_2mm"            # the temple's hinge tool
     zmin, zmax = hp.z_range()

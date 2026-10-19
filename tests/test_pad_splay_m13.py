@@ -24,7 +24,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, CastleParams(), hinges
 
@@ -112,7 +112,9 @@ def test_splay_off_is_bit_identical(demo, base_relief):
 # ------------------------------------------------------------------ geometry
 
 def test_splay_cross_section_slope_and_crest(demo, base_relief):
-    rel = _splay_relief(demo)        # 30 deg, crest 6 mm, run 18, clamp 1.5
+    # 30 deg, crest 6 mm, run 18, clamp 1.5; the seam sharp, so the angle cut's
+    # own toe is what lands at the edge
+    rel = _splay_relief(demo, seam_blend_mm=0.0)
     assert rel.feature_band is not None
     assert rel.feature_max_slope_deg == 30.0
 
@@ -120,8 +122,7 @@ def test_splay_cross_section_slope_and_crest(demo, base_relief):
     zb = base_relief.field.z[rows, col]
     carved = np.flatnonzero((zb - zs) > 1e-9)
     assert carved.size > 10
-    # Carve starts at the bottom rim and spans ~the crest deviation inward
-    # (plus the crest round-over's small lead-in past the crest).
+    # Carve starts at the bottom rim and spans ~the crest deviation inward.
     assert carved[0] == 0
     span_mm = carved.size * rel.field.resolution
     assert span_mm == pytest.approx(6.3, abs=4 * rel.field.resolution)
@@ -136,23 +137,53 @@ def test_splay_cross_section_slope_and_crest(demo, base_relief):
     assert zs[carved[0]] == pytest.approx(toe, abs=0.15)
 
 
-def test_splay_crest_is_tangent_not_ridged(demo, base_relief):
-    """The M13 fixes gate: the chamfer meets the surface through a convex
-    round-over — the last cells before the crest approach slope zero instead
-    of breaking at the full splay angle (the 'sharp ridge' complaint)."""
+def test_splay_crest_is_sharp_and_the_anterior_seam_rounded(demo, base_relief):
+    """The maker's order by hand (2026-10-17): the angle cut, then the seam
+    nearest the anterior, where it meets the frame's edge, rounded over; the
+    crest, the most posterior seam, is left for tumbling. The raster rounded
+    the crest by 2 mm and cut the edge sharp, the opposite; it now breaks at
+    the crest as the solid kernels do, and only within the seam blend of the
+    edge does the cut fall below the angle cut."""
     res = 0.2
+    sharp = _splay_relief(demo, seam_blend_mm=0.0)
+    rounded = _splay_relief(demo)                       # seam blend 1.0 mm
+    ys, zs, rows, col = _bottom_column_profile(rounded)
+    _, zs0, _, _ = _bottom_column_profile(sharp)
+    zb = base_relief.field.z[rows, col]
+    carved = np.flatnonzero((zb - zs0) > 1e-9)
+    top = zs0[carved[-3:]]                              # the cells nearest the crest
+    assert np.degrees(np.arctan(np.diff(top).mean() / res)) > 25.0
+    lowered = np.flatnonzero(zs < zs0 - 1e-9)
+    assert lowered.size and lowered[0] == 0             # the edge itself
+    assert ys[lowered[-1]] - ys[0] < 1.0 + res          # within the radius
+    assert np.all(zs >= 0.0)                            # never through the front
 
-    def top_slope_deg(rel):
-        ys, zs, rows, col = _bottom_column_profile(rel)
-        zb = base_relief.field.z[rows, col]
-        carved = np.flatnonzero((zb - zs) > 1e-9)
-        top = zs[carved[-3:]]                 # the cells nearest the crest
-        return np.degrees(np.arctan(np.diff(top).mean() / res))
 
-    blended = _splay_relief(demo)             # crest_blend default 2.0
-    sharp = _splay_relief(demo, crest_blend_mm=0.0)
-    assert top_slope_deg(blended) < 12.0      # rolls off tangentially
-    assert top_slope_deg(sharp) > 25.0        # the old hard crease
+def test_the_seam_round_over_meets_the_cut_and_the_wall():
+    """The round-over stands against the edge's wall as high as the cut lets
+    it: tangent to the angle cut at r (1 - sin θ), r tan(45° - θ/2) below its
+    toe at the wall; on an edge floored at the clamp, a quarter circle."""
+    from guildmodel.core.relief.features import splay_profile, splay_seam
+
+    t = np.tan(np.radians(30.0))
+    c, a, floor, r = np.array([6.0]), np.array([5.3]), 1.5, 1.0
+    z_c, d_t, rr = (float(v[0]) for v in splay_seam(c, np.array([t]), a, floor, r))
+    toe = 5.3 - 6.0 * t
+    assert z_c == pytest.approx(toe - r * np.tan(np.radians(30.0)), abs=2e-3)
+    assert d_t == pytest.approx(r * (1.0 - np.sin(np.radians(30.0))), abs=0.02)
+    assert rr == r
+    # floored: the angle cut meets the clamp 3.4 mm in, past the round-over
+    seam = tuple(float(v[0]) for v in splay_seam(c, np.array([t]), np.array([3.0]), floor, r))
+    assert seam[0] == pytest.approx(floor - r, abs=2e-3)
+    assert seam[1] == pytest.approx(r, abs=0.02)
+    d = np.linspace(0.0, 6.0, 1201)
+    z = splay_profile(d, 6.0, t, 3.0, floor, seam)
+    cut = splay_profile(d, 6.0, t, 3.0, floor)
+    assert np.all(z <= cut + 1e-9)                      # it only ever removes
+    assert np.abs(np.diff(z[4:])).max() < 0.06          # continuous; vertical at the wall
+    assert z[0] == pytest.approx(floor - r, abs=1e-3)
+    # the radius is held to half the crest offset near a run end
+    assert float(splay_seam(np.array([1.0]), np.array([t]), a, floor, r)[2][0]) == 0.5
 
 
 def test_default_splay_run_from_nosepad_line(demo):
@@ -193,12 +224,18 @@ def test_splay_toric_angles_blend(demo, base_relief):
 
 
 def test_splay_anterior_clamp_floor(demo):
-    rel = _splay_relief(demo, angle_center_deg=55.0, anterior_clamp_mm=2.0)
+    # 6 mm crest at 55 deg wants to cut to 5.3-8.6 < 0 — the clamp floors the
+    # angle cut, and with the seam sharp nothing goes lower.
+    rel = _splay_relief(demo, angle_center_deg=55.0, anterior_clamp_mm=2.0,
+                        seam_blend_mm=0.0)
     band = rel.feature_band
     assert band is not None
-    zmin = float(rel.field.z[band].min())
-    # 6 mm crest at 55 deg wants to cut to 5.3-8.6 < 0 — the clamp floors it.
-    assert zmin == pytest.approx(2.0, abs=1e-9)
+    assert float(rel.field.z[band].min()) == pytest.approx(2.0, abs=1e-9)
+    # The seam's round-over rounds the floored edge below the clamp, by at
+    # most its radius at the wall, never through the front.
+    rounded = _splay_relief(demo, angle_center_deg=55.0, anterior_clamp_mm=2.0)
+    zmin = float(rounded.field.z[rounded.feature_band].min())
+    assert 2.0 - 1.0 - 1e-9 <= zmin < 2.0
 
 
 def test_splay_feather_and_run_guard(demo):
@@ -221,7 +258,7 @@ def test_splay_feather_and_run_guard(demo):
     r0 = np.flatnonzero(rel18.feature_band[:, col0]).min()
     ax, ay = 0.0, oy + r0 * res
     dist = np.hypot(xs - ax, ys - ay)
-    assert dist.max() <= 18.0 + 6.0 + 2.0     # run + crest + blend lead-in
+    assert dist.max() <= 18.0 + 6.0 + 2.0     # run + crest, with room to spare
 
 
 def test_splay_crest_tables_are_smooth_on_narrow_rims():

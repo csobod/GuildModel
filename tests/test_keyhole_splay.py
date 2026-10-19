@@ -156,8 +156,11 @@ def test_the_gap_is_uncut_and_the_halves_are_not(aviator):
     # Where both cut, they cut the *same surface*: the split is the whole run
     # with its middle removed, not a shallower chamfer. Compared only outside
     # the feathered ends, which the gap moves by construction.
+    # Past the split's inner feather: the 12 mm gap's halves start 6 mm out
+    # and feather over 3 mm. 12 mm found one cell, which was the old crest
+    # round-over's lead-in past the crest; the crest is sharp now (2.0).
     outer = cut_whole > 0.05
-    inner = np.abs(ox + cols * res) > 12.0
+    inner = np.abs(ox + cols * res) > 9.0
     both = outer & cut_split.astype(bool) & inner[None, :]
     assert both.any()
     assert np.abs(cut_split[both] - cut_whole[both]).max() < 0.05

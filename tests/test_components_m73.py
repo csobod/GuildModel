@@ -74,7 +74,7 @@ def _make_gdraw(path):
 def test_derive_frame_front_geometry():
     ws = ComponentWorkspace(kind=ComponentKind.FRAME_FRONT, label="Frame Front",
                             layers={})
-    ws.layers = {k: [] for k in ("OUTLINE", "LENS", "SCULPT", "HINGE", "ENGRAVING")}
+    ws.layers = {k: [] for k in ("OUTLINE", "LENS", "SCULPT", "COMPONENT", "ENGRAVING")}
     ws.layers["OUTLINE"] = [[(-60, -20), (60, -20), (60, 20), (-60, 20)]]
     ws.layers["LENS"] = [[(20, -12), (45, -12), (45, 12), (20, 12)],
                          [(-45, -12), (-20, -12), (-20, 12), (-45, 12)]]

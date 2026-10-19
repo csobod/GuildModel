@@ -368,12 +368,16 @@ def build_base(partition: CastlePartition, castle: CastleParams,
     return drop_degenerate(intersect_all([union_all(parts), outline]))
 
 
-def hinge_pockets(hinges, castle: CastleParams, top: float) -> list[Manifold]:
+def hinge_pockets(hinges, castle: CastleParams, top: float,
+                  partition: CastlePartition | None = None,
+                  heights: dict[str, float] | None = None) -> list[Manifold]:
     """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
-    ray, so these never care what has already been cut."""
+    ray, so these never care what has already been cut. With the partition
+    and its heights, a mount is cut from its own terrace
+    (`geometry.pocket_floor`)."""
     from ..geometry.pocket_floor import castle_pocket_floors
     out = []
-    for p, floor in castle_pocket_floors(hinges, castle):
+    for p, floor in castle_pocket_floors(hinges, castle, partition, heights):
         low, _ = floor.extremes(p)
         prism = extrude(p, max(top - low, CUT_MARGIN_MM), base=low)
         if not floor.flat:
@@ -399,7 +403,7 @@ def inlay_pockets(inlays, castle: CastleParams, hinges, partition: CastlePartiti
     from ..geometry.pocket_floor import castle_pocket_floors
 
     seats = inlay_cuts(castle.inlays, list(inlays or ()),
-                       castle_pocket_floors(hinges or [], castle),
+                       castle_pocket_floors(hinges or [], castle, partition, heights),
                        posterior_reference=zone_reference(partition, heights))
     out = []
     for seat in seats:
@@ -465,7 +469,10 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
     # at up to 2.59 mm of anchor movement on the demo frame. Everything after
     # this point sees the same target either way and goes in one pass.
     _report(progress, "Surface features", 0.40)
-    for kind, params in surface_feature_cutters(None, partition.body, castle):
+    from ..relief.features import bridge_features_apply
+    on_bridge = (surface_feature_cutters(None, partition.body, castle)
+                 if bridge_features_apply(partition) else [])
+    for kind, params in on_bridge:
         # The splay may be two bodies (non-contiguous, for a keyhole bridge), so
         # both features answer with a list and the gap simply produces one fewer.
         try:
@@ -501,8 +508,8 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
         _report(progress, "Edge features", 0.78)
         tools.extend(resolved_edge_cutters(surface, partition, castle, top))
 
-    _report(progress, "Hinge pockets", 0.85)
-    tools.extend(hinge_pockets(hinges, castle, top))
+    _report(progress, "Component pockets", 0.85)
+    tools.extend(hinge_pockets(hinges, castle, top, partition, h))
     tools.extend(inlay_pockets(inlays, castle, hinges, partition, h, top))
     solid = subtract_all(solid, tools)
 

@@ -267,7 +267,7 @@ class PartDefaultsPage(QWidget):
             cb.addItems(tools)
             _set_text(cb, name)
         form.addRow("Engrave tool:", self.temple_engrave_tool)
-        form.addRow("Hinge tool:", self.temple_hinge_tool)
+        form.addRow("Component tool:", self.temple_hinge_tool)
         form.addRow("Profile tool:", self.temple_profile_tool)
         self.temple_inlay_depth = _spin(t.inlay_depth_mm, 0.0, 6.0, 0.05, 2)
         self.temple_inlay_depth.setToolTip(

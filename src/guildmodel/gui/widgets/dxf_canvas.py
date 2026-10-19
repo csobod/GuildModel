@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 from guildmodel.core.layers import LAYER_STYLES
 from guildmodel.gui.style import theme
 
-_PLACEHOLDER_TEXT = "Open a DXF file to begin"
+_PLACEHOLDER_TEXT = "Open a GuildDraw or DXF file to begin"
 
 
 class DxfCanvas(QWidget):
@@ -414,11 +414,11 @@ class DxfCanvas(QWidget):
             painter.setPen(pen)
 
             # A nested seat draws darker (§8a): a step in another seat or in
-            # a hinge pocket is deeper, and the canvas says so at a glance.
+            # a component pocket is deeper, and the canvas says so at a glance.
             levels = None
             if layer == "INLAY" and curves:
                 from guildmodel.core.geometry.inlays import nesting_levels
-                levels = nesting_levels(curves, self._layers.get("HINGE", []))
+                levels = nesting_levels(curves, self._layers.get("COMPONENT", []))
 
             for k, curve in enumerate(curves):
                 if len(curve) < 2:
@@ -438,8 +438,8 @@ class DxfCanvas(QWidget):
                     if abs(first.x() - last.x()) > 1 or abs(first.y() - last.y()) > 1:
                         painter.drawLine(pts[-1], pts[0])
 
-            # draw HINGE markers as small crosses
-            if layer == "HINGE":
+            # draw COMPONENT markers as small crosses
+            if layer == "COMPONENT":
                 cross_pen = QPen(QColor(color_hex), 1.5)
                 cross_pen.setCosmetic(True)
                 painter.setPen(cross_pen)

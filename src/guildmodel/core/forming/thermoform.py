@@ -187,6 +187,12 @@ class BridgeGeometry:
     * ``top_width`` — the bridge's width at that edge: the default gap.
     * ``nose_dir`` — +1 or -1: which way along y the nose lies, so the V
       converges toward it whichever way the intake oriented the frame.
+    * ``projects`` — False when the front has no bridge to project: separated
+      rims on a metal bridge, or a monocle. Such a front forms to its base
+      curve and face form, and the map takes no projection (2026-10-16).
+    * ``wraps`` — False for a monocle: one rim has no second eye to wrap
+      toward, so the map takes no face form and the rim forms to its base
+      curve alone (the 2.0 bug hunt).
     """
     apex_x: float = 30.0
     apex_y: float = 0.0
@@ -195,6 +201,8 @@ class BridgeGeometry:
     centre_y: float = 7.0
     top_width: float = DEFAULT_CREASE_GAP_MM
     nose_dir: float = -1.0
+    projects: bool = True
+    wraps: bool = True
 
 
 def rim_apex(lens_od, lens_os) -> tuple[float, float]:
@@ -247,11 +255,28 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
 
     apex_x, apex_y = rim_apex(lens_od, lens_os)
     band = bridge_band(partition, lens_od, lens_os)
+    # Separated rims and a monocle are named rim by rim and have no bridge of
+    # their own to set forward (`CastlePartition.halves`).
+    projects = not getattr(partition, "halves", False)
+    # A monocle is one rim around one lens, and there is no second eye to
+    # wrap toward. Its base curve is exact where s(x) is +-1, so the band
+    # stays off the rim, and a rim across the centre line is apexed on it:
+    # theta = x / R is then one sphere whatever the band.
+    wraps = projects or bool(getattr(partition, "separated", False))
+    if not wraps:
+        try:
+            x0, _, x1, _ = partition.body.bounds
+        except AttributeError:
+            x0 = x1 = 0.0
+        if x0 < 0.0 < x1:
+            apex_x = 0.0
+        else:
+            band = min(band, max(min(abs(x0), abs(x1)), 1e-3))
     try:
         bridge = partition.zone("bridge").polygon
     except (KeyError, AttributeError):
         return BridgeGeometry(apex_x, apex_y, band, apex_y + band, apex_y,
-                              2.0 * band, -1.0)
+                              2.0 * band, -1.0, projects=projects, wraps=wraps)
     x0, y0, x1, y1 = bridge.bounds
     centre_y = float(bridge.centroid.y)
     pads = [z.polygon.centroid.y for z in getattr(partition, "zones", [])
@@ -267,7 +292,7 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
         sx0, _, sx1, _ = strip.bounds
         top_width = float(sx1 - sx0)
     return BridgeGeometry(apex_x, apex_y, band, top_y, centre_y,
-                          max(top_width, 1.0), nose_dir)
+                          max(top_width, 1.0), nose_dir, projects=projects, wraps=wraps)
 
 
 # ------------------------------------------------------------ the die's section
@@ -358,7 +383,9 @@ class ThermoformMap:
         # 0 (or anything non-positive) means flat, which the arithmetic below
         # reads as an infinite radius.
         self.R = float(radius_mm) if radius_mm and radius_mm > 0 else float("inf")
-        self.face_form_deg = float(face_form_deg)
+        # A monocle takes no face form (`BridgeGeometry.wraps`), whoever
+        # builds the map: the press's wrap would crease its one rim.
+        self.face_form_deg = float(face_form_deg) if self.bridge.wraps else 180.0
         self.wrap = np.radians(180.0 - self.face_form_deg)
         # The die only presses forward: a negative projection is read as
         # none rather than as a bump the other way.
@@ -627,13 +654,16 @@ class ThermoformMap:
 
         `base_radius_mm` is the radius in use — a press row's die or the
         optical convention's, as `FormingMetadata.with_base_curve` decided —
-        and a gap of 0 means the drawing's own bridge width.
+        and a gap of 0 means the drawing's own bridge width. A front with no
+        bridge to project (``bridge.projects``) takes no projection, whatever
+        the metadata carries.
         """
         bridge = bridge if bridge is not None else BridgeGeometry()
         gap = float(forming.crease_gap_mm) or float(bridge.top_width)
         return cls(radius_mm=float(forming.base_radius_mm),
                    face_form_deg=180.0 - float(forming.face_form_wrap_deg),
-                   projection_mm=float(forming.bridge_projection_mm),
+                   projection_mm=(float(forming.bridge_projection_mm)
+                                  if bridge.projects else 0.0),
                    crease_gap_mm=gap,
                    crease_angle_deg=float(forming.crease_angle_deg),
                    bridge_offset_mm=float(forming.bridge_offset_mm),

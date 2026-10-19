@@ -150,7 +150,10 @@ def test_the_report_reproduces_the_cut_report_and_adds_the_volumes(fixture, tmp_
     write_castle_program(ops, post, tool_settings=resolved)
     program = post.to_string()
     f = relief.field
-    init_z = castle.stock.total_pad_height_mm + 1.0
+    # The stock's own top: a millimeter over it, a zone at the stock's top read
+    # that millimeter of air as uncut, and the nosepads' tops became a piece
+    # left standing (the 2.0 bug hunt).
+    init_z = castle.stock.total_pad_height_mm
 
     # today: the floor swept from the program and verified against the relief
     groups = [(p, t) for p, t in cutting_paths_from_program_grouped(program)

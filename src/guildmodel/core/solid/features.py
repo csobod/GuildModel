@@ -29,6 +29,7 @@ chamfer it is named after, and it is what gives it an edge to be crisp at.
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import Iterable
 
@@ -36,7 +37,11 @@ import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 from shapely.prepared import prep
 
-from ..geometry.regions import CastlePartition
+from ..geometry.regions import CastlePartition, body_interiors
+
+# A feature whose boolean fails is left off the part, and said so: the B-Rep
+# path dropped a bezel, the splay or the scoop without a word (the 2.0 bug hunt).
+_log = logging.getLogger(__name__)
 from ..project.schema import CastleParams, EyewireBezelParams
 from .occ import (
     BooleanError,
@@ -56,7 +61,7 @@ from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
 
 __all__ = ["anterior_bezel_features", "apply_edge_features",
-           "apply_hinge_pockets", "apply_lens_groove",
+           "apply_lens_groove",
            "apply_posterior_features", "apply_surface_features",
            "bezel_cutter", "bezel_cutters", "edge_feature_cutters",
            "groove_cutters", "hinge_pocket_cutters", "independent_cutters",
@@ -96,26 +101,17 @@ _RIM_PROBE_MM = 0.05
 
 # ------------------------------------------------------------- hinge pockets
 
-def apply_hinge_pockets(solid: TopoDS_Shape, hinges: Iterable[Polygon],
-                        castle: CastleParams, top: float) -> TopoDS_Shape:
-    """Sharp-walled pockets cut below the endpiece height.
-
-    Matches the raster exactly: the floor is `endpiece_mm - hinge_pocket_depth_mm`
-    along the superior edge, tilted by `hinge_pocket_angle_deg`
-    (`geometry.pocket_floor`), and the walls are vertical. No tool-radius offset
-    here — that belongs to `cam.castle_ops.hinge_pocket_op`, which does the
-    pocketing cascade.
-    """
-    return cut_many(solid, hinge_pocket_cutters(hinges, castle, top))
-
-
 def hinge_pocket_cutters(hinges: Iterable[Polygon], castle: CastleParams,
-                         top: float) -> list[TopoDS_Shape]:
+                         top: float, partition: CastlePartition | None = None,
+                         heights: dict[str, float] | None = None,
+                         ) -> list[TopoDS_Shape]:
     """The pocket prisms. Pure extrusions off the hinge polygons — no anchor
-    ray, so like the groove these never care what has already been cut."""
+    ray, so like the groove these never care what has already been cut. With
+    the partition and its heights, a mount is cut from its own terrace
+    (`geometry.pocket_floor`)."""
     from ..geometry.pocket_floor import castle_pocket_floors
     out = []
-    for p, floor in castle_pocket_floors(hinges, castle):
+    for p, floor in castle_pocket_floors(hinges, castle, partition, heights):
         low, _ = floor.extremes(p)
         prism = extrude(polygon_to_face(p, low), max(top - low, CUT_MARGIN_MM))
         if not floor.flat:
@@ -136,7 +132,7 @@ def inlay_pocket_cutters(inlays, castle: CastleParams, hinges,
     from ..geometry.pocket_floor import castle_pocket_floors
 
     seats = inlay_cuts(castle.inlays, list(inlays or ()),
-                       castle_pocket_floors(list(hinges or []), castle),
+                       castle_pocket_floors(list(hinges or []), castle, partition, heights),
                        posterior_reference=zone_reference(partition, heights))
     out = []
     for seat in seats:
@@ -330,7 +326,7 @@ def bezel_cutters(solid: TopoDS_Shape, partition: CastlePartition,
     bezel = castle.eyewire_bezel
     out = []
     if bezel.cuts_posterior():
-        for interior in partition.body.interiors:
+        for interior in body_interiors(partition.body):
             # Lens apertures only. A decorative OUTLINE opening — an aviator's
             # bridge keyhole, a temple cut-out — is a through-cut, not an
             # eyewire: it seats no lens, so there is no bevel for a bezel band
@@ -345,12 +341,14 @@ def bezel_cutters(solid: TopoDS_Shape, partition: CastlePartition,
                 continue
             try:
                 out.append(bezel_cutter(solid, partition.body, interior, bezel, top))
-            except BooleanError:
+            except BooleanError as exc:
+                _log.warning("the eyewire bezel at one lens is left off: %s", exc)
                 continue
     for feature in anterior_bezel_features(bezel):
         try:
             out.extend(edge_feature_cutters(solid, partition, feature, top))
-        except BooleanError:
+        except BooleanError as exc:
+            _log.warning("the anterior bezel is left off: %s", exc)
             continue
     return out
 
@@ -370,7 +368,14 @@ def apply_surface_features(solid: TopoDS_Shape, partition: CastlePartition,
     That is why these two cannot join the single-pass group in
     `independent_cutters`, and why this function exists separately rather than
     being folded in for the speed.
+
+    A front with separated rims has no bridge under which to splay or in which
+    to scoop, and takes neither (`relief.features.bridge_features_apply`).
     """
+    from ..relief.features import bridge_features_apply
+
+    if not bridge_features_apply(partition):
+        return solid
     splay = castle.pad_splay
     if splay.enabled:
         # One cutter per span: a non-contiguous splay is two. Both are built
@@ -380,15 +385,15 @@ def apply_surface_features(solid: TopoDS_Shape, partition: CastlePartition,
         for tool in splay_cutters(solid, partition.body, splay):
             try:
                 solid = cut(solid, tool)
-            except BooleanError:
-                pass
+            except BooleanError as exc:
+                _log.warning("a span of the pad splay is left off: %s", exc)
 
     scoop = castle.bridge_relief
     if scoop.enabled:
         try:
             solid = cut(solid, scoop_cutter(solid, partition.body, scoop))
-        except BooleanError:
-            pass
+        except BooleanError as exc:
+            _log.warning("the bridge relief is left off: %s", exc)
     return solid
 
 
@@ -511,11 +516,19 @@ def edge_feature_cutters(solid: TopoDS_Shape, partition: CastlePartition,
     deliberately does not take the exception the mesh path takes — see
     `relief.edges.spans_whole_ring` for the measurement. It was tried.
     """
-    from ..geometry.regions import CastlePartition as _CP    # noqa: F401
-    from ..relief.edges import ring_for, span_intervals, station_fraction, taper_weight
+    from ..relief.edges import rings_for
 
-    ring = ring_for(partition, feature.edge)
-    if ring is None or ring.length <= 0:
+    # A ring per rim on a front with separated rims; one otherwise.
+    return [cutter for ring in rings_for(partition, feature.edge)
+            for cutter in _edge_cutters_along(ring, solid, partition, feature, top)]
+
+
+def _edge_cutters_along(ring, solid: TopoDS_Shape, partition: CastlePartition,
+                        feature, top: float) -> list[TopoDS_Shape]:
+    """`edge_feature_cutters` along one ring."""
+    from ..relief.edges import span_intervals, station_fraction, taper_weight
+
+    if ring.length <= 0:
         return []
     intervals = span_intervals(ring, partition, feature.zones,
                                feature.trim_start_mm, feature.trim_end_mm)
@@ -612,6 +625,26 @@ def apply_edge_features(solid: TopoDS_Shape, partition: CastlePartition,
 
 # ---------------------------------------------------------------- pad splay
 
+def _splay_wire(p_xy, inward, d, z, top: float):
+    """One pad splay section as a closed wire: the cut's `(d, z)` samples in
+    from the outline edge, and above them everything to `top`, opening out
+    past the edge so the cutter crosses the wall rather than ending on it."""
+    px, py = float(p_xy[0]), float(p_xy[1])
+    nx, ny = float(inward[0]), float(inward[1])
+
+    def at(u, v):
+        return gp_Pnt(px + nx * float(u), py + ny * float(u), float(v))
+
+    mp = BRepBuilderAPI_MakePolygon()
+    mp.Add(at(-CUT_MARGIN_MM, z[0]))
+    for u, v in zip(d, z):
+        mp.Add(at(u, v))
+    mp.Add(at(d[-1], top))
+    mp.Add(at(-CUT_MARGIN_MM, top))
+    mp.Close()
+    return mp.Wire()
+
+
 def splay_cutters(solid: TopoDS_Shape, body: Polygon, p,
                   res_hint: float = 0.15) -> list[TopoDS_Shape]:
     """One splay cutter per span — two when the splay is non-contiguous.
@@ -657,16 +690,17 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
     * the toric angle blend;
     * the feather, as a depth taper at each end.
 
-    `crest_blend_mm` is **not** applied. In the raster it defaults to a
-    mandatory 2 mm round-over whose only job is to stop the crest shading as a
-    jagged ridge; here the crest is a real edge and wants to be sharp. It
-    returns later as the optional round-over it should always have been.
+    The crest is a real edge and is cut sharp, as the maker leaves it for
+    tumbling; the raster's old 2 mm crest round-over, whose only job was to
+    stop the crest shading as a jagged ridge, is gone (2.0). The round-over
+    the maker does make is at the anterior seam, `seam_blend_mm`, in the
+    section all three kernels cut (`relief.features.splay_profile`).
     """
     from shapely import distance as _distance, points as _points
     from shapely.ops import unary_union
 
     from ..relief.features import (_bottom_center_station, _splay_angles_deg,
-                                   splay_weight)
+                                   splay_seam, splay_section, splay_weight)
 
     ring, L, s0 = _bottom_center_station(body)
     run = min(float(p.run_mm), 0.45 * L)
@@ -709,7 +743,6 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
     tan_t = np.tan(np.radians(_splay_angles_deg(p, au, run)))
     w = splay_weight(u, [(lo, hi)], p.feather_mm)
 
-    drops = np.maximum(c * tan_t, MIN_TAPER_DROP_MM)
     widths = np.maximum(c, MIN_TAPER_DROP_MM)
     # Anchored at the CREST, not at the outline edge — the splay is defined as
     # falling *from* the crest toward the edge, and the crest sits up to
@@ -746,7 +779,7 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
 
     # Floor the cut at `anterior_clamp_mm` above the front face, the same way
     # `scoop_cutter` and the bezel do. The parameter has always existed and
-    # carried the comment "no knife edge"; this path simply never read it, so
+    # carried the comment "no knife edge"; this path once never read it, so
     # the drop was whatever the crest offset and the angle multiplied out to.
     #
     # On the Gabriel fixture that reached 3.464 mm BELOW the anterior face with
@@ -755,17 +788,17 @@ def splay_cutter(solid: TopoDS_Shape, body: Polygon, p, res_hint: float = 0.15,
     # 67.65]. Zero holes, zero non-manifold edges, `IsValid` true: a clean cut
     # in the wrong place, which is why only the body count caught it.
     #
-    # The lower bound keeps the loft buildable where the surface is already
-    # thinner than the clamp, matching `scoop_cutter`; at 0.02 mm it cannot sever
-    # anything.
-    drops = np.clip(drops, MIN_TAPER_DROP_MM,
-                    np.maximum(anchors - floor, MIN_TAPER_DROP_MM))
-
-    sections = [
-        _edge_section(q, nn, float(a), float(wd), float(dr), "chamfer", 0.0,
-                      top, True)
-        for q, nn, a, wd, dr in zip(pts, inward, anchors, widths, drops)
-    ]
+    # The section is the one all three kernels cut (`splay_profile`): the
+    # angle kept and the cut floored at the clamp, where this path shallowed
+    # the angle until the cut fit; and the anterior seam rounded over, which
+    # the limits hold above the front face.
+    seam = (splay_seam(widths, tan_t, anchors, floor, p.seam_blend_mm)
+            if p.seam_blend_mm > 0.0 else None)
+    sections = []
+    for i, (q, nn, a, wd, t) in enumerate(zip(pts, inward, anchors, widths, tan_t)):
+        d, z = splay_section(float(wd), float(t), float(a), floor,
+                             None if seam is None else tuple(v[i] for v in seam))
+        sections.append(_splay_wire(q, nn, d, z, top))
     ts = BRepOffsetAPI_ThruSections(True, True, 1e-6)
     for wire in sections:
         ts.AddWire(wire)
@@ -1057,7 +1090,7 @@ def groove_cutters(partition: CastlePartition,
         return []
     lip = partition.body
     cutters = []
-    for interior in lip.interiors:
+    for interior in body_interiors(lip):
         if partition.is_hole(interior):
             continue
         try:

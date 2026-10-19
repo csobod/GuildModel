@@ -32,7 +32,7 @@ def program():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     castle = CastleParams()
     relief = build_castle_relief(part, castle, hinges, resolution=0.3)
@@ -85,10 +85,25 @@ def _is_ccw(p):
 
 def test_contours_are_climb(program):
     """Uniform climb for a CW spindle (M12.5): an inside contour (lens hole) runs CCW,
-    an outside contour (perimeter) runs CW — a consistent down-cut wall finish."""
+    an outside contour (perimeter) runs CW — a consistent down-cut wall finish.
+    A pass over the pad block alone is an open run of its ring (2.0), and runs
+    the way its ring does."""
+    from shapely.geometry import LineString, Point
+
     ops, _ = program
-    assert all(_is_ccw(p) for p in ops["Eyewires"].paths)        # inside -> CCW
-    assert all(not _is_ccw(p) for p in ops["Perimeter"].paths)   # outside -> CW
+    for name, ccw in (("Eyewires", True), ("Perimeter", False)):
+        paths = ops[name].paths
+        closed = [p for p in paths if np.allclose(p[0][:2], p[-1][:2])]
+        assert closed and all(bool(_is_ccw(p)) == ccw for p in closed), name
+        rings = [LineString([q[:2] for q in p]) for p in closed]
+        for p in paths:
+            if np.allclose(p[0][:2], p[-1][:2]):
+                continue
+            ring = min(rings, key=lambda g: g.distance(Point(p[len(p) // 2][:2])))
+            s = [ring.project(Point(q[:2])) for q in p]
+            step = np.diff(s)
+            step = np.where(step < -0.5 * ring.length, step + ring.length, step)
+            assert np.all(step > -1e-6), name                 # along its ring's way
 
 
 # ------------------------------------------------------------------ relief pattern

@@ -195,7 +195,7 @@ def test_the_flat_worker_reads_a_stored_program_and_adds_the_volumes(qapp, tmp_p
     assert errs == [], errs[0] if errs else ""
     report2, lines2, plan2 = done[0]
     assert plan2.stock.resolution == 0.15 and report2.resolution == 0.15
-    assert "Hinge Pockets" in plan2.op_tool_geom and "Temple Profile" in plan2.op_tool_geom
+    assert "Component Pockets" in plan2.op_tool_geom and "Temple Profile" in plan2.op_tool_geom
     assert report2.status() == report.status() == "ok"      # the same verdict, read off the program
     assert report2.gouge.gouge_cells == 0
     assert not report2.faults and lines2 == report2.summary_lines()

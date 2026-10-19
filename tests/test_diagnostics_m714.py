@@ -52,7 +52,7 @@ def test_clean_job_is_empty():
 
 def test_collects_every_category_from_a_bad_job():
     issues = collect_issues(
-        reach_warnings=[_Reach("Hinge Pockets")],
+        reach_warnings=[_Reach("Component Pockets")],
         depth_warnings=[_Depth("Profile")],
         clearance_violations=["frame_front fouls a screw at (10, 20)"],
         machine_lint=["arc without an explicit center"],
@@ -84,12 +84,12 @@ def test_sorted_errors_before_warnings():
 
 def test_targets_for_navigation():
     issues = collect_issues(
-        reach_warnings=[_Reach("Hinge Pockets")],
+        reach_warnings=[_Reach("Component Pockets")],
         clearance_violations=["c"],
         cut_report=_Report("warn", _Comp(50, 1000, 0.05, 0.6), _Gouge(0, 0.0)),
     )
     by_cat = {i.category: i for i in issues}
-    assert by_cat["Tool reach"].target == ("op", "Hinge Pockets")
+    assert by_cat["Tool reach"].target == ("op", "Component Pockets")
     assert by_cat["Clearance"].target == ("view", "worktable")
     assert by_cat["Cut quality"].target == ("view", "sim")
 

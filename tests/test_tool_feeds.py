@@ -76,7 +76,7 @@ def test_tool_feeds_round_trip_and_an_old_project_loads():
 # ------------------------------------------------------------------ the post
 
 def test_build_tool_settings_takes_the_projects_feeds_and_still_clamps():
-    ops = [_op("Engraving", "engrave_vbit"), _op("Hinge Pockets", "flat_2mm"),
+    ops = [_op("Engraving", "engrave_vbit"), _op("Component Pockets", "flat_2mm"),
            _op("Temple Profile", "flat_3175")]
     machine = MachineProfile(max_feed_mmpm=2000.0, max_spindle_rpm=15000.0)
     ts, warns = build_tool_settings(
@@ -152,7 +152,7 @@ def test_the_rows_follow_the_component_and_its_tools(tmp_path, monkeypatch):
     p = _panel(monkeypatch, tmp_path)
     rows = p.tool_feed_rows()
     assert "flat_3175" in rows and "flat_2mm" in rows            # the bulk tool + the hinge default
-    assert "Hinge Pockets" in rows["flat_2mm"].ops
+    assert "Component Pockets" in rows["flat_2mm"].ops
     assert rows["flat_3175"].source.text() == "material"
     assert rows["flat_2mm"].source.text() == "tool library"
 
@@ -168,7 +168,7 @@ def test_the_rows_follow_the_component_and_its_tools(tmp_path, monkeypatch):
     p.temple_profile_tool.setCurrentText("flat_2mm")             # one tool for two ops
     rows = p.tool_feed_rows()
     assert list(rows) == ["engrave_vbit", "flat_2mm"]
-    assert rows["flat_2mm"].ops == ["Hinge Pockets", "Temple Profile"]
+    assert rows["flat_2mm"].ops == ["Component Pockets", "Temple Profile"]
 
     p.set_component_kind(ComponentKind.BASE_CURVE_RIGHT)
     assert list(p.tool_feed_rows()) == ["drill_m4_clear", "flat_3175"]

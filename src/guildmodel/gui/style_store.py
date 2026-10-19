@@ -15,6 +15,7 @@ import pathlib
 
 import yaml
 
+from guildmodel.core.fileio import write_text_atomic
 from guildmodel.core.project.schema import CastleParams
 
 _USER = pathlib.Path.home() / ".guildmodel" / "frame_styles.yaml"
@@ -42,7 +43,7 @@ def _user() -> dict:
 def _write_user(data: dict) -> None:
     try:
         _USER.parent.mkdir(parents=True, exist_ok=True)
-        _USER.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        write_text_atomic(_USER, yaml.safe_dump(data, sort_keys=False))
     except Exception:
         pass
 

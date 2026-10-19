@@ -32,7 +32,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     castle, cam = CastleParams(), CastleCamParams()
     relief = build_castle_relief(part, castle, hinges, resolution=0.3)
@@ -82,7 +82,9 @@ def test_no_low_traverse_passes_under_a_screw(demo):
     x = y = z = 0.0
     worst = 9e9
     for ln in gcode.splitlines():
-        if ln[:2] not in ("G0", "G1"):
+        # arcs move the tool too: a pass that ends on one (a contour's run over
+        # the pad block, 2.0) hops from its end, not from the last straight move
+        if ln[:2] not in ("G0", "G1", "G2", "G3"):
             continue
         w = dict(re.findall(r"([XYZ])(-?[\d.]+)", ln))
         nx, ny, nz = float(w.get("X", x)), float(w.get("Y", y)), float(w.get("Z", z))

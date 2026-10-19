@@ -25,7 +25,7 @@ PROGRAM = """; GuildModel - t
 G90
 G21
 G0 Z10.0
-; --- Hinge Pockets ---
+; --- Component Pockets ---
 ; --- Tool T1: flat_2mm (2.00 mm) ---
 G0 X-3.0 Y0.0
 G1 Z2.0 F300

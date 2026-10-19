@@ -288,7 +288,7 @@ def test_nest_worker_runs_frame_front_castle_branch(tmp_path, monkeypatch):
     raw = import_dxf(demo)
     part = partition_zones(points_to_polygon(raw["OUTLINE"][0]),
                            [points_to_polygon(c) for c in raw["LENS"]], raw["SCULPT"])
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     spec = {"index": 0, "mode": "castle", "kind": "frame_front", "label": "Frame",
             "partition": part, "castle": CastleParams(),
             "hinge": list(hinges), "stage": "full"}

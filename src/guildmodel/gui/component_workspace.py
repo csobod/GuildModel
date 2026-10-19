@@ -40,6 +40,19 @@ class ComponentWorkspace:
     # Raw GuildDraw text objects (engraving) for this workspace; the GUI outlines them
     # to ENGRAVING polylines on open (fonts need Qt, so not done in this pure module).
     texts: list = field(default_factory=list)
+    # The guide sizes the drawing was made against (GuildDraw 2.0), as the reader
+    # gives them: `{"stock": (w, h), "pad": (w, h)}` in mm, width along x. A new
+    # project's blank is seeded from them (`seed_blank_from_guides`); never saved.
+    guides: dict = field(default_factory=dict)
+    # OUTLINE curves the drawing has open, each closed with a straight line by
+    # `normalize.points_to_polygon`; reported at intake, never saved.
+    open_outline: int = 0
+    # Curves the file describes wrongly, skipped; reported at intake.
+    unreadable: int = 0
+    # LENS curves past two, and one lens in an outline drawn for two: either
+    # stops the castle (`derive_workspace`); reported at intake.
+    extra_lenses: int = 0
+    half_drawn: bool = False
     # Set once derive_workspace has applied the temple Y-axis re-orientation, so a
     # re-derive never double-flips the layers.
     layers_oriented: bool = False
@@ -62,9 +75,12 @@ class ComponentWorkspace:
     cam_overrides: object = None
 
     # derived geometry (filled by derive_workspace)
-    outline_poly: object = None      # profile WITH decorative holes as interior rings
+    # profile WITH decorative holes as interior rings; a MultiPolygon, a body
+    # per rim, for separated rims (`normalize.assemble_outline`)
+    outline_poly: object = None
     outline_holes: list = field(default_factory=list)   # Hole1..HoleN, standalone
-    outline_stray: list = field(default_factory=list)   # closed OUTLINE curves outside the profile
+    outline_stray: list = field(default_factory=list)   # closed OUTLINE curves outside every body
+    lens_outside: list = field(default_factory=list)    # LENS polygons no body holds (never cut)
     lens_od: object = None
     lens_os: object = None
     partition: object = None
@@ -142,6 +158,9 @@ class ComponentWorkspace:
     last_machine: object = None
     last_report: object = None
     program_stored: bool = False
+    program_fresh: bool = False                # matches the design (see MainWindow)
+    mesh_verdict: object = None                # the tessellation's verdict on verdict_mesh
+    verdict_mesh: object = None
     diag: dict = field(default_factory=dict)   # M7.14 inspector inputs (reach/clearance/lint)
 
 
@@ -150,9 +169,10 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     DXF import does (outline / holes / lenses / OD-OS / SCULPT partition /
     hinges / engraving / is_temple / castle_ready / boxing). Pure shapely; no Qt.
 
-    A frame front has an OUTLINE + two LENS curves (+ SCULPT for the castle); a
-    temple has an OUTLINE and no lenses; a base-curve template carries its single
-    LENS (placed in ``lens_od`` so the block generator can build from it).
+    A frame front has an OUTLINE + two LENS curves (+ SCULPT for the castle), or
+    one LENS for a monocle; a temple has an OUTLINE and no lenses; a base-curve
+    template carries its single LENS (placed in ``lens_od`` so the block
+    generator can build from it), and so does a monocle.
 
     When ``ws.curves`` carries the drawing's exact curves they are folded into the
     partition as ``source_curves``, and the B-Rep castle builds from them. Without
@@ -188,15 +208,24 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
 
     ws.engraving_curves = list(layers.get("ENGRAVING", []))
 
+    lens_polys = [points_to_polygon(c) for c in layers.get("LENS", []) if len(c) >= 3]
+    valid_lens = [p for p in lens_polys if p.is_valid and p.area > 1.0]
+
     # Extra closed OUTLINE curves drawn inside the profile are decorative holes
-    # (Hole1..HoleN) — they ride along as interior rings of `outline_poly`.
-    assembly = assemble_outline(layers.get("OUTLINE", []))
+    # (Hole1..HoleN) — they ride along as interior rings of `outline_poly`. A
+    # closed curve outside the profile that holds a lens is a separated rim
+    # (2026-10-16), a body of its own: `outline_poly` is then a MultiPolygon.
+    assembly = assemble_outline(layers.get("OUTLINE", []), lenses=valid_lens)
     ws.outline_poly = assembly.polygon
     ws.outline_holes = list(assembly.holes)
     ws.outline_stray = list(assembly.stray)
-
-    lens_polys = [points_to_polygon(c) for c in layers.get("LENS", []) if len(c) >= 3]
-    valid_lens = [p for p in lens_polys if p.is_valid and p.area > 1.0]
+    # A lens no body holds is never cut (GuildDraw's validator says so too).
+    # A base-curve template is a lens with no outline, and holds nothing.
+    # Held means held whole: a lens crossing its rim passed on one point
+    # inside it (the 2.0 bug hunt).
+    held_by = None if ws.outline_poly is None else ws.outline_poly.buffer(0.05)
+    ws.lens_outside = ([] if held_by is None else
+                       [p for p in valid_lens if not held_by.contains(p)])
 
     # A temple is an outline with no lenses (no castle relief).
     ws.is_temple = ws.outline_poly is not None and len(valid_lens) == 0
@@ -207,7 +236,7 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
         ws.lens_od = valid_lens[0]                            # base-curve template's lens
 
     ws.hinge_polys = [
-        p for p in (points_to_polygon(c) for c in layers.get("HINGE", []) if len(c) >= 3)
+        p for p in (points_to_polygon(c) for c in layers.get("COMPONENT", []) if len(c) >= 3)
         if p.is_valid and p.area > 0.5
     ]
     # The seats (§8a), parents first; their features follow on the params.
@@ -216,24 +245,36 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
                              ws.hinge_polys)
 
     sculpt = layers.get("SCULPT", [])
-    if ws.outline_poly is not None and len(valid_lens) >= 2 and sculpt:
+    # A front holds two lenses, or one for a monocle. A third is refused, not
+    # guessed at: the partition took the first two in drawing order while the
+    # eyes were the outermost two. One lens in an outline drawn for two is
+    # refused too: the other eye would be cut solid (the 2.0 bug hunt).
+    from guildmodel.core.geometry.regions import half_drawn_front
+    ws.extra_lenses = (max(0, len(valid_lens) - 2)
+                       if ws.outline_poly is not None else 0)
+    ws.half_drawn = (ws.outline_poly is not None and len(valid_lens) == 1
+                     and half_drawn_front(ws.outline_poly, valid_lens[0]))
+    # Two lenses, or one: a monocle's single rim partitions as a standard half
+    # (`regions._classify_rims`), as each rim of a separated pair does.
+    if (ws.outline_poly is not None and valid_lens and sculpt
+            and not ws.extra_lenses and not ws.half_drawn):
         # Only OUTLINE and LENS: those are the rings that bound the body, and a
         # ring is the only thing `source_curves` is ever looked up by. SCULPT
-        # cuts are open polylines (straight in every drawing so far) and HINGE
-        # pockets are cut, not bounded.
+        # cuts are open polylines (straight in every drawing so far) and
+        # COMPONENT pockets are cut, not bounded.
         source: dict = {}
         for layer in ("OUTLINE", "LENS"):
             source.update(curves_by_ring(layers.get(layer, []),
                                          (ws.curves or {}).get(layer, [])))
-        ws.partition = partition_zones(ws.outline_poly, valid_lens[:2], sculpt,
+        ws.partition = partition_zones(ws.outline_poly, valid_lens, sculpt,
                                        source_curves=source)
-        ws.castle_ready = bool(ws.partition.classified)
+        ws.castle_ready = bool(ws.partition.classified) and not ws.lens_outside
 
     if boxing is not None:
         ws.boxing = boxing
     elif len(valid_lens) >= 2:
         try:
-            ws.boxing = measure_from_polygon(valid_lens[0], valid_lens[1])
+            ws.boxing = measure_from_polygon(ws.lens_od, ws.lens_os)    # the outermost two
         except Exception:
             ws.boxing = None
     seed_inlay_features(ws)
@@ -257,7 +298,38 @@ def seed_inlay_features(ws: ComponentWorkspace) -> None:
                               default_depth_mm=params.inlay_depth_mm)
 
 
-def place_front_on_blank(ws: ComponentWorkspace, origin_from_drawing: bool) -> bool:
+def seed_blank_from_guides(ws: ComponentWorkspace) -> str | None:
+    """Size a new project's blank from the drawing's guides (GuildDraw 2.0).
+
+    GuildDraw keeps, per workspace, the stock guide the design is drawn against
+    and, on the front, the pad block's; the sizes are the design's, so they
+    replace the shop's defaults for the blank's length (along x) and width, and
+    for the front's pad block. A drawing without guides leaves the defaults.
+    Thickness is not in the guides and stays the shop's. Returns a line for the
+    log, or None when nothing was seeded. A reopened project overlays its saved
+    stock afterwards, so only a new project takes the guides.
+    """
+    stock = ws.guides.get("stock")
+    pad = ws.guides.get("pad")
+    if ws.kind == ComponentKind.FRAME_FRONT and ws.castle_params is not None:
+        target = ws.castle_params.stock
+        said = []
+        if stock is not None:
+            target.blank_length_mm, target.blank_width_mm = stock
+            said.append(f"blank {stock[0]:g} x {stock[1]:g} mm")
+        if pad is not None:
+            target.pad_block_length_mm, target.pad_block_width_mm = pad
+            said.append(f"pad block {pad[0]:g} x {pad[1]:g} mm")
+        return " and ".join(said) if said else None
+    if ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT) \
+            and ws.temple_params is not None and stock is not None:
+        ws.temple_params.blank_length_mm, ws.temple_params.blank_width_mm = stock
+        return f"blank {stock[0]:g} x {stock[1]:g} mm"
+    return None
+
+
+def place_front_on_blank(ws: ComponentWorkspace, origin_from_drawing: bool, *,
+                         carry_seats: bool = True) -> bool:
     """Set a frame front's placement on its blank (``CastleParams.origin_from_drawing``,
     2026-10-14).
 
@@ -300,9 +372,40 @@ def place_front_on_blank(ws: ComponentWorkspace, origin_from_drawing: bool) -> b
     ws.engraving_text = [[(x + dx, y + dy) for x, y in poly]
                          for poly in ws.engraving_text]
     ws.drawing_offset = (tx, ty)
+    # The seats' settings find their seats again by centroid: moved with the
+    # drawing, or two seats near each other swapped settings at every toggle
+    # (the 2.0 bug hunt). Not with `carry_seats` off: a reopened project's
+    # seats were saved where the front is going.
+    params = ws.castle_params
+    if carry_seats and params is not None and getattr(params, "inlays", None):
+        params.inlays = [f.model_copy(update={"centroid": (f.centroid[0] + dx,
+                                                           f.centroid[1] + dy)})
+                         for f in params.inlays]
     # The boxing dimensions are lengths, so the ones measured before still hold.
     derive_workspace(ws, boxing=ws.boxing)
     return True
+
+
+def component_ids(workspaces) -> list[str]:
+    """One id per workspace, unique in the project and stable across a save
+    and a reopen: the kind, numbered from the second of a kind in tab order
+    (`base_curve_right`, `base_curve_right_2`). The ids a project saves its
+    components, their program sets and their placements under.
+
+    Not the source workspace, which is not unique: every base-curve template
+    comes from the front's drawing, and until 2026-10-16 the front and both
+    blocks were all saved as `front`, so the last one's programs took the
+    slot and a reopen handed them to all three.
+    """
+    from collections import Counter
+
+    seen: Counter = Counter()
+    out: list[str] = []
+    for ws in workspaces:
+        kind = ws.kind.value
+        seen[kind] += 1
+        out.append(kind if seen[kind] == 1 else f"{kind}_{seen[kind]}")
+    return out
 
 
 def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
@@ -320,7 +423,8 @@ def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
             kind=c.kind, label=component_label(c.kind), layers=gc.layers,
             curves=gc.curves,
             enabled=c.enabled, source_workspace=c.source_workspace, forming=c.forming,
-            texts=list(gc.texts),
+            texts=list(gc.texts), guides=dict(gc.guides),
+            open_outline=gc.open_outline, unreadable=gc.unreadable,
             castle_params=c.castle, temple_params=c.temple,
             block_params=c.base_curve_block,
             # Every model component starts with its OWN G54 datum (M11 + 2026-07-09

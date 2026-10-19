@@ -267,6 +267,15 @@ class Viewer3D(QWidget):
         self._play_timer = QTimer(self)
         self._play_timer.setInterval(16)           # ~60 fps; the block is lerped between frames
         self._play_timer.timeout.connect(self._advance_play)
+        # A two-sided cut's flip (2.0): play stops on it, and going on turns
+        # the block over about the flip's line before the next setup plays.
+        self._flip_timer = QTimer(self)
+        self._flip_timer.setInterval(30)
+        self._flip_timer.timeout.connect(self._flip_tick)
+        self._flip_pending = False
+        self._flip_step = 0
+        self._flip_actor = None
+        self._flip_axis = "y"
 
     # ------------------------------------------------------------------ toolbar build
 
@@ -1177,6 +1186,9 @@ class Viewer3D(QWidget):
 
     def _reset_playback(self) -> None:
         self._play_timer.stop()
+        self._flip_timer.stop()
+        self._flip_pending = False
+        self._flip_actor = None
         self._plan = None
         self._floor = None
         self._removal_grid = None
@@ -1318,6 +1330,10 @@ class Viewer3D(QWidget):
         i = max(0, min(self._play_idx, self._plan.n_positions))
         pct = 100.0 * i / max(1, self._plan.n_positions)
         label = self._plan.label_at(min(i, self._plan.n_positions - 1))
+        flip = getattr(self._plan, "flip_label_at", lambda _i: "")(i)
+        if flip:
+            # the boundary between two setups: what happens to the blank there
+            label = f"⟲ {flip}" + ("  (▶ to go on)" if self._flip_pending else "")
         cp = self._plan.collision_pos
         warn = ("   ⚠ hold-down!" if cp is not None and i < len(cp) and cp[i] else "")
         self._step_label.setText(f"{pct:.0f}% · {label}{warn}")
@@ -1460,12 +1476,18 @@ class Viewer3D(QWidget):
         self.playback_step_changed.emit(ni, self._plan.label_at(ni))
 
     def _toggle_play(self) -> None:
-        if self._plan is None:
+        if self._plan is None or self._flip_timer.isActive():
             return
         if self._play_timer.isActive():
             self._play_timer.stop()
             self._play_btn.setText("▶")
             self._render_pos(self._play_pos, solid=True)   # the pause shows the solid
+            return
+        if self._flip_pending:
+            # resuming from a flip: turn the block over first
+            self._flip_pending = False
+            self._play_btn.setText("▮▮")
+            self._start_flip()
             return
         if self._play_pos >= self._plan.n_positions:     # replay from the uncut block
             from guildmodel.core.sim.playback import plan_floor_to
@@ -1491,6 +1513,20 @@ class Viewer3D(QWidget):
         target = min(self._play_pos + self._play_speed, float(m))
         new = int(target)
         ends = target >= m                                 # the last tick rests on the solid
+        # A flip between two setups (2.0): carve to the end of the setup and
+        # stop there; going on turns the block over.
+        flip_at = next((f for f in (getattr(plan, "flip_indices", None) or [])
+                        if old < f <= new), None)
+        if flip_at is not None:
+            if flip_at > old:
+                plan_stamp_forward(plan, self._floor, old, flip_at - 1)
+            self._play_pos = float(flip_at)
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+            self._flip_pending = True
+            self._render_pos(self._play_pos, solid=True)
+            self._sync_progress(flip_at)
+            return
         # Pause + warn on the rising edge into a hold-down collision run (M7.12.3) —
         # checks the whole [old, new) span so a fast jump can't skip past it.
         cp = plan.collision_pos
@@ -1511,6 +1547,61 @@ class Viewer3D(QWidget):
         self._render_pos(self._play_pos, solid=ends)
         if new != self._play_idx:
             self._sync_progress(min(new, m))
+
+    def _start_flip(self) -> None:
+        """Turn the block over about the flip's own line (2.0): the blank as
+        the operator turns it, then the next setup's blank, which is the last
+        one's result turned over, and play goes on."""
+        plan = self._plan
+        flips = getattr(plan, "flips", None) or []
+        at = int(self._play_pos)
+        k = next((i for i, f in enumerate(getattr(plan, "flip_indices", None) or []) if f == at),
+                 None)
+        desc = flips[k] if (k is not None and k < len(flips)) else None
+        actor = None
+        if self._plotter is not None:
+            actor = (self._plotter.actors.get("stockSolid")
+                     or self._plotter.actors.get("stockBlock"))
+        if actor is None or not desc:
+            self._finish_flip()
+            return
+        self._flip_actor = actor
+        self._flip_axis = str(desc.get("axis", "y"))
+        actor.SetOrigin(*[float(v) for v in desc.get("point", (0.0, 0.0, 0.0))])
+        if self._tool_actor is not None:
+            self._tool_actor.SetVisibility(False)
+        self._flip_step = 0
+        self._flip_timer.start()
+
+    def _flip_tick(self) -> None:
+        steps = 20
+        self._flip_step += 1
+        angle = 180.0 * min(self._flip_step, steps) / steps
+        actor = self._flip_actor
+        if actor is not None:
+            if self._flip_axis == "x":
+                actor.SetOrientation(angle, 0.0, 0.0)
+            else:
+                actor.SetOrientation(0.0, angle, 0.0)
+            self._safe_render()
+        if self._flip_step >= steps:
+            self._flip_timer.stop()
+            if actor is not None:
+                actor.SetOrientation(0.0, 0.0, 0.0)
+            self._finish_flip()
+
+    def _finish_flip(self) -> None:
+        from guildmodel.core.sim.playback import plan_floor_to
+        self._flip_actor = None
+        if self._plan is None:
+            return
+        if self._solid_actor is not None:
+            self._hide_solid()
+        self._floor = plan_floor_to(self._plan, self._play_pos)   # the next setup's blank
+        self._render_pos(self._play_pos)
+        self._update_step_label()
+        self._play_btn.setText("▮▮")
+        self._play_timer.start()
 
     # ------------------------------------------------------------------ clear
 

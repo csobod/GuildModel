@@ -43,10 +43,10 @@ def test_op_overlay_from_ops_drops_z(qapp):
     ops = [
         CamOp("Perimeter", paths=[[(0.0, 0.0, 1.0), (5.0, 0.0, 1.0)]],
               tool={"name": "flat_3175"}),
-        CamOp("Hinge Pockets", paths=[[(1.0, 1.0, 0.5)]], tool={"name": "flat_2mm"}),
+        CamOp("Component Pockets", paths=[[(1.0, 1.0, 0.5)]], tool={"name": "flat_2mm"}),
     ]
     ov = _op_overlay(ops)
-    assert [o["name"] for o in ov] == ["Perimeter", "Hinge Pockets"]
+    assert [o["name"] for o in ov] == ["Perimeter", "Component Pockets"]
     assert ov[0]["tool"] == "flat_3175"
     assert ov[0]["paths"] == [[(0.0, 0.0), (5.0, 0.0)]]   # (x, y) only, z dropped
 

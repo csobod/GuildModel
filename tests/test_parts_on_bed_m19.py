@@ -120,7 +120,7 @@ def test_nothing_in_the_core_reads_the_switch():
     """A part's own program cannot depend on the box: the only core file that
     knows the field is the schema that declares it."""
     core = ROOT / "src" / "guildmodel" / "core"
-    readers = sorted(str(p.relative_to(core)) for p in core.rglob("*.py")
+    readers = sorted(p.relative_to(core).as_posix() for p in core.rglob("*.py")
                      if "on_bed" in p.read_text(encoding="utf-8"))
     assert readers == ["project/schema.py"]
 

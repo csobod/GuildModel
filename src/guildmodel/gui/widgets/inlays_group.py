@@ -35,7 +35,9 @@ __all__ = ["InlaysGroup"]
 _FACES = ("anterior", "posterior")
 _MODES = ("step", "island")
 _FACE_LABELS = {
-    "front": ("Anterior (front) — modeled, not posted", "Posterior (back)"),
+    # a front's anterior seat is cut first by a two-sided job (2.0); a
+    # temple's outer face is modeled and not posted
+    "front": ("Anterior (front) — cut first, front face up", "Posterior (back)"),
     "temple": ("Outer face — modeled, not posted", "Inner face (hinge side)"),
 }
 _NO_TOOL = "(the part's pocket tool)"
@@ -48,7 +50,7 @@ class InlaysGroup(QWidget):
     TIP = ("Seats for plaques, laminates and plates: one row per INLAY curve in "
            "the drawing. A seat is cut into the visible face by default; a seat "
            "drawn inside another is a step down from it, and one drawn inside a "
-           "HINGE curve steps the hinge pocket's floor. Draw seats in GuildDraw.")
+           "COMPONENT curve steps that pocket's floor. Draw seats in GuildDraw.")
 
     changed = Signal()
 
@@ -93,10 +95,11 @@ class InlaysGroup(QWidget):
         self.face.addItems(list(_FACE_LABELS[self._kind]))
         self.face.setToolTip(
             "Which face the seat is cut into. The anterior face is the visible "
-            "one — the front of a frame, the outer side of a temple — and a seat "
-            "there is modeled and shown in 3D now; machining it needs the flip "
-            "setup (M24). A nested seat takes its parent's face, and a seat in a "
-            "hinge pocket is on the hinge's.")
+            "one — the front of a frame, the outer side of a temple. On a front, "
+            "a two-sided job cuts an anterior seat first, front face up (the Cut "
+            "tab's Two-sided); on a temple it is modeled and shown, not posted. "
+            "A nested seat takes its parent's face, and a seat in a component "
+            "pocket is on that pocket's face.")
         form.addRow("Face:", self.face)
 
         self.depth = ParamSlider(d.depth_mm, 0.0, 6.0, step=0.05, decimals=2)
@@ -135,7 +138,7 @@ class InlaysGroup(QWidget):
         self.tool.addItems(list(tool_names))
         self.tool.setToolTip(
             "The end mill that pockets this seat. The part's pocket tool by "
-            "default (the Hinge Pockets tool); a seat on another tool posts as "
+            "default (the Component Pockets tool); a seat on another tool posts as "
             "its own Inlays operation.")
         more.addRow("Tool:", self.tool)
         self.stepdown = QDoubleSpinBox()
@@ -173,9 +176,10 @@ class InlaysGroup(QWidget):
     def _summary(self, f: InlayFeature) -> str:
         where = _FACE_LABELS[self._kind][_FACES.index(f.face)].split(" —")[0]
         rel = {"face": "from the face", "seat": "a step in its parent",
-               "hinge": "a step in the hinge pocket"}[f.relative_to]
+               "hinge": "a step in the component pocket"}[f.relative_to]
         name = f.label or f.id or "seat"
-        posted = "" if f.face == "posterior" else "  · not posted"
+        posted = ("" if f.face == "posterior"
+                  else "  · cut first" if self._kind == "front" else "  · not posted")
         flag = "" if f.enabled else "  (off)"
         mode = "" if f.mode == "step" else "  · island"
         return f"{name} — {where} · {f.depth_mm:g} mm · {rel}{mode}{posted}{flag}"
@@ -211,9 +215,9 @@ class InlaysGroup(QWidget):
         self.relative.setText({
             "face": "the face",
             "seat": "its parent seat's floor (the face follows the parent)",
-            "hinge": "the hinge pocket's floor, tilt included (always the hinge's face)",
+            "hinge": "the component pocket's floor, tilt included (always its face)",
         }[f.relative_to])
-        # The face is derived for a nested seat and for one in a hinge.
+        # The face is derived for a nested seat and for one in a component pocket.
         self.face.setEnabled(f.relative_to == "face")
         self._loading = False
 

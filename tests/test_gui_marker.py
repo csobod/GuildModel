@@ -130,4 +130,14 @@ def test_the_marker_is_not_over_applied():
     # …and one for the zone's stop: Snap registering a flipped, shorter blank.
     # One fewer on 2026-10-15: the retired Open in GuildSend action went, and
     # its enable-mirroring window test in `test_ecosystem_c` with it.
-    assert marked == 65, f"{marked} tests marked `gui`, expected 65"
+    # Two more on 2026-10-16: separated rims opened and activated in
+    # `test_separated_rims`, and a drawing's guides seeding a new project's
+    # blank, kept over a reload, in `test_gdraw_guides`. The same day's bug
+    # hunt ten in `test_bug_hunt_v200_gui`: Export G-code from a component
+    # tab; each part's program kept through save and reopen; an older
+    # project's shared slot given only to its owner; Simulate in an unsaved
+    # session; a stale program coming back stale; a quiet build leaving
+    # Generate's dialog open; a program landing on its own part; a DXF
+    # project's settings through a reopen; Reload Drawing keeping the
+    # sculpts; and opening a project leaving the CAM preferences alone.
+    assert marked == 77, f"{marked} tests marked `gui`, expected 77"

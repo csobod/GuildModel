@@ -2,7 +2,7 @@
 
 A temple is a flat acetate blank — no castle relief. It gets, in cut order:
 
-  1. **Hinge Pockets** — the HINGE polys milled to a blind floor (the same ramped
+  1. **Component Pockets** — the HINGE polys milled to a blind floor (the same ramped
      lap-entry pocketing the frame's hinges use) while the blank is still rigid.
      Only emitted when the component carries HINGE geometry; the 3D model, the cut
      sim, and the posted G-code all agree on the same recess (BUILDPLAN M7).
@@ -43,7 +43,7 @@ TEMPLE_CONTOUR_OPS = {"Temple Profile", "Holes"}
 TEMPLE_OP_TIERS: tuple[frozenset[str], ...] = (
     # The inlay seats (§8a) want the blank rigid too, and share the hinge
     # tool by default, so they ride in the first tier beside the pockets.
-    frozenset({"Hinge Pockets", "Engraving", "Inlays"}),
+    frozenset({"Component Pockets", "Engraving", "Inlays"}),
     frozenset({"Holes"}),
     frozenset({"Temple Profile"}),
 )

@@ -25,7 +25,7 @@ def demo_inputs():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, CastleParams(), hinges
 
@@ -167,7 +167,7 @@ def test_summary_covers_the_demo_program(demo_inputs):
     ops = generate_castle_program(relief, castle, hinges, tools["flat_3175"])
     rows = op_summaries(ops, feed_rate_mmpm=750.0)
     assert [r["name"] for r in rows] == [
-        "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
+        "Component Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
     ]
     assert all(r["strategy"] != "—" for r in rows)
     for r in rows:

@@ -37,6 +37,7 @@ class ToolSpec(BaseModel):
     groove_depth_mm: float = 0.0             # groove form: radial V depth
     groove_width_mm: float = 0.0             # groove form: V opening height
     neck_diameter_mm: float = 0.0            # groove form: relieved neck above the head
+    neck_length_mm: float = 0.0              # groove form: the neck's length, the shank above it
     flutes: int = 1
     flute_length_mm: float = 0.0             # usable cutting depth (0 = unspecified)
     shank_diameter_mm: float = 0.0
@@ -79,6 +80,8 @@ class ToolSpec(BaseModel):
             out["groove_width_mm"] = self.groove_width_mm
             if self.neck_diameter_mm:
                 out["neck_diameter_mm"] = self.neck_diameter_mm
+            if self.neck_length_mm:
+                out["neck_length_mm"] = self.neck_length_mm
         if self.flute_length_mm:
             out["flute_length_mm"] = self.flute_length_mm
         if self.shank_diameter_mm:

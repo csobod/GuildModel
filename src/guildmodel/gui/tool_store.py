@@ -20,6 +20,7 @@ import pathlib
 import yaml
 
 from guildmodel.core.cam.tooling import ToolSpec
+from guildmodel.core.fileio import write_text_atomic
 
 _SHIPPED = pathlib.Path(__file__).resolve().parents[1] / "config" / "tools.yaml"
 _USER = pathlib.Path.home() / ".guildmodel" / "tools.yaml"
@@ -45,7 +46,7 @@ def _user() -> dict:
 def _write_user(data: dict) -> None:
     try:
         _USER.parent.mkdir(parents=True, exist_ok=True)
-        _USER.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        write_text_atomic(_USER, yaml.safe_dump(data, sort_keys=False))
     except Exception:
         pass
 

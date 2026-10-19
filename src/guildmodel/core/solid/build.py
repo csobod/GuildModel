@@ -284,7 +284,7 @@ def footing_bodies(partition: CastlePartition, zone_edge: ZoneEdge,
 #: `source_partition` is in there only to be kept alive — the key identifies the
 #: partition by `id()`, and a collected object's id can be handed to a different
 #: one. Holding the reference makes that impossible.
-_BASE_CACHE: list[tuple[tuple, CastlePartition, tuple]] = []
+_BASE_CACHE: list[tuple[tuple, tuple, tuple]] = []   # (key, (partition, source), value)
 _BASE_CACHE_MAX = 2
 
 
@@ -336,6 +336,10 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
     if curved is None:
         curved = CURVED_TERRACES
     key = _base_key(partition, castle, heights, curved)
+    # The key holds the partition's id, so the entry holds the partition:
+    # with the groove on it held only the lip's curves, the partition was
+    # freed, and its id could be reused by another drawing's (the 2.0 bug hunt).
+    keyed = partition
     source = partition
     for cached_key, _src, value in _BASE_CACHE:
         if cached_key == key:
@@ -405,7 +409,7 @@ def castle_base(partition: CastlePartition, castle: CastleParams,
         solid = cut_many(solid, carves)
 
     value = (partition, h, top, solid)
-    _BASE_CACHE.append((key, source, value))
+    _BASE_CACHE.append((key, (keyed, source), value))
     del _BASE_CACHE[:-_BASE_CACHE_MAX]
     return value
 
@@ -532,7 +536,7 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
 
     `return_surface=True` also returns the solid **before** the pockets are cut.
     That is the M8 `surface_field`: the relief passes follow it so they sail over
-    pockets the Hinge Pockets op has already cut, instead of diving to the floor
+    pockets the Component Pockets op has already cut, instead of diving to the floor
     a second time.
 
     Still to come as sweeps: pad splay, brow chamfer (`EdgeFeature`), bridge
@@ -551,7 +555,7 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
     # the demo frame and cutting them together costs 7.5 s for the same solid.
     solid = apply_surface_features(solid, partition, castle)
     tools = independent_cutters(solid, partition, castle, top)
-    pockets = hinge_pocket_cutters(hinges or [], castle, top)
+    pockets = hinge_pocket_cutters(hinges or [], castle, top, partition, h)
     # The seats cut below everything too, and like the pockets they anchor on
     # nothing, so they ride in the same pass (§8a).
     pockets += inlay_pocket_cutters(inlays, castle, hinges, partition, h, top)
@@ -561,14 +565,14 @@ def _build_castle_solid(partition: CastlePartition, castle: CastleParams,
         # groups have to be cut separately to have something to hand back.
         solid = cut_many(solid, tools)
         surface = solid
-        _report(progress, "Hinge pockets", 0.92)
+        _report(progress, "Component pockets", 0.92)
         solid = cut_many(solid, pockets)
     else:
         # Nobody wants the intermediate, so fold the pockets into the same pass.
         # `(X \ T) \ P == X \ (T u P)` holds however the kernel spells it, and
         # the pockets anchor on nothing, so this is the identical solid for one
         # boolean instead of two.
-        _report(progress, "Hinge pockets", 0.92)
+        _report(progress, "Component pockets", 0.92)
         solid = cut_many(solid, tools + pockets)
         surface = None
 

@@ -269,7 +269,7 @@ def test_the_curved_castle_meshes_watertight(partition_with_curves, imported):
     from guildmodel.core.solid.tessellate import tessellate
 
     points, _ = imported
-    hinges = [points_to_polygon(c) for c in points["HINGE"]]
+    hinges = [points_to_polygon(c) for c in points["COMPONENT"]]
 
     clear_base_cache()
     solid = build_castle_solid(partition_with_curves, CastleParams(), hinges)
@@ -566,7 +566,7 @@ def test_the_grooved_curved_castle_is_still_watertight(partition_with_curves, im
     from guildmodel.core.solid.tessellate import tessellate
 
     points, _ = imported
-    hinges = [points_to_polygon(c) for c in points["HINGE"]]
+    hinges = [points_to_polygon(c) for c in points["COMPONENT"]]
     castle = CastleParams()
     castle.lens_groove.enabled = True
 

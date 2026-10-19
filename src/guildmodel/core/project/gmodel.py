@@ -8,7 +8,7 @@ gSender fork. Layout:
     project.json       the full ProjectSchema (boxing / castle / cam_params / components / …)
     source.dxf         the imported GuildDraw DXF (single frame-front reopen)
     source.gdraw       OR a whole-model GuildDraw drawing (multi-component reopen)
-    program/*.nc       generated G-code (posterior_cut.nc [, back_cut.nc])
+    program/*.nc       generated G-code (posterior_cut.nc [, anterior_cut.nc], or two_sided_cut.nc)
     machine.yaml       snapshot of the active MachineProfile
     setup.json         setup sheet (tool, feeds, op order, cut lengths, est. time)
     cut_report.json    cut-simulation verification (completeness / gouge + time)
@@ -102,6 +102,8 @@ class GModelBundle:
     preview_bytes: bytes | None = None
     #: ``features/<id>.stl`` by feature id: the sculpts' sources (M22).
     features: dict[str, bytes] = field(default_factory=dict)
+    #: What the load changed to read an older file as it was cut, a line each.
+    migrated: list[str] = field(default_factory=list)
 
     @property
     def run_mode(self) -> str:
@@ -197,8 +199,22 @@ def save_gmodel(
 
 def load_gmodel(path, verify: bool = True) -> GModelBundle:
     """Read a ``.gmodel`` container into a :class:`GModelBundle`. Verifies the
-    manifest's SHA-256 inventory unless ``verify=False``."""
+    manifest's SHA-256 inventory unless ``verify=False``.
+
+    Every failure is a `GModelError`: a damaged file raised whatever the part
+    it broke raised, a JSON or a CRC or a UTF-8 error, past the window's
+    handler, and a damaged file opened from the desktop closed the app at
+    launch (the 2.0 bug hunt)."""
     path = Path(path)
+    try:
+        return _load_gmodel(path, verify)
+    except GModelError:
+        raise
+    except Exception as exc:                                  # noqa: BLE001
+        raise GModelError(f"{path.name} could not be read: {exc}") from exc
+
+
+def _load_gmodel(path: Path, verify: bool) -> GModelBundle:
     try:
         zf = zipfile.ZipFile(path, "r")
     except zipfile.BadZipFile as exc:
@@ -215,13 +231,26 @@ def load_gmodel(path, verify: bool = True) -> GModelBundle:
                     raise GModelError(f"manifest lists a missing file: {name}")
                 if hashlib.sha256(zf.read(name)).hexdigest() != meta.get("sha256"):
                     raise GModelError(f"checksum mismatch on {name} — file corrupted")
+        from .schema import collect_corrections
         try:
-            project = ProjectSchema.model_validate_json(zf.read(_PROJECT).decode("utf-8"))
+            text = zf.read(_PROJECT).decode("utf-8")
+            with collect_corrections() as corrected:
+                project = ProjectSchema.model_validate_json(text)
         except Exception as exc:
             raise GModelError(f"invalid project.json: {exc}") from exc
         # A legacy single-component .gmodel (M5.1–M6.5) has no `components`; migrate
         # it to a one-component (frame_front) project on load (BUILDPLAN M7.1).
         project.ensure_components()
+        # a value out of range was replaced as the file was read (`schema._sane`)
+        migrated: list[str] = [f"{line}, out of range" for line in corrected]
+        if "two_sided" not in (json.loads(text).get("cam_params") or {}):
+            # A file from before two-sided machining (M24) was cut from the
+            # back alone, an anterior feature modeled and never posted. Read
+            # as Auto, it became a two-setup job on its first Generate (the
+            # 2.0 bug hunt); it opens Off, as it was cut.
+            project.cam_params.two_sided = "off"
+            migrated.append("Two-sided is Off, as the file was cut before two-sided "
+                            "machining; set it on the Cut tab to cut the front's features")
 
         programs = {
             n[len(_PROGRAM_DIR) + 1:]: zf.read(n).decode("utf-8")
@@ -252,6 +281,7 @@ def load_gmodel(path, verify: bool = True) -> GModelBundle:
         return GModelBundle(
             project=project,
             manifest=manifest,
+            migrated=migrated,
             dxf_bytes=zf.read(_SOURCE) if _SOURCE in names else None,
             gdraw_bytes=zf.read(_SOURCE_GDRAW) if _SOURCE_GDRAW in names else None,
             programs=programs,
@@ -278,6 +308,10 @@ def extract_handoff(path, dest_dir) -> list[Path]:
             if not keep:
                 continue
             out = dest / name
+            # A member named `program/../../x.nc` wrote outside the destination
+            # (the 2.0 bug hunt): only what resolves inside it is written.
+            if not out.resolve().is_relative_to(dest.resolve()):
+                continue
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(zf.read(name))
             written.append(out)

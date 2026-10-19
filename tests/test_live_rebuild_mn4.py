@@ -128,7 +128,7 @@ def test_a_canceled_build_drops_what_was_owed():
     w._rebuild_pending = True
     started = []
     w._start_mesh_build = lambda show_progress=False: started.append(show_progress)
-    w._close_progress = lambda: None
+    w._close_progress = lambda *a: None
     w.append_log = lambda _t: None
     w.status_lbl = type("L", (), {"setText": lambda self, t: None})()
     w._act_build = type("A", (), {"setEnabled": lambda self, on: None})()
@@ -149,7 +149,7 @@ def test_a_failed_build_still_lets_the_next_one_run():
     w._rebuild_pending = True
     started = []
     w._start_mesh_build = lambda show_progress=False: started.append(show_progress)
-    w._close_progress = lambda: None
+    w._close_progress = lambda *a: None
     w.append_log = lambda _t: None
     w.status_lbl = type("L", (), {"setText": lambda self, t: None})()
     w._act_build = type("A", (), {"setEnabled": lambda self, on: None})()

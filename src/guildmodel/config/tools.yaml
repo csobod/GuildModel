@@ -94,7 +94,8 @@ groove_drageoir:
   flute_length_mm: 2.0          # the form head's height (side-cutting)
   groove_depth_mm: 0.75         # radial V depth of the form (root Ø4.0)
   groove_width_mm: 2.0          # V opening height at the rim face
-  neck_diameter_mm: 3.5         # relieved neck above the head (~6 mm long)
+  neck_diameter_mm: 3.5         # relieved neck above the head
+  neck_length_mm: 6.0           # the shank begins this far above the head (~6 mm)
   shank_diameter_mm: 6.0
   feed_rate_mmpm: 400.0
   plunge_rate_mmpm: 300.0

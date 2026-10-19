@@ -34,7 +34,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, CastleParams(), hinges
 
@@ -187,7 +187,7 @@ def test_a_zero_rim_radius_still_builds_a_closed_solid():
     part = partition_zones(points_to_polygon(raw["OUTLINE"][0]),
                            [points_to_polygon(c) for c in raw["LENS"]],
                            raw["SCULPT"])
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     castle = CastleParams()
     castle.bridge_relief.enabled = True
     castle.bridge_relief.exterior_radius_mm = 0.0

@@ -24,7 +24,8 @@ from shapely.geometry import LineString, Point
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
-from ..geometry.regions import CastlePartition
+from ..geometry.regions import CastlePartition, body_interiors
+from ..geometry.rings import crest_inside
 from ..project.schema import CastleParams, PadSplayParams
 
 ProgressFn = Callable[[str, float], None]
@@ -97,7 +98,11 @@ def default_splay_run_mm(partition: CastlePartition,
     past the LOWER NOSEPAD SCULPT line (user rule 2026-07-02: +5 mm). Measured
     as arc length along the outline to where each `nosepad_inferior_*` cut
     crosses it (max of OD/OS for asymmetric frames). None when the partition
-    has no matched nosepad-inferior edges (caller keeps its own default)."""
+    has no matched nosepad-inferior edges (caller keeps its own default), or
+    when it has no bridge for the splay to sit under (separated rims, a
+    monocle: `bridge_features_apply`)."""
+    if not bridge_features_apply(partition):
+        return None
     ring, L, s0 = _bottom_center_station(partition.body)
     best = None
     for edge in partition.edges:
@@ -114,23 +119,6 @@ def default_splay_run_mm(partition: CastlePartition,
     return None if best is None else best + extra_mm
 
 
-def _rounded_chamfer_drop(g: np.ndarray, tan_t: np.ndarray,
-                          blend_r: float) -> np.ndarray:
-    """Depth of a crest-blended chamfer at signed distance g inside the crest
-    (g > 0 toward the outline). A convex round-over of radius `blend_r`
-    replaces the crest corner — tangent to the surface on one side and to the
-    splay plane on the other (C1, footing-style: the M13 hard ridge shaded as
-    a jagged pixellated crease). blend_r = 0 keeps the sharp chamfer."""
-    if blend_r <= 0.0:
-        return np.maximum(g, 0.0) * tan_t
-    sec_t = np.sqrt(1.0 + tan_t**2)
-    safe_tan = np.maximum(tan_t, 1e-9)
-    g0 = blend_r * (1.0 - sec_t) / safe_tan     # arc start (inside the crest, <0)
-    g1 = g0 + blend_r * tan_t / sec_t           # arc->plane tangency (= g0 + R sin)
-    arc = blend_r - np.sqrt(np.maximum(blend_r**2 - (g - g0) ** 2, 0.0))
-    return np.where(g > g1, g * tan_t, np.where(g > g0, arc, 0.0))
-
-
 def _slope_limit(vals: np.ndarray, du: float, max_slope: float) -> np.ndarray:
     """Cap a table's rate of change by min-propagation in both directions:
     a clamp/bisection notch spreads into a gentle dip instead of a tooth.
@@ -145,6 +133,84 @@ def _slope_limit(vals: np.ndarray, du: float, max_slope: float) -> np.ndarray:
 
 
 _CREST_MAX_SLOPE = 0.5   # mm of crest offset per mm of run — teeth get flattened
+
+#: Samples on the anterior seam's round-over, and along the rest of the cut, in
+#: one solid-kernel splay section. Fixed: a loft needs every section to carry
+#: the same number of points.
+SPLAY_ARC_POINTS = 8
+SPLAY_RUN_POINTS = 12
+
+
+def splay_seam(c, tan_t, anchor, floor: float, radius: float):
+    """The round-over at the pad splay's anterior seam, per station.
+
+    The maker's order by hand (2026-10-17): the angle cut first, from the
+    crest down toward the outline at the splay angle and no lower than the
+    floor (the anterior clamp); then the seam nearest the anterior, where
+    that cut meets the frame's edge, rounded over. The crest, the most
+    posterior seam, is left sharp: tumbling takes it.
+
+    Returns ``(z_c, d_t, r)``: the circle's center height, the distance in
+    from the outline edge where it meets the cut, and the radius the station
+    takes. The circle stands against the edge's wall, its center `r` inboard,
+    as high as the cut lets it, so it meets the wall at `z_c` and the cut at
+    `d_t`: on a floored edge ``floor - r`` and ``r``, on the angle cut
+    ``h - r tan(45° - θ/2)`` and ``r (1 - sin θ)``. Found numerically, so a
+    floor that begins inside the round-over is met where it is. The radius is
+    held to half the station's crest offset, so the round-over always ends
+    on the cut, short of the crest.
+    """
+    c = np.asarray(c, dtype=np.float64)
+    tan_t = np.broadcast_to(np.asarray(tan_t, dtype=np.float64), c.shape)
+    a = np.broadcast_to(np.asarray(anchor, dtype=np.float64), c.shape)
+    r = np.minimum(max(float(radius), 0.0), 0.5 * np.maximum(c, 0.0))
+    k = np.linspace(0.0, 2.0, 161)
+    d = r[..., None] * k
+    cut = np.maximum(a[..., None] - (c[..., None] - np.minimum(d, c[..., None]))
+                     * tan_t[..., None], float(floor))
+    gap = cut - r[..., None] * np.sqrt(np.maximum(1.0 - (k - 1.0) ** 2, 0.0))
+    i = np.argmin(gap, axis=-1)[..., None]
+    return (np.take_along_axis(gap, i, axis=-1)[..., 0],
+            np.take_along_axis(d, i, axis=-1)[..., 0], r)
+
+
+def splay_profile(d, c, tan_t, anchor, floor: float, seam=None) -> np.ndarray:
+    """The pad splay's cut at distance `d` in from the outline edge, mm: the
+    angle cut from the crest (`c` in, at `anchor`) down at `tan_t`, no lower
+    than `floor`, and inside the seam's round-over (`splay_seam`) its arc,
+    never below the front face. Broadcasts over stations or cells, so every
+    kernel cuts the same section."""
+    d = np.asarray(d, dtype=np.float64)
+    c = np.asarray(c, dtype=np.float64)
+    cut = np.maximum(anchor - (c - np.minimum(d, c)) * tan_t, float(floor))
+    if seam is None:
+        return cut
+    z_c, d_t, r = seam
+    arc = z_c + np.sqrt(np.maximum(r * r - (d - r) ** 2, 0.0))
+    return np.where(d < d_t, np.maximum(arc, 0.0), cut)
+
+
+def splay_section(c: float, tan_t: float, anchor: float, floor: float,
+                  seam=None) -> tuple[np.ndarray, np.ndarray]:
+    """One solid-kernel splay section as ``(d, z)`` samples from the outline
+    edge to the crest, the same count at every station of a splay: the seam's
+    arc when there is one, then the angle cut, with a sample on the kink where
+    it meets the floor, which a chord would round off."""
+    head = np.array([0.0])
+    d0 = 0.0
+    if seam is not None:
+        d0 = max(float(seam[1]), 1e-4)
+        head = np.linspace(0.0, d0, SPLAY_ARC_POINTS + 1)
+    n = SPLAY_RUN_POINTS + 1
+    kink = c - (anchor - floor) / max(tan_t, 1e-9)
+    if d0 < kink < c:
+        m = int(np.clip(round((kink - d0) / (c - d0) * (n - 1)), 1, n - 2))
+        run = np.concatenate([np.linspace(d0, kink, m + 1),
+                              np.linspace(kink, c, n - m)[1:]])
+    else:
+        run = np.linspace(d0, c, n)
+    d = np.concatenate([head, run[1:]])
+    return d, splay_profile(d, c, tan_t, anchor, floor, seam)
 
 
 def splay_spans(p: PadSplayParams, run: float) -> list[tuple[float, float]]:
@@ -273,16 +339,13 @@ def _splay_crest_tables(body, z_pre, inside, ox, oy, res, p: PadSplayParams):
         clearance = distance(points(p0), rims)
         c_tab = np.minimum(c_tab, 0.8 * clearance)
     c_tab = _slope_limit(np.maximum(c_tab, 0.0), step, _CREST_MAX_SLOPE)
+    # Held inside the body by the solid kernels' own rule: walked back until
+    # it is in the material, then slope-limited again for the grid. It was
+    # halved here, so a crest that cleared the nose notch at 5.5 mm sat at 3.
+    walked = crest_inside(body, p0, normal, c_tab)
+    if np.any(walked < c_tab):
+        c_tab = _slope_limit(walked, step, _CREST_MAX_SLOPE)
     crest = p0 + normal * c_tab[:, None]
-    bisected = False
-    for i in range(n):
-        while c_tab[i] > res and not body.contains(Point(crest[i])):
-            c_tab[i] *= 0.5
-            crest[i] = p0[i] + normal[i] * c_tab[i]
-            bisected = True
-    if bisected:
-        c_tab = _slope_limit(c_tab, step, _CREST_MAX_SLOPE)
-        crest = p0 + normal * c_tab[:, None]
 
     w_tab = splay_weight(u_tab, spans, p.feather_mm)
 
@@ -311,8 +374,10 @@ def _carve_pad_splay(
 ) -> np.ndarray:
     """Chamfer under the bridge: crest = inward offset of the OUTLINE around its
     bottom-center; surface falls crest -> outline at the (possibly toric) splay
-    angle through a tangent crest round-over, feathered at the run ends,
-    floored at the anterior clamp."""
+    angle, feathered at the run ends, floored at the anterior clamp, with the
+    anterior seam rounded over (`splay_profile`). The crest is sharp, as the
+    solid kernels cut it; its 2 mm round-over here only kept the grid from
+    shading it as a jagged ridge, and the maker leaves that seam to tumbling."""
     rows, cols = z.shape
     tables = _splay_crest_tables(body, z_pre, inside, ox, oy, res, p)
     if tables is None:
@@ -336,9 +401,7 @@ def _carve_pad_splay(
     wline = LineString(p0)
     w_station = np.concatenate([[0.0], np.cumsum(
         np.linalg.norm(np.diff(p0, axis=0), axis=1))])
-    blend_r = max(p.crest_blend_mm, 0.0)
-    r0, r1, c0, c1 = _window(np.vstack([p0, crest]),
-                             c_tab.max() + blend_r + 2 * res,
+    r0, r1, c0, c1 = _window(np.vstack([p0, crest]), c_tab.max() + 2 * res,
                              ox, oy, res, rows, cols)
     sub_inside = inside[r0:r1, c0:c1]
     if not sub_inside.any():
@@ -354,21 +417,24 @@ def _carve_pad_splay(
     cu = np.interp(u, u_tab, c_tab)
     g = cu - d                                  # distance inside the crest
     weight = np.interp(u, u_tab, w_tab)
-    # The round-over begins a little beyond the crest (g slightly negative), so
-    # the selection reaches past it; drop() is zero there and min() is a no-op.
     # A zero weight is a station outside every span — the run ends, and the
     # keyhole gap of a non-contiguous splay — where the anchor height must not
     # be applied as a target at all.
-    sel = (weight > 0.0) & (g > -blend_r)
+    sel = (weight > 0.0) & (g > 0.0)
     if not sel.any():
         return np.zeros_like(inside)
-    drop = _rounded_chamfer_drop(g, np.interp(u, u_tab, tan_tab), blend_r)
     # `h_tab` already carries the feather as a lift, so the plane rises out of
     # the material on its own; multiplying the drop by the weight as well would
     # flatten the chamfer at the same time and is what left the shelf.
-    # `weight` survives only in `sel`, as the span mask.
-    target = np.interp(u, u_tab, h_tab) - drop
-    target = np.maximum(target, p.anterior_clamp_mm)
+    # `weight` survives only in `sel`, as the span mask. The seam's round-over
+    # is measured per station and read at each cell's station, as the crest is.
+    seam = None
+    if p.seam_blend_mm > 0.0:
+        seam = tuple(np.interp(u, u_tab, v) for v in
+                     splay_seam(c_tab, tan_tab, h_tab, p.anterior_clamp_mm,
+                                p.seam_blend_mm))
+    target = splay_profile(d, cu, np.interp(u, u_tab, tan_tab),
+                           np.interp(u, u_tab, h_tab), p.anterior_clamp_mm, seam)
 
     zsub = z[r0:r1, c0:c1].ravel().copy()
     idx = np.flatnonzero(cand)[sel]
@@ -388,19 +454,25 @@ def _carve_pad_splay(
 def _carve_eyewire_bezel(
     z: np.ndarray, z_pre: np.ndarray, body,
     inside: np.ndarray, ox: float, oy: float, res: float, p,
+    is_hole=lambda ring: False,
 ) -> np.ndarray:
     """Constant-width chamfer band around each lens opening's posterior rim.
 
     Anchored to the local pre-carve surface: the drop is zero at the band's
     inner edge and width*tan(angle) at the rim, so the band keeps constant
-    width and rim depth all the way round and rides the footing swells."""
+    width and rim depth all the way round and rides the footing swells.
+    Lens openings only: a decorative OUTLINE opening (`is_hole`) seats no
+    lens, and the mesh and B-Rep kernels leave it square by the maker's
+    decision; this kernel beveled it (the 2.0 bug hunt)."""
     rows, cols = z.shape
     band = np.zeros_like(inside)
     width = p.width_mm
     if width <= 0.0:
         return band
     tan_a = float(np.tan(np.radians(p.angle_deg)))
-    for interior in body.interiors:
+    for interior in body_interiors(body):
+        if is_hole(interior):
+            continue
         ring = LineString(interior)
         ring_xy = np.asarray(interior.coords)[:, :2]
         r0, r1, c0, c1 = _window(ring_xy, width + 2 * res, ox, oy, res, rows, cols)
@@ -483,6 +555,18 @@ def _carve_bridge_relief(
 
 # ------------------------------------------------------------------ dispatcher
 
+def bridge_features_apply(partition) -> bool:
+    """True when the front has a bridge for the pad splay to sit under and
+    the bridge relief to scoop: one body holding both lenses. Separated rims
+    (a metal bridge) and a monocle have neither, and every kernel leaves the
+    two features off."""
+    if getattr(partition, "separated", False):
+        return False
+    is_hole = getattr(partition, "is_hole", lambda ring: False)
+    apertures = [r for r in body_interiors(partition.body) if not is_hole(r)]
+    return len(apertures) >= 2
+
+
 def apply_posterior_features(
     z: np.ndarray,
     partition: CastlePartition,
@@ -498,19 +582,26 @@ def apply_posterior_features(
     (for the CAM feature-finish band) and the steepest enabled feature angle.
     When every feature is disabled, returns ``(None, 0.0)`` and ``z`` is not
     touched at all (bit-identical fast path for the M2/M3/M4 gates).
+
+    The pad splay and the bridge relief are cut under and into a one-piece
+    front's bridge; a front with separated rims has none, and leaves both off
+    (`bridge_features_apply`).
     """
     splay = castle.pad_splay
     bezel = castle.eyewire_bezel
     groove = castle.bridge_relief
+    on_bridge = bridge_features_apply(partition)
+    splay_on = splay.enabled and on_bridge
+    relief_on = groove.enabled and on_bridge
     # `cuts_posterior()` rather than `enabled` (M17): the bezel can now be aimed
     # at the front face, and an anterior-only bezel must leave the back alone.
-    if not (splay.enabled or bezel.cuts_posterior() or groove.enabled):
+    if not (splay_on or bezel.cuts_posterior() or relief_on):
         return None, 0.0
 
     z_pre = z.copy()
     band = np.zeros_like(inside)
     max_slope = 0.0
-    if splay.enabled:
+    if splay_on:
         if progress is not None:
             progress("Pad splay", 0.86)
         band |= _carve_pad_splay(z, z_pre, partition.body, inside,
@@ -523,9 +614,9 @@ def apply_posterior_features(
         if progress is not None:
             progress("Eyewire bezel", 0.87)
         band |= _carve_eyewire_bezel(z, z_pre, partition.body, inside,
-                                     ox, oy, resolution, bezel)
+                                     ox, oy, resolution, bezel, is_hole=partition.is_hole)
         max_slope = max(max_slope, bezel.angle_deg)
-    if groove.enabled:
+    if relief_on:
         if progress is not None:
             progress("Bridge relief", 0.88)
         gb = _carve_bridge_relief(z, z_pre, inside, ox, oy, resolution, groove)

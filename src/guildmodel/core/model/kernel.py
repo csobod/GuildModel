@@ -79,9 +79,14 @@ def cross_section(poly: Polygon) -> CrossSection:
     Even-odd fill, so interior rings punch holes regardless of the winding the
     partition happens to carry — Shapely does not promise a consistent
     orientation and the zone polygons come from several different producers.
+    A MultiPolygon (a front's separated rims) gives every part's rings; parts
+    never overlap, so the fill keeps each one.
     """
-    rings = [list(poly.exterior.coords)[:-1]]
-    rings.extend(list(r.coords)[:-1] for r in poly.interiors)
+    parts = list(poly.geoms) if poly.geom_type == "MultiPolygon" else [poly]
+    rings = []
+    for part in parts:
+        rings.append(list(part.exterior.coords)[:-1])
+        rings.extend(list(r.coords)[:-1] for r in part.interiors)
     return CrossSection(
         [[(float(x), float(y)) for x, y in ring] for ring in rings],
         fillrule=FillRule.EvenOdd)

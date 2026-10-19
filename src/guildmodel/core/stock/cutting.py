@@ -255,14 +255,20 @@ def cut(stock: DexelStock, poses, shape: ToolShape, *, threads: int | None = Non
 # ---------------------------------------------------------------- collisions
 
 def shank_shape(tool: dict) -> ToolShape | None:
-    """The part of the tool above its flutes, as a flat cylinder standing
-    `flute_length_mm` up from the tip: what must never enter stock. None for
-    a tool that declares no flute length or no shank."""
+    """The part of the tool above its flutes and its neck, as a flat
+    cylinder standing `flute_length_mm` plus `neck_length_mm` up from the
+    tip: what must never enter stock. None for a tool that declares no flute
+    length or no shank.
+
+    The drageoir's Ø6 shank stood 2 mm up, where its Ø3.5 neck is, and every
+    grooved front failed with the shank in the rim it reaches past (the 2.0
+    bug hunt); the neck itself is the groove form's (`ToolShape`)."""
     flute = float(tool.get("flute_length_mm") or 0.0)
+    neck = float(tool.get("neck_length_mm") or 0.0)
     dia = float(tool.get("shank_diameter_mm") or tool.get("diameter_mm") or 0.0)
     if flute <= 0.0 or dia <= 0.0:
         return None
-    return ToolShape(kind="flat", radius_mm=dia / 2.0, flute_length_mm=flute)
+    return ToolShape(kind="flat", radius_mm=dia / 2.0, flute_length_mm=flute + neck)
 
 
 def collisions(stock: DexelStock, poses, shape: ToolShape, *, lift: float = 0.0,
@@ -280,9 +286,7 @@ def collisions(stock: DexelStock, poses, shape: ToolShape, *, lift: float = 0.0,
     if len(fp) == 0:
         return hit
     rows, cols = stock.shape
-    live = np.arange(stock.k)[:, None, None] < stock.count[None]
-    tops = np.where(live, stock.z_top, -np.inf)
-    bots = np.where(live, stock.z_bot, np.inf)
+    layers = np.arange(stock.k)[:, None]
     for n, (x, y, z, ax, ay, az) in enumerate(P):
         if not _is_vertical((ax, ay, az)):
             continue
@@ -294,7 +298,11 @@ def collisions(stock: DexelStock, poses, shape: ToolShape, *, lift: float = 0.0,
         rr, cc = rr[ok], cc[ok]
         lo = z + lift + fp.z_lo[ok]
         hi = z + lift + fp.z_hi[ok]
-        # an interval [t, b] meets the cutter [lo, hi] when lo < t and hi > b
-        meets = (lo[None] < tops[:, rr, cc]) & (hi[None] > bots[:, rr, cc])
+        # Only the columns under the tool: the live tops and bottoms of the
+        # whole grid were built on every call, most of a simulation's time on
+        # a corpus front (the 2.0 bug hunt). An interval [t, b] meets the
+        # cutter [lo, hi] when lo < t and hi > b.
+        live = layers < stock.count[rr, cc][None]
+        meets = live & (lo[None] < stock.z_top[:, rr, cc]) & (hi[None] > stock.z_bot[:, rr, cc])
         hit[n] = bool(meets.any())
     return hit

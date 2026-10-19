@@ -25,7 +25,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, CastleParams(), hinges
 
@@ -158,9 +158,11 @@ def test_generic_partition_relief_with_explicit_heights():
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.relief.castle import build_castle_relief
 
+    # A front the classifier cannot name: two lenses and no section cuts. (One
+    # lens is a monocle since 2026-10-16, named by the rim classifier.)
     outline = Polygon([(-30, -10), (30, -10), (30, 10), (-30, 10)])
-    part = partition_zones(outline, [Point(0, 0).buffer(5)], [[(0, -11), (0, 11)]])
-    assert not part.matched
+    part = partition_zones(outline, [Point(-15, 0).buffer(5), Point(15, 0).buffer(5)], [])
+    assert not part.matched and not part.classified
     relief = build_castle_relief(
         part, CastleParams(), resolution=0.5,
         heights={z.name: 3.0 + i for i, z in enumerate(part.zones)},

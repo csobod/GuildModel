@@ -29,8 +29,10 @@ from typing import Callable, Optional
 import numpy as np
 from shapely import contains_xy, prepare
 from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
-from .geometry.regions import CastlePartition
+from .geometry.regions import (CastlePartition, body_exteriors, body_interiors,
+                               body_parts)
 from .kernels import resolve_kernel
 from .project.schema import CastleParams
 from .relief.castle import CUT_RES_MM, GRID_MARGIN_MM, CastleRelief
@@ -368,7 +370,7 @@ def relief_from_zmap(z: np.ndarray, partition: CastlePartition,
         zone_index=zone_index,
         partition=partition,
         groove=groove,
-        groove_lens_polys=([Polygon(r) for r in partition.body.interiors
+        groove_lens_polys=([Polygon(r) for r in body_interiors(partition.body)
                             if not partition.is_hole(r)] if groove else []),
         mask_body_override=body if groove else None,
         pocket_polys=list(pocket_polys),
@@ -456,9 +458,10 @@ def cam_relief(build, partition: CastlePartition, castle: CastleParams,
     from .geometry.pocket_floor import castle_pocket_floors
 
     hinges, inlays = list(hinges), list(inlays)
-    seats = inlay_cuts(castle.inlays, inlays, castle_pocket_floors(hinges, castle),
-                       posterior_reference=zone_reference(
-                           partition, zone_heights(partition, castle, None)))
+    heights = zone_heights(partition, castle, None)
+    seats = inlay_cuts(castle.inlays, inlays,
+                       castle_pocket_floors(hinges, castle, partition, heights),
+                       posterior_reference=zone_reference(partition, heights))
     posterior_seats = [seat.outline for seat in seats if seat.posterior]
 
     _report(progress, "Building the part", 0.10)
@@ -499,13 +502,21 @@ def map_polygon_xy(fmap, poly: Polygon, z: float = 0.0) -> Polygon:
     """`poly`'s rings through the forming map at height `z`, as the polygon
     their formed x, y make: the formed part's footprint of a flat ring (M25).
     At the anterior face by default, where the lens seats and the front's
-    edge are what a three-axis cut must get right."""
+    edge are what a three-axis cut must get right. Separated rims map rim by
+    rim."""
     def ring(coords):
         pts = np.array([(x, y, z) for x, y in coords], dtype=np.float64)
         out = fmap(pts)[:, :2]
         return [tuple(p) for p in out]
-    mapped = Polygon(ring(poly.exterior.coords), [ring(r.coords) for r in poly.interiors])
-    return mapped if mapped.is_valid else mapped.buffer(0)
+
+    def mapped(part: Polygon) -> Polygon:
+        out = Polygon(ring(part.exterior.coords), [ring(r.coords) for r in part.interiors])
+        return out if out.is_valid else out.buffer(0)
+
+    parts = [mapped(part) for part in body_parts(poly)]
+    if len(parts) == 1:
+        return parts[0]
+    return unary_union(parts)
 
 
 def formed_partition(partition: CastlePartition, fmap, z: float = 0.0) -> CastlePartition:
@@ -563,8 +574,10 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
     fmap = None
     if forming is not None and getattr(castle.stock, "preformed", False):
         from .forming import ThermoformMap, bridge_geometry
+        # the slab as the dies press it, not the formed part's full shape
         fmap = ThermoformMap.from_metadata(
-            forming, bridge=bridge if bridge is not None else bridge_geometry(partition))
+            forming.pressed(),
+            bridge=bridge if bridge is not None else bridge_geometry(partition))
         if fmap.is_flat:
             fmap = None
     if fmap is not None:
@@ -588,10 +601,24 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
                                  sculpt_sources=sculpt_sources, fmap=fmap,
                                  masks=(fp_back, hinges_f, inlays_f))
         relief.partition = fp_front
+        if relief.mask_body_override is not None:
+            # The groove's lip body, at the front's footprint with the
+            # partition: left at the back's, the eyewires and the perimeter
+            # were cut inside the front's edge by the walls' lean (the 2.0
+            # bug hunt).
+            relief.mask_body_override, _ = groove_body(fp_front, castle)
+            relief.groove_lens_polys = [Polygon(r) for r in body_interiors(fp_front.body)
+                                        if not fp_front.is_hole(r)]
         relief.hinge_polys_formed = hinges_f
         relief.inlay_polys_formed = inlays_f
-        relief.wall_lean_mm = float(fp_front.body.exterior.hausdorff_distance(
-            fp_back.body.exterior))
+        # The sculpts stand where the pressed part has them: their shadows in
+        # the flat frame put Sculpt Finish over the wrong area (the 2.0 bug hunt).
+        relief.sculpt_footprints = [map_polygon_xy(fmap, p, z=T)
+                                    for p in relief.sculpt_footprints]
+        relief.wall_lean_mm = max(
+            (float(front.hausdorff_distance(back)) for front, back in
+             zip(body_exteriors(fp_front.body), body_exteriors(fp_back.body))),
+            default=0.0)
         f = relief.field
         rows, cols = f.z.shape
         apertures = ()
@@ -600,7 +627,7 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
             # is on (the groove widens them later), the drawn apertures else
             body_cut, _ = groove_body(partition, castle)
             is_hole = partition.is_hole
-            apertures = [Polygon(r) for r in body_cut.interiors if not is_hole(r)]
+            apertures = [Polygon(r) for r in body_interiors(body_cut) if not is_hole(r)]
         top, bottom = formed_blank_envelopes(castle.stock, fmap, f.origin, rows, cols,
                                              f.resolution, apertures=apertures)
         # Where the slab has no material (past its edge, or an aperture cut
@@ -619,17 +646,36 @@ def castle_relief(partition: CastlePartition, castle: CastleParams,
         from .model.zmap import _triangles
         fv, ff = _triangles(partition, castle, hinges, inlays, sculpt_sources, None)
         fo, fr, fc_ = grid_for(partition.body, resolution, margin)
-        _, flat_depth = triangle_envelopes(fv, ff, fo, fr, fc_, resolution)
+        _, flat_depth = triangle_envelopes(fv, ff, fo, fr, fc_, resolution,
+                                           background=np.nan)
         depth2 = np.zeros((rows, cols))
-        rr, cc = np.nonzero(flat_depth > 1e-6)
+        # Every cell of the flat body is carried, cut or not, so a formed cell
+        # that no flat cell lands on is told from one with nothing cut: each
+        # flat cell lands on its nearest formed cell, and along the front's
+        # edge some formed cells take none. They read as the uncut slab, a
+        # cell wide at a chamfer's foot, where the cut is deepest, and held
+        # the anterior's tools up off the chamfer (the 2.0 bug hunt); within the
+        # front's footprint they take their nearest carried neighbor's depth.
+        rr, cc = np.nonzero(np.isfinite(flat_depth))
         if len(rr):
+            from scipy.ndimage import distance_transform_edt
             pts = np.column_stack([fo[0] + cc * resolution, fo[1] + rr * resolution,
                                    np.zeros(len(rr))])
             w = fmap(pts)
             ci = np.round((w[:, 0] - f.origin[0]) / resolution).astype(int)
             ri = np.round((w[:, 1] - f.origin[1]) / resolution).astype(int)
             ok = (ci >= 0) & (ci < cols) & (ri >= 0) & (ri < rows)
-            np.maximum.at(depth2, (ri[ok], ci[ok]), flat_depth[rr[ok], cc[ok]])
+            np.maximum.at(depth2, (ri[ok], ci[ok]),
+                          np.clip(flat_depth[rr[ok], cc[ok]], 0.0, None))
+            hit = np.zeros((rows, cols), dtype=bool)
+            hit[ri[ok], ci[ok]] = True
+            X, Y = np.meshgrid(f.origin[0] + np.arange(cols) * resolution,
+                               f.origin[1] + np.arange(rows) * resolution)
+            prepare(fp_front.body)
+            holes = ~hit & contains_xy(fp_front.body, X, Y)
+            if holes.any():
+                _, (iy, ix) = distance_transform_edt(~hit, return_indices=True)
+                depth2[holes] = depth2[iy[holes], ix[holes]]
         relief.anterior = np.where(np.isfinite(bottom), bottom, low) + depth2
         # The formed part's walls tilt with the curve, so the footprint at the
         # anterior face runs outside the posterior edge by the thickness times

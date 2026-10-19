@@ -56,7 +56,8 @@ blank_zones:
     # a press fit in the wasteboard, the stock a slip fit over them, so the
     # flip is a mirror about the line and the pins register both sides.
     # 4 mm pins, 6 mm in from the blank's top and bottom edges; the bench
-    # decides whether side one's program drills the bores.
+    # decides how the bores are made before the anterior, cut first (2.0),
+    # or whether its program drills them in the waste margin.
     pins:
       - {x_mm: 201.146, y_mm: 107.772, diameter_mm: 4.0}
       - {x_mm: 201.146, y_mm: 180.772, diameter_mm: 4.0}

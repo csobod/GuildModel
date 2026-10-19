@@ -92,7 +92,7 @@ def test_every_run_carries_its_feed_and_rapids_carry_none(gabriel_program):
     assert all(r.feed_mmpm > 0 for r in runs if r.is_cut)
     assert all(r.feed_mmpm == 0 for r in runs if not r.is_cut)
     labels = {r.label for r in runs}
-    assert "Hinge Pockets" in labels and "Perimeter" in labels
+    assert "Component Pockets" in labels and "Perimeter" in labels
     assert all(r.tool for r in runs if r.label)
 
 

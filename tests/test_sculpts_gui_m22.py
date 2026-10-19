@@ -184,7 +184,7 @@ def demo_spec():
     raw = import_dxf(root / "tests" / "fixtures" / "demo" / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     return {"mode": "castle", "partition": partition_zones(outline, lenses, raw["SCULPT"]),
             "castle": CastleParams(), "hinge": hinges, "stage": "pockets", "inlay": []}
 

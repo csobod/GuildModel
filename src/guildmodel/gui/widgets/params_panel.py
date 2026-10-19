@@ -63,6 +63,8 @@ from guildmodel.core.project.schema import (
 
 # Sentinel shown in a per-op tool combo meaning "use the global Tool above".
 _SAME_AS_GLOBAL = "(same as Tool)"
+#: The Sculpts section's title, which `set_model_kernel` shows or hides.
+SCULPTS_FOLD = "Sculpts  (your own meshes, embossed or debossed)"
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
@@ -852,7 +854,7 @@ class ParamsPanel(QTabWidget):
         panel keeps the records and says when one moved.
         """
         grp = self._fold(
-            "Sculpts  (your own meshes, embossed or debossed)", lay,
+            SCULPTS_FOLD, lay,
             "Drop an .stl on the 3D view or add one here. GuildModel repairs it, "
             "finds its flat back and snaps it to the frame; Emboss adds it, Deboss "
             "cuts it. A sculpt on the back is machined by the posterior program; "
@@ -1227,17 +1229,20 @@ class ParamsPanel(QTabWidget):
         towers.addRow("Endpieces:", self.zone_endpiece)
         towers.addRow("Bridge:", self.zone_bridge)
         towers.addRow("Nosepads:", self.zone_nosepad)
-        towers.addRow("Hinge pocket depth:", self.hinge_pocket_depth)
+        towers.addRow("Component depth:", self.hinge_pocket_depth)
         self.hinge_pocket_depth.setToolTip(
-            "Pocket floor sits this far below the endpiece height."
+            "Each COMPONENT pocket's floor sits this far below the surface it is\n"
+            "cut from: the endpiece height for a hinge, the highest terrace it\n"
+            "touches for a mount such as a bridge."
         )
         self.hinge_pocket_angle = _slider(0.0, -15.0, 15.0, step=0.5, decimals=1,
                                           suffix="°")
         towers.addRow("Hinge pocket angle:", self.hinge_pocket_angle)
         self.hinge_pocket_angle.setToolTip(
-            "Tilts the pocket floor to adjust the pantoscopic tilt at the hinge.\n"
-            "The superior edge stays at the pocket depth; a positive angle makes\n"
-            "the inferior edge deeper, and a negative angle makes it shallower."
+            "Tilts the floor of the pockets on the endpieces, the hinges', to\n"
+            "adjust the pantoscopic tilt at the hinge. The superior edge stays at\n"
+            "the pocket depth; a positive angle makes the inferior edge deeper,\n"
+            "and a negative angle makes it shallower."
         )
         self.inlay_depth = _slider(1.0, 0.0, 6.0, step=0.05, decimals=2)
         towers.addRow("Inlay depth:", self.inlay_depth)
@@ -1336,7 +1341,8 @@ class ParamsPanel(QTabWidget):
             "Blend the splay from a center angle through a middle to an end angle.")
         self.splay_clamp = _slider(d.anterior_clamp_mm, 0.2, 5.0, step=0.1, decimals=1)
         self.splay_clamp.setToolTip(
-            "Cut floor above the anterior face — the edge never gets thinner than this.")
+            "Cut floor above the anterior face: the angle cut never leaves the edge\n"
+            "thinner than this. The seam blend then rounds the edge's corner.")
         self.splay_feather = _slider(d.feather_mm, 0.0, 10.0, step=0.5, decimals=1)
         self.splay_feather.setToolTip(
             "Run the cut out to nothing over this distance at EVERY end of the "
@@ -1344,9 +1350,11 @@ class ParamsPanel(QTabWidget):
             "splay is non-contiguous.\n"
             "The chamfer keeps its angle and lifts out of the surface, so the "
             "cut narrows away instead of flattening into a shelf and stopping.")
-        self.splay_blend = _slider(d.crest_blend_mm, 0.0, 6.0, step=0.5, decimals=1)
-        self.splay_blend.setToolTip(
-            "Round-over radius where the chamfer meets the surface (0 = sharp crest).")
+        self.splay_seam = _slider(d.seam_blend_mm, 0.0, 3.0, step=0.1, decimals=1)
+        self.splay_seam.setToolTip(
+            "Round-over radius at the seam nearest the front, where the angle cut\n"
+            "meets the frame's edge: the seam you round by hand after the angle cut.\n"
+            "The crest, at the back, is left sharp for tumbling. 0 leaves the seam sharp.")
         self.splay_noncontig = QCheckBox("Non-contiguous (keyhole bridge)")
         self.splay_noncontig.setChecked(d.non_contiguous)
         self.splay_noncontig.setToolTip(
@@ -1363,8 +1371,8 @@ class ParamsPanel(QTabWidget):
         splay.addRow("", self.splay_toric)
         splay.addRow("Middle angle:", self.splay_angle_middle)
         splay.addRow("End angle:", self.splay_angle_end)
-        splay.addRow("Crest blend:", self.splay_blend)
         splay.addRow("Min edge thickness:", self.splay_clamp)
+        splay.addRow("Seam blend:", self.splay_seam)
         splay.addRow("End feather:", self.splay_feather)
         splay.addRow("", self.splay_noncontig)
         splay.addRow("Center gap:", self.splay_gap)
@@ -1597,7 +1605,7 @@ class ParamsPanel(QTabWidget):
     def _splay_spinboxes(self) -> list[Numeric]:
         return [self.splay_run, self.splay_dev_center, self.splay_dev_end,
                 self.splay_angle_center, self.splay_angle_middle,
-                self.splay_angle_end, self.splay_blend, self.splay_clamp,
+                self.splay_angle_end, self.splay_seam, self.splay_clamp,
                 self.splay_feather, self.splay_gap]
 
     def _on_splay_toggled(self, on: bool) -> None:
@@ -1682,8 +1690,10 @@ class ParamsPanel(QTabWidget):
             "hinge_pocket_depth_mm": self.hinge_pocket_depth,
             "hinge_pocket_angle_deg": self.hinge_pocket_angle,
             "pad_splay.anterior_clamp_mm": self.splay_clamp,
+            "pad_splay.seam_blend_mm": self.splay_seam,
             "pad_splay.gap_mm": self.splay_gap,
             "eyewire_bezel.anterior_clamp_mm": self.bezel_clamp,
+            "eyewire_bezel.anterior_width_mm": self.bezel_ant_width,
             "bridge_relief.anterior_clamp_mm": self.bridge_relief_clamp,
             "bridge_relief.depth_mm": self.bridge_relief_depth,
             "bridge_relief.exterior_radius_mm": self.bridge_relief_rext,
@@ -1835,7 +1845,9 @@ class ParamsPanel(QTabWidget):
         # The pre-formed blank (M25): the sheet pressed to the Forming view's
         # curve before it is cut; the target is the formed model, the stock
         # the formed slab, and the eyewires and the perimeter follow the curve.
-        self.preformed = QCheckBox("Pre-formed blank (pressed to the Forming curve first)")
+        # A short label: a checkbox does not wrap, and the long one set the tab's
+        # least width a hundred pixels past every other tab's
+        self.preformed = QCheckBox("Pre-formed blank")
         self.preformed.setToolTip(
             "Cut the front after pressing: the blank is the slab pressed to the\n"
             "Forming view's base curve and face form, the target the formed model,\n"
@@ -1846,11 +1858,11 @@ class ParamsPanel(QTabWidget):
         self.preformed.toggled.connect(self._on_preformed_toggled)
         self.preformed.toggled.connect(self.stock_changed)
         form.addRow("", self.preformed)
-        self.apertures_first = QCheckBox("Apertures and groove first (hybrid)")
+        self.apertures_first = QCheckBox("Apertures and groove first")
         self.apertures_first.setToolTip(
-            "Cut the eyewires and the groove flat, press the part in the post-cut\n"
-            "dies, and nest the curved blank for the rest. Trades the bridge's\n"
-            "draw-in for a correct groove.")
+            "The hybrid: cut the eyewires and the groove flat, press the part\n"
+            "in the post-cut dies, and nest the curved blank for the rest.\n"
+            "Trades the bridge's draw-in for a correct groove.")
         self.apertures_first.setEnabled(False)
         self.apertures_first.toggled.connect(self.stock_changed)
         form.addRow("", self.apertures_first)
@@ -1975,7 +1987,7 @@ class ParamsPanel(QTabWidget):
                                           decimals=1)
         self.temple_hinge_depth.setToolTip(
             "Pocket floor sits this far below the top face at the anterior edge.")
-        form.addRow("Hinge pocket depth:", self.temple_hinge_depth)
+        form.addRow("Component depth:", self.temple_hinge_depth)
         self.temple_hinge_angle = _slider(d.hinge_pocket_angle_deg, -15.0, 15.0,
                                           step=0.5, decimals=1, suffix="°")
         self.temple_hinge_angle.setToolTip(
@@ -1995,8 +2007,8 @@ class ParamsPanel(QTabWidget):
         self.temple_hinge_tool = QComboBox()
         self.temple_hinge_tool.addItems(_tool_names())
         self.temple_hinge_tool.setCurrentText(d.hinge_tool)
-        self.temple_hinge_tool.setToolTip("Endmill for the HINGE pockets.")
-        form.addRow("Hinge-pocket tool:", self.temple_hinge_tool)
+        self.temple_hinge_tool.setToolTip("End mill for the COMPONENT pockets.")
+        form.addRow("Component tool:", self.temple_hinge_tool)
         self.temple_profile_tool = QComboBox()
         self.temple_profile_tool.addItems(_tool_names())
         self.temple_profile_tool.setCurrentText(d.profile_tool)
@@ -2208,8 +2220,10 @@ class ParamsPanel(QTabWidget):
                 "No SCULPT zones — draw 5 section cuts per side in GuildDraw."
             )
         elif partition.matched:
+            rims = (", a standard half per rim"
+                    if getattr(partition, "halves", False) else "")
             self.zones_status.setText(
-                f"{len(partition.zones)} zones — standard castle layout."
+                f"{len(partition.zones)} zones — standard castle layout{rims}."
             )
         elif partition.classified:
             # Not the reference 5-cuts-per-side castle, but every zone is named,
@@ -2286,7 +2300,7 @@ class ParamsPanel(QTabWidget):
         pairs: list[tuple[str, str]] = []
         if kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
             pairs = [(self.temple_engrave_tool.currentText(), "Engraving"),
-                     (self.temple_hinge_tool.currentText(), "Hinge Pockets")]
+                     (self.temple_hinge_tool.currentText(), "Component Pockets")]
             # The seats on the hinge side post as Inlays, on the hinge tool
             # unless a seat names its own (§8a).
             for f in self.inlays_temple.features():
@@ -2496,6 +2510,7 @@ class ParamsPanel(QTabWidget):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         names = _tool_names()
         self.op_tool_combos: dict[str, QComboBox] = {}
+        self._op_tool_rows: dict[str, tuple] = {}
         # "Features" is not in POSTERIOR_OPS (it only exists when a posterior
         # feature is on, and listing it there would make every job read as
         # multi-tool — the same reasoning that keeps "Lens Groove" out). It gets
@@ -2511,11 +2526,12 @@ class ParamsPanel(QTabWidget):
             cb.currentIndexChanged.connect(self.cam_changed)
             self.op_tool_combos[op] = cb
             form.addRow(f"{op}:", cb)
+            self._op_tool_rows[op] = (form.labelForField(cb), cb)
         self.op_tool_combos["Features"].setToolTip(
             "Tool for the posterior features (pad splay, eyewire bezel, bridge "
-            "relief, edge features). '(same as Tool)' follows Fine Relief — the "
-            "tool these were cut with before they became their own operation. "
-            "A ball is what finishes a chamfer toe or a scoop trough.")
+            "relief, edge features): the 2 mm ball by default, which finishes a "
+            "chamfer toe or a scoop trough. Pick a tool by name to cut them with "
+            "it; '(same as Tool)' keeps the default, as for the Component Pockets.")
         self.op_tool_combos["Sculpt Finish"].setToolTip(
             "The fine pass over a sculpt's footprint (M22), off unless ticked under "
             "Operations: a ball nose at a stepover from the cusp target. The "
@@ -2623,10 +2639,10 @@ class ParamsPanel(QTabWidget):
         of.addRow("Spindle:", self.spindle_override)
         col.addLayout(of)
 
-        per_tool = QLabel("Per tool \u2014 this component")
+        per_tool = QLabel("Per tool \u2014 this part")
         per_tool.setObjectName("hintLabel")
         per_tool.setToolTip(
-            "The tools this component's program uses, in order. Type a value to set "
+            "The tools this part's program uses, in order. Type a value to set "
             "it for this project; Reset gives the tool back to its library feeds or "
             "the material's.")
         col.addWidget(per_tool)
@@ -2677,7 +2693,7 @@ class ParamsPanel(QTabWidget):
 
         self.pocket_stepdown = _spinbox(d.pocket_stepdown_mm, 0.1, 6.0, step=0.1)
         self.pocket_stepdown.setToolTip(
-            "Axial depth per pocket level (hinge recesses). The pocket is cleared "
+            "Axial depth per pocket level (component pockets and seats). The pocket is cleared "
             "level by level\ninstead of ramping in and taking the whole remaining "
             "depth in one cascade.")
         form.addRow("Pocket:", self.pocket_stepdown)
@@ -2858,10 +2874,10 @@ class ParamsPanel(QTabWidget):
     # an op whose geometry is absent (no HINGE layer, no decorative holes) simply
     # never appears in the program, and its checkbox is harmless.
     _KIND_OPS: dict = {
-        "frame_front": ("Hinge Pockets", "Rough Relief", "Fine Relief",
+        "frame_front": ("Component Pockets", "Rough Relief", "Fine Relief",
                         "Features", "Sculpt Finish", "Inlays", "Eyewires", "Holes",
                         "Lens Groove", "Perimeter"),
-        "temple": ("Hinge Pockets", "Engraving", "Inlays", "Holes", "Temple Profile"),
+        "temple": ("Component Pockets", "Engraving", "Inlays", "Holes", "Temple Profile"),
         "block": ("Drill Holes", "Block Profile"),
     }
     # Ops that release the part from the blank — switching one off is a deliberate
@@ -2898,39 +2914,73 @@ class ParamsPanel(QTabWidget):
         self.two_sided = QComboBox()
         self.two_sided.addItems(["Auto (when the front is cut)", "Off", "On"])
         self.two_sided.setToolTip(
-            "A second setup machines the anterior after the blank is flipped on\n"
-            "the fixture's dowel pins: brow chamfers, the anterior bezel, seats and\n"
-            "sculpts on the front. Auto posts it when the front takes material off\n"
-            "the anterior; Off posts the posterior alone, as before; On posts two\n"
-            "sides whatever the front carries.")
+            "The anterior is cut first, front face up while the blank is still a\n"
+            "flat slab, and only what its features need: the seats, the brow\n"
+            "chamfers and round-overs, the anterior bezel, sculpts on the front.\n"
+            "Then the blank is flipped on the fixture's dowel pins and the\n"
+            "posterior is cut as a one-sided job cuts it, onion skin and all.\n"
+            "Auto cuts the anterior when the front takes material off it; Off cuts\n"
+            "the posterior alone; On always sets the anterior up first.")
         self.two_sided.currentIndexChanged.connect(self._on_two_sided_changed)
         two.addRow("Two-sided:", self.two_sided)
-        self.through_cuts_side = QComboBox()
-        self.through_cuts_side.addItems(["Side two (the blank stays rigid)", "Side one (as today)"])
-        self.through_cuts_side.setToolTip(
-            "Where the eyewires, the holes and the perimeter are cut on a two-sided\n"
-            "job. Side two, last, keeps the blank rigid for both faces and releases\n"
-            "the part on tabs; side one keeps them with the skin or the tabs you\n"
-            "chose. A grooved front keeps them on side one: the groove is cut from\n"
-            "the back through the open apertures.")
-        self.through_cuts_side.currentIndexChanged.connect(self.cam_changed)
-        two.addRow("Through-cuts:", self.through_cuts_side)
+        self.two_sided_output = QComboBox()
+        self.two_sided_output.addItems(["Two files", "One file, pausing for the flip"])
+        self.two_sided_output.setToolTip(
+            "Two files: anterior_cut.nc, run first with the front face up, and\n"
+            "posterior_cut.nc, the one-sided program, run after the flip. One file:\n"
+            "two_sided_cut.nc cuts the anterior, stops for the flip (M0), then cuts\n"
+            "the posterior.")
+        self.two_sided_output.currentIndexChanged.connect(self.cam_changed)
+        two.addRow("Output:", self.two_sided_output)
         self.probe_block = QCheckBox("Probe Z after the flip (G38.2 block)")
         self.probe_block.setToolTip(
-            "Side two begins with a touch-off on the stock top that sets G55's Z0;\n"
-            "needs a probe plate on the machine. Off, the sheet tells you to re-zero.")
+            "The posterior begins with a touch-off on the blank's back that sets\n"
+            "G54's Z; needs a probe plate on the machine. Off, the posterior says\n"
+            "where its Z0 is: the bed, or the blank's back with a top-face zero.")
         self.probe_block.toggled.connect(self.cam_changed)
+        self.probe_block.toggled.connect(self._on_probe_block_toggled)
         two.addRow("", self.probe_block)
+        self.probe_plate = _spinbox(0.0, 0.0, 50.0, step=0.1, decimals=2)
+        self.probe_plate.setToolTip(
+            "The touch plate's thickness: the probe stops on the plate's top, and\n"
+            "G54's Z is set this much above the blank's back. 0 for a probe that\n"
+            "touches the stock itself.")
+        self.probe_plate.setEnabled(False)
+        self.probe_plate.valueChanged.connect(self.cam_changed)
+        two.addRow("Plate:", self.probe_plate)
         v.addLayout(two)
+
+    def _on_probe_block_toggled(self, on: bool) -> None:
+        self.probe_plate.setEnabled(bool(on) and self.probe_block.isEnabled())
 
     def _on_op_toggled(self, *_a) -> None:
         self._refresh_operations_hint()
         self.cam_changed.emit()
 
+    def set_model_kernel(self, kernel: str) -> None:
+        """Say which kernel builds the model, and show only what it builds.
+
+        A control a kernel ignores is not shown (the maker's call,
+        2026-10-17). Sculpts (M22) are the mesh kernel's alone: the B-Rep and
+        raster kernels build and cut the front without them, so their section
+        and the Sculpt Finish op are hidden there, and the sculpts themselves
+        are kept for the mesh kernel. Everything else on the dock is cut by
+        all three."""
+        self._model_kernel_name = kernel
+        mesh = kernel == "mesh"
+        box = self._folds.get(SCULPTS_FOLD)
+        if box is not None:
+            box.setVisible(mesh)
+        for w in getattr(self, "_op_tool_rows", {}).get("Sculpt Finish", ()):
+            if w is not None:
+                w.setVisible(mesh)
+        self._refresh_operations_hint()
+
     def _on_two_sided_changed(self, *_a) -> None:
         off = self.two_sided.currentIndex() == 1
-        self.through_cuts_side.setEnabled(not off)
+        self.two_sided_output.setEnabled(not off)
         self.probe_block.setEnabled(not off)
+        self.probe_plate.setEnabled(not off and self.probe_block.isChecked())
         self.cam_changed.emit()
 
     def _visible_op_names(self) -> tuple:
@@ -2939,7 +2989,11 @@ class ParamsPanel(QTabWidget):
             return self._KIND_OPS["temple"]
         if kind in (ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT):
             return self._KIND_OPS["block"]
-        return self._KIND_OPS["frame_front"]
+        ops = self._KIND_OPS["frame_front"]
+        if getattr(self, "_model_kernel_name", "mesh") != "mesh":
+            # no sculpts off the mesh kernel, so nothing for their pass
+            ops = tuple(n for n in ops if n != "Sculpt Finish")
+        return ops
 
     def _refresh_operations_hint(self) -> None:
         """Show only this kind's operations, and warn when the part is left in the
@@ -2972,7 +3026,7 @@ class ParamsPanel(QTabWidget):
         depth-of-cut ceiling is half. Before this the block inherited the frame's
         depth per pass and only its feeds re-read its own material.
         """
-        grp = self._fold("This component only  (overrides)", lay)
+        grp = self._fold("This part only  (overrides)", lay)
         form = QFormLayout(grp)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -2980,7 +3034,7 @@ class ParamsPanel(QTabWidget):
         self.ov_material.addItem("(project material)")
         self.ov_material.addItems(self._material_names())
         self.ov_material.setToolTip(
-            "Cut this component from a different material than the rest of the "
+            "Cut this part from a different material than the rest of the "
             "project.\nIts depth per pass is re-clamped through that material's own "
             "maximum depth of cut.")
         form.addRow("Material:", self.ov_material)
@@ -3013,19 +3067,25 @@ class ParamsPanel(QTabWidget):
             return ["acetate", "acetal", "horn"]
 
     def cam_overrides(self) -> ComponentCamOverrides:
-        """The active component's overrides (0 / "(project material)" = inherit)."""
+        """The active component's overrides (0 / "(project material)" = inherit).
+
+        The overrides with no widget (`pocket_stepdown_mm`, `cut_direction`) are
+        the ones `set_cam_overrides` restored: built fresh, a tab switch or a
+        save dropped them (the 2.0 bug hunt)."""
         def _opt(v):
             return v or None
-        return ComponentCamOverrides(
+        base = getattr(self, "_overrides_base", None) or ComponentCamOverrides()
+        return base.model_copy(update=dict(
             material=(self.ov_material.currentText()
                       if self.ov_material.currentIndex() > 0 else None),
             contour_stepdown_mm=_opt(self.ov_stepdown.value()),
             feed_rate_mmpm=_opt(self.ov_feed.value()),
             spindle_rpm=_opt(int(self.ov_spindle.value())),
-        )
+        ))
 
     def set_cam_overrides(self, ov: ComponentCamOverrides | None) -> None:
         ov = ov or ComponentCamOverrides()
+        self._overrides_base = ov
         self.ov_material.blockSignals(True)
         idx = self.ov_material.findText(ov.material) if ov.material else 0
         self.ov_material.setCurrentIndex(idx if idx >= 0 else 0)
@@ -3160,6 +3220,7 @@ class ParamsPanel(QTabWidget):
         """Just the Stock tab. Split out of `castle_params` because the zone
         limits need the stock without the cost — and without the recursion — of
         snapshotting the whole castle."""
+        base = getattr(self, "_castle_base", None)
         return StockDefinition(
             blank_length_mm=self.blank_length.value(),
             blank_width_mm=self.blank_width.value(),
@@ -3167,14 +3228,23 @@ class ParamsPanel(QTabWidget):
             pad_block_length_mm=self.pad_length.value(),
             pad_block_width_mm=self.pad_width.value(),
             pad_block_thickness_mm=self.pad_thickness.value(),
+            # no widget: the pad block's offset is the restored model's
+            pad_block_dx_mm=base.stock.pad_block_dx_mm if base is not None else 0.0,
+            pad_block_dy_mm=base.stock.pad_block_dy_mm if base is not None else 0.0,
             use_pad_block=self.use_pad_block.isChecked(),
             preformed=self.preformed.isChecked(),
             apertures_first=self.apertures_first.isChecked(),
         )
 
     def castle_params(self) -> CastleParams:
-        """Snapshot the panel into the CastleParams schema (API vocabulary)."""
-        defaults = FootingSchedule()
+        """Snapshot the panel into the CastleParams schema (API vocabulary).
+
+        The fields the panel has no widget for are the model's `set_castle_params`
+        restored, as `cam_params` keeps its own: built fresh, the pad block's
+        offset, the footings' `first` and the bezel's minimum thickness went back
+        to the defaults on every tab switch and save (the 2.0 bug hunt)."""
+        base = getattr(self, "_castle_base", None)
+        defaults = base.footing if base is not None else FootingSchedule()
         footing = FootingSchedule(**{
             canonical: FootingFillet(
                 exterior_mm=ext_sb.value(),
@@ -3207,7 +3277,7 @@ class ParamsPanel(QTabWidget):
                 angle_end_deg=self.splay_angle_end.value(),
                 anterior_clamp_mm=self.splay_clamp.value(),
                 feather_mm=self.splay_feather.value(),
-                crest_blend_mm=self.splay_blend.value(),
+                seam_blend_mm=self.splay_seam.value(),
                 non_contiguous=self.splay_noncontig.isChecked(),
                 gap_mm=self.splay_gap.value(),
             ),
@@ -3219,6 +3289,8 @@ class ParamsPanel(QTabWidget):
                 face=("posterior", "anterior", "both")[self.bezel_face.currentIndex()],
                 anterior_width_mm=self.bezel_ant_width.value(),
                 anterior_angle_deg=self.bezel_ant_angle.value(),
+                min_thickness_mm=(base.eyewire_bezel.min_thickness_mm if base is not None
+                                  else EyewireBezelParams().min_thickness_mm),
             ),
             edge_features=self.edge_features(),
             sculpts=self.sculpts(),
@@ -3242,6 +3314,7 @@ class ParamsPanel(QTabWidget):
 
     def set_castle_params(self, c: CastleParams) -> None:
         """Restore the Castle / Stock tabs from a CastleParams (opening a .gmodel)."""
+        self._castle_base = c
         z = c.zones
         self._zone_overrides = dict(c.zone_height_overrides)
         pairs = [
@@ -3282,7 +3355,7 @@ class ParamsPanel(QTabWidget):
             (self.splay_angle_end, c.pad_splay.angle_end_deg),
             (self.splay_clamp, c.pad_splay.anterior_clamp_mm),
             (self.splay_feather, c.pad_splay.feather_mm),
-            (self.splay_blend, c.pad_splay.crest_blend_mm),
+            (self.splay_seam, c.pad_splay.seam_blend_mm),
             (self.splay_gap, c.pad_splay.gap_mm),
             (self.bezel_width, c.eyewire_bezel.width_mm),
             (self.bezel_angle, c.eyewire_bezel.angle_deg),
@@ -3387,8 +3460,9 @@ class ParamsPanel(QTabWidget):
             op_enabled={n: cb.isChecked() for n, cb in self.op_checks.items()
                         if cb.isChecked() != (n not in OFF_BY_DEFAULT_OPS)},
             two_sided=("auto", "off", "on")[self.two_sided.currentIndex()],
-            through_cuts_side="one" if self.through_cuts_side.currentIndex() == 1 else "two",
+            two_sided_output="one_file" if self.two_sided_output.currentIndex() == 1 else "two_files",
             probe_block=self.probe_block.isChecked(),
+            probe_plate_mm=self.probe_plate.value(),
             arc_tolerance_mm=self.arc_tolerance.value(),
             feed_rate_mmpm=_opt(self.feed_override.value()),
             plunge_rate_mmpm=_opt(self.plunge_override.value()),
@@ -3397,6 +3471,27 @@ class ParamsPanel(QTabWidget):
             safe_z_clearance_mm=self.safe_z_clearance.value(),
             hold_down_height_mm=self.hold_down_height.value(),
         ))
+
+    def missing_from_library(self, cp: CastleCamParams, material: str) -> list[str]:
+        """What a project names that this machine's libraries lack, each with
+        what the tab takes instead: a project opened on another machine was
+        posted with another tool or material, and nothing said so (the 2.0
+        bug hunt). Read before `set_cam_params`, which settles on the
+        replacements."""
+        out = []
+        if material and self.material.findText(material) < 0:
+            out.append(f"material {material!r}; the tab takes "
+                       f"{self.material.currentText()!r}")
+        if cp.tool_name and self.cam_tool.findText(cp.tool_name) < 0:
+            out.append(f"tool {cp.tool_name!r}; the tab takes {self.cam_tool.currentText()!r}")
+        for op, name in (cp.op_tools or {}).items():
+            cb = getattr(self, "op_tool_combos", {}).get(op)
+            if name and cb is not None and cb.findText(name) < 0:
+                out.append(f"{op}'s tool {name!r}; the op takes the global tool")
+        if cp.machine_name and cp.machine_name not in self._machine_names:
+            out.append(f"machine {cp.machine_name!r}; the tab takes "
+                       f"{self.machine.currentText()!r}")
+        return out
 
     def set_cam_params(self, cp: CastleCamParams) -> None:
         """Restore the CAM tab from a persisted CastleCamParams (prefs/project)."""
@@ -3432,16 +3527,18 @@ class ParamsPanel(QTabWidget):
             cb.setChecked(cp.is_op_enabled(name))
             cb.blockSignals(False)
         self._refresh_operations_hint()
-        for w in (self.two_sided, self.through_cuts_side, self.probe_block):
+        for w in (self.two_sided, self.two_sided_output, self.probe_block, self.probe_plate):
             w.blockSignals(True)
         self.two_sided.setCurrentIndex(("auto", "off", "on").index(getattr(cp, "two_sided", "auto")))
-        self.through_cuts_side.setCurrentIndex(
-            1 if getattr(cp, "through_cuts_side", "two") == "one" else 0)
+        self.two_sided_output.setCurrentIndex(
+            1 if getattr(cp, "two_sided_output", "two_files") == "one_file" else 0)
         self.probe_block.setChecked(bool(getattr(cp, "probe_block", False)))
-        for w in (self.two_sided, self.through_cuts_side, self.probe_block):
+        self.probe_plate.setValue(float(getattr(cp, "probe_plate_mm", 0.0)))
+        for w in (self.two_sided, self.two_sided_output, self.probe_block, self.probe_plate):
             w.blockSignals(False)
-        self.through_cuts_side.setEnabled(self.two_sided.currentIndex() != 1)
+        self.two_sided_output.setEnabled(self.two_sided.currentIndex() != 1)
         self.probe_block.setEnabled(self.two_sided.currentIndex() != 1)
+        self.probe_plate.setEnabled(self.probe_block.isEnabled() and self.probe_block.isChecked())
         self.arc_tolerance.setValue(cp.arc_tolerance_mm)
         self.feed_override.setValue(cp.feed_rate_mmpm or 0.0)
         self.plunge_override.setValue(cp.plunge_rate_mmpm or 0.0)

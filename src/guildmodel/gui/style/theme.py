@@ -535,7 +535,7 @@ _OUTLINE_LIGHT_HEX = "#1a1a1a"
 _DARK_LAYER_COLORS: dict[str, str] = {
     "#1a1a1a": "#d4cfc0",   # OUTLINE  — GuildDraw's dark geometry color
     "#1a6cbf": "#5aa0e0",   # LENS
-    "#d94f1a": "#e8784a",   # HINGE
+    "#d94f1a": "#e8784a",   # COMPONENT
     "#2e8040": "#58b070",   # BRIDGE
     "#8040bf": "#a878d8",   # SCULPT
     "#1a9a9a": "#40c0c0",   # ENGRAVING

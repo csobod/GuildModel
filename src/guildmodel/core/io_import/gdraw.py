@@ -1,7 +1,7 @@
 """GuildDraw ``.gdraw`` / ``.svg`` intake (BUILDPLAN M7.2).
 
 A ``.gdraw`` is a ZIP of ``manifest.json`` + ``front.svg`` + ``temple_r.svg`` +
-``temple_l.svg`` + ``hinge.svg``. Each SVG carries the authoritative geometry in a
+``temple_l.svg`` + ``component.svg`` (``hinge.svg`` before 2.0). Each SVG carries the authoritative geometry in a
 ``<metadata>`` child of the root ``<svg>`` — a JSON blob with the curves (line /
 spline / circle / arc, each with cubic spline nodes), the ``forming`` metadata
 (``apical_radius_mm`` — GuildDraw's *Apical radius*, the crest of the bridge in
@@ -24,6 +24,11 @@ Coordinate frame: GuildDraw scene units are mm in screen space (Y down). A DXF
 export negates Y (DXF Y-up) and GuildModel flips X for the posterior, so the **net
 scene → posterior transform is (x, y) → (-x, -y)** — applied here once, exactly as
 ``import_dxf(posterior=True)`` does its single flip.
+
+**The Ghost is ignored** (2026-10-16, the maker's decision). GuildDraw's Ghost
+(``mirror.enabled``) is a drawing aid, a mask over the other side; this reader
+takes the curves drawn and nothing else, so a front drawn with one rim and
+one lens, a monocle, reads as exactly that.
 
 ``read_gdraw`` is the low-level intake (geometry per workspace, like ``import_dxf``).
 ``build_project_from_gdraw`` assembles a multi-component :class:`ProjectSchema` —
@@ -48,7 +53,7 @@ from guildmodel.core.geometry.curves import (
     mirror_x,
     mirror_y,
 )
-from guildmodel.core.layers import ALL_LAYERS
+from guildmodel.core.layers import ALL_LAYERS, canonical_layer
 from guildmodel.core.project.schema import (
     Component,
     ComponentKind,
@@ -59,12 +64,18 @@ from guildmodel.core.project.schema import (
 CHORD_TOL_MM = 0.01
 _SVG_NS = "http://www.w3.org/2000/svg"
 
-#: GuildDraw workspace tabs, in document order (export/gdraw.py).
-TABS = ("front", "temple_r", "temple_l", "hinge")
+#: GuildDraw workspace tabs, in document order (export/gdraw.py). The
+#: component tab was "hinge" (``hinge.svg``) before 2.0, and a file that
+#: carries only that is read for it.
+TABS = ("front", "temple_r", "temple_l", "component")
 _TAB_KIND = {
     "temple_r": ComponentKind.TEMPLE_RIGHT,
     "temple_l": ComponentKind.TEMPLE_LEFT,
 }
+
+#: An open curve whose ends are closer than this is closed, mm: the gap
+#: `normalize.close_if_nearly_closed` and GuildDraw's validator both allow.
+_CLOSURE_TOL_MM = 0.1
 
 # No legitimate GuildDraw SVG comes near this; the cap + DTD scan close the
 # entity-expansion ("billion laughs") hole without a third-party parser, exactly
@@ -116,7 +127,9 @@ def _flatten_spline(curve: dict, tol: float) -> list[Point]:
         return []
     pts: list[Point] = [_node_xy(nodes[0])]
     segs = list(zip(nodes, nodes[1:]))
-    if curve.get("closed") and len(nodes) > 2:
+    # GuildDraw gives a closed curve as many segments as nodes, two included:
+    # a lens drawn with two nodes is two arcs, not one.
+    if curve.get("closed") and len(nodes) >= 2:
         segs.append((nodes[-1], nodes[0]))
     for a, b in segs:
         p0, p3 = _node_xy(a), _node_xy(b)
@@ -137,6 +150,9 @@ def _flatten_circle(curve: dict, tol: float) -> list[Point]:
     r = curve.get("radius")
     if not nodes or not r:
         return []
+    r = float(r)
+    if r <= 0:
+        raise ValueError(f"a circle of radius {r}")
     cx, cy = _node_xy(nodes[0])
     # Sagitta, not arc length: `tol` is how far the chord may sag from the arc,
     # the same test `_flatten_arc` (and the DXF importer) applies. Dividing
@@ -162,6 +178,30 @@ def _flatten_arc(curve: dict, tol: float) -> list[Point]:
     n = max(2, math.ceil((a1 - a0) / (2.0 * half)))
     return [(cx + r * math.cos(a0 + (a1 - a0) * i / n),
              cy + r * math.sin(a0 + (a1 - a0) * i / n)) for i in range(n + 1)]
+
+
+def _flatten_readable(curve, tol: float) -> list[Point] | None:
+    """`_flatten_curve`, or None for a curve the file describes wrongly: a
+    coordinate that is not a number, a circle of no positive radius. One such
+    curve stopped the whole drawing from opening (the 2.0 bug hunt); it is
+    skipped now, and counted (`unreadable_curve_count`)."""
+    if not isinstance(curve, dict):
+        return None
+    try:
+        pts = _flatten_curve(curve, tol)
+    except (TypeError, ValueError, KeyError, AttributeError, ZeroDivisionError):
+        return None
+    if not all(math.isfinite(x) and math.isfinite(y) for x, y in pts):
+        return None
+    return pts
+
+
+def unreadable_curve_count(state: dict, chord_tol: float = CHORD_TOL_MM) -> int:
+    """How many curves on the layers GuildModel reads could not be read."""
+    return sum(1 for curve in (state.get("curves") or [])
+               if (not isinstance(curve, dict)
+                   or canonical_layer(curve.get("layer")) in ALL_LAYERS)
+               and _flatten_readable(curve, chord_tol) is None)
 
 
 def _flatten_curve(curve: dict, tol: float) -> list[Point]:
@@ -190,7 +230,9 @@ def _bezier_segments(curve: dict) -> list[tuple[Point, Point, Point, Point]]:
     if len(nodes) < 2:
         return []
     pairs = list(zip(nodes, nodes[1:]))
-    if curve.get("closed") and len(nodes) > 2:
+    # GuildDraw gives a closed curve as many segments as nodes, two included:
+    # a lens drawn with two nodes is two arcs, not one.
+    if curve.get("closed") and len(nodes) >= 2:
         pairs.append((nodes[-1], nodes[0]))
     segments = []
     for a, b in pairs:
@@ -229,6 +271,10 @@ def _source_curve(curve: dict, layer: str) -> NurbsCurve | None:
     return None
 
 
+def _is_closed(curve: dict) -> bool:
+    return curve.get("kind") == "circle" or bool(curve.get("closed"))
+
+
 # ------------------------------------------------------------------ workspace read
 
 @dataclass
@@ -248,10 +294,23 @@ class GdrawWorkspace:
     curves: dict[str, list] = field(default_factory=dict)
     apical_radius_mm: float = 0.0
     bridge_angle_deg: float = 0.0
+    #: The Ghost as saved: GuildDraw's drawing aid, read for the record and
+    #: never applied (see the module docstring).
     mirror_enabled: bool = True
     mirror_x: float = 0.0
     texts: list[dict] = field(default_factory=list)
     posterior: bool = True
+    #: The guide sizes the design was drawn against (GuildDraw 2.0):
+    #: ``{"stock": (width_mm, height_mm)}``, plus ``"pad"`` on the front, in
+    #: scene mm with the width along x. Empty when the file has none.
+    guides: dict = field(default_factory=dict)
+    #: OUTLINE curves drawn open, ends further apart than the closure
+    #: tolerance: each is closed with a straight line from end to end, so a
+    #: contour drawn in pieces reads as pieces (see `open_outline_count`).
+    open_outline: int = 0
+    #: Curves skipped because the file describes them wrongly
+    #: (`unreadable_curve_count`).
+    unreadable: int = 0
 
     def is_empty(self) -> bool:
         return not any(self.layers.values())
@@ -278,12 +337,13 @@ def read_workspace_curves(
     """
     result: dict[str, list[list[Point]]] = {k: [] for k in ALL_LAYERS}
     curves: dict[str, list[NurbsCurve | None]] = {k: [] for k in ALL_LAYERS}
-    for curve in state.get("curves", []):
-        layer = curve.get("layer")
+    for curve in (state.get("curves") or []):
+        # a drawing from before 2.0 says HINGE for COMPONENT
+        layer = canonical_layer(curve.get("layer")) if isinstance(curve, dict) else None
         if layer not in ALL_LAYERS:
             continue
-        pts = _flatten_curve(curve, chord_tol)
-        if len(pts) < 2:
+        pts = _flatten_readable(curve, chord_tol)
+        if pts is None or len(pts) < 2:
             continue
         exact = _source_curve(curve, layer)
         if posterior:
@@ -340,12 +400,54 @@ def _parse_svg_state(data: bytes) -> dict:
         raise GdrawError(f"invalid GuildDraw metadata JSON: {exc}") from exc
 
 
+def _guide_size(block) -> tuple[float, float] | None:
+    """``(width_mm, height_mm)`` of one guide, or None when it is missing or
+    not two positive numbers."""
+    if not isinstance(block, dict):
+        return None
+    try:
+        width, height = float(block.get("width_mm")), float(block.get("height_mm"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(width) and math.isfinite(height)
+            and width > 0.0 and height > 0.0):
+        return None
+    return width, height
+
+
+def _guides_of(raw) -> dict:
+    """The workspace's ``guides`` key: the stock guide and, on the front, the
+    pad block guide. A file without the key, or a guide that is not a size,
+    gives nothing for it."""
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for key in ("stock", "pad"):
+        size = _guide_size(raw.get(key))
+        if size is not None:
+            out[key] = size
+    return out
+
+
+def open_outline_count(state: dict, chord_tol: float = CHORD_TOL_MM) -> int:
+    """How many OUTLINE curves the state draws open. GuildDraw's validator
+    refuses a contour drawn in pieces, but a file can still carry one, and
+    each piece would be closed on its own with a straight line."""
+    count = 0
+    for curve in (state.get("curves") or []):
+        if not isinstance(curve, dict) or curve.get("layer") != "OUTLINE" or _is_closed(curve):
+            continue
+        pts = _flatten_readable(curve, chord_tol) or []
+        if len(pts) >= 2 and math.dist(pts[0], pts[-1]) > _CLOSURE_TOL_MM:
+            count += 1
+    return count
+
+
 def _workspace_from_state(name: str, state: dict, chord_tol: float,
                           posterior: bool) -> GdrawWorkspace:
     frm = state.get("forming", {}) or {}
     mir = state.get("mirror", {}) or {}
     texts = [dict(t) for t in (state.get("texts") or [])
-             if isinstance(t, dict) and t.get("layer") in ALL_LAYERS]
+             if isinstance(t, dict) and canonical_layer(t.get("layer")) in ALL_LAYERS]
     layers, curves = read_workspace_curves(state, chord_tol, posterior)
 
     def number(block: dict, key: str, what: str) -> float:
@@ -364,6 +466,9 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
         mirror_x=number(mir, "x", "mirror.x"),
         texts=texts,
         posterior=posterior,
+        guides=_guides_of(state.get("guides")),
+        open_outline=open_outline_count(state, chord_tol),
+        unreadable=unreadable_curve_count(state, chord_tol),
     )
 
 
@@ -398,11 +503,16 @@ def read_gdraw(path, chord_tol: float = CHORD_TOL_MM,
             active = manifest.get("active_tab", "front")
             if active == "temple":          # legacy single-temple tab name
                 active = "temple_r"
+            elif active == "hinge":         # the component tab before 2.0
+                active = "component"
 
-        # backward compat: old files store a single temple.svg
+        # backward compat: old files store a single temple.svg, and the
+        # component tab as hinge.svg
         compat: dict[str, str] = {}
         if "temple.svg" in names and "temple_r.svg" not in names:
             compat["temple_r"] = "temple.svg"
+        if "hinge.svg" in names and "component.svg" not in names:
+            compat["component"] = "hinge.svg"
 
         for tab in TABS:
             svg_name = compat.get(tab, f"{tab}.svg")
@@ -432,6 +542,12 @@ class GdrawComponent:
     texts: list[dict] = field(default_factory=list)
     #: Index-aligned with ``layers`` (see :class:`GdrawWorkspace.curves`).
     curves: dict[str, list] = field(default_factory=dict)
+    #: The workspace's guide sizes (see :class:`GdrawWorkspace.guides`).
+    guides: dict = field(default_factory=dict)
+    #: Open OUTLINE curves (see :class:`GdrawWorkspace.open_outline`).
+    open_outline: int = 0
+    #: Curves skipped as unreadable (see :class:`GdrawWorkspace.unreadable`).
+    unreadable: int = 0
 
 
 @dataclass
@@ -479,7 +595,9 @@ def build_project_from_gdraw(path) -> GdrawProject:
         source_file=str(path), source_workspace="front")
     project.add_component(ff)
     comps.append(GdrawComponent(ff, front.layers, texts=list(front.texts),
-                                curves=front.curves))
+                                curves=front.curves, guides=dict(front.guides),
+                                open_outline=front.open_outline,
+                                unreadable=front.unreadable))
 
     # temples (disabled when the workspace is empty / has no outline)
     for tab, kind in _TAB_KIND.items():
@@ -490,12 +608,19 @@ def build_project_from_gdraw(path) -> GdrawProject:
             source_file=str(path), source_workspace=tab)
         project.add_component(comp)
         comps.append(GdrawComponent(comp, ws.layers, texts=list(ws.texts),
-                                    curves=ws.curves))
+                                    curves=ws.curves, guides=dict(ws.guides),
+                                    open_outline=ws.open_outline,
+                                    unreadable=ws.unreadable))
 
-    # base-curve templates, one per front LENS (OD/+x → right, OS/-x → left)
+    # base-curve templates, one per front LENS (OD/+x → right, OS/-x → left),
+    # the side taken about the front's axis midway between its outermost
+    # lenses; about x = 0, a front drawn off its origin made two right blocks.
+    # A lone lens (a monocle) is the right eye on +x, as before.
     lens_curves = front.curves.get("LENS", [])
+    lens_xs = [_lens_centroid_x(p) for p in front.layers.get("LENS", [])]
+    axis = 0.5 * (min(lens_xs) + max(lens_xs)) if len(lens_xs) > 1 else 0.0
     for i, lens_pts in enumerate(front.layers.get("LENS", [])):
-        kind = (ComponentKind.BASE_CURVE_RIGHT if _lens_centroid_x(lens_pts) >= 0
+        kind = (ComponentKind.BASE_CURVE_RIGHT if lens_xs[i] >= axis
                 else ComponentKind.BASE_CURVE_LEFT)
         comp = Component.for_kind(
             kind, forming=_forming_of(front),

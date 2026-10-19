@@ -256,11 +256,22 @@ def load() -> dict:
                 else:
                     merged[key] = copy.deepcopy(DEFAULTS[key])
             _retire_m124_stepdown(merged["cam_params"])
+            _rename_aliased_layers(merged["layer_colors"])
             _migrate_save_as_chord(data, merged)
             return merged
     except Exception:
         pass
     return copy.deepcopy(DEFAULTS)
+
+
+def _rename_aliased_layers(colors: dict) -> None:
+    """A layer color set under a layer's old name colors it under its new
+    one (`core.layers.LAYER_ALIASES`): HINGE's is COMPONENT's since 2.0."""
+    from guildmodel.core.layers import LAYER_ALIASES
+    for old, new in LAYER_ALIASES.items():
+        if old in colors:
+            colors.setdefault(new, colors[old])
+            del colors[old]
 
 
 def save(prefs: dict) -> None:

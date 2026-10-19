@@ -32,7 +32,7 @@ import numpy as np
 from shapely import distance, line_locate_point, points
 from shapely.geometry import LineString, Point, Polygon
 
-from ..geometry.regions import CastlePartition
+from ..geometry.regions import CastlePartition, body_exteriors, body_interiors
 from ..project.schema import EdgeFeature
 
 ProgressFn = Callable[[str, float], None]
@@ -51,8 +51,19 @@ def lens_rings(partition: CastlePartition) -> list:
     OD is +x in posterior coordinates, so ordering by centroid x descending puts
     the right eye first — the same convention `regions.py` labels zones with.
     """
-    rings = [r for r in partition.body.interiors if not partition.is_hole(r)]
+    rings = [r for r in body_interiors(partition.body) if not partition.is_hole(r)]
     return sorted(rings, key=lambda r: Polygon(r).centroid.x, reverse=True)
+
+
+def rings_for(partition: CastlePartition, edge: str) -> list:
+    """Every `LineString` an `EdgeFeature.edge` names: the outline is a ring
+    per body, so two for a front with separated rims (each rim takes the
+    feature, its span named by zone as always); a lens is its one ring, or
+    none when absent."""
+    if edge == "outline":
+        return [LineString(r.coords) for r in body_exteriors(partition.body)]
+    ring = ring_for(partition, edge)
+    return [] if ring is None else [ring]
 
 
 def ring_for(partition: CastlePartition, edge: str):
@@ -60,10 +71,12 @@ def ring_for(partition: CastlePartition, edge: str):
 
     A frame with one aperture (an unsplit OU lens) has no `lens_os`, and a
     feature pointing at it is skipped rather than raising — the mirrored twin of
-    an OD feature must not blow up a build on such a frame.
+    an OD feature must not blow up a build on such a frame. For the outline of
+    a front with separated rims this is the first rim's; `rings_for` gives both.
     """
     if edge == "outline":
-        return LineString(partition.body.exterior.coords)
+        outlines = body_exteriors(partition.body)
+        return LineString(outlines[0].coords) if outlines else None
     rings = lens_rings(partition)
     idx = {"lens_od": 0, "lens_os": 1}.get(edge)
     if idx is None or idx >= len(rings):
@@ -325,11 +338,32 @@ def carve_edge_feature(
     Both grids are passed because the two faces constrain each other: an anterior
     cut may not eat past the posterior surface, and vice versa, so the part can
     never be carved into nothing from two sides at once.
+
+    Each ring the edge names is carved in turn (`rings_for`).
     """
+    touched = np.zeros_like(inside)
+    for ring in rings_for(partition, feature.edge):
+        touched |= _carve_along(ring, posterior, anterior, pre_posterior,
+                                pre_anterior, feature, partition, inside,
+                                ox, oy, res)
+    return touched
+
+
+def _carve_along(
+    ring: LineString,
+    posterior: np.ndarray,
+    anterior: np.ndarray,
+    pre_posterior: np.ndarray,
+    pre_anterior: np.ndarray,
+    feature: EdgeFeature,
+    partition: CastlePartition,
+    inside: np.ndarray,
+    ox: float, oy: float, res: float,
+) -> np.ndarray:
+    """`carve_edge_feature` along one ring."""
     rows, cols = posterior.shape
     touched = np.zeros_like(inside)
-    ring = ring_for(partition, feature.edge)
-    if ring is None or ring.length <= 0:
+    if ring.length <= 0:
         return touched
 
     intervals = span_intervals(ring, partition, feature.zones,
@@ -357,7 +391,13 @@ def carve_edge_feature(
     pts_near = pts[near]
     d_near = d[near]
     s = line_locate_point(ring, pts_near)
-    w = taper_weight(s, intervals, feature.blend_mm, ring.length)
+    # A run all the way round has no ends to feather: tapered, it faded to
+    # nothing at the ring's start, the bridge's center on every corpus front,
+    # where the mesh kernel cuts it whole (`spans_whole_ring`; the 2.0 bug hunt).
+    if len(intervals) == 1 and spans_whole_ring(intervals[0], ring.length):
+        w = np.ones_like(s)
+    else:
+        w = taper_weight(s, intervals, feature.blend_mm, ring.length)
     live = w > 1e-9
     if not live.any():
         return touched
@@ -474,7 +514,7 @@ def carve_anterior_bezel(
     if bezel.anterior_width_mm <= 0:
         return band
     for feature in bezel.as_edge_features():
-        if ring_for(partition, feature.edge) is None:
+        if not rings_for(partition, feature.edge):
             continue
         band |= carve_edge_feature(posterior, anterior, posterior, pre_anterior,
                                    feature, partition, inside, ox, oy, res)

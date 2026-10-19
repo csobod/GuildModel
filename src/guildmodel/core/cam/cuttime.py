@@ -57,7 +57,8 @@ class MachineDynamics:
 
 # canonical op names, matched from the section comments of either dialect
 _CANON = [
-    ("hinge", "Hinge Pockets"),
+    ("component", "Component Pockets"),
+    ("hinge", "Component Pockets"),     # its name until 2.0, in a stored program
     ("inlay", "Inlays"),          # the seats (§8a), their own section since 2026-10-15
     ("rough", "Rough Relief"),
     ("fine", "Fine Relief"),
@@ -69,11 +70,22 @@ _CANON = [
     ("sculpt", "Sculpt Finish"),  # the fine pass over a sculpt (M22)
     ("eyewire", "Eyewires"),
     ("perimeter", "Perimeter"),
+    # The rest of the ops, each its own row: their time was billed to the
+    # section before them, the holes and the groove to Eyewires (the 2.0 bug
+    # hunt). "drill" before "hole", which it contains.
+    ("drill", "Drill Holes"),
+    ("hole", "Holes"),
+    ("groove", "Lens Groove"),
+    ("engrav", "Engraving"),
+    ("temple profile", "Temple Profile"),
+    ("block profile", "Block Profile"),
 ]
 
 
 def _canon_op(text: str) -> str | None:
     low = text.lower()
+    if low.lstrip().startswith("tool"):
+        return None                  # a tool's announcement, named for the tool
     for key, name in _CANON:
         if key in low:
             return name
@@ -110,6 +122,7 @@ class CutTimeReport:
     dynamics: MachineDynamics = field(default_factory=MachineDynamics)
     n_tool_changes: int = 0           # tool-change blocks (BUILDPLAN M6.1)
     tool_change_seconds: float = 0.0  # nominal dwell over all changes
+    dwell_seconds: float = 0.0        # the program's own G4 dwells (the spindle's spin-up)
 
     def op(self, name: str) -> OpTime | None:
         return next((o for o in self.ops if o.name == name), None)
@@ -133,8 +146,8 @@ class CutTimeReport:
 
     @property
     def total_seconds(self) -> float:
-        """Motion cycle + tool-change dwell — the wall-clock estimate."""
-        return self.cycle_seconds + self.tool_change_seconds
+        """Motion cycle + tool-change dwell + G4 dwells — the wall-clock estimate."""
+        return self.cycle_seconds + self.tool_change_seconds + self.dwell_seconds
 
 
 # ----------------------------------------------------------------- parsing
@@ -216,8 +229,10 @@ def _parse_segments(gcode: str, dyn: MachineDynamics) -> list[_Segment]:
         if not words:
             continue
 
-        # G28/G30 homing: machine setup, not part cycle — skip and don't move
-        if any(w[0].upper() == "G" and w[1] in ("28", "30") for w in words):
+        # G28/G30 homing, a G53 machine-coordinate move, a G38 probe, a G10 or
+        # G92 offset: machine setup, not part cycle — skip and don't move
+        if any(w[0].upper() == "G" and w[1].split(".")[0] in ("28", "30", "53", "38", "10", "92")
+               for w in words):
             continue
 
         nx, ny, nz = pos
@@ -362,6 +377,16 @@ def count_tool_changes(gcode: str) -> int:
     return sum(1 for line in gcode.splitlines() if "Tool Change" in line)
 
 
+def dwell_seconds(gcode: str) -> float:
+    """The seconds a program's ``G4 P…`` dwells hold the machine still."""
+    total = 0.0
+    for line in gcode.splitlines():
+        words = _WORD.findall(line.split(";")[0])
+        if any(w.upper() == "G" and float(v) == 4.0 for w, v in words):
+            total += sum(float(v) for w, v in words if w.upper() == "P")
+    return total
+
+
 def estimate_program(
     gcode: str,
     dynamics: MachineDynamics | None = None,
@@ -382,6 +407,7 @@ def estimate_program(
         dynamics=dyn,
         n_tool_changes=n_changes,
         tool_change_seconds=n_changes * tool_change_seconds,
+        dwell_seconds=dwell_seconds(gcode),
     )
     by_name: dict[str, OpTime] = {}
     order: list[str] = []

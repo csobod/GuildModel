@@ -69,7 +69,7 @@ def test_reference_program_is_sane():
     assert 9.5 < rep.cycle_seconds / 60 < 13.0
     # all five ops recognized
     names = {o.name for o in rep.ops}
-    assert {"Hinge Pockets", "Rough Relief", "Fine Relief",
+    assert {"Component Pockets", "Rough Relief", "Fine Relief",
             "Eyewires", "Perimeter"} <= names
 
 
@@ -90,7 +90,7 @@ def generated_program() -> str:
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     castle = CastleParams()
     relief = build_castle_relief(part, castle, hinges, resolution=0.3)

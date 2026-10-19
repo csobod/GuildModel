@@ -37,7 +37,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from manifold3d import Error, Manifold, OpType
 from shapely.geometry import Polygon, box
+from shapely.ops import unary_union
 
+from ..geometry.regions import body_exteriors, body_parts
 from ..model.kernel import ManifoldError, drop_degenerate, extrude, to_trimesh
 from .thermoform import ThermoformMap, bridge_geometry
 
@@ -90,7 +92,8 @@ def die_map(forming, partition, lens_od=None, lens_os=None) -> ThermoformMap:
     return ThermoformMap(
         radius_mm=radius,
         face_form_deg=forming.face_form_deg if d.face_form_in_die else 180.0,
-        projection_mm=float(forming.bridge_projection_mm) if d.bridge_in_die else 0.0,
+        projection_mm=(float(forming.bridge_projection_mm)
+                       if d.bridge_in_die and bridge.projects else 0.0),
         crease_gap_mm=gap, crease_angle_deg=float(forming.crease_angle_deg),
         bridge_offset_mm=float(forming.bridge_offset_mm),
         die_radius_mm=float(forming.die_radius_mm),
@@ -101,12 +104,18 @@ def die_map(forming, partition, lens_od=None, lens_os=None) -> ThermoformMap:
 
 def _formed_polygon(fmap: ThermoformMap, poly: Polygon, z_flat: float) -> Polygon:
     """`poly`'s rings through the map at height `z_flat`, as the polygon
-    their formed x, y make: the footprint a cap is clipped to."""
+    their formed x, y make: the footprint a cap is clipped to. A footprint of
+    separated rims maps rim by rim."""
     def ring(coords):
         pts = np.array([(x, y, z_flat) for x, y in coords], dtype=np.float64)
         return [tuple(p) for p in fmap(pts)[:, :2]]
-    out = Polygon(ring(poly.exterior.coords), [ring(r.coords) for r in poly.interiors])
-    return out if out.is_valid else out.buffer(0)
+
+    def mapped(part: Polygon) -> Polygon:
+        out = Polygon(ring(part.exterior.coords), [ring(r.coords) for r in part.interiors])
+        return out if out.is_valid else out.buffer(0)
+
+    parts = [mapped(part) for part in body_parts(poly)]
+    return parts[0] if len(parts) == 1 else unary_union(parts)
 
 
 def _grid_cap(fmap: ThermoformMap, z_flat: float, bounds, z_plane: float,
@@ -227,7 +236,9 @@ def _face_footprint(partition, castle, d) -> Polygon:
         s = castle.stock
         return box(-s.blank_length_mm / 2 - d.margin_mm, -s.blank_width_mm / 2 - d.margin_mm,
                    s.blank_length_mm / 2 + d.margin_mm, s.blank_width_mm / 2 + d.margin_mm)
-    body = Polygon(partition.body.exterior.coords)
+    # every rim's silhouette, for a front with separated rims
+    shells = [Polygon(ring.coords) for ring in body_exteriors(partition.body)]
+    body = shells[0] if len(shells) == 1 else unary_union(shells)
     return body.buffer(float(d.trim_mm), join_style="round")
 
 
@@ -248,8 +259,15 @@ def build_dies(partition, castle, forming, lens_od=None, lens_os=None,
     d = forming.dies
     fmap = die_map(forming, partition, lens_od, lens_os)
     heights = _terrace_heights(partition, castle)
-    eyewires = [h for name, h in heights.items() if name.startswith("eyewire")]
-    t = float(max(eyewires) if eyewires else max(heights.values()))
+    if d.mode == "pre_cut":
+        # The press takes the blank before it is cut: the gap is the blank's
+        # own thickness, and no zone stands proud of it yet. The pre-cut dies
+        # were cut for the front's eyewire terrace, a blank's thickness less
+        # what the cutting takes, with the zones' cutaways (the 2.0 bug hunt).
+        t = float(castle.stock.blank_thickness_mm)
+    else:
+        eyewires = [h for name, h in heights.items() if name.startswith("eyewire")]
+        t = float(max(eyewires) if eyewires else max(heights.values()))
     mat, c = float(d.mat_thickness_mm), float(d.clearance_mm)
     gap = t + mat + c
     F = _face_footprint(partition, castle, d)
@@ -271,7 +289,7 @@ def build_dies(partition, castle, forming, lens_od=None, lens_os=None,
     posterior = Manifold.batch_boolean([dome, plate], OpType.Add)
     cuts = []
     cutaways = []
-    if d.cutaways:
+    if d.cutaways and d.mode == "post_cut":
         for zone in partition.zones:
             h = float(heights.get(zone.name, t))
             if h > t + PROUD_MM and not zone.polygon.is_empty:
@@ -336,7 +354,7 @@ def build_dies(partition, castle, forming, lens_od=None, lens_os=None,
 
     # --- the bridge punch and the V anvil, post-cut only
     punch = anvil = None
-    if d.mode == "post_cut" and forming.bridge_projection_mm > 0.0:
+    if d.mode == "post_cut" and forming.bridge_projection_mm > 0.0 and fmap.bridge.projects:
         punch, anvil = _bridge_tooling(fmap, forming, d, t)
 
     label = _label(forming, d, t, gap, fmap)
@@ -357,7 +375,12 @@ def _bridge_tooling(fmap: ThermoformMap, forming, d, t: float):
     shoulders as the depth stop, and the anvil, a plate with the V notch the
     creases follow. Flat-space tooling: the bridge is set at the bench after
     the front is curved, on the maker's own fixture."""
-    R = float(d.punch_radius_mm) or fmap.die_radius_mm()
+    # Auto is the forming's own die, for the projection the punch sets: the
+    # die map carries no projection unless the die presses the bridge, and
+    # its radius came out infinite, so Auto was always the 10 mm fallback
+    # (the 2.0 bug hunt).
+    R = (float(d.punch_radius_mm) or float(forming.die_radius_mm)
+         or ThermoformMap.auto_die_radius(fmap.gap, float(forming.bridge_projection_mm)))
     if not np.isfinite(R) or R <= 0:
         R = 10.0
     R = min(R, 60.0)
@@ -384,14 +407,16 @@ def _bridge_tooling(fmap: ThermoformMap, forming, d, t: float):
     anvil = Manifold.batch_boolean(
         [extrude(plate, plate_t, base=-plate_t), extrude(notch, plate_t + 2.0, base=-plate_t - 1.0)],
         OpType.Subtract)
-    # the punch: the cylinder's axis along y, its lowest line at z = -p when
-    # the shoulders rest on the sheet's back at z = t
+    # the punch: the cylinder's axis along y, its lowest line p proud of the
+    # shoulders, which rest on the sheet's back at z = t, so the sheet under
+    # it goes down by the projection. The line sat at z = -p, and the sheet
+    # went down a whole thickness further (the 2.0 bug hunt).
     width = min(2.0 * R, gap - 0.2) if gap > 0.4 else 2.0 * R
     y0, y1 = min(y_far, y_apex) + 2.0, max(y_far, y_apex) - 2.0
     cyl = (Manifold.cylinder(y1 - y0, R, R, 96).rotate([-90.0, 0.0, 0.0])
-           .translate([ox, y0, R - p]))
+           .translate([ox, y0, R + t - p]))
     clip = extrude(box(ox - width / 2, y0 - 1.0, ox + width / 2, y1 + 1.0), 2 * R + p + 2.0,
-                   base=-p - 1.0)
+                   base=t - p - 1.0)
     nose = Manifold.batch_boolean([cyl, clip], OpType.Intersect)
     body = extrude(box(ox - 0.5 * gap - 15.0, y0, ox + 0.5 * gap + 15.0, y1), 20.0, base=t)
     punch = drop_degenerate(Manifold.batch_boolean([body, nose], OpType.Add))

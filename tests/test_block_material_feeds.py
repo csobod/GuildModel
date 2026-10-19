@@ -147,8 +147,15 @@ def test_the_block_posted_from_the_front_tab_cuts_at_acetals_feeds(tmp_path, mon
     win.params.plunge_override.setValue(400.0)
     win.params.spindle_override.setValue(9000)
 
-    win._last_programs = {}
+    from guildmodel.core.project.schema import ComponentKind
+    front = win._active_workspace()
+    assert front.kind == ComponentKind.FRAME_FRONT
+    win._last_programs = {"posterior_cut.nc": "(front)"}
     win._on_generate_block()
+    # The block is posted on its own tab (the 2.0 bug hunt): from the Front
+    # tab it replaced the front's program and took the front's datum.
+    assert win._active_workspace().kind == ComponentKind.BASE_CURVE_RIGHT
+    assert front.last_programs == {"posterior_cut.nc": "(front)"}
     th = lambda: win._gcode_thread
     assert _pump(app, lambda: win._last_programs and not th().isRunning())
     text = win._last_programs["base_curve_block.nc"]

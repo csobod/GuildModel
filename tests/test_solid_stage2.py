@@ -326,7 +326,7 @@ def demo_hinges():
     from guildmodel.core.io_import.normalize import points_to_polygon
 
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
-    return [points_to_polygon(c) for c in raw["HINGE"]]
+    return [points_to_polygon(c) for c in raw["COMPONENT"]]
 
 
 def test_hinge_pockets_match_the_raster(demo_partition, demo_hinges):
@@ -375,7 +375,7 @@ def test_hinge_pockets_match_the_raster(demo_partition, demo_hinges):
 def test_hinge_pockets_leave_the_surface_solid_alone(demo_partition, demo_hinges):
     """`return_surface` hands back the solid *before* the pockets — the M8
     `surface_field`, which the relief passes ride so they sail over pockets the
-    Hinge Pockets op has already cut."""
+    Component Pockets op has already cut."""
     from guildmodel.core.project.schema import CastleParams
     from guildmodel.core.solid import build_castle_solid, volume
 
@@ -539,7 +539,6 @@ def test_pad_splay_as_a_swept_chamfer(demo_partition, demo_hinges):
 
     castle = CastleParams()
     castle.pad_splay.enabled = True
-    castle.pad_splay.crest_blend_mm = 0.0      # compare like with like
 
     plain = build_castle_solid(demo_partition, CastleParams(), demo_hinges)
     solid = build_castle_solid(demo_partition, castle, demo_hinges)
@@ -575,7 +574,6 @@ def test_pad_splay_is_anchored_at_the_crest(demo_partition, demo_hinges):
 
     castle = CastleParams()
     castle.pad_splay.enabled = True
-    castle.pad_splay.crest_blend_mm = 0.0
 
     raster = build_castle_relief(demo_partition, castle, demo_hinges,
                                  resolution=CUT_RES_MM)

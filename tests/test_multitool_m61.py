@@ -39,8 +39,8 @@ def test_tools_yaml_has_a_small_pocket_tool():
 
 
 def test_tool_for_op_falls_back_to_global():
-    cam = CastleCamParams(tool_name="flat_3175", op_tools={"Hinge Pockets": "flat_2mm"})
-    assert cam.tool_for_op("Hinge Pockets") == "flat_2mm"
+    cam = CastleCamParams(tool_name="flat_3175", op_tools={"Component Pockets": "flat_2mm"})
+    assert cam.tool_for_op("Component Pockets") == "flat_2mm"
     assert cam.tool_for_op("Perimeter") == "flat_3175"
     assert cam.tools_in_use() == ["flat_2mm", "flat_3175"]
     assert cam.is_multi_tool()
@@ -48,7 +48,7 @@ def test_tool_for_op_falls_back_to_global():
     # multi-tool by design; pinning the hinge to the global tool collapses it.
     assert CastleCamParams().is_multi_tool()
     glob = CastleCamParams().tool_name
-    assert not CastleCamParams(op_tools={"Hinge Pockets": glob}).is_multi_tool()
+    assert not CastleCamParams(op_tools={"Component Pockets": glob}).is_multi_tool()
 
 
 def test_hinge_pockets_default_to_fine_tool():
@@ -56,10 +56,10 @@ def test_hinge_pockets_default_to_fine_tool():
     # the bulk global tool, so corners aren't over-rounded (a 3.175 mm tool leaves
     # ~1.6 mm corners, a 2 mm tool ~1 mm). An explicit assignment still wins.
     cam = CastleCamParams(tool_name="flat_3175")
-    assert cam.tool_for_op("Hinge Pockets") == "flat_2mm"
+    assert cam.tool_for_op("Component Pockets") == "flat_2mm"
     assert cam.tool_for_op("Rough Relief") == "flat_3175"
-    pinned = CastleCamParams(tool_name="flat_3175", op_tools={"Hinge Pockets": "flat_3175"})
-    assert pinned.tool_for_op("Hinge Pockets") == "flat_3175"
+    pinned = CastleCamParams(tool_name="flat_3175", op_tools={"Component Pockets": "flat_3175"})
+    assert pinned.tool_for_op("Component Pockets") == "flat_3175"
 
 
 def test_resolve_tool_normalizes_name_and_default():
@@ -73,11 +73,11 @@ def test_resolve_tool_normalizes_name_and_default():
 def test_op_tools_round_trip_through_gmodel(tmp_path):
     from guildmodel.core.project.gmodel import save_gmodel, load_gmodel
     proj = ProjectSchema(job_name="MT")
-    proj.cam_params = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    proj.cam_params = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     path = tmp_path / "mt.gmodel"
     save_gmodel(path, project=proj, dxf_bytes=b"dxf")
     b = load_gmodel(path)
-    assert b.project.cam_params.op_tools == {"Hinge Pockets": "flat_2mm"}
+    assert b.project.cam_params.op_tools == {"Component Pockets": "flat_2mm"}
     assert b.project.cam_params.is_multi_tool()
 
 
@@ -93,7 +93,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     castle = CastleParams()
     relief = build_castle_relief(part, castle, hinges, resolution=0.3)
@@ -104,15 +104,15 @@ def demo():
 
 def test_generate_binds_per_op_tools(demo):
     part, castle, relief, hinges = demo
-    cam = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    cam = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     ops = generate_castle_program(
         relief, castle, hinges, TOOLS["flat_3175"], params=cam, tools_cfg=TOOLS)
     by = {op.name: op for op in ops}
-    assert by["Hinge Pockets"].tool_name == "flat_2mm"
+    assert by["Component Pockets"].tool_name == "flat_2mm"
     assert by["Perimeter"].tool_name == "flat_3175"
     assert by["Fine Relief"].tool_name == "flat_3175"
     # the small pocket tool has its own (smaller) radius driving its offsets
-    assert by["Hinge Pockets"].tool["radius_mm"] == 1.0
+    assert by["Component Pockets"].tool["radius_mm"] == 1.0
     assert count_tool_changes(ops) == 1   # small -> bulk, once
 
 
@@ -141,7 +141,7 @@ def _post_multitool(ops, machine, mode="m0"):
 
 def test_tool_change_block_m0_parses_and_lints(demo):
     part, castle, relief, hinges = demo
-    cam = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    cam = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     ops = generate_castle_program(
         relief, castle, hinges, TOOLS["flat_3175"], params=cam, tools_cfg=TOOLS)
     machine = MachineProfile()       # guild_cnc defaults, tool_change_mode m0
@@ -161,7 +161,7 @@ def test_tool_change_block_m0_parses_and_lints(demo):
 
 def test_tool_change_block_m6_emits_toolword(demo):
     part, castle, relief, hinges = demo
-    cam = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    cam = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     ops = generate_castle_program(
         relief, castle, hinges, TOOLS["flat_3175"], params=cam, tools_cfg=TOOLS)
     machine = MachineProfile(tool_change_mode="m6")
@@ -172,7 +172,7 @@ def test_tool_change_block_m6_emits_toolword(demo):
 
 def test_per_tool_feeds_applied_and_grouped(demo):
     part, castle, relief, hinges = demo
-    cam = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    cam = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     ops = generate_castle_program(
         relief, castle, hinges, TOOLS["flat_3175"], params=cam, tools_cfg=TOOLS)
     ts, _ = _post_multitool(ops, MachineProfile())
@@ -196,7 +196,7 @@ def test_single_tool_posts_without_change_blocks(demo):
 
 def test_cuttime_charges_tool_change_dwell(demo):
     part, castle, relief, hinges = demo
-    cam = CastleCamParams(op_tools={"Hinge Pockets": "flat_2mm"})
+    cam = CastleCamParams(op_tools={"Component Pockets": "flat_2mm"})
     ops = generate_castle_program(
         relief, castle, hinges, TOOLS["flat_3175"], params=cam, tools_cfg=TOOLS)
     machine = MachineProfile()
@@ -220,11 +220,11 @@ def _square(cx, cy, w):
 
 def test_reach_warns_when_tool_too_large_and_suggests_fit():
     pocket = _square(0, 0, 2.4)               # ~2.4 mm wide pocket, inradius ~1.2
-    feats = [("Hinge Pockets", "hinge pocket", [pocket], resolve_tool("flat_3175", TOOLS))]
+    feats = [("Component Pockets", "hinge pocket", [pocket], resolve_tool("flat_3175", TOOLS))]
     warns = reach_warnings(feats, TOOLS)
     assert len(warns) == 1
     w = warns[0]
-    assert w.op_name == "Hinge Pockets" and w.tool_name == "flat_3175"
+    assert w.op_name == "Component Pockets" and w.tool_name == "flat_3175"
     assert w.fits_radius_mm == pytest.approx(1.2, abs=0.05)
     # suggests a tool that actually fits the pocket
     assert w.suggested_tool is not None
@@ -234,7 +234,7 @@ def test_reach_warns_when_tool_too_large_and_suggests_fit():
 
 def test_reach_no_warning_when_tool_fits():
     pocket = _square(0, 0, 2.4)
-    feats = [("Hinge Pockets", "hinge pocket", [pocket], resolve_tool("flat_2mm", TOOLS))]
+    feats = [("Component Pockets", "hinge pocket", [pocket], resolve_tool("flat_2mm", TOOLS))]
     assert reach_warnings(feats, TOOLS) == []   # r=1.0 <= inradius ~1.2
 
 

@@ -365,7 +365,7 @@ def test_the_window_keeps_drawn_curves_and_text_apart(monkeypatch, tmp_path):
 def test_a_dxf_workspace_offers_every_curve_as_text():
     from guildmodel.core.project.schema import ComponentKind
     from guildmodel.gui.component_workspace import ComponentWorkspace, derive_workspace
-    layers = {k: [] for k in ("OUTLINE", "LENS", "BRIDGE", "HINGE", "REF", "SCULPT", "ENGRAVING")}
+    layers = {k: [] for k in ("OUTLINE", "LENS", "BRIDGE", "COMPONENT", "REF", "SCULPT", "ENGRAVING")}
     layers["OUTLINE"] = [[(-70, -6), (70, -6), (70, 6), (-70, 6), (-70, -6)]]
     layers["ENGRAVING"] = [_asterisk()]
     ws = ComponentWorkspace(kind=ComponentKind.FRAME_FRONT, label="", layers=layers)

@@ -27,7 +27,14 @@ def profile_cut(
     normalize.assemble_outline) are cut too — offset *inward* so the tool stays
     inside the opening, and without tabs: the waste slug falls free and the part
     itself is still held by the tabbed perimeter.
+
+    A front with separated rims (a MultiPolygon) gets a perimeter per rim,
+    offset together so they merge where the gap is narrower than the tool.
     """
+    from shapely.geometry.polygon import orient
+
+    from ..geometry.regions import body_parts
+
     def _offset(ring, delta: float) -> list[tuple[float, float]] | None:
         scaled = [[int(x * _SCALE), int(y * _SCALE)] for x, y in ring.coords]
         pco = pyclipper.PyclipperOffset()
@@ -43,12 +50,29 @@ def profile_cut(
         pts.append(pts[0])
         return pts
 
-    offset_pts = _offset(outline.exterior, tool_radius_mm)
-    if offset_pts is None:
+    parts = body_parts(outline)
+    if len(parts) == 1:
+        offset_pts = _offset(outline.exterior, tool_radius_mm)
+        perimeters = [offset_pts] if offset_pts is not None else []
+    else:
+        # One offset over every rim, each wound the same way so none of them
+        # reads as a hole.
+        pco = pyclipper.PyclipperOffset()
+        for part in parts:
+            ring = orient(Polygon(part.exterior), 1.0).exterior
+            pco.AddPath([[int(x * _SCALE), int(y * _SCALE)] for x, y in ring.coords],
+                        pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+        perimeters = []
+        for path in pco.Execute(tool_radius_mm * _SCALE):
+            pts = [(p[0] / _SCALE, p[1] / _SCALE) for p in path]
+            pts.append(pts[0])
+            perimeters.append(pts)
+    if not perimeters:
         return []
     # A ring smaller than the tool offsets away to nothing — skip rather than emit
     # a degenerate path (pyclipper returns [] for it).
-    hole_pts = [pts for pts in (_offset(r, -tool_radius_mm) for r in outline.interiors)
+    hole_pts = [pts for pts in (_offset(r, -tool_radius_mm)
+                                for part in parts for r in part.interiors)
                 if pts]
 
     passes = []
@@ -56,9 +80,10 @@ def profile_cut(
     while z > -stock_thickness_mm - 1e-9:
         z_actual = max(z, -stock_thickness_mm)
         is_last = abs(z_actual - (-stock_thickness_mm)) < 1e-9
-        pts_with_tabs = insert_tabs(offset_pts, tab_count, tab_width_mm, tab_height_mm, z_actual) if is_last else [(x, y, z_actual) for x, y in offset_pts]
         polylines = [[(x, y, z_actual) for x, y in pts] for pts in hole_pts]
-        polylines.append(pts_with_tabs)
+        for offset_pts in perimeters:
+            pts_with_tabs = insert_tabs(offset_pts, tab_count, tab_width_mm, tab_height_mm, z_actual) if is_last else [(x, y, z_actual) for x, y in offset_pts]
+            polylines.append(pts_with_tabs)
         passes.append(polylines)
         z -= stepdown_mm
 

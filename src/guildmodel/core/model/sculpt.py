@@ -437,11 +437,20 @@ def snap_target(host_mesh, face: str, point=None, *, outline=None,
     `outline` to `point`, outward normal horizontal) or ``pick`` (the picked
     surface point with its own normal). For the two faces the height is the
     host's surface under `point`'s x, y — the terrace the sculpt lands on,
-    not the model's extreme — and `point` defaults to the host's center.
+    not the model's extreme — and `point` defaults to the host's center (on a
+    front with separated rims, whose center is the gap, the nearest point on
+    a rim). The rim is the nearest rim's wall.
     """
+    from ..geometry.regions import body_exteriors, body_parts, point_on_body
+
     bounds = np.asarray(host_mesh.bounds, dtype=np.float64)
     center = bounds.mean(axis=0)
-    p = center.copy() if point is None else np.asarray(point, dtype=np.float64)
+    if point is None:
+        p = center.copy()
+        if outline is not None and len(body_parts(outline)) > 1:
+            p[0], p[1] = point_on_body(outline, float(p[0]), float(p[1]))
+    else:
+        p = np.asarray(point, dtype=np.float64)
     if face in ("posterior", "anterior"):
         z = surface_z_at(host_mesh, [p[:2]], face="top" if face == "posterior" else "bottom")[0]
         if not np.isfinite(z):
@@ -453,7 +462,7 @@ def snap_target(host_mesh, face: str, point=None, *, outline=None,
             raise ValueError("the rim needs the outline polygon")
         from shapely.geometry import Point
         from shapely.ops import nearest_points
-        ring = outline.exterior
+        ring = min(body_exteriors(outline), key=lambda r: r.distance(Point(p[0], p[1])))
         q, _ = nearest_points(ring, Point(p[0], p[1]))
         # outward: away from the polygon's interior, along the wall's normal
         s = ring.project(q)

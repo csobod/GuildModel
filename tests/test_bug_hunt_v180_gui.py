@@ -154,10 +154,10 @@ def test_a_reopened_project_keeps_every_components_program(tmp_path, monkeypatch
     # a program on the front and another on a temple, as the workers leave them
     win._last_programs = {"frame_front.nc": "; front"}
     win._last_setup = {"tool": "flat_3175"}
-    win._program_stored = True
+    win._program_stored = win._program_fresh = True
     win._activate_workspace(1)
     win._last_programs = {"temple_right.nc": "; temple"}
-    win._program_stored = True
+    win._program_stored = win._program_fresh = True
     win._activate_workspace(0)
 
     path = tmp_path / "p.gmodel"
@@ -205,7 +205,7 @@ def test_cancel_reaches_a_running_build_and_nothing_stale_lands(tmp_path, monkey
     assert worker._cancel is True                 # set at once, not when run() returns
     assert _pump(app, lambda: not win._mesh_thread.isRunning(), 120)
     assert any("canceled" in m.lower() for m in log)
-    assert not any("All component models built" in m for m in log)
+    assert not any("All part models built" in m for m in log)
 
     # The owed rebuild: a change during a build is remembered, and it runs
     # once the thread has actually stopped (the handler runs before it has).

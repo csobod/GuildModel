@@ -33,7 +33,7 @@ _WORD = re.compile(r"([A-Za-z])\s*(-?\d*\.?\d+)")
 # The post's tool announcements: "--- Tool T1: flat_2mm (2.00 mm) ---" and
 # "--- Tool Change → T2: flat_3175 (3.18 mm) ---" (BUILDPLAN M6.1).
 _TOOL_COMMENT = re.compile(r"Tool(?:\s*Change)?[^A-Za-z0-9]*T\d+:\s*(\S+)")
-# The post's op sections: "--- Hinge Pockets ---".
+# The post's op sections: "--- Component Pockets ---".
 _OP_COMMENT = re.compile(r"-{2,}\s*(.+?)\s*-{2,}")
 
 #: Chord sag an arc is flattened to, mm, as the simulation has always done.
@@ -74,9 +74,21 @@ def _flatten_arc(cur, end, i, j, ccw, chord_mm):
     return pts
 
 
+#: G words whose axis words are not a move in the program's coordinates: a
+#: home, a machine-coordinate move, a probe, an offset being set.
+_BREAK_WORDS = frozenset({"28", "30", "53", "38", "10", "92"})
+
+#: Where a machine-coordinate Z retract (`G53 G0 Z0`, the top of travel) leaves
+#: the tool in the program's coordinates: well over any blank, mm.
+_TOP_OF_TRAVEL_MM = 50.0
+
+
 def parse_program(gcode: str, chord_mm: float = CHORD_MM) -> list[Run]:
     """Walk a GRBL-dialect program once into runs: modal G0/G1/G2/G3, G20/G21,
-    G90/G91, X Y Z I J, the A word, the F word, G28/G30 as a break. Comments
+    G90/G91, X Y Z I J, the A word, the F word, and as a break the words that
+    move or set something other than the program's own coordinates: G28/G30,
+    G53 (machine coordinates: the retract before a rotary turns), G38.x (a
+    probe) and G10/G92 (offsets). Comments
     carry the op sections and the tool announcements. A run starts at the
     position the tool was at, so the motion is continuous, and a one-point
     run (a program's first move) is kept so a rapid from the start is seen."""
@@ -118,8 +130,12 @@ def parse_program(gcode: str, chord_mm: float = CHORD_MM) -> list[Run]:
         words = _WORD.findall(s)
         if not words:
             continue
-        if any(w[0].upper() == "G" and w[1] in ("28", "30") for w in words):
+        if any(w[0].upper() == "G" and (w[1].split(".")[0] in _BREAK_WORDS)
+               for w in words):
             flush()
+            if (any(w[0].upper() == "G" and w[1].split(".")[0] == "53" for w in words)
+                    and any(w[0].upper() == "Z" for w in words)):
+                z = max(z, _TOP_OF_TRAVEL_MM)     # the retract before a rotary turns
             continue
         for letter, num in words:
             L = letter.upper()

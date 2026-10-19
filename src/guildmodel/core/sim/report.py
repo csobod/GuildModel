@@ -46,6 +46,9 @@ class CutReport:
     #: What the program would do beyond the cut itself: a rapid through
     #: stock, a shank in it. Any one fails the verdict.
     faults: tuple = ()
+    #: What lowers an otherwise clean verdict to a warning: the anterior's own
+    #: warning on a two-sided job, whose report is the posterior's.
+    warnings: tuple = ()
 
     def status(self) -> str:
         if self.faults:
@@ -53,13 +56,13 @@ class CutReport:
         c, g = self.completeness, self.gouge
         if c.uncut_fraction > 0.10 or g.max_depth_mm > 0.5:
             return "fail"
-        if c.uncut_fraction > 0.04 or g.gouge_cells > 0:
+        if c.uncut_fraction > 0.04 or g.gouge_cells > 0 or self.warnings:
             return "warn"
         return "ok"
 
     def summary_lines(self) -> list[str]:
         if self.lines:
-            return list(self.lines) + list(self.faults)
+            return list(self.lines) + list(self.faults) + list(self.warnings)
         c, g = self.completeness, self.gouge
         lines = [
             f"Cut completeness: {100 * (1 - c.uncut_fraction):.1f}% reached "
@@ -74,7 +77,7 @@ class CutReport:
             if d["cells"]:
                 lines.append(f"  {kind}: {d['cells']} uncut, "
                              f"worst {d['max_excess_mm']:.2f} mm")
-        return lines + list(self.faults)
+        return lines + list(self.faults) + list(self.warnings)
 
 
 def _per_zone(partition, xs, ys, excess) -> dict:

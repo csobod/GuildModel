@@ -364,3 +364,45 @@ def test_components_carry_their_curves(tmp_path):
     front = next(c for c in gp.components
                  if c.component.kind == ComponentKind.FRAME_FRONT)
     assert sum(c is not None for c in front.curves["LENS"]) == 1
+
+
+# ------------------------------------------------------------------ the Ghost
+
+def test_the_ghost_is_never_applied(tmp_path):
+    """GuildDraw's Ghost is a drawing aid, a mask over the other side; the
+    reader takes the curves drawn and nothing else (2026-10-16, the maker's
+    decision). One lens with the Ghost on is one lens: a monocle can be made."""
+    front = {"mirror": {"x": 0.0, "enabled": True}, "curves": [
+        _line("OUTLINE", [(-60, -20), (-6, -20), (-6, 20), (-60, 20)], closed=True),
+        _line("LENS", [(-52, -12), (-14, -12), (-14, 12), (-52, 12)], closed=True),
+        _line("SCULPT", [(-30, -20), (-30, -12)]),
+        _line("HINGE", [(-58, -5), (-54, -5), (-54, 5), (-58, 5)], closed=True),
+    ]}
+    path = tmp_path / "monocle.gdraw"
+    _make_gdraw(path, {"front": front, "temple_r": {"curves": []},
+                       "temple_l": {"curves": []}, "hinge": {"curves": []}})
+    ws = read_gdraw(path).workspaces["front"]
+    assert ws.mirror_enabled
+    assert [len(ws.layers[k]) for k in ("LENS", "SCULPT", "COMPONENT")] == [1, 1, 1]
+    kinds = [c.component.kind for c in build_project_from_gdraw(path).components]
+    assert kinds.count(ComponentKind.BASE_CURVE_RIGHT) + \
+        kinds.count(ComponentKind.BASE_CURVE_LEFT) == 1
+
+
+def test_a_closed_spline_of_two_nodes_is_both_of_its_arcs():
+    """GuildDraw gives a closed curve as many segments as it has nodes, so a
+    lens drawn with two nodes is two arcs. The reader closed only curves of
+    three or more and read such a lens as half its shape (a corpus design's
+    lenses were cut at half their width)."""
+    k = 4.0 / 3.0 * 10.0                              # a circle of r 10 in two halves
+    lens = {"kind": "spline", "layer": "LENS", "closed": True, "nodes": [
+        _node(-10, 0, cp_in=(-10, k), cp_out=(-10, -k)),
+        _node(10, 0, cp_in=(10, -k), cp_out=(10, k)),
+    ]}
+    pts, curves = read_workspace_curves({"curves": [lens]}, posterior=False)
+    from shapely.geometry import Polygon
+    ring = pts["LENS"][0]
+    xs = [x for x, _ in ring]
+    assert min(xs) == pytest.approx(-10.0) and max(xs) == pytest.approx(10.0)
+    assert Polygon(ring).area == pytest.approx(math.pi * 100.0, rel=0.02)
+    assert curves["LENS"][0] is not None and curves["LENS"][0].closed

@@ -22,7 +22,7 @@ import math
 import ezdxf
 
 from guildmodel.core.geometry.curves import NurbsCurve, mirror_x
-from guildmodel.core.layers import ALL_LAYERS
+from guildmodel.core.layers import ALL_LAYERS, canonical_layer
 
 SUPPORTED_LAYERS = ALL_LAYERS   # public alias kept for callers that import this name
 CHORD_TOL_MM = 0.01
@@ -97,7 +97,7 @@ def import_curves(
         curves[layer].append(curve)
 
     for entity in msp:
-        layer = entity.dxf.layer.upper()
+        layer = canonical_layer(entity.dxf.layer)      # HINGE reads as COMPONENT
         if layer not in ALL_LAYERS:
             continue
         dxf_type = entity.dxftype()
@@ -117,7 +117,12 @@ def import_curves(
             add(layer, _arc_to_points(entity, chord_tol))
         elif dxf_type == "CIRCLE":
             cx, cy, r = entity.dxf.center.x, entity.dxf.center.y, entity.dxf.radius
-            n = max(16, int(2 * math.pi * r / chord_tol))
+            # Sagitta, not arc length, as the arcs here and the .gdraw reader
+            # flatten: the circumference over the tolerance made a 25 mm
+            # circle 15,707 points (the 2.0 bug hunt; the .gdraw side was
+            # fixed 2026-08-07).
+            half = math.acos(max(-1.0, 1.0 - chord_tol / r)) if r > 0 else math.pi
+            n = max(16, math.ceil(math.pi / max(half, 1e-9)))
             pts = [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
             add(layer, pts)
         elif dxf_type == "SPLINE":

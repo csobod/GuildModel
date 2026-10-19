@@ -16,31 +16,37 @@ def validate(layers: dict[str, list[Polygon]]) -> ValidationResult:
     warnings: list[str] = []
 
     outline_curves = layers.get("OUTLINE", [])
+    lens_curves = layers.get("LENS", [])
     if not outline_curves:
         errors.append("Missing required layer: OUTLINE")
     elif len(outline_curves) > 1:
-        # Extra closed OUTLINE curves inside the profile are decorative openings
-        # (Hole1..HoleN); ones that fall outside it are an authoring mistake.
-        shell = max(outline_curves, key=lambda p: p.area)
-        stray = [p for p in outline_curves
-                 if p is not shell and not shell.contains(p.representative_point())]
-        holes = len(outline_curves) - 1 - len(stray)
+        # Extra closed OUTLINE curves inside a body are decorative openings
+        # (Hole1..HoleN); one that holds a lens is a separated rim, a body of
+        # its own; the rest are an authoring mistake. The intake's own rule.
+        from .normalize import assemble_outline
+        assembly = assemble_outline(
+            [list(p.exterior.coords) for p in outline_curves if not p.is_empty],
+            lenses=lens_curves)
+        holes, stray = len(assembly.holes), len(assembly.stray)
         if holes:
             warnings.append(
                 f"{holes} closed curve(s) inside the OUTLINE profile — cutting them "
                 "as openings (Hole1…).")
         if stray:
             warnings.append(
-                f"{len(stray)} OUTLINE curve(s) fall outside the profile and are "
-                "ignored; the largest curve is the profile.")
+                f"{stray} OUTLINE curve(s) fall outside the profile and hold no lens, "
+                "so they are ignored; the largest curve is the profile.")
 
-    lens_curves = layers.get("LENS", [])
     if not lens_curves:
         errors.append("Missing required layer: LENS (need two lens openings).")
     elif len(lens_curves) == 1:
-        warnings.append("Only one lens curve found on LENS layer; expected two for a pair.")
+        # A monocle since 2026-10-16, when its outline is one rim; one lens in
+        # an outline drawn for two is refused at intake (`half_drawn_front`).
+        warnings.append("One lens curve on the LENS layer: a monocle, if the outline is "
+                        "one rim; draw the second lens for a pair.")
     elif len(lens_curves) > 2:
-        warnings.append(f"{len(lens_curves)} curves on LENS layer; expected two.")
+        warnings.append(f"{len(lens_curves)} curves on LENS layer; a front holds two, "
+                        "and nothing is cut until the extra ones are deleted.")
 
     for layer_name, curves in layers.items():
         for i, poly in enumerate(curves):

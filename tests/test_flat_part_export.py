@@ -303,7 +303,7 @@ def _workspace(kind, **layers):
     from guildmodel.core.project.schema import ComponentKind
     from guildmodel.gui.component_workspace import (ComponentWorkspace,
                                                     derive_workspace)
-    base = {k: [] for k in ("OUTLINE", "LENS", "SCULPT", "HINGE", "ENGRAVING")}
+    base = {k: [] for k in ("OUTLINE", "LENS", "SCULPT", "COMPONENT", "ENGRAVING")}
     base.update(layers)
     ws = ComponentWorkspace(kind=getattr(ComponentKind, kind), label="", layers=base)
     derive_workspace(ws)
@@ -365,8 +365,11 @@ def test_the_blocked_reason_names_what_is_actually_missing():
 
     jude = _workspace("FRAME_FRONT", LENS=[_LENS], SCULPT=_SCULPT)
     why = MainWindow._export_blocked_reason(jude)
-    assert "OUTLINE" in why and "two LENS curves" in why
+    # one lens is a monocle since 2026-10-16: the outline is all that is missing
+    assert "OUTLINE" in why and "LENS" not in why
     assert "SCULPT" not in why
+    nothing = _workspace("FRAME_FRONT", OUTLINE=[_OUTLINE], SCULPT=_SCULPT)
+    assert "LENS" in MainWindow._export_blocked_reason(nothing)
 
     no_zones = _workspace("FRAME_FRONT", OUTLINE=[_OUTLINE], LENS=[_LENS, _LENS2])
     assert "SCULPT" in MainWindow._export_blocked_reason(no_zones)

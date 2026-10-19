@@ -345,13 +345,19 @@ def zone_reference(partition, heights: dict[str, float]
     """The flat plane a posterior seat on a front measures from: the highest
     terrace it touches. A seat straddling a step is cut from the higher side;
     where the lower terrace already lies below the floor, nothing is cut there
-    and the model shows the plaque spanning the step."""
+    and the model shows the plaque spanning the step.
+
+    Touching is overlapping by `pocket_floor._TOUCH_MM2`, as a mount's terrace
+    is found: a seat that only met a higher neighbor along a seam was
+    measured from it (the 2.0 bug hunt)."""
+    from .pocket_floor import _TOUCH_MM2
     zones = list(getattr(partition, "zones", []) or [])
     fallback = max(heights.values()) if heights else 0.0
 
     def reference(poly: Polygon) -> float:
         hs = [heights[z.name] for z in zones
-              if z.name in heights and z.polygon.intersects(poly)]
+              if z.name in heights and z.polygon.intersects(poly)
+              and z.polygon.intersection(poly).area >= _TOUCH_MM2]
         return max(hs) if hs else fallback
 
     return reference

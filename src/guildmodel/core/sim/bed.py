@@ -267,7 +267,7 @@ def simulate_component(
         tool = resolve_tool(cam.tool_name, tools_cfg, tools_cfg.get("flat_3175"))
         relief = castle_relief(spec["partition"], castle, hinge, kernel=kernel,
                                resolution=resolution, progress=progress,
-                               inlays=seats)
+                               inlays=seats, sculpt_sources=spec.get("sculpt_sources"))
         ops = generate_castle_program(relief, castle, hinge, tool,
                                       params=cam, tools_cfg=tools_cfg,
                                       inlay_polys=seats)

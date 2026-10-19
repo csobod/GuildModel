@@ -46,7 +46,7 @@ from guildmodel.gui.widgets.viewer_3d import Viewer3D
 from guildmodel.gui.widgets import readiness_dot
 from guildmodel.gui.widgets.readiness_dot import ReadinessDot
 from guildmodel.gui.component_workspace import (
-    ComponentWorkspace, build_workspaces_from_gdraw, derive_workspace,
+    ComponentWorkspace, build_workspaces_from_gdraw, component_ids, derive_workspace,
     seed_inlay_features,
 )
 
@@ -210,17 +210,21 @@ class _ProgressWorker(QObject):
             raise _Canceled()
         self.stage.emit(label, int(round(frac * 100)))
 
-    def _check_z_profile(self, text: str) -> str:
+    def _check_z_profile(self, text: str, *, more: bool = False) -> str:
         """Measure the posted program's Z behaviour, log it, and stamp it in.
 
         Every worker that posts runs this — the Hyde Park sawtooth hid for four
         releases in an operation nobody was measuring, so the guard measures all
         of them or it is worth nothing. Returns the program with its profile in
         the header, so the file a maker emails back carries its own numbers.
+        `more` adds a job's further program to the profiles (the anterior of a
+        two-sided job, the hybrid's flat program), which skipped the guard
+        until the 2.0 bug hunt.
         """
         from guildmodel.core.cam.zprofile import annotate, measure_program, warnings
         profiles = measure_program(text)
-        self.z_profiles = list(profiles.values())
+        self.z_profiles = ((list(getattr(self, "z_profiles", [])) if more else [])
+                           + list(profiles.values()))
         for w in warnings(profiles):
             self.progress.emit(f"[gcode] ⚠ Z profile: {w}")
         return annotate(text, profiles)
@@ -386,7 +390,7 @@ class ExportWorker(_ProgressWorker):
             written: list[str] = []
             total = max(1, len(self.specs))
             for k, (spec, path) in enumerate(zip(self.specs, self.paths)):
-                label = spec.get("label") or spec.get("kind") or "component"
+                label = spec.get("label") or spec.get("kind") or "part"
                 # The kernel applies to a frame front only — flat or formed; a
                 # temple and a base-curve template are flat parts the raster
                 # builds exactly.
@@ -400,7 +404,10 @@ class ExportWorker(_ProgressWorker):
                     progress=lambda lbl, f, _k=k: self._progress(
                         lbl, (_k + f) / total),
                 )
-                verdict = verify_mesh(mesh)
+                partition = spec.get("partition")
+                bodies = (len(partition.parts) if spec["mode"] in KERNEL_MODES
+                          and partition is not None else 1)
+                verdict = verify_mesh(mesh, expected_bodies=bodies)
                 self.progress.emit(
                     f"[export] {label}: {len(mesh.vertices):,} verts, "
                     f"{len(mesh.faces):,} tris, {verdict.volume_mm3:,.1f} mm3 "
@@ -458,10 +465,11 @@ def _castle_inlay_seats(relief, castle, hinge_polys, inlay_polys, cam, tools_cfg
     from guildmodel.core.geometry.heights import zone_heights
     from guildmodel.core.geometry.inlays import inlay_cuts, zone_reference
     from guildmodel.core.geometry.pocket_floor import castle_pocket_floors
+    heights = zone_heights(relief.partition, castle, None)
     seats = inlay_cuts(
-        castle.inlays, list(inlay_polys), castle_pocket_floors(hinge_polys, castle),
-        posterior_reference=zone_reference(
-            relief.partition, zone_heights(relief.partition, castle, None)))
+        castle.inlays, list(inlay_polys),
+        castle_pocket_floors(hinge_polys, castle, relief.partition, heights),
+        posterior_reference=zone_reference(relief.partition, heights))
     default = resolve_tool(cam.tool_for_op("Inlays"), tools_cfg, default=tool)
     return seats, inlay_op_groups(seats, tools_cfg, default)
 
@@ -481,7 +489,7 @@ def _temple_inlay_seats(outline, temple, hinge_polys, inlay_polys, tools_cfg):
                                   resolve_tool(temple.hinge_tool, tools_cfg))
 
 
-def _inlay_sheet(seats, thin) -> list[dict]:
+def _inlay_sheet(seats, thin, anterior_posted: bool = False) -> list[dict]:
     """The setup sheet's inlay rows: each seat, its face and depth, what it is
     relative to, whether this program posts it, and whether its floor keeps
     the minimum thickness (`thin` names the ones that do not)."""
@@ -493,7 +501,7 @@ def _inlay_sheet(seats, thin) -> list[dict]:
         rows.append({
             "seat": name, "face": seat.face, "depth_mm": round(seat.depth_mm, 3),
             "relative_to": f.relative_to, "mode": f.mode,
-            "posted": bool(seat.posterior),
+            "posted": bool(seat.posterior) or anterior_posted,
             "thickness_ok": name not in failing,
         })
     return rows
@@ -553,9 +561,108 @@ RAPID_CHECK_MM = 0.5
 SHANK_CHECK_MM = 1.0
 
 
+#: The program a two-sided job in one file is stored as (2.0): the anterior,
+#: the flip's pause, the posterior.
+TWO_SIDED_ONE_FILE = "two_sided_cut.nc"
+
+
+def split_two_sided(text: str) -> tuple[str, str]:
+    """A two-sided program in one file as its two setups' programs: the
+    anterior, through the flip's pause, and the posterior from its own
+    ``; Side:`` line, given the header's modes so it reads alone."""
+    lines = text.splitlines()
+    sides = [i for i, ln in enumerate(lines) if ln.startswith("; Side:")]
+    if len(sides) < 2:
+        return text, ""
+    cut = sides[1]
+    return ("\n".join(lines[:cut]) + "\n",
+            "G90\nG21\nG17\n" + "\n".join(lines[cut:]) + "\n")
+
+
+def frame_programs(programs: dict) -> tuple[str | None, str | None]:
+    """The frame front's posterior program and, on a two-sided job, its
+    anterior's, from what the job stored (2.0): ``posterior_cut.nc`` and
+    ``anterior_cut.nc``, or both from ``two_sided_cut.nc``."""
+    if TWO_SIDED_ONE_FILE in programs:
+        anterior, posterior = split_two_sided(programs[TWO_SIDED_ONE_FILE])
+        return posterior, anterior or None
+    return programs.get("posterior_cut.nc"), programs.get("anterior_cut.nc")
+
+
+def sculpts_left_off(castle, kernel: str) -> str:
+    """The sentence for a front whose sculpts the kernel in use does not build,
+    or "": sculpts (M22) are the mesh kernel's alone, and the B-Rep and raster
+    kernels build and cut the front without them."""
+    sculpts = (castle.resolved_sculpts()
+               if castle is not None and hasattr(castle, "resolved_sculpts") else [])
+    if kernel == "mesh" or not sculpts:
+        return ""
+    name = {"brep": "B-Rep", "raster": "raster"}.get(kernel, kernel)
+    n = len(sculpts)
+    return (f"The {name} kernel builds no sculpts: this front's {n} sculpt"
+            f"{'s are' if n != 1 else ' is'} left off, and kept for the mesh kernel.")
+
+
+def _release_faults(verdict, relief, level_mm: float, *, perimeter: bool = True,
+                    eyewires: bool = True) -> list[str]:
+    """Whether the program released the part and opened its lenses, read off
+    the stock it left: above `level_mm` over the stock's bottom (the skin, or
+    the tabs' height), the body may join neither the stock round the grid's
+    edge, past the perimeter's cut, nor the core of a lens opening, past the
+    eyewire's. The verdict looks inside the body only, so a through-cut that
+    stopped short, or skipped an opening, passed it (the 2.0 bug hunt).
+    `perimeter` and `eyewires` say which cuts this side is to make: a cut the
+    maker switched off, or one left to the other side, is not asked for."""
+    import numpy as np
+    from scipy.ndimage import label
+    from shapely import contains_xy, prepare
+    from shapely.geometry import Polygon
+    from guildmodel.core.geometry.regions import body_interiors
+
+    f = relief.field
+    top = verdict.top(empty=-np.inf).z
+    bottom = relief.stock_bottom.z if relief.stock_bottom is not None else 0.0
+    solid = top > bottom + level_mm
+    lab, _n = label(solid, structure=np.ones((3, 3), dtype=bool))
+    body = set(np.unique(lab[relief.inside & solid])) - {0}
+    rows, cols = f.z.shape
+    xs = f.origin[0] + np.arange(cols) * f.resolution
+    ys = f.origin[1] + np.arange(rows) * f.resolution
+    X, Y = np.meshgrid(xs, ys)
+    part = relief.partition
+    out = []
+    if perimeter:
+        edge = np.zeros_like(solid)
+        edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+        # Only the edge past the part is the blank. A pressed blank's grid is
+        # the back's footprint with its margin, and its leaning walls carry
+        # the front's footprint past it at the two ends (M25): the part's own
+        # material stands on the grid's edge there, with the cut beyond it.
+        reach = part.body.buffer(f.resolution)
+        prepare(reach)
+        edge &= ~contains_xy(reach, X.ravel(), Y.ravel()).reshape(rows, cols)
+        if body & set(np.unique(lab[edge & solid])):
+            out.append("The part is not released: the perimeter leaves it joined to the blank")
+    if eyewires and body:
+        for ring in body_interiors(part.body):
+            if part.is_hole(ring):
+                continue
+            core = Polygon(ring).buffer(-4.0)          # past any eyewire's cut
+            if core.is_empty:
+                continue
+            prepare(core)
+            m = contains_xy(core, X.ravel(), Y.ravel()).reshape(rows, cols) & solid
+            if body & set(np.unique(lab[m])):
+                out.append("A lens opening is not cut out: the eyewire leaves it joined to the rim")
+                break
+    return out
+
+
 def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict, *,
                       init_z: float, stock_field, feed_mmpm: float, partition=None,
-                      progress=None, verdict0=None, blank0=None, carry: dict | None = None):
+                      progress=None, verdict0=None, blank0=None, carry: dict | None = None,
+                      work_offset=(0.0, 0.0, 0.0), release_level_mm: float | None = None,
+                      release_cuts: tuple = (True, True)):
     """The simulation of a posted program (BUILDPLAN M21 §6.5): the verdict on
     the relief's grid, and the playback over the blank, both from one parse.
 
@@ -569,11 +676,18 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     `stock_field`, the blank as listed, cut by the same runs; the viewer plays
     it. Returns ``(report, lines, plan, runs)``.
 
-    For side two of a two-sided job (M24) `verdict0` and `blank0` are the
-    stock side one left, flipped: the verdict and the playback start from
-    them rather than from a box and the listed blank. `carry`, when given,
+    For a setup of a two-sided job (2.0) `verdict0` and `blank0` are the
+    stock as that setup finds it, turned over: the fresh blank for the
+    anterior, the anterior's result for the posterior. The verdict and the
+    playback start from them rather than from a box and the listed blank.
+    `carry`, when given,
     receives the finished verdict stock and the playback's final stock so a
     caller can hand them on.
+
+    `work_offset` is the program zero the program was posted with
+    (`ProgramZero.work_offset`): its coordinates are the design frame's plus
+    the offset, and the relief is in the design frame. A stored program with
+    a corner or a top-face zero was read unshifted and failed its verdict.
     """
     import numpy as np
     from guildmodel.core.relief.heightfield import Heightfield
@@ -582,6 +696,10 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     from guildmodel.core.stock.playback import build_stock_plan
 
     runs = parse_program(program)
+    dx, dy, dz = (float(v) for v in work_offset)
+    if dx or dy or dz:
+        for run in runs:
+            run.points = [(p[0] - dx, p[1] - dy, p[2] - dz, *p[3:]) for p in run.points]
     shapes: dict = {}
     shanks: dict = {}
 
@@ -610,6 +728,9 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     else:
         verdict = DexelStock.from_box(-1e9, -1e9, 1e9, 1e9, VERDICT_BOTTOM_MM, float(init_z),
                                       f.resolution, origin=f.origin, shape=(rows, cols))
+    # the stock before the program, so a deep gouge is measured in what was cut
+    top0 = verdict.top(empty=np.nan).z.copy()
+    bottom0 = verdict.bottom(empty=np.nan).z.copy()
     footprints: dict = {}
 
     def footprint_of(shp):
@@ -646,16 +767,24 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
     if shank_hits:
         faults.append(f"Shank in stock: {sum(shank_hits.values())} positions in "
                       + ", ".join(shank_hits))
+    if release_level_mm is not None:
+        faults += _release_faults(verdict, relief, release_level_mm,
+                                  perimeter=release_cuts[0], eyewires=release_cuts[1])
     inside = relief.inside
     target = DexelStock.from_heightfield(
         Heightfield(z=np.where(inside, f.z, 0.0), origin=f.origin, resolution=f.resolution),
         inside=inside, z_bottom=VERDICT_BOTTOM_MM, k=1)
+    # The part reaches down to the stock's own bottom: the anterior of a
+    # pressed blank turns the slab over (M25), its underside below the fixed bottom,
+    # and the verdict counted the part's own material there as left standing.
+    live = target.count > 0
+    target.z_bot[0][live] = np.fmin(bottom0, VERDICT_BOTTOM_MM)[live]
     # On a pressed blank (M25) the three-axis cut makes the walls vertical at
     # the front edge where the formed part's lean; the back's rim loses that
     # much by design, and the verdict's rim band allows it.
     lean = float(getattr(relief, "wall_lean_mm", 0.0) or 0.0)
     sreport = compare(verdict, target, inside, partition=partition,
-                      gouge_rim_margin_mm=1.7 + lean)
+                      gouge_rim_margin_mm=1.7 + lean, wall_lean_mm=lean, top0=top0)
     report = sreport.to_cut_report(np.where(inside, f.z, np.nan), verdict.top(empty=init_z).z,
                                    faults=faults)
     if progress is not None:
@@ -725,7 +854,8 @@ class GCodeWorker(_ProgressWorker):
             # "Every operation is switched off" is the maker's own setting, not a
             # crash — report the sentence, not a traceback (M16 per-op enable).
             from guildmodel.core.cam.castle_ops import NoOperationsError
-            self.error.emit(str(exc) if isinstance(exc, NoOperationsError)
+            from guildmodel.core.cam.two_sided import FlipRefused
+            self.error.emit(str(exc) if isinstance(exc, (NoOperationsError, FlipRefused))
                             else traceback.format_exc())
 
     def _generate_castle(self, tools_cfg: dict, mats_cfg: dict, config_dir: Path) -> None:
@@ -778,9 +908,9 @@ class GCodeWorker(_ProgressWorker):
                 f"{relief.wall_lean_mm:.2f} mm between the front's edge and the back's, and "
                 "a three-axis cut makes them vertical at the front's.")
             if cam.two_sided != "off":
-                self.progress.emit("[gcode] A second side on the pressed blank turns the slab "
-                                   "over in its nest: side two's stock is side one's result "
-                                   "upside down, the dome nest under its back.")
+                self.progress.emit("[gcode] Two-sided on the pressed blank: the anterior first, "
+                                   "the slab back down over the dome nest, then the flip into "
+                                   "the cup, front down, for the posterior.")
             if getattr(castle.stock, "apertures_first", False):
                 # The hybrid: the eyewires, the holes and the groove cut flat
                 # before pressing, in a program of their own; the pressed
@@ -793,7 +923,7 @@ class GCodeWorker(_ProgressWorker):
                     inlays=self.inlay_polys, sculpt_sources=self.sculpt_sources)
                 keep = {"Eyewires", "Holes", "Lens Groove"}
                 flat_cam = cam.model_copy(update={"op_enabled": {
-                    **{n: False for n in ("Hinge Pockets", "Rough Relief", "Fine Relief",
+                    **{n: False for n in ("Component Pockets", "Rough Relief", "Fine Relief",
                                           "Features", "Sculpt Finish", "Inlays", "Perimeter")},
                     **{n: True for n in keep}}})
                 flat_ops = generate_castle_program(
@@ -812,32 +942,57 @@ class GCodeWorker(_ProgressWorker):
                 cam = cam.model_copy(update={"op_enabled": {
                     **cam.op_enabled, "Eyewires": False, "Holes": False, "Lens Groove": False}})
         self.progress.emit("[gcode] Castle: generating the operations…")
+        note = sculpts_left_off(castle, self.kernel)
+        if note:
+            self.progress.emit(f"[gcode] {note}")
         from guildmodel.core.cam.two_sided import plan_two_sided
         # The flip (M26): by the machine's rotary when the profile has one and
         # the blank is on the rotary bar; by hand about the fixture's flip line
         # otherwise. A test or a dialog may name the mount directly.
         with open(config_dir / "fixtures" / "guild_cnc.yaml", encoding="utf-8") as fh:
-            mount = (getattr(self, "fixture_mount", None)
-                     or (yaml.safe_load(fh) or {}).get("mount", "flat"))
+            fixture = yaml.safe_load(fh) or {}
+        mount = getattr(self, "fixture_mount", None) or fixture.get("mount", "flat")
         flip = "rotary" if (machine.has_rotary and mount == "rotary_bar") else "manual"
         job = plan_two_sided(relief, castle, self.hinge_polys, tool, cam, tools_cfg,
                              inlay_polys=self.inlay_polys, progress=self._progress,
                              flip=flip, rotary=machine.rotary if flip == "rotary" else None)
         if job.two_sided and flip == "rotary":
+            # The turn sweeps the blank's radius about the axis: refuse to post a
+            # flip whose swing the profile cannot show clears the tool.
+            from guildmodel.core.cam.two_sided import FlipRefused, rotary_swing_problem
+            problem = rotary_swing_problem(machine, castle.stock, fixture.get("rotary_bar"))
+            if problem:
+                raise FlipRefused(problem)
             self.progress.emit(
-                f"[gcode] Indexed flip: the rotary turns the blank {job.setups[1].a_deg:+.0f} "
-                f"degrees about {machine.rotary.about}; side two runs in G55 with no pause.")
+                f"[gcode] Indexed flip: the rotary turns the blank {job.setups[-2].a_deg:+.0f} "
+                f"degrees about {machine.rotary.about} for the anterior, and back for the "
+                "posterior; no pause.")
         if flat_setups:
             job.setups = flat_setups + job.setups
             job.setups[-1].notes = list(job.setups[-1].notes) + ["on the pressed blank, in the nest"]
         for note in job.notes:
             self.progress.emit(f"[gcode] {note}")
-        ops = require_ops(job.side_one, "The frame front")
+        ops = require_ops(job.posterior, "The frame front")
+        skin_lost = 0
         if job.two_sided:
+            # The anterior first, front face up, and only what its features
+            # need; then the flip, and the posterior as a one-sided job cuts
+            # it (the maker, 2026-10-17).
             self.progress.emit(
-                f"[gcode] Two-sided job: side one {len(ops)} ops in G54, side two "
-                f"{len(job.side_two)} ops in G55 after the flip ("
-                + ", ".join(job.setups[1].notes) + ")")
+                f"[gcode] Two-sided job: the anterior first, front face up, "
+                f"{len(job.anterior)} ops in G55 (" + ", ".join(job.setups[-2].notes)
+                + f"); then the flip, and the posterior as a one-sided job cuts it, "
+                f"{len(ops)} ops in G54.")
+            for op in job.anterior:
+                zmin, zmax = op.z_range()
+                self.progress.emit(
+                    f"[gcode]   Anterior · {op.name}: {len(op.paths)} paths, "
+                    f"Z {zmin:.2f}..{zmax:.2f}" + (f" · {op.tool_name}" if op.tool_name else ""))
+            # what the anterior leaves of the hold the posterior relies on
+            from guildmodel.core.cam.two_sided import skin_hold_notes, skin_holds
+            for warn, line in skin_hold_notes(skin_holds(relief, castle, cam)):
+                self.progress.emit(f"[gcode] {'⚠ ' if warn else ''}{line}")
+                skin_lost += int(warn)
         for op in ops:
             zmin, zmax = op.z_range()
             tag = f" · {op.tool_name}" if (cam.is_multi_tool() and op.tool_name) else ""
@@ -871,7 +1026,9 @@ class GCodeWorker(_ProgressWorker):
         for r in reach:
             self.progress.emit(f"[gcode] ⚠ reach: {r.message()}")
         from guildmodel.core.cam.castle_ops import op_notes
-        for w in op_notes(ops) + anterior_inlay_notes(seats):
+        # an anterior seat is the anterior setup's on a two-sided job (2.0)
+        for w in op_notes(ops) + ([] if job.two_sided else anterior_inlay_notes(
+                seats, "Two-sided on the Cut tab cuts it first, front face up")):
             self.progress.emit(f"[gcode] ⚠ {w}")
 
         # A zone standing at the stock top keeps an uncut cap — raw blank
@@ -930,18 +1087,6 @@ class GCodeWorker(_ProgressWorker):
                 f"[gcode] Multi-tool: {tools_list} · {n_changes} tool change(s) "
                 f"({machine.tool_change_mode.upper()})"
             )
-        first_ts = resolved.get(ops[0].tool_name) if ops else None
-        if first_ts is not None:
-            post_dia = first_ts.diameter_mm
-            post_spindle = first_ts.spindle_rpm
-            post_feed = first_ts.feed_rate_mmpm
-            post_plunge = first_ts.plunge_rate_mmpm
-        else:
-            post_dia = tool["diameter_mm"]
-            post_spindle = clamp.spindle_rpm
-            post_feed = clamp.feed_rate_mmpm
-            post_plunge = clamp.plunge_rate_mmpm
-
         # Program zero / G54 datum (BUILDPLAN M6.2): a post-time offset so the
         # chosen stock-box datum lands at work zero; geometry/sim stay in the
         # design frame. Fixture mode = identity.
@@ -956,38 +1101,94 @@ class GCodeWorker(_ProgressWorker):
         # (M25) the slab's own highest point, which the safe plane must clear.
         stock_top_mm = (float(np.nanmax(relief.stock_top.z)) if relief.preformed
                         else castle.stock.total_pad_height_mm)
-        post = GRBLPost(
-            job_name="posterior_cut",
-            material=p["material_name"],
-            tool_diameter_mm=post_dia,
-            spindle_rpm=post_spindle,
-            feed_rate_mmpm=post_feed,
-            plunge_rate_mmpm=post_plunge,
-            safe_z_mm=cam.safe_z_for(stock_top_mm),
-            feed_plane_mm=stock_top_mm + 1.0,   # rapid-descent floor
-            work_offset=work_offset,
-        )
-        if cam.link_retracts:
-            from guildmodel.core.cam.castle_ops import work_holding_keepouts
-            post.link_clearance_z_mm = stock_top_mm + cam.link_clearance_mm
-            post.link_keepouts = tuple(work_holding_keepouts(
-                relief.partition.body, castle.stock, post_dia / 2.0,
+        from guildmodel.core.cam.castle_ops import fixture_screws, work_holding_keepouts
+        from guildmodel.core.cam.two_sided import flip_pause_text, pad_on, spacer_note
+
+        def keepouts(body, stock, settings, first_dia, is_hole, screws):
+            # the fixture's screws, and every tool in the program: the
+            # keep-outs were sized for the first op's tool alone
+            widest = max([first_dia] + [ts.diameter_mm for ts in settings.values()])
+            return tuple(work_holding_keepouts(
+                body, stock, widest / 2.0,
                 screw_head_diameter_mm=cam.screw_head_diameter_mm,
-                margin_mm=cam.screw_keepout_margin_mm,
-                is_hole=relief.partition.is_hole))
+                margin_mm=cam.screw_keepout_margin_mm, is_hole=is_hole, screws=screws))
+
+        # the fixture's flip line, machine X, on every setup before anything
+        # quotes it
+        flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
+        for st in job.setups:
+            st.flip_axis_x_mm = flip
+        one_file = job.two_sided and cam.two_sided_output == "one_file"
+        setup_p = job.setups[-1]
+        # In a two-sided job the posterior follows the flip: its program says
+        # so, and the probe, when it is on, re-establishes Z after the turn.
+        preamble_p: list = []
+        if job.two_sided:
+            if not one_file and setup_p.flip != "rotary":
+                preamble_p.append(f"; After anterior_cut.nc: {flip_pause_text(setup_p)}")
+            # the face the posterior's Z is taken from after the turn: the
+            # blank's back, or a pressed slab's highest point (M25)
+            if relief.preformed:
+                where, z_face = "the slab's highest point", stock_top_mm
+            else:
+                where = ("the blank's back, off the pad block" if pad_on(castle.stock)
+                         else "the blank's back")
+                z_face = float(castle.stock.blank_thickness_mm)
+            zpost = GRBLPost(job_name="", material="", tool_diameter_mm=0.0,
+                             spindle_rpm=0, feed_rate_mmpm=0.0, plunge_rate_mmpm=0.0,
+                             safe_z_mm=cam.safe_z_for(stock_top_mm), work_offset=work_offset)
+            if "Z" in setup_p.reprobe:
+                preamble_p += zpost.probe_z_block(z_face, cam.probe_plate_mm,
+                                                  where=where, wcs_slot=1)
+            elif setup_p.flip != "rotary":
+                # a zero on the blank's bottom is the bed, which the flip does
+                # not move; a top-face zero is the face now on top, the back
+                preamble_p.append("; Z0: the bed, as for the anterior; the flip does not move it"
+                                  if abs(work_offset[2]) < 5e-4
+                                  else zpost.rezero_note(z_face, where))
+
+        def post_posterior(*, start=True, preamble=(), current_tool=None,
+                           settings=None, multi=None) -> str:
+            """The posterior as a one-sided job posts it, or its part of a
+            two-sided program in one file (`start` False)."""
+            settings = resolved if settings is None else settings
+            multi = (tool_settings is not None) if multi is None else multi
+            first = settings.get(ops[0].tool_name) if ops else None
+            post = GRBLPost(
+                job_name="posterior_cut",
+                material=p["material_name"],
+                tool_diameter_mm=first.diameter_mm if first else tool["diameter_mm"],
+                spindle_rpm=first.spindle_rpm if first else clamp.spindle_rpm,
+                feed_rate_mmpm=first.feed_rate_mmpm if first else clamp.feed_rate_mmpm,
+                plunge_rate_mmpm=first.plunge_rate_mmpm if first else clamp.plunge_rate_mmpm,
+                safe_z_mm=cam.safe_z_for(stock_top_mm),
+                feed_plane_mm=stock_top_mm + 1.0,   # rapid-descent floor
+                work_offset=work_offset,
+                spindle_spinup_s=machine.spindle_spinup_s,
+                preamble=list(preamble),
+            )
+            if cam.link_retracts:
+                post.link_clearance_z_mm = stock_top_mm + cam.link_clearance_mm
+                post.link_keepouts = keepouts(relief.partition.body, castle.stock, settings,
+                                              post.tool_diameter_mm, relief.partition.is_hole,
+                                              fixture_screws(fixture, "front"))
+            write_castle_program(
+                ops, post, side="Posterior Cut" if start else "Posterior Cut (after the flip)",
+                arc_tol_mm=clamp.arc_tol_mm,
+                contour_stepdown_mm=cam.contour_stepdown_mm,
+                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                contour_lead_in=cam.contour_lead_in,
+                tool_settings=settings if multi else None,
+                tool_change_mode=machine.tool_change_mode,
+                start=start, current_tool=current_tool,
+            )
+            return post.to_string()
+
         self._progress("Writing program", 0.95)
-        write_castle_program(
-            ops, post, arc_tol_mm=clamp.arc_tol_mm,
-            contour_stepdown_mm=cam.contour_stepdown_mm,
-            contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
-            contour_lead_in=cam.contour_lead_in,
-            tool_settings=tool_settings,
-            tool_change_mode=machine.tool_change_mode,
-        )
         # The program is kept in the project (.gmodel) by default — no loose .nc
         # is written here; File ▸ Export G-code writes a standalone file on
         # demand (mirrors Export STL).
-        text = post.to_string()
+        text = post_posterior(preamble=preamble_p)
         self.progress.emit(f"[gcode] posterior_cut.nc generated ({len(text):,} bytes)")
 
         # Lint against the machine + estimate cut time (machine dynamics).
@@ -1024,6 +1225,9 @@ class GCodeWorker(_ProgressWorker):
             summary += f"\n⚠ {len(violations)} fixture clearance warning(s) — see log."
         if machine_warnings:
             summary += f"\n⚠ {len(machine_warnings)} machine compliance warning(s) — see log."
+        if skin_lost:
+            summary += (f"\n⚠ The anterior takes the hold off {skin_lost} whole ring(s) "
+                        "— see log.")
         rows = op_summaries(ops, feed_rate_mmpm=clamp.feed_rate_mmpm,
                             tool_settings=resolved)
         self.op_overlay = _op_overlay(ops)
@@ -1032,17 +1236,24 @@ class GCodeWorker(_ProgressWorker):
         self.programs = {"posterior_cut.nc": text}
         for name, flat_ops in flat_programs.items():
             # the hybrid's flat program (M25), posted with the same settings
+            first_f = resolved.get(flat_ops[0].tool_name) if flat_ops else None
             post_f = GRBLPost(
                 job_name=name.replace(".nc", ""), material=p["material_name"],
-                tool_diameter_mm=post_dia, spindle_rpm=post_spindle,
-                feed_rate_mmpm=post_feed, plunge_rate_mmpm=post_plunge,
+                tool_diameter_mm=first_f.diameter_mm if first_f else tool["diameter_mm"],
+                spindle_rpm=first_f.spindle_rpm if first_f else clamp.spindle_rpm,
+                feed_rate_mmpm=first_f.feed_rate_mmpm if first_f else clamp.feed_rate_mmpm,
+                plunge_rate_mmpm=(first_f.plunge_rate_mmpm if first_f
+                                  else clamp.plunge_rate_mmpm),
                 safe_z_mm=cam.safe_z_for(castle.stock.total_pad_height_mm),
-                feed_plane_mm=castle.stock.total_pad_height_mm + 1.0, work_offset=work_offset)
+                feed_plane_mm=castle.stock.total_pad_height_mm + 1.0, work_offset=work_offset,
+                spindle_spinup_s=machine.spindle_spinup_s)
+            # clamped to the machine as the posterior is: the feeds as asked went
+            # out to a program the machine could not run (the 2.0 bug hunt)
             settings_f, _ = build_tool_settings(
                 flat_ops, tools_cfg,
-                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
-                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
-                default_spindle=cam.spindle_rpm or mat["spindle_rpm"], tool_feeds=cam.tool_feeds)
+                default_feed=clamp.feed_rate_mmpm, default_plunge=clamp.plunge_rate_mmpm,
+                default_spindle=clamp.spindle_rpm, machine=machine,
+                tool_feeds=cam.tool_feeds)
             write_castle_program(
                 flat_ops, post_f, side="Apertures Cut (flat, before pressing)",
                 arc_tol_mm=clamp.arc_tol_mm, contour_stepdown_mm=cam.contour_stepdown_mm,
@@ -1050,87 +1261,148 @@ class GCodeWorker(_ProgressWorker):
                 contour_lead_in=cam.contour_lead_in,
                 tool_settings=settings_f if len(settings_f) > 1 else None,
                 tool_change_mode=machine.tool_change_mode)
-            self.programs[name] = post_f.to_string()
+            text_f = self._check_z_profile(post_f.to_string(), more=True)
+            for w in lint_program(text_f, machine):
+                self.progress.emit(f"[gcode] ⚠ machine ({name}): {w}")
+                self.machine_warnings.append(w)
+            self.programs[name] = text_f
             self.progress.emit(f"[gcode] {name} generated ({len(self.programs[name]):,} bytes)")
         self.machine_dump = machine.model_dump()
-        flip = (fixture.get("blank_zones", {}).get("front", {}).get("flip_axis_x_mm"))
-        for s in job.setups:
-            s.flip_axis_x_mm = flip
-        side_two_report = None
+        anterior_report = None
         if job.two_sided:
-            # Side two (M24): the anterior in G55 after the flip, its own
-            # program with the pause text GuildSend parses and the re-probe.
-            from guildmodel.core.cam.two_sided import flip_pause_text
-            castle_two = job.castle_two
-            # the turned slab's own top on a pressed blank (M25), else the flat stock
-            top_two = (float(np.nanmax(job.relief_two.stock_top.z))
-                       if job.relief_two.stock_top is not None
-                       else castle_two.stock.total_pad_height_mm)
-            settings_two, resolved_two = build_tool_settings(
-                job.side_two, tools_cfg,
-                default_feed=cam.feed_rate_mmpm or mat["feed_rate_mmpm"],
-                default_plunge=cam.plunge_rate_mmpm or mat["plunge_rate_mmpm"],
-                default_spindle=cam.spindle_rpm or mat["spindle_rpm"],
+            # The anterior (2.0): cut first, front face up, in G55; its own
+            # program, or the first part of one with the flip's pause.
+            castle_a, relief_a = job.castle_anterior, job.relief_anterior
+            setup_a = job.setups[-2]
+            # the front face's height: the stack's on its spacer, the sheet's,
+            # or a pressed slab's bottom turned over (M25)
+            top_a = (float(np.nanmax(relief_a.stock_top.z)) if relief_a.stock_top is not None
+                     else castle_a.stock.total_pad_height_mm)
+            settings_a, _ = build_tool_settings(
+                job.anterior, tools_cfg,
+                default_feed=clamp.feed_rate_mmpm, default_plunge=clamp.plunge_rate_mmpm,
+                default_spindle=clamp.spindle_rpm, machine=machine,
                 tool_feeds=cam.tool_feeds)
-            multi_two = (cam.is_multi_tool()
-                         or len({op.tool_name for op in job.side_two if op.tool_name}) > 1)
-            first_two = settings_two.get(job.side_two[0].tool_name)
-            offset_two = cam.program_zero.work_offset(castle_two.stock)
-            setup_two = job.setups[1]
+            multi_a = (cam.is_multi_tool()
+                       or len({op.tool_name for op in job.anterior if op.tool_name}) > 1)
+            offset_a = cam.program_zero.work_offset(castle_a.stock)
             rotary_kw = {}
-            if setup_two.flip == "rotary" and machine.rotary is not None:
+            if setup_a.flip == "rotary" and machine.rotary is not None:
                 rotary_kw = dict(
                     axes=machine.axes, rotary_letter=machine.rotary.letter,
                     rotary_travel_deg=float(machine.rotary.travel_deg),
                     rotary_max_rate_degpm=float(machine.rotary.max_rate_degpm),
                     supports_g93=bool(machine.supports_g93),
-                    index_a_deg=float(setup_two.a_deg or 180.0),
+                    index_a_deg=float(setup_a.a_deg if setup_a.a_deg is not None else 180.0),
                     rotary_unwind="g53" if not machine.rotary.travel_deg else "g28")
-            post2 = GRBLPost(
-                job_name="back_cut", material=p["material_name"],
-                tool_diameter_mm=first_two.diameter_mm if first_two else post_dia,
-                spindle_rpm=first_two.spindle_rpm if first_two else post_spindle,
-                feed_rate_mmpm=first_two.feed_rate_mmpm if first_two else post_feed,
-                plunge_rate_mmpm=first_two.plunge_rate_mmpm if first_two else post_plunge,
-                safe_z_mm=cam.safe_z_for(top_two),
-                feed_plane_mm=top_two + 1.0,
-                work_offset=offset_two, wcs="G55", **rotary_kw)
-            post2.preamble = ["; " + flip_pause_text(setup_two)]
-            if cam.probe_block:
-                post2.preamble += post2.probe_z_block()
-            elif setup_two.flip != "rotary":
-                post2.preamble.append("; Re-zero Z on the stock top (the former front) before cutting")
-            if cam.link_retracts:
-                from guildmodel.core.cam.castle_ops import work_holding_keepouts
-                post2.link_clearance_z_mm = top_two + cam.link_clearance_mm
-                post2.link_keepouts = tuple(work_holding_keepouts(
-                    job.relief_two.partition.body, castle_two.stock, post2.tool_diameter_mm / 2.0,
-                    screw_head_diameter_mm=cam.screw_head_diameter_mm,
-                    margin_mm=cam.screw_keepout_margin_mm,
-                    is_hole=job.relief_two.partition.is_hole))
-            write_castle_program(
-                job.side_two, post2, side="Anterior Cut (side two)", arc_tol_mm=clamp.arc_tol_mm,
-                contour_stepdown_mm=cam.contour_stepdown_mm,
-                contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
-                contour_lead_in=cam.contour_lead_in,
-                tool_settings=settings_two if multi_two else None,
-                tool_change_mode=machine.tool_change_mode)
-            text2 = post2.to_string()
-            self.progress.emit(f"[gcode] back_cut.nc generated ({len(text2):,} bytes)")
-            for w in lint_program(text2, machine):
-                self.progress.emit(f"[gcode] ⚠ machine (side two): {w}")
-            side_two_report = estimate_program(
-                text2, MachineDynamics.from_profile(machine),
+            # the bed's screws stay where they are; the blank front face up is
+            # mirrored about the flip line, so they are in its frame mirrored
+            # too (a rotary flip takes the blank off the bed)
+            screws_a = ([] if setup_a.flip == "rotary" else
+                        [(2.0 * float(setup_a.mirror_x_mm or 0.0) - x, y, r)
+                         for x, y, r in fixture_screws(fixture, "front")])
+            preamble_a = ["; Front face up: the anterior first, its seats and its features alone"]
+            spacer = "" if setup_a.flip == "rotary" else spacer_note(castle.stock)
+            if spacer:
+                preamble_a.append("; " + spacer[0].upper() + spacer[1:])
+            if abs(offset_a[2]) < 5e-4 and setup_a.flip != "rotary":
+                preamble_a.append("; Z0: " + ("the bed, under the pad block" if pad_on(castle.stock)
+                                              else "the blank's bottom, on the bed"))
+
+            def post_anterior(*, end=True, pause=None, settings=None, multi=None,
+                              job_name="anterior_cut") -> str:
+                settings = settings_a if settings is None else settings
+                multi = multi_a if multi is None else multi
+                first = settings.get(job.anterior[0].tool_name)
+                post_a = GRBLPost(
+                    job_name=job_name, material=p["material_name"],
+                    tool_diameter_mm=first.diameter_mm if first else tool["diameter_mm"],
+                    spindle_rpm=first.spindle_rpm if first else clamp.spindle_rpm,
+                    feed_rate_mmpm=first.feed_rate_mmpm if first else clamp.feed_rate_mmpm,
+                    plunge_rate_mmpm=(first.plunge_rate_mmpm if first
+                                      else clamp.plunge_rate_mmpm),
+                    safe_z_mm=cam.safe_z_for(top_a),
+                    feed_plane_mm=top_a + 1.0,
+                    work_offset=offset_a, wcs="G55", **rotary_kw,
+                    spindle_spinup_s=machine.spindle_spinup_s,
+                    preamble=list(preamble_a))
+                if cam.link_retracts:
+                    post_a.link_clearance_z_mm = top_a + cam.link_clearance_mm
+                    post_a.link_keepouts = keepouts(relief_a.partition.body, castle_a.stock,
+                                                    settings, post_a.tool_diameter_mm,
+                                                    relief_a.partition.is_hole, screws_a)
+                write_castle_program(
+                    job.anterior, post_a, side="Anterior Cut (front face up, cut first)",
+                    arc_tol_mm=clamp.arc_tol_mm,
+                    contour_stepdown_mm=cam.contour_stepdown_mm,
+                    contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
+                    contour_lead_in=cam.contour_lead_in,
+                    tool_settings=settings if multi else None,
+                    tool_change_mode=machine.tool_change_mode, end=end, pause=pause)
+                return post_a.to_string()
+
+            text_a = self._check_z_profile(post_anterior(), more=True)
+            for w in lint_program(text_a, machine):
+                self.progress.emit(f"[gcode] ⚠ machine (anterior): {w}")
+                self.machine_warnings.append(w)
+            anterior_report = estimate_program(
+                text_a, MachineDynamics.from_profile(machine),
                 tool_change_seconds=machine.tool_change_seconds)
-            self.progress.emit("[gcode] Side two, estimated cut time —\n"
-                               + format_report(side_two_report))
-            self.programs["back_cut.nc"] = text2
-            summary += (f"\n\nTwo-sided job: back_cut.nc cuts the anterior in G55 after the "
-                        f"flip ({', '.join(job.setups[1].notes)}); "
-                        f"side two {side_two_report.cycle_seconds / 60:.1f} min.")
-            rows += [dict(r, name=f"Side two · {r['name']}")
-                     for r in op_summaries(job.side_two, feed_rate_mmpm=clamp.feed_rate_mmpm,
-                                           tool_settings=settings_two)]
+            self.progress.emit("[gcode] The anterior, estimated cut time —\n"
+                               + format_report(anterior_report))
+            if one_file:
+                # One program (2.0): the anterior, the flip's pause, then the
+                # posterior; one tool table for both, so a tool keeps its number.
+                shared, _ = build_tool_settings(
+                    job.anterior + ops, tools_cfg,
+                    default_feed=clamp.feed_rate_mmpm, default_plunge=clamp.plunge_rate_mmpm,
+                    default_spindle=clamp.spindle_rpm, machine=machine,
+                    tool_feeds=cam.tool_feeds)
+                multi_s = (cam.is_multi_tool() or len(shared) > 1)
+                pause = None if setup_p.flip == "rotary" else flip_pause_text(setup_p)
+                combined = (post_anterior(end=False, pause=pause, settings=shared, multi=multi_s,
+                                          job_name="two_sided_cut")
+                            + post_posterior(start=False, preamble=preamble_p,
+                                             current_tool=job.anterior[-1].tool_name,
+                                             settings=shared, multi=multi_s))
+                combined = self._check_z_profile(combined, more=True)
+                for w in lint_program(combined, machine):
+                    if w not in self.machine_warnings:
+                        self.progress.emit(f"[gcode] ⚠ machine (two_sided_cut): {w}")
+                        self.machine_warnings.append(w)
+                del self.programs["posterior_cut.nc"]
+                self.programs[TWO_SIDED_ONE_FILE] = combined
+                for st in job.setups[-2:]:
+                    st.program = TWO_SIDED_ONE_FILE
+                self.progress.emit(f"[gcode] two_sided_cut.nc generated ({len(combined):,} bytes): "
+                                   "the anterior, the flip's pause, the posterior")
+                summary += (f"\n\nTwo-sided job in one program: two_sided_cut.nc cuts the "
+                            "anterior front face up, pauses for the flip, then cuts the "
+                            f"posterior; the anterior {anterior_report.cycle_seconds / 60:.1f} min.")
+            else:
+                self.programs = {"anterior_cut.nc": text_a, **self.programs}
+                self.progress.emit(f"[gcode] anterior_cut.nc generated ({len(text_a):,} bytes)")
+                summary += (f"\n\nTwo-sided job: anterior_cut.nc first, front face up ("
+                            f"{', '.join(setup_a.notes)}); then the flip, and posterior_cut.nc, "
+                            "the one-sided program; the anterior "
+                            f"{anterior_report.cycle_seconds / 60:.1f} min.")
+            rows = [dict(r, name=f"Anterior · {r['name']}")
+                    for r in op_summaries(job.anterior, feed_rate_mmpm=clamp.feed_rate_mmpm,
+                                          tool_settings=settings_a)] + rows
+            # the anterior's paths on the 2D view, named as its rows are, so the
+            # inspector colors them and names their tools; drawn in the design
+            # frame the view shows, turned back over the flip line (or the
+            # rotary's centerline), and after the posterior's, which keep
+            # their colors
+            from guildmodel.core.cam.two_sided import mirror_points
+            rotary_a = setup_a.flip == "rotary" and machine.rotary is not None
+            m_a = (float(machine.rotary.center_y_mm) if rotary_a
+                   else float(setup_a.mirror_x_mm or 0.0))
+            self.op_overlay = list(self.op_overlay or []) + [
+                dict(entry, name=f"Anterior · {entry['name']}",
+                     paths=[mirror_points(path, m_a, "y" if rotary_a else "x")
+                            for path in entry["paths"]])
+                for entry in _op_overlay(job.anterior)]
         self.setup_dict = {
             "tool": tool.get("display_name", cam.tool_name),
             "tool_name": cam.tool_name,
@@ -1146,10 +1418,10 @@ class GCodeWorker(_ProgressWorker):
             "setups": [s.model_dump() for s in job.setups],
             "two_sided": job.two_sided,
             "run_mode": ("rotary_indexed" if (job.two_sided and job.setups[-1].flip == "rotary")
-                         else "two_file"),
-            "est_cycle_min_side_two": (round(side_two_report.cycle_seconds / 60, 2)
-                                       if side_two_report is not None else None),
-            "inlays": _inlay_sheet(seats, thin),
+                         else "single_file" if one_file else "two_file"),
+            "est_cycle_min_anterior": (round(anterior_report.cycle_seconds / 60, 2)
+                                       if anterior_report is not None else None),
+            "inlays": _inlay_sheet(seats, thin, anterior_posted=job.two_sided),
             "program_zero": cam.program_zero.label(),
             "program_zero_mode": cam.program_zero.mode,
             "work_offset_mm": [round(v, 3) for v in work_offset],
@@ -1305,6 +1577,7 @@ class GCodeWorker(_ProgressWorker):
             safe_z_mm=cam.safe_z_for(temple.blank_thickness_mm),
             feed_plane_mm=temple.blank_thickness_mm + 1.0,
             work_offset=work_offset,
+            spindle_spinup_s=machine.spindle_spinup_s,
         )
         self._progress("Writing temple program", 0.9)
         write_castle_program(
@@ -1485,6 +1758,7 @@ class GCodeWorker(_ProgressWorker):
             safe_z_mm=cam.safe_z_for(block.blank_thickness_mm),
             feed_plane_mm=block.blank_thickness_mm + 1.0,
             work_offset=work_offset,
+            spindle_spinup_s=machine.spindle_spinup_s,
         )
         self._progress("Writing block program", 0.9)
         write_castle_program(
@@ -1656,24 +1930,26 @@ class SimWorker(_ProgressWorker):
     def __init__(self, partition, castle, cam_params, hinge_polys=(),
                  material_name="acetate", resolution: float = 0.3,
                  inlay_polys=(), program_text: str | None = None,
-                 sculpt_sources=None, back_program_text: str | None = None,
-                 forming=None, bridge=None, back_setup=None) -> None:
+                 sculpt_sources=None, anterior_program_text: str | None = None,
+                 forming=None, bridge=None, anterior_setup=None) -> None:
         super().__init__()
         self.partition = partition
         self.castle = castle
         self.cam_params = cam_params
         self.forming = forming           # the project's forming, for a pre-formed blank (M25)
         self.bridge = bridge
-        # Side two's setup record (M24/M26): how the blank was flipped, by
-        # hand about the fixture's line or by the rotary about its centerline.
-        self.back_setup = dict(back_setup) if isinstance(back_setup, dict) else (
-            back_setup.model_dump() if back_setup is not None else None)
+        # The anterior's setup record (M24/M26, the anterior first since
+        # 2.0): how the blank lies front face up, turned by hand about the
+        # fixture's line or by the rotary about its centerline.
+        self.anterior_setup = dict(anterior_setup) if isinstance(anterior_setup, dict) else (
+            anterior_setup.model_dump() if anterior_setup is not None else None)
         self.hinge_polys = list(hinge_polys)
         self.inlay_polys = list(inlay_polys)
         self.sculpt_sources = dict(sculpt_sources or {})   # the sculpts' sources (M22)
-        # Side two's stored program (M24): simulated after side one, from the
-        # stock side one left, flipped about the blank's center line.
-        self.back_program_text = back_program_text
+        # The anterior's stored program: simulated first, on the blank turned
+        # front face up; the posterior is then cut from the stock it leaves,
+        # turned back.
+        self.anterior_program_text = anterior_program_text
         self.material_name = material_name
         # The stored program, when the tab has a fresh one (M21 §6.5): the
         # simulation then reads it at the posting grid, `CUT_RES_MM`, and
@@ -1771,10 +2047,21 @@ class SimWorker(_ProgressWorker):
             # playback over the blank as listed on the Stock tab, from one parse
             # of the program the machine will run.
             f = relief.field
-            init_z = self.castle.stock.total_pad_height_mm + 1.0
+            init_z = self.castle.stock.total_pad_height_mm
             stock_hf = stock_top_heightfield(self.castle.stock, resolution=f.resolution)
             carry: dict = {}
             pressed: dict = {}
+            if not relief.preformed:
+                # The verdict starts from the stock as it is, the sheet and the
+                # pad block over its footprint. It started from a box a
+                # millimeter over the pad's top, and every zone at the stock's
+                # top, the nosepads on the shipped stock, read that millimeter
+                # of air as uncut (the 2.0 bug hunt).
+                from guildmodel.core.stock import DexelStock
+                pressed["verdict0"] = DexelStock.from_heightfield(
+                    stock_top_heightfield(self.castle.stock, resolution=f.resolution,
+                                          origin=f.origin, shape=f.z.shape),
+                    z_bottom=VERDICT_BOTTOM_MM)
             if relief.preformed and self.forming is not None:
                 # The pressed slab is the stock (M25): the verdict and the
                 # playback both start from its mesh, apertures open on a hybrid.
@@ -1783,11 +2070,12 @@ class SimWorker(_ProgressWorker):
                 from guildmodel.core.forming import ThermoformMap
                 from guildmodel.core.forming.blank import formed_blank_mesh
                 from guildmodel.core.stock import DexelStock
-                fmap = ThermoformMap.from_metadata(self.forming, bridge=self.bridge)
+                fmap = ThermoformMap.from_metadata(self.forming.pressed(), bridge=self.bridge)
                 apertures = ()
                 if getattr(self.castle.stock, "apertures_first", False):
+                    from guildmodel.core.geometry.regions import body_interiors
                     is_hole = self.partition.is_hole
-                    apertures = [Polygon(r) for r in self.partition.body.interiors
+                    apertures = [Polygon(r) for r in body_interiors(self.partition.body)
                                  if not is_hole(r)]
                 mesh = formed_blank_mesh(self.castle.stock, fmap, apertures=apertures)
                 v, fc = np.asarray(mesh.vertices), np.asarray(mesh.faces)
@@ -1798,10 +2086,94 @@ class SimWorker(_ProgressWorker):
                 init_z = float(np.nanmax(relief.stock_top.z)) + 0.5
                 self.progress.emit("[sim] The stock is the pressed slab; the walls lean "
                                    f"{relief.wall_lean_mm:.2f} mm and the rim band allows it.")
+            # a stored program carries the program zero; one posted here does not
+            offset = (cam.program_zero.work_offset(self.castle.stock) if self.program_text
+                      else (0.0, 0.0, 0.0))
+            def release_level(castle) -> float:
+                # what holds the part when the through-cuts are done: the
+                # skin, or the tabs, and half a millimeter over either
+                held = castle.holding.tab_height_mm if castle.holding.tabs_on() else 0.0
+                return max(castle.onion_skin_mm, held) + 0.5
+
+            # Two-sided (2.0): the anterior first, front face up on the blank
+            # turned over, then the stock it leaves turned back and the
+            # posterior cut from it as a one-sided job cuts it; the playback
+            # runs both, with the flip between.
+            cuts_on = (cam.is_op_enabled("Perimeter"), cam.is_op_enabled("Eyewires"))
+            two_sided = bool(self.program_text and self.anterior_program_text)
+            plan_a = None
+            lines_a: list = []
+            status_a = "ok"
+            flip_desc: dict = {}
+            if two_sided:
+                from guildmodel.core.cam.two_sided import (
+                    anterior_castle, anterior_setup_relief, flip_height)
+                from guildmodel.core.stock import DexelStock
+                flip = "rotary" if (self.anterior_setup or {}).get("flip") == "rotary" else "manual"
+                rotary = None
+                if flip == "rotary":
+                    try:
+                        from guildmodel.core.post.machine import load_machine_profile
+                        rotary = load_machine_profile(cam.machine_name, config_dir).rotary
+                    except Exception:                        # noqa: BLE001
+                        rotary = None
+                    if rotary is None:
+                        flip = "manual"
+                T = float(self.castle.stock.blank_thickness_mm)
+                cy = float(rotary.center_y_mm) if rotary is not None else 0.0
+                cz = float(rotary.center_z_mm) if rotary is not None else T / 2.0
+                zf = flip_height(self.castle.stock)
+                relief_a = anterior_setup_relief(relief, self.castle, flip=flip,
+                                                 center_y=cy, center_z=cz, force=True)
+
+                def turned(stock):
+                    # the blank turned over: about the rotary's centerline, or
+                    # the stack about the flip line
+                    if flip == "rotary":
+                        return stock.mirrored(cy, z_flip=2 * cz, axis="y")
+                    return stock.mirrored(0.0, z_flip=zf)
+
+                if relief.preformed:
+                    hi, lo = relief.stock_top.z, relief.stock_bottom.z
+                else:
+                    hi = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
+                                               origin=f.origin, shape=f.z.shape).z
+                    lo = 0.0
+                verdict0 = pressed.get("verdict0")
+                if verdict0 is None:
+                    verdict0 = DexelStock.from_box(-1e9, -1e9, 1e9, 1e9, 0.0, float(init_z),
+                                                   f.resolution, origin=f.origin,
+                                                   shape=f.z.shape)
+                blank0 = pressed.get("blank0")
+                if blank0 is None:
+                    blank0 = DexelStock.from_heightfield(stock_hf, z_bottom=0.0)
+                carry_a: dict = {}
+                self.progress.emit("[sim] The anterior, front face up…")
+                init_a = (float(np.nanmax(relief_a.stock_top.z)) + 0.5
+                          if relief_a.stock_top is not None else T)
+                report_a, lines_a, plan_a, _ = _simulate_program(
+                    self.anterior_program_text, relief_a, tools_cfg, tool, init_z=init_a,
+                    stock_field=stock_hf, feed_mmpm=feed_mmpm, partition=relief_a.partition,
+                    progress=self._progress,
+                    verdict0=turned(verdict0.clipped(lo, hi)), blank0=turned(blank0),
+                    carry=carry_a,
+                    work_offset=(cam.program_zero.work_offset(anterior_castle(self.castle).stock)
+                                 if self.program_text else (0.0, 0.0, 0.0)))
+                status_a = report_a.status()
+                # the posterior is cut from what the anterior left, turned back
+                pressed = dict(pressed, verdict0=turned(carry_a["verdict"]),
+                               blank0=turned(carry_a["stock"]))
+                flip_desc = ({"label": "The rotary turns the blank back: the posterior up",
+                              "axis": "x", "point": (0.0, cy, cz)} if flip == "rotary" else
+                             {"label": "Flip: the blank turns over onto its front face, "
+                                       "re-registered on the dowel pins",
+                              "axis": "y", "point": (0.0, 0.0, zf / 2.0)})
+                self.progress.emit("[sim] The flip, then the posterior…")
             report, lines, plan, runs = _simulate_program(
                 program, relief, tools_cfg, tool, init_z=init_z, stock_field=stock_hf,
                 feed_mmpm=feed_mmpm, partition=self.partition, progress=self._progress,
-                carry=carry, **pressed)
+                carry=carry, work_offset=offset, release_level_mm=release_level(self.castle),
+                release_cuts=cuts_on, **pressed)
             if ops is not None:
                 plan.op_tool_geom = _op_tool_geom(ops, tool)
 
@@ -1825,56 +2197,19 @@ class SimWorker(_ProgressWorker):
                      for x, y in lens.exterior.coords]
                     for lens in relief.groove_lens_polys]
 
-            # Two-sided (M24): side two is cut from the stock side one left,
-            # flipped about the blank's center line, against the anterior as
-            # a relief of its own; the lines carry both verdicts and a failed
-            # side one fails the whole.
-            if self.program_text and self.back_program_text:
-                from guildmodel.core.cam.two_sided import anterior_setup_relief
-                flip = (self.back_setup or {}).get("flip", "manual")
-                rotary = None
-                if flip == "rotary":
-                    try:
-                        from guildmodel.core.post.machine import load_machine_profile
-                        rotary = load_machine_profile(cam.machine_name, config_dir).rotary
-                    except Exception:                        # noqa: BLE001
-                        rotary = None
-                    if rotary is None:
-                        flip = "manual"
-                T = float(self.castle.stock.blank_thickness_mm)
-                cy = float(rotary.center_y_mm) if rotary is not None else 0.0
-                cz = float(rotary.center_z_mm) if rotary is not None else T / 2.0
-                relief_two = anterior_setup_relief(relief, self.castle, flip=flip,
-                                                   center_y=cy, center_z=cz)
-                if relief_two is not None:
-                    import dataclasses
-                    if relief.preformed:
-                        # the pressed slab's own envelopes bound side one's result
-                        hi, lo = relief.stock_top.z, relief.stock_bottom.z
-                    else:
-                        hi = stock_top_heightfield(self.castle.stock, resolution=f.resolution,
-                                                   origin=f.origin, shape=f.z.shape).z
-                        lo = 0.0
-                    if flip == "rotary":
-                        verdict2 = carry["verdict"].clipped(lo, hi).mirrored(cy, z_flip=2 * cz, axis="y")
-                        blank2 = carry["stock"].mirrored(cy, z_flip=2 * cz, axis="y")
-                    else:
-                        verdict2 = carry["verdict"].clipped(lo, hi).mirrored(0.0, z_flip=T)
-                        blank2 = carry["stock"].mirrored(0.0, z_flip=T)
-                    lines_one = [f"Side one: {ln}" for ln in lines]
-                    status_one = report.status()
-                    self.progress.emit("[sim] Side two: the anterior after the flip…")
-                    init_two = (float(np.nanmax(relief_two.stock_top.z)) + 0.5
-                                if relief_two.stock_top is not None else T)
-                    report, lines, plan, _ = _simulate_program(
-                        self.back_program_text, relief_two, tools_cfg, tool, init_z=init_two,
-                        stock_field=stock_hf, feed_mmpm=feed_mmpm,
-                        partition=relief_two.partition, progress=self._progress,
-                        verdict0=verdict2, blank0=blank2)
-                    lines = lines_one + [f"Side two: {ln}" for ln in lines]
-                    if status_one == "fail" and report.status() != "fail":
-                        report = dataclasses.replace(
-                            report, faults=tuple(report.faults) + ("Side one: the cut is incomplete",))
+            if two_sided:
+                import dataclasses
+                from guildmodel.core.stock.playback import SetupsPlan
+                lines = [f"Anterior: {ln}" for ln in lines_a] + [f"Posterior: {ln}" for ln in lines]
+                if status_a == "fail" and report.status() != "fail":
+                    report = dataclasses.replace(
+                        report, faults=tuple(report.faults) + ("Anterior: the cut is incomplete",))
+                elif status_a == "warn" and report.status() == "ok":
+                    # the anterior's warning was dropped with its report
+                    report = dataclasses.replace(
+                        report, warnings=tuple(report.warnings)
+                        + ("Anterior: short of the model or gouged; see its lines",))
+                plan = SetupsPlan([plan_a, plan], names=["Anterior", ""], flips=[flip_desc])
 
             self.finished.emit(report, lines, plan)
         except _Canceled:
@@ -2037,11 +2372,16 @@ class FlatSimWorker(_ProgressWorker):
             from guildmodel.core.sim.bed import flat_blank_heightfield
             stock_top, stock_origin = flat_blank_heightfield(
                 blank_length, blank_width, float(top_z), f.resolution)
+            # a stored program carries the part's program zero (its blank box)
+            offset = (0.0, 0.0, 0.0)
+            if self.program_text:
+                part = self.temple if self.mode == "temple" else self.block
+                offset = cam.program_zero.work_offset(part.stock())
             report, lines, plan, runs = _simulate_program(
                 program, relief, tools_cfg, fallback_tool, init_z=float(top_z),
                 stock_field=Heightfield(z=stock_top, origin=stock_origin,
                                         resolution=f.resolution),
-                feed_mmpm=feed_mmpm, progress=self._progress)
+                feed_mmpm=feed_mmpm, progress=self._progress, work_offset=offset)
             if self.program_text is None:
                 plan.op_tool_geom = _op_tool_geom(ops, fallback_tool)
             self.finished.emit(report, lines, plan)
@@ -3743,6 +4083,12 @@ class MainWindow(QMainWindow):
         self._dxf_loaded = False
         self._mesh_built = False
         self._program_stored = False
+        # The program on the window matches the design and its CAM settings:
+        # set when one is generated, cleared by `_invalidate_program`. Stored
+        # (green) is fresh *and* in the .gmodel; the simulation needs only
+        # fresh, and an unsaved session's program is fresh from the moment
+        # it posts (the 2.0 bug hunt: Simulate generated again, forever).
+        self._program_fresh = False
         # The tessellation's verdict on the current model (BUILDPLAN-NEW UI-0).
         # None = nothing built yet; set by `_set_mesh_verdict` on every build.
         self._mesh_verdict = None
@@ -3806,6 +4152,7 @@ class MainWindow(QMainWindow):
         self._export_thread: Optional[QThread] = None
         self._export_worker: Optional[ExportWorker] = None
         self._progress_dialog: Optional[QProgressDialog] = None
+        self._progress_owner: Optional[str] = None
 
         # The component notebook (BUILDPLAN M7.3): a project is N role-typed
         # components, one active at a time. The `self._*` geometry/artifacts below
@@ -3945,6 +4292,10 @@ class MainWindow(QMainWindow):
 
         # Autosave + crash recovery (GuildDraw pattern): snapshot dirty work to
         # a recovery slot every few minutes; offer to restore it on startup.
+        self._cam_prefs_timer = QTimer(self)
+        self._cam_prefs_timer.setSingleShot(True)
+        self._cam_prefs_timer.setInterval(500)
+        self._cam_prefs_timer.timeout.connect(self._save_cam_prefs)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(self._AUTOSAVE_MS)
         self._autosave_timer.timeout.connect(self._do_autosave)
@@ -4008,6 +4359,8 @@ class MainWindow(QMainWindow):
 
     def _invalidate_program(self) -> None:
         """A design/CAM change makes any stored program stale → drop to yellow."""
+        self._program_fresh = False
+        self._program_gen = getattr(self, "_program_gen", 0) + 1
         if self._program_stored:
             self._program_stored = False
             self._refresh_readiness()
@@ -4064,6 +4417,7 @@ class MainWindow(QMainWindow):
 
         # Right dock: the tabbed params panel (title bar hidden, GuildDraw look)
         self.params = ParamsPanel()
+        self.params.set_model_kernel(self._model_kernel())
         self._right_dock = QDockWidget("Parameters", self)
         self._right_dock.setObjectName("paramsDock")
         # Context-aware sidebar (BUILDPLAN M7.12 + UX pass): the dock follows both the
@@ -4920,11 +5274,14 @@ class MainWindow(QMainWindow):
 
     # ---- parts on the bed: ids, footprints, keys, chips (BUILDPLAN M19 / M20)
 
-    @staticmethod
-    def _component_id(ws) -> str:
-        """The id a saved placement is matched by: the part's kind, which is
-        unique in a project and stable across a reopen. Not the source
-        workspace — both base-curve blocks come from the front's drawing."""
+    def _component_id(self, ws) -> str:
+        """The id a saved placement is matched by: the part's kind, numbered
+        when a kind repeats (`component_workspace.component_ids`), unique in a
+        project and stable across a reopen. Not the source workspace — both
+        base-curve blocks come from the front's drawing."""
+        for w, cid in zip(self._workspaces, component_ids(self._workspaces)):
+            if w is ws:
+                return cid
         return ws.kind.value
 
     def _workspace_by_id(self, cid: str):
@@ -5206,7 +5563,7 @@ class MainWindow(QMainWindow):
         if not self._worktable.placement_zones():
             QMessageBox.information(
                 self, "No placement zones",
-                "Tag at least one zone with a component role (frame-front, temple, "
+                "Tag at least one zone with a part's role (frame-front, temple, "
                 "base-curve) before placing. Keep-outs alone hold nothing.")
             return
         self._sync_active_workspace()        # the active component's dock edits
@@ -5661,13 +6018,13 @@ class MainWindow(QMainWindow):
         worker.finished.connect(self._parts_thread.quit)
         worker.error.connect(self._parts_thread.quit)
         worker.canceled.connect(self._parts_thread.quit)
-        dlg = self._open_progress("Generating the worktable program")
+        dlg = self._open_progress("Generating the worktable program", "parts")
         worker.stage.connect(self._on_stage)
         dlg.canceled.connect(worker.cancel, Qt.ConnectionType.DirectConnection)
         self._parts_thread.start()
 
     def _on_bed_parts_ready(self, parts) -> None:
-        self._close_progress()
+        self._close_progress("parts")
         for part in parts:
             ws = self._workspace_by_id(part.component_id)
             if ws is None:
@@ -5678,13 +6035,13 @@ class MainWindow(QMainWindow):
         self._finish_bed_generate()
 
     def _on_bed_parts_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("parts")
         self._wt_after_generate = None
         self._refresh_bed_program_state()
         self._report_failure("Worktable program", "gcode", tb)
 
     def _on_bed_parts_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("parts")
         self._wt_after_generate = None
         self._refresh_bed_program_state()
         self.append_log("[gcode] Worktable program canceled.")
@@ -5734,7 +6091,7 @@ class MainWindow(QMainWindow):
             bed = build_nest_program(nest)
             if not bed.ops:
                 QMessageBox.information(self, "Nothing to cut",
-                                       "The placed components produced no toolpaths.")
+                                       "The placed parts produced no toolpaths.")
                 return
             self.append_log(
                 f"[gcode] Worktable: {len(bed.placements)} part(s), {len(bed.ops)} ops, "
@@ -5764,7 +6121,8 @@ class MainWindow(QMainWindow):
                 tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
                 feed_rate_mmpm=first_ts.feed_rate_mmpm,
                 plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
-                safe_z_mm=self._bed_safe_z(cam), work_offset=bed_offset)
+                safe_z_mm=self._bed_safe_z(cam), work_offset=bed_offset,
+                spindle_spinup_s=machine.spindle_spinup_s)
             write_castle_program(
                 bed.ops, post, side="Worktable", arc_tol_mm=clamp.arc_tol_mm,
                 contour_stepdown_mm=cam.contour_stepdown_mm,
@@ -5937,13 +6295,13 @@ class MainWindow(QMainWindow):
         self._sim_worker.finished.connect(self._sim_thread.quit)
         self._sim_worker.error.connect(self._sim_thread.quit)
         self._sim_worker.canceled.connect(self._sim_thread.quit)
-        dlg = self._open_progress("Simulating bed")
+        dlg = self._open_progress("Simulating bed", "bed_sim")
         self._sim_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._sim_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._sim_thread.start()
 
     def _on_sim_bed_finished(self, report, lines, plan=None) -> None:
-        self._close_progress()
+        self._close_progress("bed_sim")
         # Hold-down collision check (M7.12.3): the tool/holder envelope vs the bed's
         # keep-outs, flagged per toolpath position and rendered on the bed.
         if plan is not None and self._worktable is not None:
@@ -5982,18 +6340,18 @@ class MainWindow(QMainWindow):
         for line in lines:
             self.append_log("[bed-sim] " + line)
         self.status_lbl.setText({
-            "ok": "Bed verified — every component reached",
+            "ok": "Bed verified — every part reached",
             "warn": "Bed simulated — review the flagged regions",
             "fail": "Bed incomplete — see the flagged regions",
         }.get(report.status(), "Bed simulated"))
 
     def _on_sim_bed_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("bed_sim")
         self._report_failure("Bed simulation", "bed-sim", tb)
         self._update_view_toggles()
 
     def _on_sim_bed_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("bed_sim")
         self.append_log("[bed-sim] Canceled.")
         self.status_lbl.setText("Bed simulation canceled")
         self._update_view_toggles()
@@ -6231,14 +6589,14 @@ class MainWindow(QMainWindow):
         self._act_export = QAction("Export STL", self)
         self._act_export.setShortcut("Ctrl+E")
         self._act_export.setToolTip(
-            "Export this component's watertight STL mesh…  (Ctrl+E)")
+            "Export this part's watertight STL mesh…  (Ctrl+E)")
         self._act_export.setEnabled(False)
         self._act_export.triggered.connect(self._on_export_stl)
 
         self._act_export_all = QAction("Export All STL", self)
         self._act_export_all.setShortcut("Ctrl+Shift+E")
         self._act_export_all.setToolTip(
-            "Export every component's STL to one folder…  (Ctrl+Shift+E)")
+            "Export every part's STL to one folder…  (Ctrl+Shift+E)")
         self._act_export_all.setEnabled(False)
         self._act_export_all.triggered.connect(self._on_export_all_stl)
 
@@ -6682,6 +7040,9 @@ class MainWindow(QMainWindow):
             self.params.set_fold_state(self._prefs.get("dock_folds") or {})
 
     def _save_window_state(self) -> None:
+        if self._cam_prefs_timer.isActive():         # a CAM edit not yet written
+            self._cam_prefs_timer.stop()
+            self._save_cam_prefs()
         self._prefs["main_window_geometry"] = bytes(
             self.saveGeometry().toBase64()
         ).decode()
@@ -6715,7 +7076,7 @@ class MainWindow(QMainWindow):
         pairs = [("_import_thread", "_import_worker"), ("_mesh_thread", "_mesh_worker"),
                  ("_gcode_thread", "_gcode_worker"), ("_sim_thread", "_sim_worker"),
                  ("_export_thread", "_export_worker"), ("_nest_thread", "_nest_worker"),
-                 ("_formed_thread", "_formed_worker")]
+                 ("_parts_thread", "_parts_worker"), ("_formed_thread", "_formed_worker")]
         for t_name, w_name in pairs:
             thread = getattr(self, t_name, None)
             if thread is None or not thread.isRunning():
@@ -6958,13 +7319,25 @@ class MainWindow(QMainWindow):
                 return
         comps = self._build_project_schema().components
         active = self._active_ws
+        # What the old drawing drew, by component: a part that was empty then
+        # (a temple not yet drawn) takes the new drawing's switch, not its old
+        # "off" (the 2.0 bug hunt: a temple drawn since stayed disabled).
+        drawn = {cid for ws, cid in zip(self._workspaces, component_ids(self._workspaces))
+                 if ws.outline_poly is not None or ws.lens_od is not None}
+        # The sculpts' meshes live on the workspaces, not in the drawing, and
+        # are carried across like the params; a reload dropped them.
+        self._pending_sculpt_sources = {}
+        for ws in self._workspaces:
+            self._pending_sculpt_sources.update(ws.sculpt_sources or {})
         self._pending_artifacts = None
         self._pending_component_artifacts = {}
         self._pending_flagged = []
+        self._pending_components = []
         if str(path).lower().endswith((".gdraw", ".svg")):
             self._load_model(Path(path), from_project=True)
             self._source_path = Path(path)
-            self._apply_components_to_workspaces(comps)
+            undrawn = {cid for cid in component_ids(self._workspaces) if cid not in drawn}
+            self._apply_components_to_workspaces(comps, new_switch=undrawn)
             if 0 <= active < len(self._workspaces):
                 self._activate_workspace(active)
         else:
@@ -7075,14 +7448,16 @@ class MainWindow(QMainWindow):
         comps = []
         ws_param = {"castle": "castle_params", "temple": "temple_params",
                     "base_curve_block": "block_params"}
-        for ws in self._workspaces:
+        ids = component_ids(self._workspaces)
+        for ws, cid in zip(self._workspaces, ids):
             field = component_param_field(ws.kind)
             param = getattr(ws, ws_param[field], None)
             kwargs = dict(
-                id=ws.source_workspace or ws.kind.value, kind=ws.kind,
+                id=cid, kind=ws.kind,
                 label=ws.label, enabled=ws.enabled, on_bed=ws.on_bed,
                 source_workspace=ws.source_workspace, source_file=self._source_name,
-                has_program=ws.program_stored)
+                has_program=bool(ws.last_programs),
+                program_stale=bool(ws.last_programs) and not ws.program_fresh)
             if param is not None:
                 kwargs[field] = param
             if ws.program_zero is not None:
@@ -7117,9 +7492,9 @@ class MainWindow(QMainWindow):
         # tab's: a whole-model project used to keep the front's program and
         # stamp `has_program` on the temples whose programs it had dropped.
         component_artifacts = {}
-        for ws in self._workspaces:
+        for ws, cid in zip(self._workspaces, component_ids(self._workspaces)):
             if ws.last_programs:
-                component_artifacts[ws.source_workspace or ws.kind.value] = {
+                component_artifacts[cid] = {
                     "programs": dict(ws.last_programs), "setup": ws.last_setup,
                     "machine": ws.last_machine, "report": ws.last_report}
         # The worktable program in a slot of its own (M20), and at the top
@@ -7160,8 +7535,15 @@ class MainWindow(QMainWindow):
         self._project_path = path
         self._add_recent(str(path))
         self._clear_dirty()          # saved — title refreshes without the star
-        # Green only once a program is actually stored in the .gmodel (M5.2).
-        self._program_stored = bool(self._last_programs)
+        # The recovery snapshot is older than the file now: a crash before
+        # the next edit offered it on the next start, and taking it lost the
+        # save (the 2.0 bug hunt).
+        self._clear_autosave()
+        # Green only once a program is actually stored in the .gmodel (M5.2),
+        # and only a fresh one: a stale program rides in the file, flagged.
+        self._program_stored = bool(self._last_programs) and self._program_fresh
+        for ws in self._workspaces:
+            ws.program_stored = bool(ws.last_programs) and ws.program_fresh
         self._refresh_readiness()
         if announce:
             self.append_log(f"[project] Saved {path.name}")
@@ -7238,6 +7620,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open failed", f"{path.name}:\n{exc}")
             return
         proj = bundle.project
+        if bundle.gdraw_bytes:
+            # The drawing is read before anything here changes: one that did
+            # not parse left the window half opened, the old design under the
+            # new file's name and settings, and a save wrote the mixture over
+            # the file (the 2.0 bug hunt).
+            import tempfile
+            tmp = Path(tempfile.gettempdir()) / f"gmodel_{path.stem}.gdraw"
+            try:
+                tmp.write_bytes(bundle.gdraw_bytes)
+                build_workspaces_from_gdraw(tmp)
+            except Exception as exc:                          # noqa: BLE001
+                QMessageBox.critical(self, "Open failed",
+                                     f"{path.name}: its drawing could not be read:\n{exc}")
+                return
         # A programmatic restore, not user edits — don't let the param setters
         # or the rebuild below mark the freshly-opened project dirty.
         self._restoring += 1
@@ -7247,6 +7643,10 @@ class MainWindow(QMainWindow):
             self._restoring -= 1
 
     def _open_project_body(self, bundle, proj, path: Path, remember: bool) -> None:
+        for line in self.params.missing_from_library(proj.cam_params, proj.cam.material.name):
+            self.append_log(f"[warn]  {path.name} names {line}: not in this machine's library.")
+        for line in bundle.migrated:
+            self.append_log(f"[project] {path.name}: {line}.")
         # Restore params first so the post-import rebuild uses them.
         self.params.set_material(proj.cam.material.name)
         self.params.set_castle_params(proj.castle)
@@ -7308,12 +7708,18 @@ class MainWindow(QMainWindow):
                 if data and f.source_sha256:
                     self._pending_sculpt_sources[f.source_sha256] = data
         self._pending_flagged = [c.id for c in (proj.components or []) if c.has_program]
+        self._pending_components = list(proj.components or [])
         self._project_path = path
         # Readiness: a stored program means the reopened job is transmittable
         # (green) as soon as its DXF finishes importing below; otherwise the
         # import drops it to red. The model is rebuilt lazily from the DXF.
         self._mesh_built = False
-        self._program_stored = bundle.has_program()
+        # A DXF project's one component says whether its program went stale
+        # before the save; a drawing's workspaces each say so on activation.
+        first = (proj.components or [None])[0]
+        self._program_fresh = bundle.has_program() and not (
+            first is not None and first.program_stale)
+        self._program_stored = self._program_fresh
         self._act_export_nc.setEnabled(bundle.has_program())
         if remember:
             self._add_recent(str(path))
@@ -7401,6 +7807,7 @@ class MainWindow(QMainWindow):
         if appearance_changed:
             self._recolor_toolpath_table(
                 self.canvas.recolor_toolpaths(theme.toolpath_colors()))
+        self.params.set_model_kernel(self._model_kernel())
         if p["preview_resolution_mm"] != old_preview_res:
             # Cached stage meshes were built at the old resolution.
             self._stage_cache.clear()
@@ -7507,7 +7914,7 @@ class MainWindow(QMainWindow):
 
         v.addSpacing(6)
         self._sim_rerun_btn = QPushButton("Re-run simulation")
-        self._sim_rerun_btn.setToolTip("Re-simulate the cut for the active component.")
+        self._sim_rerun_btn.setToolTip("Re-simulate the cut for the active part.")
         self._sim_rerun_btn.clicked.connect(lambda: self._switch_view(2, run=True))
         v.addWidget(self._sim_rerun_btn)
 
@@ -7792,7 +8199,7 @@ class MainWindow(QMainWindow):
             ws.stage_cache = {}
             ws.edge_cache = {}
             ws.core_guide = None
-            ws.program_stored = False
+            ws.program_stored = ws.program_fresh = False
             changed.append(ws.label)
         if not changed:
             self.status_lbl.setText("Both temples already match")
@@ -7802,18 +8209,19 @@ class MainWindow(QMainWindow):
                         + " (fixture zone, program zero and cut settings kept per temple).")
         self.status_lbl.setText("Temple settings applied to " + ", ".join(changed))
 
-    def _place_fronts(self, workspaces) -> None:
+    def _place_fronts(self, workspaces, *, saved: bool = False) -> None:
         """Place every frame front on its blank as its params say (2026-10-14):
         as drawn, or centered on the blank (`place_front_on_blank`). Geometry
         only, done before the views draw it. A front whose params are still the
-        dock's (a plain DXF) takes the dock's word."""
+        dock's (a plain DXF) takes the dock's word. `saved` params came from a
+        file, their seats already where the front is going."""
         from guildmodel.core.project.schema import ComponentKind
         from guildmodel.gui.component_workspace import place_front_on_blank
         for ws in workspaces:
             if ws.kind != ComponentKind.FRAME_FRONT:
                 continue
             params = ws.castle_params or self.params.castle_params()
-            if place_front_on_blank(ws, params.origin_from_drawing):
+            if place_front_on_blank(ws, params.origin_from_drawing, carry_seats=not saved):
                 ox, oy = ws.drawing_offset
                 self.append_log(
                     f"[model] {ws.label or 'Frame front'}: centered on the blank "
@@ -7841,7 +8249,7 @@ class MainWindow(QMainWindow):
         ws.mesh_built = False
         ws.stage_cache = {}
         ws.edge_cache = {}
-        ws.program_stored = False
+        ws.program_stored = ws.program_fresh = False
         ws.diag = {}
         self._drop_formed_caches()
         self._restoring += 1                     # the dock is re-filled, not edited
@@ -7882,6 +8290,9 @@ class MainWindow(QMainWindow):
         ws.last_machine = self._last_machine
         ws.last_report = self._last_report
         ws.program_stored = self._program_stored
+        ws.program_fresh = self._program_fresh
+        ws.mesh_verdict = self._mesh_verdict
+        ws.verdict_mesh = getattr(self, "_verdict_mesh", None)
         ws.diag = {                               # M7.14 inspector inputs per component
             "reach": self._diag_reach, "clearance": self._diag_clearance,
             "lint": self._diag_lint, "cut_report": self._diag_cut_report,
@@ -7917,6 +8328,10 @@ class MainWindow(QMainWindow):
         self._last_machine = ws.last_machine
         self._last_report = ws.last_report
         self._program_stored = ws.program_stored
+        self._program_fresh = ws.program_fresh
+        # the part's own verdict: the 2D view's tab switch kept the last one's
+        self._mesh_verdict = ws.mesh_verdict
+        self._verdict_mesh = ws.verdict_mesh
         d = ws.diag or {}                         # M7.14 inspector inputs per component
         self._diag_reach = d.get("reach", [])
         self._diag_clearance = d.get("clearance", [])
@@ -7989,6 +8404,15 @@ class MainWindow(QMainWindow):
                     geom = bridge_geometry(ws.partition, ws.lens_od, ws.lens_os)
                     ws.forming = ws.forming.model_copy(
                         update={"crease_gap_mm": round(geom.top_width, 1)})
+                # Separated rims and a monocle have no bridge to project: the
+                # map ignores a projection, so the front does not carry one.
+                # A monocle has no second eye to wrap toward either; its wrap
+                # is kept, since the press row is named by the pair.
+                projects = ws.partition is None or not ws.partition.halves
+                if not projects and ws.forming.bridge_projection_mm:
+                    ws.forming = ws.forming.model_copy(update={"bridge_projection_mm": 0.0})
+                self._forming_panel.set_bridge_projects(
+                    projects, wraps=projects or ws.partition.separated)
                 self._forming_panel.set_forming(ws.forming)
         finally:
             self.params.blockSignals(False)
@@ -8129,7 +8553,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open Drawing failed", "See log for details.")
             return
         if not workspaces:
-            QMessageBox.warning(self, "Empty model", "No components found in this model.")
+            QMessageBox.warning(self, "Empty model", "No parts found in this model.")
             return
 
         self._source_name = path.name
@@ -8156,6 +8580,13 @@ class MainWindow(QMainWindow):
         # saved values right after this (_apply_components_to_workspaces), so
         # what a project saved is what it shows.
         part_defaults_mod.seed_workspaces(workspaces, self._prefs)
+        if not from_project:
+            # A new project's blanks are the ones the drawing was made against.
+            from guildmodel.gui.component_workspace import seed_blank_from_guides
+            for w in workspaces:
+                seeded = seed_blank_from_guides(w)
+                if seeded:
+                    self.append_log(f"[stock] {w.label}: {seeded}, from the drawing's guides")
         self._part_defaults_offered = set()
         self._tool_feeds_offered = None
         self._inject_gdraw_engraving(workspaces)
@@ -8167,7 +8598,7 @@ class MainWindow(QMainWindow):
 
         populated = [w.label for w in workspaces if w.enabled]
         self.append_log(
-            f"[model] {len(workspaces)} components, {len(populated)} populated: "
+            f"[model] {len(workspaces)} parts, {len(populated)} populated: "
             + ", ".join(populated))
         for w in workspaces:
             self._log_outline_holes(w, prefix=f"{w.label}: ")
@@ -8177,16 +8608,54 @@ class MainWindow(QMainWindow):
             self._update_title()
             self.status_lbl.setText(
                 f"Loaded drawing: {path.name}  ({len(populated)} of {len(workspaces)} "
-                f"components) — Build 3D to model them all")
+                f"parts) — Build 3D to model them all")
             self._add_recent(str(path))
         self._post_load_baseline()   # a just-loaded design is the clean baseline
 
     def _log_outline_holes(self, ws, prefix: str = "") -> None:
         """Report the decorative OUTLINE openings by name (Hole1…), plus any
         closed OUTLINE curve that fell outside the profile (an authoring
-        mistake — it is ignored rather than cut)."""
+        mistake — it is ignored rather than cut). Separated rims and a lens no
+        body holds are reported too."""
+        from guildmodel.core.geometry.regions import body_parts
         from guildmodel.core.io_import.normalize import hole_label
 
+        rims = len(body_parts(ws.outline_poly))
+        if rims > 1 and not ws.is_temple:
+            self.append_log(
+                f"[rims]  {prefix}separated rims — {rims} bodies cut from one front "
+                "blank; the pad splay and the bridge relief need a one-piece "
+                "bridge and are left off.")
+        elif ws.partition is not None and ws.partition.halves:
+            self.append_log(
+                f"[rims]  {prefix}one rim and one lens, a monocle; the pad splay and "
+                "the bridge relief need a one-piece bridge and are left off.")
+        if ws.lens_outside:
+            self.append_log(
+                f"[warn]  {prefix}{len(ws.lens_outside)} LENS curve(s) outside every "
+                "OUTLINE body, or crossing its edge — never cut; draw the lens inside "
+                "its rim.")
+        if ws.extra_lenses:
+            self.append_log(
+                f"[warn]  {prefix}{ws.extra_lenses + 2} LENS curves; a front holds two, "
+                "a monocle one. Delete the extra ones in GuildDraw; nothing is cut "
+                "until then.")
+        if ws.half_drawn:
+            self.append_log(
+                f"[warn]  {prefix}one lens in an outline drawn for two: the other eye "
+                "would be cut solid. Draw the second lens, or bake the Ghost with "
+                "Mirror in GuildDraw; a monocle's outline is one rim. Nothing is cut "
+                "until then.")
+        if ws.unreadable:
+            self.append_log(
+                f"[warn]  {prefix}{ws.unreadable} curve(s) the file describes wrongly "
+                "(a coordinate that is not a number, a circle of no radius) were "
+                "skipped; open the drawing in GuildDraw and redraw them.")
+        if ws.open_outline:
+            self.append_log(
+                f"[warn]  {prefix}{ws.open_outline} OUTLINE curve(s) drawn open — each "
+                "is closed with a straight line from end to end. A contour drawn in "
+                "pieces reads as pieces: select them in GuildDraw and Join them.")
         if ws.outline_holes:
             named = ", ".join(
                 f"{hole_label(i)} {h.area:.1f} mm²"
@@ -8197,7 +8666,8 @@ class MainWindow(QMainWindow):
         if ws.outline_stray:
             self.append_log(
                 f"[warn]  {prefix}{len(ws.outline_stray)} closed OUTLINE curve(s) "
-                "outside the profile — ignored; the largest curve is the profile.")
+                "outside every body — ignored. The largest curve is the profile, and "
+                "a curve that holds a lens is a separated rim.")
 
     def _inject_gdraw_engraving(self, workspaces) -> None:
         """Outline GuildDraw engraving *text objects* into ENGRAVING polylines.
@@ -8242,30 +8712,56 @@ class MainWindow(QMainWindow):
                 f"[engraving] {ws.label}: outlined {len(polys)} glyph contour(s) "
                 f"from {len(texts)} text object(s){drawn}.")
 
-    def _apply_components_to_workspaces(self, components) -> None:
+    def _apply_components_to_workspaces(self, components, new_switch=()) -> None:
         """Overlay saved per-component params (from a reopened .gmodel) onto the
-        freshly-rebuilt workspaces, matched by kind (M7.1)."""
+        freshly-rebuilt workspaces, matched by kind (M7.1). The components whose
+        ids are in `new_switch` keep the switch the drawing gave them: a part
+        a reloaded drawing draws for the first time."""
+        from collections import Counter
+
         from guildmodel.core.project.schema import component_param_field
         ws_attr = {"castle": "castle_params", "temple": "temple_params",
                    "base_curve_block": "block_params"}
-        by_kind = {c.kind: c for c in (components or [])}
-        for ws in self._workspaces:
-            comp = by_kind.get(ws.kind)
+        components = list(components or [])
+        # By id where the file has this workspace's (`component_ids`); a file
+        # from before 2026-10-16 keyed by source workspace, the front and both
+        # blocks all as "front", so it is matched by kind, the n-th of a kind
+        # to the n-th, which also keeps four Base Curve R apart.
+        by_id = {c.id: c for c in components}
+        if len(by_id) < len(components):
+            by_id = {}
+        of_kind: dict = {}
+        for c in components:
+            of_kind.setdefault(c.kind, []).append(c)
+        nth: Counter = Counter()
+        for ws, cid in zip(self._workspaces, component_ids(self._workspaces)):
+            same = of_kind.get(ws.kind, [])
+            comp = by_id.get(cid)
+            if comp is None or comp.kind != ws.kind:
+                comp = same[nth[ws.kind]] if nth[ws.kind] < len(same) else None
+            nth[ws.kind] += 1
             if comp is None:
                 continue
-            ws.enabled = comp.enabled
+            if cid not in new_switch:
+                ws.enabled = comp.enabled
             ws.on_bed = comp.on_bed                      # on the worktable (M19)
             ws.program_zero = comp.program_zero          # restore per-component datum (M11)
             ws.cam_overrides = comp.cam_overrides        # restore per-component CAM (M16)
             ws.forming = self._merge_saved_forming(ws.forming, comp.forming)   # M18
             field = component_param_field(ws.kind)
             setattr(ws, ws_attr[field], getattr(comp, field))
-            seed_inlay_features(ws)                     # the saved seats follow the drawing (§8a)
             ws.sculpt_sources.update(getattr(self, "_pending_sculpt_sources", {}))   # M22
             self._seed_workspace_artifacts(ws, comp)
         self._pending_artifacts = None
         self._pending_component_artifacts = {}
-        self._place_fronts(self._workspaces)        # the saved placement (2026-10-14)
+        self._pending_components = []
+        self._place_fronts(self._workspaces, saved=True)   # the saved placement (2026-10-14)
+        # The saved seats follow the drawing (§8a), paired once the front is
+        # where it was saved: their centroids are in that frame, and paired
+        # before the move, two seats near each other could swap settings.
+        for ws in self._workspaces:
+            seed_inlay_features(ws)
+        self._populate_component_tabs()             # the tabs follow the saved switches
         self._refresh_bed_parts_list()              # the rows were built before the restore (M19)
         self._refresh_nest_render()                 # the saved placements (M20)
         if 0 <= self._active_ws < len(self._workspaces):
@@ -8282,6 +8778,19 @@ class MainWindow(QMainWindow):
         """
         from guildmodel.core.project.gmodel import component_key
         cid = comp.id if comp is not None else (ws.source_workspace or ws.kind.value)
+        sharing = [c for c in (getattr(self, "_pending_components", None) or [])
+                   if c.id == cid]
+        if len(sharing) > 1:
+            # A file from before 2026-10-16 kept the front's and the blocks'
+            # programs in one slot, the last writer's. It is this part's only
+            # when this part is the one of them that had a program.
+            owners = [c for c in sharing if c.has_program]
+            if len(owners) != 1 or owners[0] is not comp:
+                if comp is not None and comp.has_program:
+                    self.append_log(
+                        f"[project] {ws.label}: this older project kept its program "
+                        "in a slot another part shared; generate it again.")
+                return
         art = self._pending_component_artifacts.get(component_key(cid))
         if art is None and self._pending_artifacts is not None:
             flagged = self._pending_flagged
@@ -8293,7 +8802,9 @@ class MainWindow(QMainWindow):
         ws.last_setup = art.get("setup")
         ws.last_machine = art.get("machine")
         ws.last_report = art.get("report")
-        ws.program_stored = True
+        # A program saved after the design moved on comes back stale.
+        ws.program_fresh = not (comp is not None and comp.program_stale)
+        ws.program_stored = ws.program_fresh
 
     def _load_dxf(self, path: Path, *, from_project: bool = False) -> None:
         if self._import_thread is not None and self._import_thread.isRunning():
@@ -8316,7 +8827,7 @@ class MainWindow(QMainWindow):
             self._last_setup = self._last_machine = self._last_report = None
             # Readiness restarts at red once the import lands (no model/program).
             self._mesh_built = False
-            self._program_stored = False
+            self._program_stored = self._program_fresh = False
             # No program for the fresh design yet — disable loose export.
             self._act_export_nc.setEnabled(False)
 
@@ -8385,8 +8896,10 @@ class MainWindow(QMainWindow):
                 if stock:
                     ws.castle_params = part_defaults_mod.with_overrides(
                         self.params.castle_params(), "frame_front", stock)
-        if self._import_from_project:
-            self._seed_workspace_artifacts(ws, None)
+        saved = list(getattr(self, "_pending_components", None) or []) \
+            if self._import_from_project else []
+        if self._import_from_project and not saved:
+            self._seed_workspace_artifacts(ws, None)      # a file from before components
             self._pending_artifacts = None
             self._pending_component_artifacts = {}
         self._place_fronts([ws])
@@ -8397,6 +8910,12 @@ class MainWindow(QMainWindow):
         self._workspaces = [ws]
         self._active_ws = -1
         self._populate_component_tabs()
+        if saved:
+            # The saved component's own settings, as a drawing's reopen applies
+            # them: its program zero, CAM overrides, forming, params and the
+            # sculpts' meshes. A DXF project restored only the project-level
+            # castle and CAM, and lost the rest (the 2.0 bug hunt).
+            self._apply_components_to_workspaces(saved)
         if self._reload_components is not None:         # Reload Drawing on a DXF (M20)
             comps, self._reload_components = self._reload_components, None
             self._apply_components_to_workspaces(comps)
@@ -8405,14 +8924,15 @@ class MainWindow(QMainWindow):
             text, graphics = ws.engraving_split()
             drawn = f" ({len(graphics)} drawn as graphics)" if graphics else ""
             self.append_log(
-                f"[temple] Temple component: outline + "
+                f"[temple] Temple: outline + "
                 f"{len(text) + len(graphics)} engraving curve(s){drawn} — "
                 f"engrave + profile program on Generate G-code."
             )
         self._log_outline_holes(ws)
         if ws.partition is not None:
             if ws.partition.matched:
-                layout = "standard castle layout"
+                layout = ("standard castle layout, a standard half per rim"
+                          if ws.partition.halves else "standard castle layout")
             elif ws.partition.classified:
                 layout = "non-standard layout — builds; override zone heights as needed"
             else:
@@ -8453,7 +8973,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ progress dialog
 
-    def _open_progress(self, title: str) -> QProgressDialog:
+    def _open_progress(self, title: str, owner: str) -> QProgressDialog:
+        """Open the progress dialog for ``owner``'s job; `_close_progress`
+        closes it only for the same owner."""
+        if self._progress_dialog is not None:
+            self._close_progress(self._progress_owner)     # never two on screen
         dlg = QProgressDialog(title, "Cancel", 0, 100, self)
         dlg.setWindowTitle(title)
         dlg.setWindowModality(Qt.WindowModality.WindowModal)
@@ -8462,6 +8986,7 @@ class MainWindow(QMainWindow):
         dlg.setMinimumDuration(0)
         dlg.setValue(0)
         self._progress_dialog = dlg
+        self._progress_owner = owner
         return dlg
 
     def _on_stage(self, label: str, pct: int) -> None:
@@ -8469,15 +8994,76 @@ class MainWindow(QMainWindow):
             self._progress_dialog.setLabelText(label)
             self._progress_dialog.setValue(pct)
 
-    def _close_progress(self) -> None:
-        if self._progress_dialog is not None:
+    def _close_progress(self, owner: str) -> None:
+        """Close the progress dialog if ``owner``'s job opened it.
+
+        Every job shared one dialog, and any job's end closed it: a quiet
+        build that finished under Generate's let the window take input while
+        the program was still being made (the 2.0 bug hunt).
+        """
+        if self._progress_dialog is not None and self._progress_owner == owner:
             self._progress_dialog.reset()
             self._progress_dialog.deleteLater()
             self._progress_dialog = None
+            self._progress_owner = None
+
+    def _stamp_job(self, worker) -> None:
+        """Record what a G-code or simulation job is for: this design, this
+        component, and this state of its settings (see `_build_is_current`,
+        which asks the same of a mesh)."""
+        worker._design_token = self._design_token
+        worker._design_ws = self._active_ws
+        worker._program_gen = getattr(self, "_program_gen", 0)
+
+    def _job_is_on_screen(self, worker) -> bool:
+        """Whether a landed job belongs to the design and component on screen."""
+        token = getattr(worker, "_design_token", None)
+        if token is None:
+            return True                       # a worker a test built by hand
+        return token == self._design_token and worker._design_ws == self._active_ws
+
+    def _job_is_fresh(self, worker) -> bool:
+        """Nothing invalidated the program while the job was making it."""
+        gen = getattr(worker, "_program_gen", None)
+        return gen is None or gen == getattr(self, "_program_gen", 0)
+
+    def _file_offscreen_program(self, worker) -> None:
+        """A program that landed after the maker left its design or its tab.
+        One for a design since closed is dropped; one for another component
+        of this design is filed on that component, unshown, as a mesh is."""
+        if worker is None or not getattr(worker, "programs", None):
+            return
+        idx = worker._design_ws
+        if worker._design_token != self._design_token or not (
+                0 <= idx < len(self._workspaces)):
+            self.append_log("[gcode] Dropped a program for a design that is no longer open.")
+            return
+        ws = self._workspaces[idx]
+        ws.last_programs = worker.programs
+        ws.last_setup = worker.setup_dict
+        ws.last_machine = worker.machine_dump
+        ws.last_report = None
+        ws.program_fresh = self._job_is_fresh(worker)
+        ws.program_stored = False
+        ws.diag = {
+            "reach": list(getattr(worker, "reach_warnings", [])),
+            "clearance": list(getattr(worker, "clearance_violations", [])),
+            "lint": list(getattr(worker, "machine_warnings", [])),
+            "zprofile": list(getattr(worker, "z_profiles", [])),
+            "cut_report": None,
+        }
+        self._mark_dirty()
+        self.append_log(f"[gcode] {ws.label}: the program is kept on its own tab.")
 
     # ------------------------------------------------------------------ 3D build
 
     def _castle_ready(self) -> bool:
+        # A lens outside every body is never cut: Build and Export refused it
+        # through `ws.castle_ready`, and Generate and Simulate asked only
+        # whether the zones were named (the 2.0 bug hunt).
+        ws = self._active_workspace()
+        if ws is not None and getattr(ws, "lens_outside", None):
+            return False
         return self._partition is not None and self._partition.classified
 
     def _flat_build_mode(self) -> str | None:
@@ -8614,8 +9200,12 @@ class MainWindow(QMainWindow):
         n = len(specs)
         self._act_build.setEnabled(False)
         self._switch_view(1)
-        self.append_log(f"[3D] Building {n} component model{'s' if n != 1 else ''}…")
+        self.append_log(f"[3D] Building {n} part model{'s' if n != 1 else ''}…")
 
+        for spec in specs:
+            note = sculpts_left_off(spec.get("castle"), self._model_kernel())
+            if note:
+                self.append_log(f"[3D] {note}")
         self._mesh_worker = MultiMeshWorker(
             specs, self._prefs["preview_resolution_mm"],
             kernel=self._model_kernel())
@@ -8630,9 +9220,9 @@ class MainWindow(QMainWindow):
         self._mesh_worker.error.connect(self._mesh_thread.quit)
         self._mesh_worker.canceled.connect(self._mesh_thread.quit)
         self._stamp_build(self._mesh_worker, self._mesh_thread)
-        self._mesh_worker.stage.connect(self._on_stage)
         if not quiet:
-            dlg = self._open_progress("Building 3D models")
+            self._mesh_worker.stage.connect(self._on_stage)
+            dlg = self._open_progress("Building 3D models", "mesh")
             dlg.canceled.connect(self._mesh_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._mesh_thread.start()
 
@@ -8667,7 +9257,7 @@ class MainWindow(QMainWindow):
         return token is None or token == getattr(self, "_design_token", 0)
 
     def _on_multi_mesh_finished(self) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         self._act_build.setEnabled(True)
         if not self._multi_build_is_current():
             self.append_log("[3D] Dropped a build for a design that is no longer open.")
@@ -8678,15 +9268,15 @@ class MainWindow(QMainWindow):
         verdict = self._mesh_verdict
         if verdict is not None and not verdict.ok:
             self.status_lbl.setText("⚠ 3D model has problems")
-        self.append_log("[3D] All component models built.")
+        self.append_log("[3D] All part models built.")
 
     def _on_multi_mesh_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         self._report_failure("3D build", "3D", tb)
         self._act_build.setEnabled(True)
 
     def _on_multi_mesh_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         self._act_build.setEnabled(True)
         self._show_active_3d()
         self.append_log("[3D] Build canceled.")
@@ -8760,6 +9350,7 @@ class MainWindow(QMainWindow):
     def _sculpt_source(self, feature):
         """The loaded `SculptSource` for a record, with its flat back found
         once and kept on it; None when the bytes are not in hand."""
+        from guildmodel.core.model.kernel import ManifoldError
         from guildmodel.core.model.sculpt import flat_back, load_sculpt
         cache = getattr(self, "_sculpt_cache", None)
         if cache is None:
@@ -8769,9 +9360,12 @@ class MainWindow(QMainWindow):
             data = self._sculpt_sources().get(feature.source_sha256)
             if not isinstance(data, (bytes, bytearray)):
                 return None
-            src = load_sculpt(bytes(data), feature.source_name,
-                              simplify_tol=feature.simplify_tol)
-            src.back = flat_back(src.mesh)[0]
+            try:
+                src = load_sculpt(bytes(data), feature.source_name,
+                                  simplify_tol=feature.simplify_tol)
+                src.back = flat_back(src.mesh)[0]
+            except (ManifoldError, ValueError):
+                return None                   # bytes that no longer load, or no back
             cache[feature.source_sha256] = src
         return src
 
@@ -8796,8 +9390,12 @@ class MainWindow(QMainWindow):
         top = max(z.endpiece_mm, z.bridge_mm, z.nosepad_mm, z.eyewire_superior_mm,
                   z.eyewire_inferior_mm)
         if p is None:
-            c = self._partition.body.centroid if self._partition is not None else None
+            from guildmodel.core.geometry.regions import point_on_body
+            body = self._partition.body if self._partition is not None else None
+            c = body.centroid if body is not None else None
             p = (c.x, c.y) if c is not None else (0.0, 0.0)
+            if self._partition is not None and self._partition.separated:
+                p = point_on_body(body, *p)      # a rim, not the gap between them
         if face == "anterior":
             return SnapTarget("anterior", np.array([p[0], p[1], 0.0]), np.array([0.0, 0.0, -1.0]))
         return SnapTarget("posterior", np.array([p[0], p[1], float(top)]), np.array([0.0, 0.0, 1.0]))
@@ -8849,7 +9447,12 @@ class MainWindow(QMainWindow):
             if ans == QMessageBox.StandardButton.Yes:
                 tol = 0.02
                 src = load_sculpt(data, Path(path).name, simplify_tol=tol)
-        src.back = flat_back(src.mesh)[0]
+        try:
+            src.back = flat_back(src.mesh)[0]
+        except ManifoldError as exc:
+            # a sculpt with no face to mount on raised out of Add (the 2.0 bug hunt)
+            self._report_failure("Sculpt import", "sculpt", f"{Path(path).name}: {exc}")
+            return
         ws.sculpt_sources[src.sha256] = data
         cache = getattr(self, "_sculpt_cache", None)
         if cache is None:
@@ -9014,6 +9617,14 @@ class MainWindow(QMainWindow):
             # the worker reads the live temple/block params, snap included).
             if self._active_is_flat():
                 self._rebuild_timer.start()
+        # The CAM tab is remembered for the next drawing, but only what the
+        # maker sets: an opened project's settings are a restore, and they
+        # became the next new drawing's, a Perimeter switched off included
+        # (the 2.0 bug hunt). Written once the edits settle, not per step.
+        if not self._restoring:
+            self._cam_prefs_timer.start()
+
+    def _save_cam_prefs(self) -> None:
         try:
             self._prefs["cam_params"] = self.params.cam_params().model_dump()
             self._prefs["material_name"] = self.params.material_name()
@@ -9239,7 +9850,7 @@ class MainWindow(QMainWindow):
         self._stamp_build(self._mesh_worker, self._mesh_thread)
 
         if show_progress:
-            dlg = self._open_progress("Building 3D model")
+            dlg = self._open_progress("Building 3D model", "mesh")
             self._mesh_worker.stage.connect(self._on_stage)
             dlg.canceled.connect(self._mesh_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._mesh_thread.start()
@@ -9281,13 +9892,13 @@ class MainWindow(QMainWindow):
         self._stamp_build(self._mesh_worker, self._mesh_thread)
 
         if show_progress:
-            dlg = self._open_progress("Building 3D model")
+            dlg = self._open_progress("Building 3D model", "mesh")
             self._mesh_worker.stage.connect(self._on_stage)
             dlg.canceled.connect(self._mesh_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._mesh_thread.start()
 
     def _on_flat_mesh_finished(self, mesh, core_guide) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         if not self._build_is_current(self._mesh_worker, "flat", mesh, None):
             return
         self._stage_cache["flat"] = mesh
@@ -9339,7 +9950,16 @@ class MainWindow(QMainWindow):
         """
         from guildmodel.core.mesh_check import verify_mesh
 
-        self._mesh_verdict = verify_mesh(mesh)
+        if mesh is getattr(self, "_verdict_mesh", None) and self._mesh_verdict is not None:
+            # this very mesh was judged when it was built: a tab switch that
+            # shows it again re-ran the check, most of the switch's time
+            self._refresh_inspector()
+            return
+        # A front with separated rims is one body per rim.
+        bodies = (1 if self._active_is_flat() or self._partition is None
+                  else len(self._partition.parts))
+        self._mesh_verdict = verify_mesh(mesh, expected_bodies=bodies)
+        self._verdict_mesh = mesh
         if not self._mesh_verdict.ok:
             self.append_log("[verify] " + self._mesh_verdict.summary)
             for problem in self._mesh_verdict.problems[1:]:
@@ -9347,7 +9967,7 @@ class MainWindow(QMainWindow):
         self._refresh_inspector()
 
     def _on_mesh_finished(self, mesh, stage: str, edges=None) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         if not self._build_is_current(self._mesh_worker, stage, mesh, edges):
             return
         self._stage_cache[stage] = mesh
@@ -9405,7 +10025,7 @@ class MainWindow(QMainWindow):
             self._toggle_log_dock(True)
 
     def _on_mesh_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         self._report_failure("3D build", "3D", tb)
         self._act_build.setEnabled(True)
         # Still drain: the parameters have moved on since the build that failed,
@@ -9414,7 +10034,7 @@ class MainWindow(QMainWindow):
         self._drain_pending_rebuild()
 
     def _on_mesh_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("mesh")
         self.append_log("[3D] Build canceled.")
         self.status_lbl.setText("Build canceled")
         self._act_build.setEnabled(True)
@@ -9509,12 +10129,12 @@ class MainWindow(QMainWindow):
         """The pressed slab as a trimesh, for the 3D view's stock ghost on a
         pre-formed blank (M25); None on a flat one."""
         forming = self._preformed_forming()
-        if forming is None or forming.is_flat:
+        if forming is None or forming.pressed().is_flat:
             return None
         from guildmodel.core.forming import ThermoformMap
         from guildmodel.core.forming.blank import formed_blank_mesh
         castle = self.params.castle_params()
-        fmap = ThermoformMap.from_metadata(forming, bridge=self._preformed_bridge())
+        fmap = ThermoformMap.from_metadata(forming.pressed(), bridge=self._preformed_bridge())
         return formed_blank_mesh(castle.stock, fmap)
 
     def _bridge_geometry(self):
@@ -9771,10 +10391,13 @@ class MainWindow(QMainWindow):
         return written
 
     def _write_nests(self, i: int, folder: Path) -> list[Path]:
-        """The nest fixture for a pressed blank (M25 §10.2): the pre-cut
-        dies' cup holds the slab for side one, the post-cut dome, cut away
-        under the taller zones, holds the carved back for side two; both
-        carry the dowels, so the flip registers. Written like the dies."""
+        """The nest fixture for a pressed blank (M25 §10.2): the post-cut
+        dome, cut away under the taller zones, under the slab's back for the
+        anterior, cut first (2.0); the pre-cut dies' cup holding it front
+        down for the posterior after the flip. Both carry the dowels, so the
+        flip registers. Written like the dies. The dome was shaped for a
+        carved back and holds the uncut one where it is not cut away
+        (BUILDPLAN §11b.3)."""
         from guildmodel.core.forming import build_dies
         from guildmodel.core.model.kernel import to_trimesh
         from guildmodel.core.project.schema import FormingMetadata, PressDieParams
@@ -9797,15 +10420,15 @@ class MainWindow(QMainWindow):
             self._report_failure("Nest build", "nest", traceback.format_exc())
             return []
         stem = self._export_filenames()[i].replace(".stl", "")
-        for name, man in (("nest_side_one", cup.anterior), ("nest_side_two", dome.posterior)):
+        for name, man in (("nest_back_down", dome.posterior), ("nest_front_down", cup.anterior)):
             path = folder / f"{stem}_{name}.stl"
             mesh = to_trimesh(man)
             mesh.export(str(path))
             self.append_log(f"[nest] {path.name}: {len(mesh.faces):,} tris, {man.volume():.0f} mm³")
             written.append(path)
-        self.append_log("[nest] side one: the pressed slab in the cup, front down; side two: "
-                        "the carved back over the dome, turned about the blank's center line "
-                        "on the dowels")
+        self.append_log("[nest] the anterior first: the pressed slab back down over the dome; "
+                        "the posterior after the flip: front down in the cup, turned about the "
+                        "blank's center line on the dowels")
         return written
 
     def _on_export_nests(self) -> None:
@@ -10069,11 +10692,12 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ cut simulation
 
-    def _start_component_sim(self) -> None:
+    def _start_component_sim(self, *, generated: bool = False) -> None:
         """Run the active component's cut sim off-thread (driven by the Sim view,
         BUILDPLAN M7.12). The Sim toggle is only enabled when runnable and the view
         is already in sim mode (the caller switched it), so this just starts the work
-        and caches + shows the result on finish."""
+        and caches + shows the result on finish. ``generated`` is set when the
+        program was just generated for it, which is never asked for twice."""
         mode = self._flat_build_mode()
         if mode is None and not self._castle_ready():
             return
@@ -10089,10 +10713,19 @@ class MainWindow(QMainWindow):
         # is generated first and the simulation follows, as the bed's does.
         key = {"temple": "temple_cut.nc", "block": "base_curve_block.nc"}.get(
             mode, "posterior_cut.nc")
-        program = self._last_programs.get(key) if self._program_stored else None
+        program = self._last_programs.get(key) if self._program_fresh else None
+        anterior = None
+        if mode is None and self._program_fresh:
+            # a two-sided job's programs: two files, or one with the flip (2.0)
+            program, anterior = frame_programs(self._last_programs)
         if program is None and self._outline_poly is not None:
-            self.append_log("[sim] No fresh program stored — generating it first.")
-            self._on_generate(then=self._start_component_sim)
+            if generated:
+                self.append_log(f"[sim] The generated program has no {key}; "
+                                "nothing to simulate.")
+                self.status_lbl.setText("Nothing to simulate")
+                return
+            self.append_log("[sim] No fresh program — generating it first.")
+            self._on_generate(then=lambda: self._start_component_sim(generated=True))
             return
         # The sim must simulate the program the tab posts, overrides and all (M16).
         cam = self.params.effective_cam_params()
@@ -10113,12 +10746,13 @@ class MainWindow(QMainWindow):
                 hinge_polys=self._hinge_polys, material_name=mat, resolution=res,
                 inlay_polys=self._inlay_polys, program_text=program,
                 sculpt_sources=self._sculpt_sources(),
-                back_program_text=(self._last_programs.get("back_cut.nc")
-                                   if program and self._program_stored else None),
-                back_setup=(((self._last_setup or {}).get("setups") or [None, None])[-1]
-                            if program and self._program_stored else None),
+                anterior_program_text=anterior if program else None,
+                anterior_setup=(next((st for st in (self._last_setup or {}).get("setups") or []
+                                      if isinstance(st, dict) and st.get("side") == "anterior"),
+                                     None) if anterior else None),
                 forming=self._preformed_forming(), bridge=self._preformed_bridge())
         self._sim_worker.kernel = self._model_kernel()
+        self._stamp_job(self._sim_worker)
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
         self._sim_thread.started.connect(self._sim_worker.run)
@@ -10130,13 +10764,17 @@ class MainWindow(QMainWindow):
         self._sim_worker.error.connect(self._sim_thread.quit)
         self._sim_worker.canceled.connect(self._sim_thread.quit)
 
-        dlg = self._open_progress("Simulating cut")
+        dlg = self._open_progress("Simulating cut", "sim")
         self._sim_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._sim_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._sim_thread.start()
 
     def _on_sim_finished(self, report, lines, plan=None) -> None:
-        self._close_progress()
+        self._close_progress("sim")
+        if not self._job_is_on_screen(self._sim_worker):
+            self.append_log("[sim] Dropped a simulation of a part no longer on screen.")
+            self.status_lbl.setText("Simulation dropped")
+            return
         self._active_sim_report = report          # cache for instant Sim re-toggle (M7.12)
         self._active_sim_removal = plan
         self._diag_cut_report = report            # feed cut completeness/gouge to M7.14
@@ -10168,12 +10806,12 @@ class MainWindow(QMainWindow):
                 self._mark_dirty()
 
     def _on_sim_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("sim")
         self._report_failure("Simulation", "sim", tb)
         self._update_view_toggles()
 
     def _on_sim_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("sim")
         self.append_log("[sim] Canceled.")
         self.status_lbl.setText("Simulation canceled")
         self._update_view_toggles()
@@ -10217,6 +10855,7 @@ class MainWindow(QMainWindow):
             is_temple=self._is_temple,
         )
         self._gcode_worker.kernel = self._model_kernel()
+        self._stamp_job(self._gcode_worker)
         self._gcode_thread = QThread()
         self._gcode_worker.moveToThread(self._gcode_thread)
         self._gcode_thread.started.connect(self._gcode_worker.run)
@@ -10228,7 +10867,7 @@ class MainWindow(QMainWindow):
         self._gcode_worker.error.connect(self._gcode_thread.quit)
         self._gcode_worker.canceled.connect(self._gcode_thread.quit)
 
-        dlg = self._open_progress("Generating G-code")
+        dlg = self._open_progress("Generating G-code", "gcode")
         self._gcode_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._gcode_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._gcode_thread.start()
@@ -10239,6 +10878,17 @@ class MainWindow(QMainWindow):
         self._commit_typed_value()
         if self._gcode_thread is not None and self._gcode_thread.isRunning():
             return                            # a G-code job is already in flight
+        from guildmodel.core.project.schema import ComponentKind
+        active = self._active_workspace()
+        blocks = sorted((w for w in self._workspaces if w.kind in (
+            ComponentKind.BASE_CURVE_RIGHT, ComponentKind.BASE_CURVE_LEFT)),
+            key=lambda w: w.kind != ComponentKind.BASE_CURVE_RIGHT)
+        if blocks and active not in blocks:
+            # The block has a tab of its own, with its own program zero,
+            # material and settings: it is posted there. From the Front tab
+            # it replaced the front's program and took the front's datum
+            # (the 2.0 bug hunt).
+            self._activate_workspace(self._workspaces.index(blocks[0]))
         if self._lens_od is None:
             QMessageBox.warning(
                 self, "No lens",
@@ -10261,6 +10911,7 @@ class MainWindow(QMainWindow):
         worker.block = block
         worker.is_block = True
         worker.kernel = self._model_kernel()
+        self._stamp_job(worker)
         self._gcode_worker = worker
 
         self._gcode_thread = QThread()
@@ -10274,7 +10925,7 @@ class MainWindow(QMainWindow):
         worker.error.connect(self._gcode_thread.quit)
         worker.canceled.connect(self._gcode_thread.quit)
 
-        dlg = self._open_progress("Generating base-curve block")
+        dlg = self._open_progress("Generating base-curve block", "gcode")
         worker.stage.connect(self._on_stage)
         dlg.canceled.connect(worker.cancel, Qt.ConnectionType.DirectConnection)
         self._gcode_thread.start()
@@ -10527,19 +11178,32 @@ class MainWindow(QMainWindow):
         self._toolpath_dock.setWindowTitle("Toolpaths")
 
     def _on_gcode_finished(self, summary: str, rows) -> None:
-        self._close_progress()
+        self._close_progress("gcode")
         self.append_log("[gcode] Done.")
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
+        w = self._gcode_worker
+        if not self._job_is_on_screen(w):
+            self._gcode_then = None
+            self._file_offscreen_program(w)
+            return
         self.status_lbl.setText("G-code ready")
         # Capture the program + setup for the .gmodel container (M5.1). A new
         # program supersedes any stale cut report.
-        w = self._gcode_worker
+        active = self._active_workspace()
+        beside = (w is not None and getattr(w, "is_block", False) and self._last_programs
+                  and not (active is not None and self._is_block_workspace(active)))
         if w is not None and getattr(w, "programs", None):
-            self._last_programs = w.programs
-            self._last_setup = w.setup_dict
-            self._last_machine = w.machine_dump
-            self._last_report = None
+            if beside:
+                # A drawing with no block tab (a DXF): the block's program
+                # joins the front's, which it used to replace.
+                self._last_programs = {**self._last_programs, **w.programs}
+            else:
+                self._last_programs = w.programs
+                self._last_setup = w.setup_dict
+                self._last_machine = w.machine_dump
+                self._last_report = None
+                self._program_fresh = self._job_is_fresh(w)
             self._act_export_nc.setEnabled(True)
             # If a project file is open, fold the new program straight into it.
             if self._project_path is not None:
@@ -10552,15 +11216,21 @@ class MainWindow(QMainWindow):
         # Fold this program's checks into the Inspector (M7.14). A fresh program
         # supersedes any prior cut report, so clear it until the sim re-runs.
         if w is not None:
-            self._diag_reach = list(getattr(w, "reach_warnings", []))
-            self._diag_clearance = list(getattr(w, "clearance_violations", []))
-            self._diag_lint = list(getattr(w, "machine_warnings", []))
-            self._diag_zprofile = list(getattr(w, "z_profiles", []))
-            self._diag_cut_report = None
+            # a block beside the front's program adds its checks to the front's
+            def fold(old, new):
+                return (list(old) if beside else []) + list(new)
+            self._diag_reach = fold(self._diag_reach, getattr(w, "reach_warnings", []))
+            self._diag_clearance = fold(self._diag_clearance,
+                                        getattr(w, "clearance_violations", []))
+            self._diag_lint = fold(self._diag_lint, getattr(w, "machine_warnings", []))
+            self._diag_zprofile = fold(self._diag_zprofile, getattr(w, "z_profiles", []))
+            if not beside:
+                self._diag_cut_report = None
             self._refresh_inspector()
         # Draw the toolpaths over the 2D design + fill the inspector (M7.11); the
         # worktable bed has its own render, so only per-component programs overlay.
-        overlay = getattr(w, "op_overlay", None) if w is not None else None
+        overlay = (getattr(w, "op_overlay", None)
+                   if w is not None and not beside else None)
         if overlay:
             self._show_toolpath_overlay(overlay, rows)
         then, self._gcode_then = getattr(self, "_gcode_then", None), None
@@ -10573,14 +11243,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "G-code generated", summary)
 
     def _on_gcode_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("gcode")
         self._gcode_then = None
         self._report_failure("G-code generation", "gcode", tb)
         self._act_gcode.setEnabled(True)
         self._act_block.setEnabled(self._lens_od is not None)
 
     def _on_gcode_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("gcode")
         self._gcode_then = None
         self.append_log("[gcode] Canceled.")
         self._act_gcode.setEnabled(True)
@@ -10622,13 +11292,25 @@ class MainWindow(QMainWindow):
         self._commit_typed_value()
         # From the Worktable tab the bed's own program is what is exported (M20).
         programs = (self._wt_programs if self._on_worktable_tab() and self._wt_programs
-                    else programs)
+                    else self._last_programs)
         if not programs:
             QMessageBox.information(
                 self, "Export G-code",
                 "Generate G-code first (Ctrl+G) — then export it to a .nc file.",
             )
             return
+        if programs is self._last_programs and not self._program_fresh:
+            # A confirmation and not a refusal, as the Z profile's is: the
+            # maker may want the older program, but not without knowing.
+            ans = QMessageBox.warning(
+                self, "Export G-code \u2014 an older program?",
+                "The design or its CAM settings changed after this program was "
+                "generated, so it does not cut what the tabs now show. Generate "
+                "it again (Ctrl+G) to export the current one.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
+                QMessageBox.StandardButton.Cancel)
+            if ans != QMessageBox.StandardButton.Ok:
+                return
         if self._z_profile_hold("export anyway"):
             return
         base = Path(self._prefs["last_output_dir"] or ".")
@@ -10648,7 +11330,7 @@ class MainWindow(QMainWindow):
             self._prefs["last_output_dir"] = str(out.parent)
             written = [out]
         else:
-            # Multiple programs (e.g. a future back-side cut): pick a folder.
+            # Multiple programs (a two-sided job's two files): pick a folder.
             d = QFileDialog.getExistingDirectory(
                 self, "Export G-code — choose folder", str(base)
             )
@@ -10695,13 +11377,24 @@ class MainWindow(QMainWindow):
             missing = []
             if ws.outline_poly is None:
                 missing.append("an OUTLINE")
-            if ws.lens_od is None or ws.lens_os is None:
-                missing.append("two LENS curves")
+            if ws.lens_od is None and ws.lens_os is None:
+                missing.append("a LENS curve (two for a pair, one for a monocle)")
             if not ws.layers.get("SCULPT"):
                 missing.append("a SCULPT zone layout (5 section cuts per side)")
             if missing:
                 return ("This frame front is missing " + ", ".join(missing)
                         + ". Draw it in GuildDraw and re-export.")
+            if ws.lens_outside:
+                return ("A LENS curve lies outside every OUTLINE body, or crosses its "
+                        "edge, so it would never be cut. Draw each lens inside its "
+                        "rim in GuildDraw and re-export.")
+            if getattr(ws, "extra_lenses", 0):
+                return (f"The front has {ws.extra_lenses + 2} LENS curves; it holds two, "
+                        "a monocle one. Delete the extra ones in GuildDraw and re-export.")
+            if getattr(ws, "half_drawn", False):
+                return ("One lens in an outline drawn for two: the other eye would be "
+                        "cut solid. Draw the second lens, or bake the Ghost with Mirror, "
+                        "in GuildDraw and re-export.")
             return ("This frame front's SCULPT cuts do not resolve into zones. "
                     "Check that there are 5 section cuts per side.")
         if ws.kind in (ComponentKind.TEMPLE_RIGHT, ComponentKind.TEMPLE_LEFT):
@@ -10782,7 +11475,7 @@ class MainWindow(QMainWindow):
             return
         self._sync_active_workspace()
         folder = QFileDialog.getExistingDirectory(
-            self, "Export every component as STL",
+            self, "Export every part as STL",
             self._prefs["last_output_dir"] or ".")
         if not folder:
             return
@@ -10865,7 +11558,7 @@ class MainWindow(QMainWindow):
         self._export_worker.error.connect(self._export_thread.quit)
         self._export_worker.canceled.connect(self._export_thread.quit)
 
-        dlg = self._open_progress(title)
+        dlg = self._open_progress(title, "export")
         self._export_worker.stage.connect(self._on_stage)
         dlg.canceled.connect(self._export_worker.cancel, Qt.ConnectionType.DirectConnection)
         self._export_thread.start()
@@ -10884,7 +11577,7 @@ class MainWindow(QMainWindow):
         self._forming_panel.set_export_enabled(formed_ok)
 
     def _on_export_finished(self, paths: list) -> None:
-        self._close_progress()
+        self._close_progress("export")
         for p in paths:
             self.append_log(f"[export] Wrote {p}")
         self._restore_export_actions()
@@ -10895,12 +11588,12 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(f"STL exported — {Path(paths[0]).name}{more}")
 
     def _on_export_error(self, tb: str) -> None:
-        self._close_progress()
+        self._close_progress("export")
         self._report_failure("STL export", "export", tb)
         self._restore_export_actions()
 
     def _on_export_canceled(self) -> None:
-        self._close_progress()
+        self._close_progress("export")
         self.append_log("[export] Canceled.")
         self._restore_export_actions()
         self.status_lbl.setText("STL export canceled")

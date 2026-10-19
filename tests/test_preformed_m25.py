@@ -29,7 +29,7 @@ def demo():
     raw = import_dxf(ROOT / "tests" / "fixtures" / "demo" / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     od, os_ = sorted(lenses, key=lambda l: -l.centroid.x)
     return partition_zones(outline, lenses, raw["SCULPT"]), hinges, od, os_
 
@@ -118,7 +118,7 @@ def test_the_contours_follow_the_curve_and_the_skin_is_along_the_normal(demo, re
     assert np.abs((z - bottom) - want).max() < 0.05
     assert (want.max() - want.min()) > 0.01                 # and it varies with the tilt
     # the hinge pockets follow the curve too
-    pockets = next(op for op in ops if op.name == "Hinge Pockets")
+    pockets = next(op for op in ops if op.name == "Component Pockets")
     pz = np.array([p[2] for path in pockets.paths for p in path])
     assert pz.max() - pz.min() > 1.0
 
@@ -306,7 +306,7 @@ def _gdraw_front(tmp_path_factory, name):
     return build_workspaces_from_gdraw(path)[0][0]
 
 
-def test_a_second_side_on_the_pressed_blank_turns_the_slab_over(demo, tmp_path, monkeypatch):
+def test_the_pressed_blank_two_sided_cuts_the_anterior_first(demo, tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
     pytest.importorskip("PySide6.QtWidgets")
@@ -331,27 +331,37 @@ def test_a_second_side_on_the_pressed_blank_turns_the_slab_over(demo, tmp_path, 
     worker.progress.connect(log.append)
     worker.run()
     assert errs == [], errs[0] if errs else ""
-    assert set(worker.programs) == {"posterior_cut.nc", "back_cut.nc"}
-    assert any("turns the slab over" in ln for ln in log)
-    back = worker.programs["back_cut.nc"]
-    assert "G55" in back and "--- Perimeter ---" in back
-    assert "--- Features ---" in back or "--- Fine Relief ---" in back   # the chamfer's pass
-    # side two's perimeter rides the turned slab: its Z varies along the ring
-    zs = [float(ln.split("Z")[1].split()[0]) for ln in back.splitlines()
+    assert set(worker.programs) == {"anterior_cut.nc", "posterior_cut.nc"}
+    assert any("Two-sided on the pressed blank" in ln for ln in log)
+    # the anterior first (2.0): its chamfer, nothing of the posterior's
+    front, back = worker.programs["anterior_cut.nc"], worker.programs["posterior_cut.nc"]
+    assert "G55" in front and "--- Perimeter ---" not in front
+    assert "--- Features ---" in front or "--- Fine Relief ---" in front   # the chamfer's pass
+    # the posterior's perimeter rides the pressed slab: its Z varies along the ring
+    assert "--- Perimeter ---" in back
+    zs = [float(ln.split("Z")[1].split()[0]) for ln in back.split("--- Perimeter ---")[1].splitlines()
           if ln.startswith("G1") and "Z" in ln and "X" in ln]
     assert max(zs) - min(zs) > 3.0
     sim_done = []
     sim = SimWorker(partition, castle, cam, hinge_polys=hinges, resolution=0.3,
-                    program_text=worker.programs["posterior_cut.nc"],
-                    back_program_text=worker.programs["back_cut.nc"],
+                    program_text=back, anterior_program_text=front,
+                    anterior_setup=worker.setup_dict["setups"][0],
                     forming=_forming(), bridge=bridge)
     sim.finished.connect(lambda r, lines, plan: sim_done.append((r, lines, plan)))
     sim.error.connect(errs.append)
     sim.run()
     assert errs == [], errs[0] if errs else ""
     report, lines, plan = sim_done[0]
-    assert any(ln.startswith("Side one:") for ln in lines) and any(ln.startswith("Side two:") for ln in lines)
+    assert any(ln.startswith("Anterior:") for ln in lines) and any(ln.startswith("Posterior:") for ln in lines)
     assert report.status() in {"ok", "warn"}, lines
+    # The brow chamfer is cut on the turned slab (the 2.0 bug hunt): the
+    # front's depth mapped onto the formed grid left cells that read as the
+    # uncut slab along the chamfer's foot, and they held the tools up off it,
+    # 93% reached. The turned slab's underside, below the verdict's fixed
+    # bottom, was counted as left standing, 1.5 cm³ of it.
+    first = next(ln for ln in lines if ln.startswith("Anterior: Cut completeness"))
+    assert float(first.split("completeness: ")[1].split("%")[0]) >= 99.0, first
+    assert float(first.split("proud, ")[1].split(" mm³")[0]) < 100.0, first
 
 
 def test_the_nest_is_the_cup_and_the_dome_on_the_dowels(demo):

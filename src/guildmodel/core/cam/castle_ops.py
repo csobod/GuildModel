@@ -3,7 +3,7 @@
 Reproduces the maker's proven Fusion 360 program from the castle relief,
 in order:
 
-  1. Hinge Pockets — while the stock is rigid; ramp entry, no straight plunge
+  1. Component Pockets — while the stock is rigid; ramp entry, no straight plunge
   2. Rough Relief  — castle surface + axial stock to leave, stock-aware
   3. Fine Relief   — final castle surface
   4. Eyewires      — through-cut contours, onion skin (no tabs)
@@ -28,20 +28,22 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
-from shapely.geometry import LineString, Polygon
+from shapely import contains_xy, prepare, segmentize
+from shapely.geometry import LineString, MultiPolygon, Polygon
 
 # Optional stage-boundary progress hook (BUILDPLAN M4.6 Part B); see
 # relief.castle.ProgressFn. Default None — core never imports the GUI.
 ProgressFn = Callable[[str, float], None]
 
 from ..geometry.pocket_floor import aligned, castle_pocket_floors
+from ..geometry.regions import body_interiors, body_parts
 from ..project.schema import (
     CastleCamParams, CastleParams, HoldingParams, StockDefinition,
 )
 from ..relief.castle import CUT_RES_MM, CastleRelief, stock_top_heightfield
 from ..relief.heightfield import Heightfield
 from .dropcutter import cutter_location_surface
-from .pocketing import _inward_offsets, _SCALE
+from .pocketing import _inward_offsets, _SCALE, core_rings
 from .tabs import insert_tabs
 
 Point3 = tuple[float, float, float]
@@ -156,7 +158,7 @@ _DEFAULT_CAM = CastleCamParams()
 # the fine relief that tool outweighed the rough one and the pockets moved after
 # the roughing, which the release notes had promised would not happen.)
 CASTLE_OP_TIERS: tuple[frozenset[str], ...] = (
-    frozenset({"Hinge Pockets"}),
+    frozenset({"Component Pockets"}),
     frozenset({"Rough Relief"}),
     frozenset({"Fine Relief"}),
     frozenset({"Features"}),
@@ -219,6 +221,27 @@ def _rdp(points: list[Point3], tol: float) -> list[Point3]:
     return [tuple(p) for p in pts[keep]]
 
 
+#: How far past the tool-center region a link may stray, mm: the rings lie on
+#: its boundary, and the slack keeps a link along one inside it.
+_LINK_TOL_MM = 0.01
+
+
+def _ramp_down(ring_xy, z_from: float, z_to: float, ramp_step: float) -> list[Point3]:
+    """Laps of a closed ring (its first point repeated last), descending
+    `ramp_step` per lap from `z_from` to `z_to`: no straight plunge into the
+    material. Ends on the ring's first point at `z_to`."""
+    path: list[Point3] = [(*ring_xy[0], z_from)]
+    n = len(ring_xy)
+    z = z_from
+    while z > z_to + 1e-9:
+        z_next = max(z_to, z - ramp_step)
+        for i in range(1, n):
+            t = i / (n - 1)
+            path.append((*ring_xy[i], z + (z_next - z) * t))
+        z = z_next
+    return path
+
+
 def _ring_to_points(scaled_ring: list[list[int]], z: float) -> list[Point3]:
     pts = [(p[0] / _SCALE, p[1] / _SCALE, z) for p in scaled_ring]
     pts.append(pts[0])          # close the loop
@@ -230,30 +253,57 @@ def _poly_rings(poly: Polygon, tool_radius_mm: float, stepover_mm: float) -> lis
     return _inward_offsets(scaled, tool_radius_mm, stepover_mm)
 
 
+def fixture_screws(fixture: dict | None, blank: str = "front") -> list[tuple[float, float, float]]:
+    """The fixture's hold-down screws under a blank, ``(x, y, head radius)`` in
+    the blank's design frame (its zone's center at the origin, as
+    `fixture_clearance_violations` reads it): the screws inside the zone."""
+    if not fixture:
+        return []
+    zone = (fixture.get("blank_zones") or {}).get(blank)
+    if not zone:
+        return []
+    x0, y0 = float(zone["x_mm"]), float(zone["y_mm"])
+    x1, y1 = x0 + float(zone["width_mm"]), y0 + float(zone["height_mm"])
+    cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+    r = float(fixture.get("hold_down_screw_radius_mm", 0.0) or 0.0)
+    return [(float(sc["x"]) - cx, float(sc["y"]) - cy, r)
+            for sc in fixture.get("hold_down_screws") or []
+            if x0 <= float(sc["x"]) <= x1 and y0 <= float(sc["y"]) <= y1]
+
+
 def work_holding_keepouts(
     body: Polygon, stock: StockDefinition, tool_radius_mm: float,
     *, screw_head_diameter_mm: float = 7.0, margin_mm: float = 2.0,
-    is_hole=lambda ring: False,
+    is_hole=lambda ring: False, screws=(),
 ) -> list[tuple[float, float, float]]:
     """Keep-out circles ``(cx, cy, radius)`` the tool CENTER must stay outside when
     a pass-link retract is lowered below safe Z (BUILDPLAN M8). They mark the
     work-holding screws standing proud of the stock — the standard Guild fixture:
     one at each stock-blank corner and one at each lens center (the body's interior
-    holes). ``radius`` = screw radius + tool radius + margin, so the tool *edge*
-    keeps ``margin`` clear of the head. Design coordinates (blank centerd on origin).
+    holes, every rim's on a front with separated rims). ``radius`` = screw radius +
+    tool radius + margin, so the tool *edge* keeps ``margin`` clear of the head.
+    Design coordinates (blank centered on origin).
 
     ``is_hole`` marks interior rings that are decorative OUTLINE openings rather
     than lens apertures — nothing is screwed through those, so they seed no
-    keep-out (see geometry.regions.CastlePartition.is_hole)."""
+    keep-out (see geometry.regions.CastlePartition.is_hole).
+
+    ``screws`` are the fixture's own (`fixture_screws`), each with its head's
+    radius. The corners and the lens centers were the only keep-outs, and the
+    Guild bed's screws stand at (±75, ±36) and (±32, 0): low hops passed
+    straight over the inner pair on five of the eight corpus fronts, a cap
+    head standing above the link plane (the 2.0 bug hunt). They are kept as
+    well, the conservative reading."""
     keep_r = screw_head_diameter_mm / 2.0 + tool_radius_mm + margin_mm
     hl, hw = stock.blank_length_mm / 2.0, stock.blank_width_mm / 2.0
     centers = [(hl, hw), (-hl, hw), (hl, -hw), (-hl, -hw)]      # blank corners
-    for ring in body.interiors:                                 # lens centers
+    for ring in body_interiors(body):                           # lens centers
         if is_hole(ring):
             continue
         c = Polygon(ring).centroid
         centers.append((c.x, c.y))
-    return [(x, y, keep_r) for x, y in centers]
+    return ([(x, y, keep_r) for x, y in centers]
+            + [(x, y, r + tool_radius_mm + margin_mm) for x, y, r in screws])
 
 
 # ------------------------------------------------------------------ op 1: hinge pockets
@@ -279,6 +329,53 @@ def pocket_levels(start_z: float, floor_z: float, stepdown_mm: float) -> list[fl
     return zs
 
 
+def pad_footprint(stock: StockDefinition) -> Polygon | None:
+    """The pad block's footprint in the design frame, or None without one."""
+    from shapely.geometry import box
+    if not (stock.use_pad_block and stock.pad_block_length_mm > 0
+            and stock.pad_block_width_mm > 0):
+        return None
+    hl, hw = stock.pad_block_length_mm / 2.0, stock.pad_block_width_mm / 2.0
+    return box(stock.pad_block_dx_mm - hl, stock.pad_block_dy_mm - hw,
+               stock.pad_block_dx_mm + hl, stock.pad_block_dy_mm + hw)
+
+
+def pocket_starts(polys: list[Polygon], stock: StockDefinition,
+                  clearance_mm: float = 0.5) -> list[float]:
+    """Where each pocket's descent begins on a flat blank: `clearance_mm` over
+    the stock standing above it, the pad block's top where the pocket meets the
+    pad block, else the blank's. The pockets are cut first, on raw stock."""
+    top = float(stock.blank_thickness_mm)
+    pad = pad_footprint(stock)
+    return [(float(stock.total_pad_height_mm)
+             if pad is not None and poly.intersects(pad) else top) + clearance_mm
+            for poly in polys]
+
+
+def formed_pocket_starts(polys: list[Polygon], relief: CastleRelief, tool_radius_mm: float,
+                         clearance_mm: float = 0.5) -> list[float]:
+    """`pocket_starts` on a pressed slab: `clearance_mm` over the slab's own
+    top under each pocket and the tool's reach round it. Every pocket started
+    over the slab's highest point, and four fifths of the op was air on the
+    demo (the 2.0 bug hunt)."""
+    from shapely import contains_xy
+    top = relief.stock_top
+    if top is None:
+        return [float(np.nanmax(relief.field.z)) + clearance_mm for _ in polys]
+    z = np.asarray(top.z, dtype=np.float64)
+    rows, cols = z.shape
+    xs = top.origin[0] + np.arange(cols) * top.resolution
+    ys = top.origin[1] + np.arange(rows) * top.resolution
+    X, Y = np.meshgrid(xs, ys)
+    highest = float(np.nanmax(z))
+    out = []
+    for poly in polys:
+        reach = poly.buffer(tool_radius_mm + top.resolution)
+        under = contains_xy(reach, X.ravel(), Y.ravel()).reshape(z.shape) & np.isfinite(z)
+        out.append((float(z[under].max()) if under.any() else highest) + clearance_mm)
+    return out
+
+
 def hinge_pocket_op(
     hinge_polys: list[Polygon],
     floor_z: float,
@@ -286,6 +383,7 @@ def hinge_pocket_op(
     tool_radius_mm: float,
     params: CastleCamParams,
     floors: list | None = None,
+    starts: list | None = None,
 ) -> CamOp:
     """Pocket each hinge outline to floor_z in ramped levels.
 
@@ -307,8 +405,13 @@ def hinge_pocket_op(
     Up to `2·r·tan(angle)` stays against the downhill wall, where the flat end
     cannot reach. A flat floor, or no `floors`, gets no finishing pass and posts
     exactly the historical path.
+
+    `starts` (one height per polygon) is where each pocket's descent begins,
+    above the stock that stands over it: a separated-rims mount sits under the
+    pad block, where the stock is the pad's height and not the blank's
+    (`pocket_starts`). Without it every pocket starts at `start_z`.
     """
-    op = CamOp("Hinge Pockets")
+    op = CamOp("Component Pockets")
     # A non-positive ramp step never descends (max(floor_z, z - 0) == z) — guard it
     # so a hand-edited project can't hang the worker (matching peck_drill): +inf ramps
     # straight to the level in one lap. The inward cascade's stepover is guarded in
@@ -316,12 +419,19 @@ def hinge_pocket_op(
     ramp_step = params.ramp_step_mm if params.ramp_step_mm > 1e-9 else float("inf")
     flat_levels = pocket_levels(start_z, floor_z, params.pocket_stepdown_mm)
     floors = list(floors) if floors is not None else [None] * len(hinge_polys)
-    for poly, floor in zip(hinge_polys, floors):
+    starts = list(starts) if starts is not None else [start_z] * len(hinge_polys)
+    for poly, floor, start in zip(hinge_polys, floors, starts):
         rings = _poly_rings(poly, tool_radius_mm, params.pocket_stepover_mm)
         if not rings:
             continue
+        # once more round a middle the cascade's passes do not overlap (2.0)
+        rings += [[[int(round(x * _SCALE)), int(round(y * _SCALE))] for x, y in ring[:-1]]
+                  for ring in core_rings(poly, tool_radius_mm, params.pocket_stepover_mm)]
         tilted = floor is not None and not floor.flat
-        if tilted:
+        if floor is not None and floor.flat and floor.z_fixed != floor_z:
+            # a mount, cut from its own terrace (`geometry.pocket_floor`)
+            levels = pocket_levels(start, floor.z_fixed, params.pocket_stepdown_mm)
+        elif tilted:
             lift = tool_radius_mm * abs(floor.slope)
             # The plane's low point over the region the tool *centre* can
             # reach: over the whole pocket it sat r·tan lower than any point
@@ -329,40 +439,62 @@ def hinge_pocket_op(
             # clamped to the level before it and was posted twice.
             inset = poly.buffer(-tool_radius_mm)
             low, _ = floor.extremes(inset if not inset.is_empty else poly)
-            levels = pocket_levels(start_z, low + lift, params.pocket_stepdown_mm)
+            levels = pocket_levels(start, low + lift, params.pocket_stepdown_mm)
+        elif start != start_z:
+            levels = pocket_levels(start, floor_z, params.pocket_stepdown_mm)
         else:
             levels = flat_levels
-        outer = rings[0]
-        path: list[Point3] = []
-
-        ring_xy = [(p[0] / _SCALE, p[1] / _SCALE) for p in outer]
+        ring_xy = [(p[0] / _SCALE, p[1] / _SCALE) for p in rings[0]]
         ring_xy.append(ring_xy[0])
-        n = len(ring_xy)
-        z = start_z
-        path.append((*ring_xy[0], z))
+        # Where the tool center may go: a link that leaves it cuts the wall.
+        # A pocket whose first offset splits (a neck narrower than the tool)
+        # linked its loops straight across the neck at full depth, and entered
+        # every loop but the first sideways; such a link now ends the path,
+        # and the next ring is entered as the outer one is, ramping down from
+        # the level above, which the cascade has cleared (the 2.0 bug hunt).
+        # A convex pocket's links all stay inside and post as before.
+        reach = poly.buffer(-(tool_radius_mm - _LINK_TOL_MM), join_style="round")
+        prepare(reach)
+
+        def inside(a, b) -> bool:
+            return bool(reach.covers(LineString([a[:2], b[:2]])))
+
+        paths: list[list[Point3]] = []
+        path = _ramp_down(ring_xy, start, levels[0], ramp_step) if levels else []
+        above = start
         for k, level in enumerate(levels):
-            # ramp laps on the outer ring down to this level
-            while z > level + 1e-9:
-                z_next = max(level, z - ramp_step)
-                for i in range(1, n):
-                    t = i / (n - 1)
-                    path.append((*ring_xy[i], z + (z_next - z) * t))
-                z = z_next
+            if k:
+                # down the outer ring from the level above, as the first level is
+                path += _ramp_down(ring_xy, above, level, ramp_step)[1:]
             # level laps: outer ring once more flat, then the inward cascade
             path += [(*p, level) for p in ring_xy]
             for ring in rings[1:]:
-                path += _ring_to_points(ring, level)
+                pts = _ring_to_points(ring, level)
+                if inside(path[-1], pts[0]):
+                    path += pts
+                else:
+                    paths.append(path)
+                    ring_pts = [p[:2] for p in pts]
+                    path = _ramp_down(ring_pts, above, level, ramp_step) + pts[1:]
             if k + 1 < len(levels):
                 # The cascade ends on the innermost ring; come back out to the
-                # outer ring's start to ramp the next level. Everything inside the
-                # outer ring is already cleared AT this level, so the move is air.
-                path.append((*ring_xy[0], level))
-        if tilted:
-            pts = np.asarray(path, dtype=np.float64)
-            pts[:, 2] = np.maximum(pts[:, 2],
-                                   floor.z(pts[:, 0], pts[:, 1]) + lift)
-            path = [tuple(p) for p in pts.tolist()]
-        op.paths.append(_rdp(path, params.simplify_tol_mm))
+                # outer ring's start to ramp the next level. The pocket is
+                # cleared at this level, so a link that stays inside it is air.
+                back = (*ring_xy[0], level)
+                if inside(path[-1], back):
+                    path.append(back)
+                else:
+                    paths.append(path)
+                    path = [back]
+            above = level
+        paths.append(path)
+        for path in paths:
+            if tilted:
+                pts = np.asarray(path, dtype=np.float64)
+                pts[:, 2] = np.maximum(pts[:, 2],
+                                       floor.z(pts[:, 0], pts[:, 1]) + lift)
+                path = [tuple(p) for p in pts.tolist()]
+            op.paths.append(_rdp(path, params.simplify_tol_mm))
         if tilted:
             op.paths += [_rdp(p, params.simplify_tol_mm) for p in
                          tilted_floor_finish(poly, floor, tool_radius_mm,
@@ -672,7 +804,7 @@ def relief_ops(
     rough_type, rough_r = rough_tool["type"], rough_tool["radius_mm"]
     f = relief.field
     # Relief passes follow the PRE-pocket surface so they sail over the already-cut
-    # hinge pockets instead of re-diving to the floor (M8); the Hinge Pockets op cuts
+    # hinge pockets instead of re-diving to the floor (M8); the Component Pockets op cuts
     # the pockets, the sim verifies the full pocketed `field`.
     surf = relief.surface_field if relief.surface_field is not None else f
     res = f.resolution
@@ -686,8 +818,20 @@ def relief_ops(
 
     # Machining region = body grown by a finishing-tool-radius band; the band's
     # target is the relief level of the nearest body cell (so the rim floor is
-    # reachable by the finishing tool).
-    band_mm = max(fine_r, params.relief_stepover_mm)
+    # reachable by the finishing tool). A pressed blank's surface tilts with
+    # the curve (M25), and a flat tool finishes an edge that falls away from
+    # it only when centered a radius past it, its whole disc over the band:
+    # with one radius the uncut slab beyond held it r tan(slope) high there,
+    # 0.5 to 0.8 mm along a lens opening's edge (the 2.0 bug hunt).
+    tilted = float(getattr(relief, "wall_lean_mm", 0.0) or 0.0) > 0.0
+    # The same holds wherever the stock past the part stands uncut, as on the
+    # anterior cut first (2.0): the band takes the widest finishing tool's
+    # disc beyond the edge, and the Features pass reaches its own radius past
+    # it, or the uncut stock holds both tools off the feature's foot.
+    beyond = bool(getattr(relief, "uncut_beyond_edge", False))
+    reach_r = max(fine_r, float(feature_tool["radius_mm"]) if feature_tool else 0.0)
+    band_mm = max((2.0 * reach_r) if beyond else fine_r * (2.0 if tilted else 1.0),
+                  params.relief_stepover_mm)
     dist, (iy, ix) = distance_transform_edt(
         ~inside, sampling=res, return_indices=True
     )
@@ -798,7 +942,11 @@ def relief_ops(
                 cam_hf, feature_tool["type"], feature_tool["radius_mm"]).z
             stock_feat_z = _stock_ceiling(feature_tool["type"],
                                           feature_tool["radius_mm"])
-        fb_wide = binary_dilation(fb, iterations=2)   # cover band-edge rounding
+        # cover band-edge rounding; past an uncut edge, the tool's own radius
+        reach_cells = 2
+        if beyond:
+            reach_cells = max(2, int(math.ceil((float(feature_tool["radius_mm"]) + res) / res)))
+        fb_wide = binary_dilation(fb, iterations=reach_cells)
         dist_in = distance_transform_edt(inside, sampling=res)
         d_max = float(dist_in[fb_wide & inside].max()) + band_mm + f_step
         f_rings = contour_parallel_rings(machining, f_step, max_depth_mm=d_max)
@@ -830,7 +978,7 @@ class NoOperationsError(ValueError):
     """
 
 
-def require_ops(ops: list[CamOp], what: str = "This component") -> list[CamOp]:
+def require_ops(ops: list[CamOp], what: str = "This part") -> list[CamOp]:
     """Return `ops`, or raise `NoOperationsError` when there is nothing to cut."""
     if not ops:
         raise NoOperationsError(
@@ -839,6 +987,39 @@ def require_ops(ops: list[CamOp], what: str = "This component") -> list[CamOp]:
             f"least one operation and generate again."
         )
     return ops
+
+
+#: How far past the pad block's footprint, beyond the tool's radius, a pass
+#: over it starts and ends, mm: the tool goes down there in air.
+AIR_ENTRY_MARGIN_MM = 0.5
+#: The longest step along a contour ring when it is cut into runs, mm.
+RUN_SAMPLE_MM = 0.5
+
+
+def _keep_runs(keep: np.ndarray) -> list[np.ndarray] | None:
+    """The stretches of a closed ring's vertices (the closing duplicate left
+    off) where `keep` holds, as index runs in the ring's own direction, each
+    widened by one vertex at either end, where the pass is in air. None when
+    `keep` holds everywhere: the whole ring is cut, closed, as before."""
+    n = len(keep)
+    if n == 0 or keep.all():
+        return None
+    if not keep.any():
+        return []
+    s0 = int(np.flatnonzero(~keep)[0])              # start outside every run,
+    order = (np.arange(n) + s0) % n                 # so none wraps the seam
+    k = keep[order]
+    runs, i = [], 1
+    while i < n:
+        if not k[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and k[j]:
+            j += 1
+        runs.append(order[np.arange(i - 1, j + 1) % n])
+        i = j
+    return runs
 
 
 def contour_passes(top_z: float, skin_z: float, stepdown_mm: float) -> list[float]:
@@ -872,8 +1053,19 @@ def contour_op(
     holding: "HoldingParams | None" = None,
     surface_top=None,
     surface_bottom=None,
+    pad: Polygon | None = None,
+    blank_top_z: float | None = None,
 ) -> CamOp:
     """Depth-stacked offset contour passes.
+
+    `pad` and `blank_top_z` start each ring where the stock over it stands: a
+    ring the tool keeps clear of the pad block's footprint starts at the
+    blank's top, `blank_top_z`, not the pad's, `top_z` (the 2.0 bug hunt). A
+    ring that crosses the pad is cut whole only below the blank's top; above
+    it the pad alone has material, so each pass there cuts the ring's runs
+    over the pad, going down and coming out in air past its edge. Whole
+    rings there ran a quarter of the contours' feed through air, about a
+    minute a front (2.0).
 
     On a pre-formed blank (M25) `surface_top` and `surface_bottom` are the
     pressed slab's envelopes (`Heightfield`s on the relief grid): each pass
@@ -931,15 +1123,42 @@ def contour_op(
     # moving to the next (Fusion's order). Depth-major (the old order)
     # alternated lenses at each level, adding a long OD<->OS traverse per pass
     # — the back-and-forth that dramatically inflates eyewire cut time.
-    passes = contour_passes(top_z, floor_z, params.contour_stepdown_mm)
-    tab_h = tab_height_for(passes, top_z, holding.tab_height_mm) if tabs else 0.0
+    def ring_top(ring) -> float:
+        if pad is None or blank_top_z is None or blank_top_z >= top_z:
+            return top_z
+        swept = LineString([(x, y) for x, y, *_ in ring]).buffer(tool_radius_mm)
+        return top_z if swept.intersects(pad) else blank_top_z
+
+    over_pad = None
+    if pad is not None and blank_top_z is not None and blank_top_z < top_z:
+        over_pad = pad.buffer(tool_radius_mm + AIR_ENTRY_MARGIN_MM)
+        prepare(over_pad)
+
     for ring in rings:
+        start = ring_top(ring)
+        passes = contour_passes(start, floor_z, params.contour_stepdown_mm)
+        tab_h = tab_height_for(passes, start, holding.tab_height_mm) if tabs else 0.0
+        # A ring that crosses the pad: its runs over it, for the passes above
+        # the blank's top (None when the whole ring lies over the pad). Cut from
+        # the ring as the full passes simplify it, so a run lies on their path
+        # exactly and the wall keeps one line through the blank's top.
+        runs = dense = None
+        if over_pad is not None and start > blank_top_z:
+            simple = [(x, y) for x, y, _ in _rdp([(x, y, 0.0) for x, y in ring],
+                                                 params.simplify_tol_mm)]
+            dense = np.asarray(segmentize(LineString(simple), RUN_SAMPLE_MM).coords)[:-1, :2]
+            runs = _keep_runs(contains_xy(over_pad, dense[:, 0], dense[:, 1]))
         for i, z in enumerate(passes):
             if tabs and i == len(passes) - 1:
                 # Only the last pass carries the bridges; the passes above it are at
                 # depth the tab tops don't reach, so tabbing them would cut air.
                 pts = insert_tabs([(x, y) for x, y, *_ in ring], holding.tab_count,
                                   holding.tab_width_mm, tab_h, z)
+            elif runs is not None and z >= blank_top_z - 1e-9:
+                for idx in runs:
+                    op.paths.append(_rdp([(float(dense[j, 0]), float(dense[j, 1]), z)
+                                          for j in idx], params.simplify_tol_mm))
+                continue
             else:
                 pts = [(x, y, z) for x, y in ring]
             op.paths.append(_rdp(pts, params.simplify_tol_mm))
@@ -959,7 +1178,17 @@ def _surface_along(field, xy: np.ndarray) -> np.ndarray:
 
 def _curved_contour(op: CamOp, rings, surface_top, surface_bottom, skin_mm: float,
                     params: CastleCamParams, holding, tabs: bool) -> None:
-    """The depth stack on a curved blank (M25): see `contour_op`."""
+    """The depth stack on a stock of varying top or bottom: a pre-formed blank
+    (M25). See `contour_op`. (M24's side two on its spacer cut here too; since
+    2.0 the anterior makes no through-cut.)
+
+    Each pass cuts only where it goes deeper than the one before. Where the
+    bottom is high, under a pressed slab's thin parts, the passes reach the
+    floor early, and they rode it whole in air to the last (2.0). With tabs,
+    the passes before the last stop over the tabs' tops, so the last pass is
+    deep enough everywhere to leave them: the tab height was the least depth
+    of that pass along the ring, which is nothing where the floor is reached
+    early, and such a part was released with no tabs at all (2.0)."""
     res = float(surface_bottom.resolution)
     gy, gx = np.gradient(surface_bottom.z, res)
     tilt = np.sqrt(np.nan_to_num(gx) ** 2 + np.nan_to_num(gy) ** 2)
@@ -967,7 +1196,9 @@ def _curved_contour(op: CamOp, rings, surface_top, surface_bottom, skin_mm: floa
     tilt_field = Heightfield(z=tilt, origin=surface_bottom.origin, resolution=res)
     step = params.contour_stepdown_mm if params.contour_stepdown_mm > 1e-9 else 1e9
     for ring in rings:
-        xy = np.asarray([(x, y) for x, y, *_ in ring], dtype=np.float64)
+        # sampled finely, so the floor's steps are where they are on the ring
+        xy = np.asarray(segmentize(LineString([(x, y) for x, y, *_ in ring]),
+                                   RUN_SAMPLE_MM).coords, dtype=np.float64)[:, :2]
         top = _surface_along(surface_top, xy)
         bottom = _surface_along(surface_bottom, xy)
         normal_skin = skin_mm * np.sqrt(1.0 + _surface_along(tilt_field, xy) ** 2)
@@ -976,22 +1207,61 @@ def _curved_contour(op: CamOp, rings, surface_top, surface_bottom, skin_mm: floa
         if depth <= 1e-9:
             continue
         n = max(1, int(math.ceil(depth / step - 1e-9)))
-        passes = [np.maximum(top - k * step, floor) for k in range(1, n + 1)]
-        passes[-1] = floor
         tab_h = 0.0
         if tabs:
-            prev = passes[-2] if n >= 2 else top
-            tab_h = max(0.0, min(holding.tab_height_mm, float(np.min(prev - floor))))
+            tab_h = max(0.0, min(float(holding.tab_height_mm), step if n >= 2
+                                 else float(np.min(top - floor))))
+        hold = floor + tab_h
+        passes = [np.maximum(top - k * step, hold) for k in range(1, n)] + [floor]
+        prev = top
         for i, z in enumerate(passes):
             if tabs and i == n - 1 and tab_h > 0.0:
                 raised = insert_tabs([(float(x), float(y)) for x, y in xy], holding.tab_count,
                                      holding.tab_width_mm, tab_h, 0.0)
                 rxy = np.asarray([(x, y) for x, y, _ in raised], dtype=np.float64)
                 local = _surface_along(surface_bottom, rxy)
-                pts = [(float(x), float(y), float(local[k] + dz)) for k, (x, y, dz) in enumerate(raised)]
+                op.paths.append(_rdp([(float(x), float(y), float(local[k] + dz))
+                                      for k, (x, y, dz) in enumerate(raised)],
+                                     params.simplify_tol_mm))
             else:
-                pts = [(float(x), float(y), float(zk)) for (x, y), zk in zip(xy, z)]
-            op.paths.append(_rdp(pts, params.simplify_tol_mm))
+                runs = _keep_runs((z < prev - 1e-6)[:-1])
+                spans = [np.arange(len(xy))] if runs is None else runs
+                for idx in spans:
+                    op.paths.append(_rdp([(float(xy[j, 0]), float(xy[j, 1]), float(z[j]))
+                                          for j in idx], params.simplify_tol_mm))
+            prev = z
+
+
+def split_across_rims(polys: list[Polygon], partition) -> list[Polygon]:
+    """Each pocket that reaches both rims of a separated pair, cut in two at
+    the line midway between the rims; every other pocket as it is.
+
+    On a pre-formed blank a pocket's floor is a plane fitted to the formed
+    part under it, and one plane cannot follow the curve through two rims: a
+    bridge mount across the gap sat 1.3 mm under one rim's floor. Each half
+    keeps its run into the gap, so its step stays open at the rim's edge.
+    """
+    from shapely.geometry import box
+
+    parts = getattr(partition, "parts", [])
+    if len(parts) != 2:
+        return list(polys)
+    left, right = sorted(parts, key=lambda q: q.centroid.x)
+    axis = 0.5 * (left.bounds[2] + right.bounds[0])
+    out = []
+    for poly in polys:
+        if not (poly.intersection(left).area > 1e-6 and poly.intersection(right).area > 1e-6):
+            out.append(poly)
+            continue
+        x0, y0, x1, y1 = poly.bounds
+        for half in (box(x0 - 1.0, y0 - 1.0, axis, y1 + 1.0),
+                     box(axis, y0 - 1.0, x1 + 1.0, y1 + 1.0)):
+            piece = poly.intersection(half)
+            if piece.geom_type == "MultiPolygon":
+                piece = max(piece.geoms, key=lambda g: g.area)
+            if not piece.is_empty and piece.area > 0:
+                out.append(piece)
+    return out
 
 
 def formed_pocket_floors(hinges, castle, relief: CastleRelief) -> list:
@@ -1006,7 +1276,11 @@ def formed_pocket_floors(hinges, castle, relief: CastleRelief) -> list:
     ox, oy = f.origin
     res = f.resolution
     out = []
-    for poly, flat_floor in castle_pocket_floors(hinges, castle):
+    heights = None
+    if relief.partition.classified:
+        from ..geometry.heights import zone_heights
+        heights = zone_heights(relief.partition, castle, None)
+    for poly, flat_floor in castle_pocket_floors(hinges, castle, relief.partition, heights):
         x0, y0, x1, y1 = poly.bounds
         c0, c1 = max(0, int((x0 - ox) / res)), min(cols, int((x1 - ox) / res) + 2)
         r0, r1 = max(0, int((y0 - oy) / res)), min(rows, int((y1 - oy) / res) + 2)
@@ -1016,7 +1290,9 @@ def formed_pocket_floors(hinges, castle, relief: CastleRelief) -> list:
         prepare(poly)
         inside = contains_xy(poly.buffer(-0.3), X.ravel(), Y.ravel())
         Z = f.z[r0:r1, c0:c1].ravel()
-        ok = inside & np.isfinite(Z)
+        # Over the part only: a mount across separated rims, or any pocket
+        # drawn past the outline, covers cells the relief holds at 0.
+        ok = inside & np.isfinite(Z) & relief.inside[r0:r1, c0:c1].ravel()
         if ok.sum() < 6:
             out.append((poly, flat_floor))
             continue
@@ -1192,9 +1468,9 @@ def analyze_program_reach(
     is said, with a tool that fits)."""
     by_name = {op.name: op for op in ops}
     features: list[tuple[str, str, list[Polygon], dict]] = []
-    hinge_op = by_name.get("Hinge Pockets")
+    hinge_op = by_name.get("Component Pockets")
     if hinge_op is not None and hinge_op.tool and hinge_polys:
-        features.append(("Hinge Pockets", "hinge pocket", list(hinge_polys), hinge_op.tool))
+        features.append(("Component Pockets", "component pocket", list(hinge_polys), hinge_op.tool))
     for name, tool, seats in inlay_groups:
         for seat in seats:
             label = seat.feature.label or seat.feature.id
@@ -1682,8 +1958,9 @@ def generate_castle_program(
     stock = castle.stock
     if relief.hinge_polys_formed is not None:
         # a pre-formed blank (M25): the pockets and the seats where the
-        # pressed part has them, not where the flat drawing had them
-        hinge_polys = list(relief.hinge_polys_formed)
+        # pressed part has them, not where the flat drawing had them, and a
+        # mount across separated rims cut as a half per rim
+        hinge_polys = split_across_rims(relief.hinge_polys_formed, relief.partition)
         if relief.inlay_polys_formed is not None and inlay_polys:
             inlay_polys = list(relief.inlay_polys_formed)
     body = relief.mask_body           # aperture holes when the lens groove is on
@@ -1707,9 +1984,14 @@ def generate_castle_program(
 
     # 1 — hinge pockets (cut first, stock rigid). Hinges sit on the blank
     # outside the pad block, so the local stock top is the blank thickness.
-    _p("Hinge pockets", 1)
-    hinge_tool = _tool_for("Hinge Pockets")
+    _p("Component pockets", 1)
+    hinge_tool = _tool_for("Component Pockets")
     floor_z = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
+    # The zones' heights, for a mount's floor (`geometry.pocket_floor`) and
+    # for the seats below; a relief is only ever built on named zones.
+    from ..geometry.heights import zone_heights
+    heights = (zone_heights(relief.partition, castle, None)
+               if relief.partition.classified else None)
     preformed = relief.stock_top is not None
     if preformed:
         # The pressed blank (M25): the pocket floor follows the curve as the
@@ -1720,13 +2002,16 @@ def generate_castle_program(
         floor_z = min(lows) if lows else floor_z
         start_z = float(np.nanmax(relief.stock_top.z)) + 0.5
     else:
-        floors = aligned(castle_pocket_floors(hinge_polys, castle), hinge_polys)
+        floors = aligned(castle_pocket_floors(hinge_polys, castle, relief.partition,
+                                              heights), hinge_polys)
         start_z = stock.blank_thickness_mm + 0.5
     op1 = hinge_pocket_op(
         hinge_polys, floor_z,
         start_z=start_z,
         tool_radius_mm=hinge_tool["radius_mm"], params=params,
         floors=floors,
+        starts=(formed_pocket_starts(hinge_polys, relief, hinge_tool["radius_mm"])
+                if preformed else pocket_starts(hinge_polys, stock)),
     )
     op1.tool = hinge_tool
     ops.append(op1)
@@ -1735,13 +2020,13 @@ def generate_castle_program(
     _p("Rough + fine relief", 3)
     rough_tool = _tool_for("Rough Relief")
     fine_tool = _tool_for("Fine Relief")
-    # Features default to the FINE tool, not the global one: unassigned, the op
-    # cuts exactly what it cut when it was part of Fine Relief. `_tool_for`
-    # would fall back to the global tool instead, which on a multi-tool job is a
-    # different tool and a silent change of program.
-    feature_tool = (resolve_tool(params.op_tools["Features"], tools_cfg or {},
-                                 default=fine_tool)
-                    if params.op_tools.get("Features") else fine_tool)
+    # Features take their own tool, a ball by default (`DEFAULT_OP_TOOLS`):
+    # their surfaces are slopes, and the fine tool, the flat 3.175, left up to
+    # a millimeter on them. Without a tool library, the fine tool as before.
+    from ..project.schema import DEFAULT_OP_TOOLS
+    feature_name = params.op_tools.get("Features") or DEFAULT_OP_TOOLS.get("Features")
+    feature_tool = (resolve_tool(feature_name, tools_cfg, default=fine_tool)
+                    if feature_name and tools_cfg else fine_tool)
     rough, fine, features = relief_ops(relief, stock, fine_tool, params,
                                        rough_tool=rough_tool,
                                        feature_tool=feature_tool)
@@ -1767,11 +2052,11 @@ def generate_castle_program(
     # seat is measured from, before the eyewires open the apertures. One list
     # from the params, the same one the kernels cut.
     if castle.inlays and inlay_polys:
-        from ..geometry.heights import zone_heights
         from ..geometry.inlays import inlay_cuts, zone_reference
         from .inlay_ops import inlay_ops
         seats = inlay_cuts(
-            castle.inlays, list(inlay_polys), castle_pocket_floors(hinge_polys, castle),
+            castle.inlays, list(inlay_polys),
+            castle_pocket_floors(hinge_polys, castle, relief.partition, heights),
             posterior_reference=zone_reference(
                 relief.partition, zone_heights(relief.partition, castle, None)))
         ops += inlay_ops(seats, params, tools_cfg, _tool_for("Inlays"))
@@ -1784,8 +2069,8 @@ def generate_castle_program(
     # but are a separate op: no groove, no rim-lip widening, just an inside
     # through-cut (see normalize.assemble_outline).
     is_hole = relief.partition.is_hole
-    apertures = [Polygon(r) for r in body.interiors if not is_hole(r)]
-    hole_polys = [Polygon(r) for r in body.interiors if is_hole(r)]
+    apertures = [Polygon(r) for r in body_interiors(body) if not is_hole(r)]
+    hole_polys = [Polygon(r) for r in body_interiors(body) if is_hole(r)]
 
     def _groove_tool() -> dict:
         # Explicit op_tools wins, then the groove param's tool, then the
@@ -1814,8 +2099,11 @@ def generate_castle_program(
                 contour_polys.append(inner)
     else:
         contour_polys = apertures
+    # A pressed slab's contours follow its own envelopes; a flat blank's start
+    # each ring at the stock standing over it, the pad block's or the blank's.
     surfaces = ({"surface_top": relief.stock_top, "surface_bottom": relief.stock_bottom}
-                if preformed else {})
+                if preformed else
+                {"pad": pad_footprint(stock), "blank_top_z": float(stock.blank_thickness_mm)})
     op4 = contour_op(
         "Eyewires", contour_polys, "inside", eyewire_tool["radius_mm"],
         allowance, top_z, skin, params, **surfaces,
@@ -1859,12 +2147,28 @@ def generate_castle_program(
     # chosen them. The inside contours above keep the skin either way.
     _p("Perimeter", 5)
     perimeter_tool = _tool_for("Perimeter")
+    # Separated rims go in as one MultiPolygon, so their offsets merge where
+    # the gap between them is too narrow for the tool: one ring around both,
+    # never one rim's ring cutting into the other.
+    shells = [Polygon(part.exterior) for part in body_parts(body)]
+    outline = shells[0] if len(shells) == 1 else MultiPolygon(shells)
     op5 = contour_op(
-        "Perimeter", [Polygon(body.exterior)], "outside",
+        "Perimeter", [outline], "outside",
         perimeter_tool["radius_mm"], allowance, top_z, skin, params,
         holding=castle.holding, **surfaces,
     )
     op5.tool = perimeter_tool
+    if len(shells) > 1:
+        reach = perimeter_tool["radius_mm"] + allowance
+        merged = outline.buffer(reach, join_style="round")
+        if merged.geom_type != "MultiPolygon" or len(merged.geoms) < len(shells):
+            gap = min(a.distance(b) for i, a in enumerate(shells)
+                      for b in shells[i + 1:])
+            op5.notes.append(
+                f"Perimeter: the rims are {gap:.2f} mm apart, closer than the "
+                f"{2.0 * reach:.2f} mm a {2.0 * perimeter_tool['radius_mm']:.3f} mm "
+                "tool needs with its allowance, so one ring goes around both and "
+                "the stock between them stays; cut the gap with a smaller tool")
     ops.append(op5)
     from .sequence import order_by_tool_work
     return order_by_tool_work(params.enabled_ops(ops), CASTLE_OP_TIERS)
@@ -1872,7 +2176,7 @@ def generate_castle_program(
 
 # Strategy descriptions for the in-app setup sheet, keyed by op name.
 _OP_STRATEGIES = {
-    "Hinge Pockets": "Pocket 2D · ramped lap entry",
+    "Component Pockets": "Pocket 2D · ramped lap entry",
     "Inlays": "Pocket 2D · ramped lap entry · seats, parents first",
     "Rough Relief": "Raster drop-cutter · stock-aware, +axial stock",
     "Fine Relief": "Raster drop-cutter",
@@ -2059,13 +2363,18 @@ def write_castle_program(
     contour_lead_in: str = _DEFAULT_CAM.contour_lead_in,
     start: bool = True,
     end: bool = True,
+    pause: str | None = None,
+    current_tool: str | None = None,
 ) -> None:
     """Emit the ops into a single GRBL program (the castle's five ops, or any
     op list — e.g. a temple's engrave + profile, BUILDPLAN M6.3).
 
     `start` and `end` (M24) let a two-sided single-file program carry both
-    sides: side one written with ``end=False``, the flip pause, side two
-    with ``start=False``.
+    setups (2.0): the first written with ``end=False`` and its `pause`, the
+    flip, which `GRBLPost.end_side` emits after the spindle stops; the next
+    with ``start=False``, which names its work offset (`GRBLPost.begin_side`)
+    and changes tools when its first one is not `current_tool`, the one the
+    setup before ended with.
 
     `contour_op_names` are the through-cut ops that get the partial-lap ramped
     lead-in (default the castle's Eyewires / Perimeter); every other op is emitted
@@ -2086,24 +2395,35 @@ def write_castle_program(
     # Eyewires — it needs the same ramped lead-in, not a full-depth plunge.
     contour_ops = contour_op_names if contour_op_names is not None else {"Eyewires", "Holes", "Perimeter"}
     drill_ops = drill_op_names or set()
+    # An op with nothing to cut posts nothing. Hinge pockets too small for
+    # their tool led the program with that tool and paused for a change to
+    # the next, and cut nothing (the 2.0 bug hunt). Its notes stay with it.
+    ops = [op for op in ops if op.paths]
     # On an auto-tool-change machine the M6 that follows the header raises Z itself, so
     # the header's safe-Z retract is a wasted bob before the tool change — skip it there
     # (the first cutting pass still takes its own full retract after the M6).
     if start:
         post.header(side, initial_retract=(tool_change_mode != "m6"))
     else:
-        post.comment(f"Side: {side}")
+        post.begin_side(side)
     current: str | None = None
     first = ops[0].tool_name if ops else None
+    changed = False
     if tool_settings and first in tool_settings:
-        post.apply_tool(tool_settings[first])
+        if not start and current_tool is not None and first != current_tool:
+            # the setup before ended on another tool: change it, spindle and all
+            post.tool_change(tool_settings[first], mode=tool_change_mode)
+            changed = True
+        else:
+            post.apply_tool(tool_settings[first])
         current = first
     # Auto-tool-change machines (Carbide Motion + probe) want the first tool loaded
     # and measured up front — emit M6 so it probes before cutting (BUILDPLAN M8).
     if start and tool_change_mode == "m6":
         n = tool_settings[first].number if (tool_settings and first in tool_settings) else 1
         post.initial_tool_load(n)
-    post.spindle_on()
+    if not changed:
+        post.spindle_on()
     for op in ops:
         nm = op.tool_name
         if tool_settings and nm is not None and nm != current and nm in tool_settings:
@@ -2136,3 +2456,5 @@ def write_castle_program(
         post.safe_retract()
     if end:
         post.end_program()
+    else:
+        post.end_side(pause)

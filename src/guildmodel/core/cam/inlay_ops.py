@@ -24,7 +24,8 @@ named with a tool that fits rather than silently left out.
 **Anterior seats are not here.** They are modeled in every kernel, shown in
 3D and on the panel with "not posted", and the posted program is byte for
 byte the one without them (`test_anterior_inlay_is_not_cut`), as the anterior
-bezel has been since M17. M24 posts them on side two.
+bezel has been since M17. A two-sided job posts them in its anterior setup,
+cut first (M24; the anterior first since 2.0).
 
 The thickness check is here too, because it is a check on a program: a seat's
 floor against the other face's relief at the same cell must leave the
@@ -38,14 +39,14 @@ from dataclasses import dataclass
 import numpy as np
 import pyclipper
 from shapely import contains_xy, prepare
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 from shapely.geometry.polygon import orient
 
 from ..geometry.inlays import InlayCut
 from ..project.schema import CastleCamParams
-from .castle_ops import (CamOp, Point3, _rdp, pocket_levels, resolve_tool,
-                         tilted_floor_finish)
-from .pocketing import _SCALE
+from .castle_ops import (_LINK_TOL_MM, CamOp, Point3, _ramp_down, _rdp, pocket_levels,
+                         resolve_tool, tilted_floor_finish)
+from .pocketing import _SCALE, core_rings
 
 __all__ = ["CLEARANCE_MM", "InlayThicknessWarning", "OP_NAME", "anterior_inlay_notes",
            "inlay_op_groups", "inlay_ops", "inlay_thickness_warnings", "op_name_for"]
@@ -100,7 +101,9 @@ def _seat_rings(region: Polygon, tool_radius_mm: float,
         offset += step
     if outer is None:
         return [], []
-    return outer, [outer] + [r for r in rings if r is not outer]
+    # once more round a middle the cascade's passes do not overlap (2.0)
+    return outer, ([outer] + [r for r in rings if r is not outer]
+                   + core_rings(region, tool_radius_mm, stepover_mm))
 
 
 def _seat_path(seat: InlayCut, tool_radius_mm: float, params: CastleCamParams,
@@ -124,26 +127,45 @@ def _seat_path(seat: InlayCut, tool_radius_mm: float, params: CastleCamParams,
         lift = 0.0
         levels = pocket_levels(start_z, plane.z_fixed, stepdown_mm)
 
-    n = len(outer)
-    z = start_z
-    path: list[Point3] = [(*outer[0], z)]
+    # A link that leaves the tool-center region cuts the wall, or an island:
+    # it ends the path, and the ring is entered by ramping down from the
+    # level above, as in `hinge_pocket_op` (the 2.0 bug hunt).
+    reach = seat.region.buffer(-(tool_radius_mm - _LINK_TOL_MM), join_style="round")
+    prepare(reach)
+
+    def inside(a, b) -> bool:
+        return bool(reach.covers(LineString([a[:2], b[:2]])))
+
+    paths: list[list[Point3]] = []
+    path = _ramp_down(outer, start_z, levels[0], ramp_step) if levels else []
+    above = start_z
     for k, level in enumerate(levels):
-        while z > level + 1e-9:
-            z_next = max(level, z - ramp_step)
-            for i in range(1, n):
-                t = i / (n - 1)
-                path.append((*outer[i], z + (z_next - z) * t))
-            z = z_next
+        if k:
+            path += _ramp_down(outer, above, level, ramp_step)[1:]
         path += [(*p, level) for p in outer]
         for ring in rings[1:]:
-            path += [(*p, level) for p in ring]
+            pts = [(*p, level) for p in ring]
+            if inside(path[-1], pts[0]):
+                path += pts
+            else:
+                paths.append(path)
+                path = _ramp_down(ring, above, level, ramp_step) + pts[1:]
         if k + 1 < len(levels):
-            path.append((*outer[0], level))
-    if tilted:
-        pts = np.asarray(path, dtype=np.float64)
-        pts[:, 2] = np.maximum(pts[:, 2], plane.z(pts[:, 0], pts[:, 1]) + lift)
-        path = [tuple(p) for p in pts.tolist()]
-    out = [_rdp(path, params.simplify_tol_mm)]
+            back = (*outer[0], level)
+            if inside(path[-1], back):
+                path.append(back)
+            else:
+                paths.append(path)
+                path = [back]
+        above = level
+    paths.append(path)
+    out = []
+    for path in paths:
+        if tilted:
+            pts = np.asarray(path, dtype=np.float64)
+            pts[:, 2] = np.maximum(pts[:, 2], plane.z(pts[:, 0], pts[:, 1]) + lift)
+            path = [tuple(p) for p in pts.tolist()]
+        out.append(_rdp(path, params.simplify_tol_mm))
     if tilted:
         out += [_rdp(p, params.simplify_tol_mm) for p in
                 tilted_floor_finish(seat.region, plane, tool_radius_mm,
@@ -198,11 +220,13 @@ def inlay_ops(seats: list[InlayCut], params: CastleCamParams,
     return ops
 
 
-def anterior_inlay_notes(seats: list[InlayCut]) -> list[str]:
-    """One line per anterior seat: modeled, shown, not posted — for the log."""
+def anterior_inlay_notes(seats: list[InlayCut], advice: str = "") -> list[str]:
+    """One line per anterior seat a one-setup program leaves out: modeled,
+    shown, not posted, for the log. `advice` says how the part gets it cut
+    (the frame front: the anterior setup, cut first, 2.0)."""
+    tail = f"; {advice}" if advice else ""
     return [f"{OP_NAME}: seat '{seat.feature.label or seat.feature.id}' is on the "
-            "anterior face and is modeled and previewed, not posted; the flip "
-            "setup (M24) cuts it on side two"
+            f"anterior face and is modeled and previewed, not posted{tail}"
             for seat in seats if not seat.posterior]
 
 

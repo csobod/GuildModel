@@ -15,6 +15,13 @@ A positive angle deepens the moving edge; a negative one makes it shallower.
 Every pocket is tilted about its own fixed edge, so two pockets of different
 heights keep the same set depth where the hinge leaf starts.
 
+**A front pocket that reaches no endpiece is a mount** (2026-10-16): the
+metal bridge of separated rims, drawn on HINGE as one shape across the gap,
+seats in the rims' bridge ends. Its depth is taken from the highest terrace
+it touches, as an inlay seat's is, and its floor is flat: the angle is the
+hinge's, for the temple's pantoscopic tilt. A pocket on an endpiece keeps the
+endpiece rule above, whatever else it touches.
+
 At 0° every floor is exactly the flat `top - depth` of before, and the callers
 take their historical code path for it, so nothing already posted changes.
 
@@ -30,7 +37,7 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 __all__ = ["FRONT_AXIS", "PocketFloor", "aligned", "castle_pocket_floors",
-           "hinge_on_plus_x", "pocket_span", "temple_axis",
+           "hinge_on_plus_x", "mount_pockets", "pocket_span", "temple_axis",
            "temple_pocket_floors"]
 
 #: Below this the tilt is treated as none: the flat path runs unchanged.
@@ -108,11 +115,55 @@ def _usable(hinges) -> list[Polygon]:
 FRONT_AXIS = (0.0, -1.0)
 
 
-def castle_pocket_floors(hinges, castle) -> list[tuple[Polygon, PocketFloor]]:
-    """Each usable front hinge pocket with its floor."""
-    z_fixed = castle.zones.endpiece_mm - castle.hinge_pocket_depth_mm
+#: A zone shares less area than this with a pocket only touches it, mm².
+_TOUCH_MM2 = 0.01
+
+
+def _mount_reference(poly: Polygon, partition, heights) -> float | None:
+    """The terrace a mount pocket measures from: the highest zone it touches,
+    or None for a hinge pocket (one that reaches an endpiece) and wherever the
+    zones cannot say."""
+    if partition is None or not heights:
+        return None
+    touched = [z for z in getattr(partition, "zones", [])
+               if z.polygon.intersection(poly).area > _TOUCH_MM2]
+    if not touched or any(z.kind == "endpiece" for z in touched):
+        return None
+    levels = [heights[z.name] for z in touched if z.name in heights]
+    return max(levels) if levels else None
+
+
+def mount_pockets(hinges, partition=None, heights: dict[str, float] | None = None,
+                  ) -> list[tuple[Polygon, float]]:
+    """The front pockets that are mounts, each with the terrace height it
+    measures from (see the module docstring). Empty without the partition."""
+    out = []
+    for p in _usable(hinges):
+        ref = _mount_reference(p, partition, heights)
+        if ref is not None:
+            out.append((p, ref))
+    return out
+
+
+def castle_pocket_floors(hinges, castle, partition=None,
+                         heights: dict[str, float] | None = None,
+                         ) -> list[tuple[Polygon, PocketFloor]]:
+    """Each usable front hinge pocket with its floor.
+
+    With the `partition` and its zone `heights`, a pocket that reaches no
+    endpiece is a mount, measured flat from the highest terrace it touches
+    (see the module docstring); without them every pocket is a hinge pocket.
+    """
+    depth = castle.hinge_pocket_depth_mm
+    z_fixed = castle.zones.endpiece_mm - depth
     angle = float(getattr(castle, "hinge_pocket_angle_deg", 0.0))
-    return [(p, _floor_for(p, z_fixed, FRONT_AXIS, angle)) for p in _usable(hinges)]
+    mounts = {id(p): ref for p, ref in mount_pockets(hinges, partition, heights)}
+    out = []
+    for p in _usable(hinges):
+        floor = (PocketFloor(z_fixed=mounts[id(p)] - depth) if id(p) in mounts
+                 else _floor_for(p, z_fixed, FRONT_AXIS, angle))
+        out.append((p, floor))
+    return out
 
 
 def hinge_on_plus_x(outline: Polygon | None, hinges) -> bool:

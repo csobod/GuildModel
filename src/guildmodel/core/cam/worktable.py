@@ -20,6 +20,7 @@ import yaml
 from shapely.geometry import LineString
 from shapely.ops import polygonize, unary_union
 
+from ..fileio import write_text_atomic
 from ..project.schema import BedRole, Worktable, WorktableZone, bed_role_label
 
 CHORD_TOL_MM = 0.05
@@ -218,7 +219,7 @@ def default_worktable(name: str = "guild_cnc", config_dir=None) -> Worktable:
 def save_bed(worktable: Worktable, path) -> None:
     """Persist a worktable as a reusable `.bed` (YAML) for a shop's fixtures."""
     data = worktable.model_dump(mode="json")     # JSON-native: tuples → lists, enums → values
-    Path(path).write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    write_text_atomic(path, yaml.safe_dump(data, sort_keys=False))
 
 
 def load_bed(path) -> Worktable:

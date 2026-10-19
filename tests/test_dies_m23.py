@@ -32,7 +32,7 @@ def demo():
     raw = import_dxf(ROOT / "tests" / "fixtures" / "demo" / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     od, os_ = sorted(lenses, key=lambda l: -l.centroid.x)
     return partition_zones(outline, lenses, raw["SCULPT"]), od, os_, hinges
 
@@ -205,12 +205,16 @@ def test_pre_cut_dies_cover_the_blank_and_carry_no_eyewire_geometry(demo, pre_cu
     assert w == pytest.approx(castle.stock.blank_length_mm + 2 * 10.0 + 2 * 12.0, abs=0.5)
     assert hgt == pytest.approx(castle.stock.blank_width_mm + 2 * 10.0 + 2 * 12.0, abs=0.5)
     fmap = die_map(_forming(mode="pre_cut"), partition, od, os_)
+    # the press takes the blank, its own thickness and no zone proud of it
+    # (the 2.0 bug hunt: the gap was the cut front's eyewire terrace)
     t = r["terrace_mm"]
+    assert t == pytest.approx(castle.stock.blank_thickness_mm) and r["cutaways"] == []
     c = od.centroid
     at = fmap(np.array([[c.x, c.y, t]]))[0]
     z_pre = surface_z_at(to_trimesh(pre_cut.posterior), at[None, :2], face="bottom")[0]
     assert z_pre == pytest.approx(at[2], abs=0.05)              # the smooth map, no pocket
     fmap_post = die_map(_forming(), partition, od, os_)
+    t = post_cut.report["terrace_mm"]
     at_post = fmap_post(np.array([[c.x, c.y, t]]))[0]
     relieved = fmap_post(np.array([[c.x, c.y, t + 1.0]]))[0]
     z_post = surface_z_at(to_trimesh(post_cut.posterior), at_post[None, :2], face="bottom")[0]
@@ -242,8 +246,10 @@ def test_the_punch_and_the_anvil_close_at_the_bridge(demo, post_cut):
     fmap = die_map(_forming(), partition, od, os_)
     punch, anvil = to_trimesh(post_cut.punch), to_trimesh(post_cut.anvil)
     t = post_cut.report["terrace_mm"]
-    # the nose reaches the projection below the plate's face; the shoulders stop on the sheet's back
-    assert punch.bounds[0, 2] == pytest.approx(-3.0, abs=1e-6)
+    # the nose stands the projection proud of the shoulders, which stop on the
+    # sheet's back: the sheet under it goes down by the projection, not by the
+    # projection and its own thickness (the 2.0 bug hunt)
+    assert punch.bounds[0, 2] == pytest.approx(t - 3.0, abs=1e-6)
     ox = fmap.offset
     shoulder = surface_z_at(punch, [(ox + 0.5 * fmap.gap + 8.0, fmap.bridge.top_y)], face="bottom")[0]
     assert shoulder == pytest.approx(t, abs=1e-6)

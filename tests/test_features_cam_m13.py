@@ -28,7 +28,7 @@ def demo():
     raw = import_dxf(DEMO / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     part = partition_zones(outline, lenses, raw["SCULPT"])
     return part, hinges
 
@@ -147,20 +147,24 @@ def test_features_op_takes_its_own_tool(demo, tools):
     castle = _castle(splay=True, bezel=True)
     relief = _build(demo, castle)
 
-    plain = CastleCamParams()
+    flat = CastleCamParams(op_tools={"Features": "flat_3175"})
     pinned = CastleCamParams(op_tools={"Features": "ball_2mm"})
-    assert "ball_2mm" not in plain.tools_in_use()
     assert "ball_2mm" in pinned.tools_in_use()
 
     a = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
-                                params=plain, tools_cfg=tools)
+                                params=flat, tools_cfg=tools)
     b = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
                                 params=pinned, tools_cfg=tools)
     fa = next(op for op in a if op.name == "Features")
     fb = next(op for op in b if op.name == "Features")
-    assert fa.tool_name == "flat_3175"          # unassigned: follows Fine Relief
+    assert fa.tool_name == "flat_3175"
     assert fb.tool_name == "ball_2mm"
     assert fa.paths != fb.paths
+    # unassigned, the shipped default: a ball, which cuts the slopes the flat
+    # left up to a millimeter proud on (the 2.0 bug hunt)
+    c = generate_castle_program(relief, castle, hinges, tools["flat_3175"],
+                                params=CastleCamParams(), tools_cfg=tools)
+    assert next(op for op in c if op.name == "Features").tool_name == "ball_2mm"
 
 
 def test_band_rings_shrink_chamfer_facets(demo, tools):

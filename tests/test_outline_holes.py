@@ -82,6 +82,11 @@ def test_holes_are_named_and_ordered_top_to_bottom_then_left_to_right():
     assert a.hole_labels == ["Hole1", "Hole2", "Hole3"]
     centers = [(round(h.centroid.x), round(h.centroid.y)) for h in a.holes]
     assert centers == [(-20, 20), (20, 20), (0, -20)]
+    # The profile's interior rings come in the same order: the Holes op cuts
+    # them in ring order, so the posted program depends on it.
+    rings = [(round(Polygon(r).centroid.x), round(Polygon(r).centroid.y))
+             for r in a.polygon.interiors]
+    assert rings == centers
 
 
 def test_a_single_outline_curve_is_unchanged():

@@ -154,15 +154,17 @@ def test_a_hinge_pocket_stops_short_of_the_front_face():
 # ----------------------------------------------------------------- groove
 
 @pytest.mark.parametrize("name,bites", [("demo", False),
-                                        ("gabriel", True),
-                                        ("aviator", True)])
+                                        ("gabriel", False),
+                                        ("aviator", False)])
 def test_the_groove_depth_ceiling_is_a_depth_that_actually_works(fronts, name, bites):
     """The ceiling has to be measured per drawing, and it has to be *reachable*.
 
     Two claims. The depth handed back re-partitions the castle — a ceiling that
-    is itself broken is worse than none. And on the gabriel and the aviator it
-    lands below 2.0 mm, which is where the panel's own range ended: those two
-    drawings could be broken from the GUI before this existed.
+    is itself broken is worse than none. And it is the drawing's: on the
+    gabriel and the aviator it landed below 2.0 mm, where the panel's own range
+    ends, only because the section cuts fell short of a deeper lip (the 2.0 bug
+    hunt). Carried past the lip, both reach the panel's whole range; a front
+    whose aperture splits at a narrow neck still stops short of it.
     """
     from guildmodel.core.geometry.rings import lip_partition
     from guildmodel.core.project.limits import max_groove_depth
@@ -298,7 +300,7 @@ def test_the_groove_guard_raises_its_own_sentence(fronts):
     from guildmodel.core.project.limits import max_groove_depth
 
     partition = fronts["gabriel"].partition
-    past_it = max_groove_depth(partition, high=GROOVE_PANEL_MAX_MM) + 0.5
+    past_it = max_groove_depth(partition, high=8.0) + 0.5   # past its own ceiling
 
     with pytest.raises(BooleanError) as caught:
         lip_partition(partition, past_it)

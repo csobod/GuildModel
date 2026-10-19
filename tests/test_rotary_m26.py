@@ -28,8 +28,9 @@ def test_the_profile_round_trips_with_and_without_a_rotary(tmp_path):
     four = load_machine_profile("guild_cnc_rotary", CONFIG)
     assert four.has_rotary and four.axes == "XYZA" and four.rotary.about == "X"
     assert four.max_swing_radius_mm(50.0) is None                 # not measured yet
-    measured = four.model_copy(update={"spindle_nose_to_table_mm": 88.0})
-    assert measured.max_swing_radius_mm(50.0) == pytest.approx(38.0)
+    measured = four.model_copy(update={"spindle_nose_to_table_mm": 118.0})
+    # the nose's height less the axis's and less the longest tool's stick-out
+    assert measured.max_swing_radius_mm(50.0) == pytest.approx(118.0 - 50.0 - 30.0)
     # a v1.8.0 profile, with none of the fields, loads unchanged
     old = {k: v for k, v in yaml.safe_load((CONFIG / "machines" / "guild_cnc.yaml").read_text()).items()}
     assert "rotary" not in old and MachineProfile(**old).rotary is None
@@ -60,8 +61,11 @@ def test_the_post_commands_the_indexed_flip_before_the_offset_and_unwinds_at_the
     lines = [ln for ln in post.to_string().splitlines() if ln and not ln.startswith(";")]
     i_a = next(i for i, ln in enumerate(lines) if ln.startswith("G0 A"))
     i_wcs = lines.index("G55  ; work offset for this side")
-    assert lines[i_a] == "G0 A180.000" and lines[i_a - 1].startswith("G0 Z11.000")
+    # the blank turns from the top of Z travel, never from the program's
+    # safe height a few millimeters over the stock (2026-10-16)
+    assert lines[i_a] == "G0 A180.000" and lines[i_a - 1].startswith("G53 G0 Z0")
     assert i_a < i_wcs
+    assert lines[-3].startswith("G53 G0 Z0")
     assert lines[-2] == "G53 G0 A0" and lines[-1] == "M30"
     neg = _post(axes="XYZA", index_a_deg=-180.0, rotary_unwind="g28")
     neg.header("s")
@@ -190,7 +194,7 @@ def demo():
     raw = import_dxf(ROOT / "tests" / "fixtures" / "demo" / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     return partition_zones(outline, lenses, raw["SCULPT"]), hinges
 
 
@@ -231,19 +235,24 @@ def test_the_rotary_flip_negates_y_and_z_about_the_centerline(demo):
                          CastleCamParams(), yaml.safe_load((CONFIG / "tools.yaml").read_text()),
                          flip="rotary", rotary=four.rotary)
     assert job.two_sided
-    s2 = job.setups[1]
-    assert s2.flip == "rotary" and s2.a_deg == 180.0 and s2.reprobe == []
-    assert any("indexed flip" in n for n in s2.notes)
-    assert flip_pause_text(s2).startswith("Indexed flip") and "A180.000" in flip_pause_text(s2)
+    # the anterior first (2.0): the rotary turns the blank front face up, and
+    # back for the posterior, which runs at A0 as it would alone
+    s1, s2 = job.setups
+    assert (s1.side, s1.flip, s1.a_deg, s1.reprobe) == ("anterior", "rotary", 180.0, [])
+    assert any("indexed" in n for n in s1.notes)
+    assert (s2.side, s2.flip, s2.a_deg) == ("posterior", "rotary", 0.0)
+    assert flip_pause_text(s1).startswith("Indexed flip") and "A180.000" in flip_pause_text(s1)
+    assert "A0.000" in flip_pause_text(s2)
     neg = four.rotary.model_copy(update={"direction_sign": -1})
     job_neg = plan_two_sided(relief, castle, hinges, yaml.safe_load((CONFIG / "tools.yaml").read_text())["flat_3175"],
                              CastleCamParams(), yaml.safe_load((CONFIG / "tools.yaml").read_text()),
                              flip="rotary", rotary=neg)
-    assert job_neg.setups[1].a_deg == -180.0
+    assert job_neg.setups[0].a_deg == -180.0
     # the manual flip is untouched
     manual = plan_two_sided(relief, castle, hinges, yaml.safe_load((CONFIG / "tools.yaml").read_text())["flat_3175"],
                             CastleCamParams(), yaml.safe_load((CONFIG / "tools.yaml").read_text()))
-    assert manual.setups[1].flip == "manual" and manual.setups[1].a_deg is None
+    assert manual.setups[0].flip == "none" and manual.setups[1].flip == "manual"
+    assert manual.setups[1].a_deg is None
 
 
 def load_machine_profile_for_test():
@@ -254,21 +263,28 @@ def load_machine_profile_for_test():
 # ------------------------------------------------------------- the workers
 
 def test_the_workers_post_the_indexed_flip_and_turn_the_stock(demo, tmp_path, monkeypatch):
-    """A rotary profile with the blank on the rotary bar: side two begins
-    with the A move before its offset and carries no pause; the project
-    records the run mode; the simulation turns side one's result about
-    the centerline and judges both sides. The same profile with the blank
-    on the flat mount still flips by hand."""
+    """A rotary profile with the blank on the rotary bar, the anterior first
+    (2.0): the anterior program turns the rotary to A180 before its offset,
+    carries no pause, and turns it back at its end, so the posterior runs at
+    A0 as it would alone; the project records the run mode; the simulation
+    turns the stock about the centerline and judges both setups. The same
+    profile with the blank on the flat mount still flips by hand."""
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("HOME", str(tmp_path))
     pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
+    from guildmodel.core.post import machine as machine_mod
     from guildmodel.core.project.schema import CastleCamParams
     from guildmodel.gui.app import GCodeWorker, SimWorker
     partition, hinges = demo
     castle = _brow(partition)
     cam = CastleCamParams(machine_name="guild_cnc_rotary")
+    # The shipped profile leaves the spindle's height to the bench, and an
+    # indexed flip is refused until it is measured (2026-10-16); measure it.
+    real = machine_mod.load_machine_profile
+    monkeypatch.setattr(machine_mod, "load_machine_profile", lambda *a, **k: real(
+        *a, **k).model_copy(update={"spindle_nose_to_table_mm": 160.0}))
 
     def generate(mount):
         done, errs, log = [], [], []
@@ -284,41 +300,47 @@ def test_the_workers_post_the_indexed_flip_and_turn_the_stock(demo, tmp_path, mo
         return worker, done[0], log
 
     worker, (summary, rows), log = generate("rotary_bar")
-    assert set(worker.programs) == {"posterior_cut.nc", "back_cut.nc"}
+    assert set(worker.programs) == {"anterior_cut.nc", "posterior_cut.nc"}
     setups = worker.setup_dict["setups"]
-    assert [s["flip"] for s in setups] == ["none", "rotary"]
-    assert setups[1]["a_deg"] == 180.0 and setups[1]["wcs"] == "G55"
+    assert [s["flip"] for s in setups] == ["rotary", "rotary"]
+    assert setups[0]["a_deg"] == 180.0 and setups[0]["wcs"] == "G55"
+    assert setups[1]["a_deg"] == 0.0 and setups[1]["wcs"] == "G54"
     assert worker.setup_dict["run_mode"] == "rotary_indexed"
-    back = worker.programs["back_cut.nc"].splitlines()
-    i_a = next(i for i, ln in enumerate(back) if ln.startswith("G0 A180.000"))
-    i_wcs = next(i for i, ln in enumerate(back) if ln.startswith("G55"))
-    assert i_a < i_wcs, "the rotary turns the blank before the second offset is selected"
-    assert not any(ln.startswith("M0") for ln in back), "an indexed flip needs no pause"
-    assert any("Indexed flip" in ln for ln in back)
-    assert any("G53 G0 A0" in ln or "G28" in ln for ln in back[i_wcs:]), "the rotary unwinds at the end"
+    front = worker.programs["anterior_cut.nc"].splitlines()
+    i_a = next(i for i, ln in enumerate(front) if ln.startswith("G0 A180.000"))
+    i_wcs = next(i for i, ln in enumerate(front) if ln.startswith("G55"))
+    assert i_a < i_wcs, "the rotary turns the blank before the anterior's offset is selected"
+    # the pauses left are the tool changes: the brow chamfer takes the
+    # Features op's ball (the 2.0 bug hunt)
+    pauses = [i for i, ln in enumerate(front) if ln.startswith("M0")]
+    assert all("Load tool" in front[i - 1] for i in pauses), "an indexed flip needs no pause"
+    assert any("Indexed flip" in ln for ln in front)
+    assert any("G53 G0 A0" in ln or "G28" in ln for ln in front[i_wcs:]), "the rotary turns back at the end"
     assert not any(" A" in ln.split(";")[0] for ln in worker.programs["posterior_cut.nc"].splitlines()
-                   if ln.startswith(("G0 ", "G1 ", "G2 ", "G3 "))), "side one is cut at A0 and writes no A word"
+                   if ln.startswith(("G0 ", "G1 ", "G2 ", "G3 "))), "the posterior is cut at A0 and writes no A word"
     assert any("Indexed flip" in ln for ln in log)
     # the simulation reads the setup and turns the stock the same way
     sim_done, errs = [], []
     sim = SimWorker(partition, castle, cam, hinge_polys=hinges, resolution=0.3,
                     program_text=worker.programs["posterior_cut.nc"],
-                    back_program_text=worker.programs["back_cut.nc"],
-                    back_setup=setups[1])
+                    anterior_program_text=worker.programs["anterior_cut.nc"],
+                    anterior_setup=setups[0])
     sim.finished.connect(lambda r, lines, plan: sim_done.append((r, lines, plan)))
     sim.error.connect(errs.append)
     sim.run()
     assert errs == [], errs[0] if errs else ""
     report, lines, plan = sim_done[0]
-    assert any(ln.startswith("Side one:") for ln in lines) and any(ln.startswith("Side two:") for ln in lines)
+    assert any(ln.startswith("Anterior:") for ln in lines) and any(ln.startswith("Posterior:") for ln in lines)
     assert report.status() in {"ok", "warn"}, lines
+    assert plan.flips[0]["axis"] == "x"
     # on the flat mount the same profile flips by hand, as before
     worker, _, _ = generate("flat")
     setups = worker.setup_dict["setups"]
-    assert setups[1]["flip"] == "manual" and worker.setup_dict["run_mode"] == "two_file"
-    back = worker.programs["back_cut.nc"]
-    assert "flip about machine X" in back and "Indexed flip" not in back
-    assert not any(ln.startswith("G0 A") for ln in back.splitlines())
+    assert [s["flip"] for s in setups] == ["none", "manual"]
+    assert worker.setup_dict["run_mode"] == "two_file"
+    front, back = worker.programs["anterior_cut.nc"], worker.programs["posterior_cut.nc"]
+    assert "flip about machine X" in back and "Indexed flip" not in front + back
+    assert not any(ln.startswith("G0 A") for ln in (front + back).splitlines())
 
 
 def test_the_project_file_records_the_run_mode(tmp_path):
@@ -330,3 +352,23 @@ def test_the_project_file_records_the_run_mode(tmp_path):
     assert load_gmodel(path).run_mode == "rotary_indexed"
     save_gmodel(path, project=project, dxf_bytes=b"dxf")
     assert load_gmodel(path).run_mode == "two_file"
+
+
+def test_the_flip_is_refused_until_the_swing_is_known_to_clear():
+    """The turn sweeps the blank through a radius of half its width about the
+    axis. Posting it needs the spindle's height measured, and the swing must
+    fit under the tool's tip at the top of Z travel."""
+    from guildmodel.core.cam.two_sided import blank_swing_radius_mm, rotary_swing_problem
+    from guildmodel.core.post.machine import load_machine_profile
+    from guildmodel.core.project.schema import StockDefinition
+
+    machine = load_machine_profile("guild_cnc_rotary", ROOT / "src" / "guildmodel" / "config")
+    stock = StockDefinition()
+    swing = blank_swing_radius_mm(stock, machine.rotary)
+    assert swing == pytest.approx((42.5 ** 2 + 3.0 ** 2) ** 0.5)
+    bar = {"center_z_mm": 50.0, "swing_radius_mm": 38.0}
+    assert "measure the spindle nose" in rotary_swing_problem(machine, stock, bar)
+    roomy = machine.model_copy(update={"spindle_nose_to_table_mm": 160.0})
+    assert rotary_swing_problem(roomy, stock, bar) is None          # 160 - 50 - 30 = 80
+    tight = machine.model_copy(update={"spindle_nose_to_table_mm": 110.0})
+    assert "would strike the tool" in rotary_swing_problem(tight, stock, bar)

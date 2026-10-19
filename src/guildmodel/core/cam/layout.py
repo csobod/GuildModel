@@ -54,12 +54,14 @@ def ops_bbox_center(ops: list[CamOp]) -> tuple[float, float]:
 def transform_ops(ops: list[CamOp], dx: float, dy: float,
                   rotation_deg: float = 0.0) -> list[CamOp]:
     """New CamOps with each path rotated about the origin then translated by
-    (dx, dy). Z, tool and name are preserved."""
+    (dx, dy). Z, tool, name and notes are preserved: the notes were lost, and
+    a bed program never said what its parts' generators left out (the 2.0
+    bug hunt)."""
     th = math.radians(rotation_deg)
     c, s = math.cos(th), math.sin(th)
     out: list[CamOp] = []
     for op in ops:
-        new = CamOp(op.name, tool=op.tool, cut=op.cut)
+        new = CamOp(op.name, tool=op.tool, cut=op.cut, notes=list(op.notes))
         for path in op.paths:
             new.paths.append([(c * x - s * y + dx, s * x + c * y + dy, z)
                               for x, y, z in path])

@@ -189,7 +189,7 @@ def _surface_problems(holes: int, overlaps: int) -> list[str]:
     return out
 
 
-def verify_mesh(mesh) -> MeshVerdict:
+def verify_mesh(mesh, expected_bodies: int = 1) -> MeshVerdict:
     """Check a `trimesh.Trimesh` is a closed solid, and say so in plain terms.
 
     Closure is judged on the **welded** surface — see `welded_surface` for why
@@ -202,7 +202,11 @@ def verify_mesh(mesh) -> MeshVerdict:
     Never raises: a verification that can itself fail the build would be one
     more way for the app to go dark. An unreadable mesh is reported as a
     problem, not thrown.
+
+    ``expected_bodies`` is how many pieces the part is meant to be: one, or one
+    per rim for a front with separated rims (`CastlePartition.parts`).
     """
+    expected_bodies = max(1, int(expected_bodies))
     if mesh is None:
         return MeshVerdict(False, "No model was produced.",
                            ["The build finished without returning geometry."])
@@ -258,10 +262,20 @@ def verify_mesh(mesh) -> MeshVerdict:
             "likely been cut away by a feature.")
 
     bodies = int(getattr(mesh, "body_count", 1) or 1)
-    if bodies > 1:
+    if bodies > expected_bodies == 1:
         problems.append(
-            f"The model is in {bodies} separate pieces. A frame component "
+            f"The model is in {bodies} separate pieces. A frame part "
             "should be one connected body.")
+    elif bodies > expected_bodies:
+        problems.append(
+            f"The model is in {bodies} separate pieces. A front with "
+            f"separated rims should be {expected_bodies}, one body per rim.")
+    elif bodies < expected_bodies:
+        # separated rims that a build joined read as verified (the 2.0 bug hunt)
+        problems.append(
+            f"The model is in {bodies} piece{'s' if bodies > 1 else ''}. A front with "
+            f"separated rims should be {expected_bodies}, one body per rim: the "
+            "rims are joined.")
 
     if problems:
         return MeshVerdict(False, problems[0], problems, volume, watertight)

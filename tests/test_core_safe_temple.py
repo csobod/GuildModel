@@ -113,7 +113,7 @@ def test_snapped_program_never_crosses_the_core_end():
         assert not (abs(path[0][0] - path[-1][0]) < 1e-9
                     and abs(path[0][1] - path[-1][1]) < 1e-9)
     # hinge pockets + engraving still cut (they sit inside the blank)
-    assert {op.name for op in ops} >= {"Hinge Pockets", "Engraving"}
+    assert {op.name for op in ops} >= {"Component Pockets", "Engraving"}
 
 
 def test_unsnapped_program_keeps_closed_profile():

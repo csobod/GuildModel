@@ -105,3 +105,20 @@ def test_the_folded_details_still_round_trip_the_seat(tmp_path, monkeypatch):
 def test_the_prefs_carry_the_fold_key():
     from guildmodel.gui import prefs as prefs_mod
     assert prefs_mod.DEFAULTS["dock_folds"] == {}
+
+
+def test_the_stock_tab_does_not_hold_the_sidebar_open(tmp_path, monkeypatch):
+    """A checkbox does not wrap, and the pre-formed blank's long label made
+    the Stock tab's least width 478 px when the next widest tab's was 370:
+    narrowing the sidebar scrolled the Stock tab sideways and no other (2.0)."""
+    from PySide6.QtWidgets import QApplication, QScrollArea
+    p = _panel(tmp_path, monkeypatch)
+    p.resize(380, 900)
+    p.show()
+    QApplication.processEvents()
+    widths = {}
+    for i in range(p.count()):
+        page = p.widget(i)
+        inner = page.widget() if isinstance(page, QScrollArea) else page
+        widths[p.tabText(i)] = inner.minimumSizeHint().width()
+    assert widths["Stock"] <= max(w for name, w in widths.items() if name != "Stock"), widths

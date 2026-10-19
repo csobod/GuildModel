@@ -1,10 +1,63 @@
 """Pydantic schema for .guildmodel project files (JSON under the hood)."""
 from __future__ import annotations
+import contextvars as _contextvars
+import math as _math
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+# ------------------------------------------------------------------ sane values at the door
+#
+# A value a cut is made with is corrected when a model is built, not refused:
+# a skin of -2 posted a block's profile inside its lens, a feed of -500 passed,
+# and a NaN, written back as null, left a file that no longer opened (the 2.0
+# bug hunt). A refusal would turn a hand-edited file that opens today away,
+# so the value is replaced, by the field's default or, for an optional feed,
+# by none, and the file says so on open (`collect_corrections`). The panel
+# never sets these out of range; only a file can.
+
+_CORRECTIONS: _contextvars.ContextVar = _contextvars.ContextVar(
+    "guildmodel_corrections", default=None)
+
+
+class collect_corrections:
+    """Gather what the models corrected while a file was read::
+
+        with collect_corrections() as notes:
+            project = ProjectSchema.model_validate_json(text)
+    """
+
+    def __enter__(self) -> list:
+        self._token = _CORRECTIONS.set([])
+        return _CORRECTIONS.get()
+
+    def __exit__(self, *exc) -> bool:
+        _CORRECTIONS.reset(self._token)
+        return False
+
+
+def _sane(model, rules: dict):
+    """Correct `model`'s fields by `rules`: ``"gt0"`` positive, ``"ge0"`` not
+    negative, ``"fin"`` any finite value, ``"opt"`` positive or None."""
+    for name, rule in rules.items():
+        v = getattr(model, name)
+        if v is None:
+            continue
+        x = float(v)
+        ok = _math.isfinite(x) and (x > 0 if rule in ("gt0", "opt")
+                                    else x >= 0 if rule == "ge0" else True)
+        if ok:
+            continue
+        new = (None if rule == "opt"
+               else type(model).model_fields[name].get_default(call_default_factory=True))
+        setattr(model, name, new)
+        notes = _CORRECTIONS.get()
+        if notes is not None:
+            notes.append(f"{type(model).__name__}.{name} was {v!r}; {new!r} is used")
+    return model
 
 
 class BoxingParams(BaseModel):
@@ -79,6 +132,16 @@ class StockDefinition(BaseModel):
     preview both read it so toolpaths never cut air at the wrong height.
     Defaults match the GuildDraw stock/pad guides and guild_cnc.yaml.
     """
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "StockDefinition":
+        return _sane(self, {"blank_length_mm": "gt0", "blank_width_mm": "gt0",
+                            "blank_thickness_mm": "gt0",
+                            "pad_block_length_mm": "ge0",
+                            "pad_block_width_mm": "ge0",
+                            "pad_block_thickness_mm": "ge0",
+                            "pad_block_dx_mm": "fin", "pad_block_dy_mm": "fin"})
+
     blank_length_mm: float = 170.0
     blank_width_mm: float = 85.0
     blank_thickness_mm: float = 6.0
@@ -139,7 +202,17 @@ class PadSplayParams(BaseModel):
     three angles — center ("start") / half-run ("middle") / run-end ("end") —
     mirror-symmetric about the centerline. Angles are measured from the anterior
     plane (0° = flat). Off by default: many makers cut theirs by hand.
+
+    The maker's order by hand (2026-10-17): the angle cut first, then the seam
+    nearest the anterior, where that cut meets the frame's edge, rounded over
+    (`seam_blend_mm`). The crest, the most posterior seam, is left sharp for
+    tumbling, so no kernel rounds it.
     """
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "PadSplayParams":
+        return _sane(self, {"seam_blend_mm": "ge0"})
+
     enabled: bool = False
     run_mm: float = 18.0                     # arc distance per side from bottom-center
     crest_deviation_center_mm: float = 6.0   # inward crest offset at bottom-center
@@ -150,9 +223,13 @@ class PadSplayParams(BaseModel):
     angle_end_deg: float = 30.0
     anterior_clamp_mm: float = 1.5           # cut floor above the anterior face (no knife edge)
     feather_mm: float = 3.0                  # depth feather over the last mm of each run end
-    # Convex round-over at the crest (tangent both sides, footing-style) — the
-    # hard chamfer/surface corner shaded as a jagged ridge. 0 = sharp crest.
-    crest_blend_mm: float = 2.0
+    # Round-over radius at the anterior seam, where the angle cut (or its floor
+    # at the clamp) meets the frame's edge: the seam the maker rounds by hand
+    # after the angle cut. 0 leaves it sharp; at most the clamp, so the round
+    # never runs out through the front face. Replaces `crest_blend_mm`, the
+    # raster's round-over at the crest, which an older file may still carry
+    # and which is ignored on load (2.0).
+    seam_blend_mm: float = 1.0
     # Start the cut away from bottom-center, leaving the middle uncut (2026-08-11).
     # A **keyhole** bridge carries its own shape across the centerline and a splay
     # run through it planes that shape off; the maker wants the two halves of the
@@ -542,6 +619,12 @@ class CastleParams(BaseModel):
     UI presents these staged Towers -> Walls -> Footing; this schema is the
     API surface and keeps anatomical vocabulary.
     """
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "CastleParams":
+        return _sane(self, {"hinge_pocket_depth_mm": "ge0", "onion_skin_mm": "ge0",
+                            "hand_finishing_allowance_mm": "ge0"})
+
     zones: ZoneThicknesses = Field(default_factory=ZoneThicknesses)
     # Per-zone height overrides keyed by Zone.name (not kind), for the zones a
     # drawing produces that the per-kind defaults don't suit — a second bridge
@@ -693,16 +776,27 @@ class CastleParams(BaseModel):
 # still first-class where it counts: `tools_in_use` scans pinned `op_tools`
 # alongside this tuple, and the GUI offers a selector for each.
 POSTERIOR_OPS: tuple[str, ...] = (
-    "Hinge Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
+    "Component Pockets", "Rough Relief", "Fine Relief", "Eyewires", "Perimeter",
 )
 
 # Per-op tool defaults when a job hasn't pinned one (M11): small precise features
 # get a fine tool rather than the bulk global tool. Hinge pockets cut with the
 # 3.175 mm default leave ~1.6 mm corners instead of ~1 mm. An explicit op_tools
 # entry always overrides this; it only changes the otherwise-global fallback.
-DEFAULT_OP_TOOLS: dict[str, str] = {"Hinge Pockets": "flat_2mm",
+DEFAULT_OP_TOOLS: dict[str, str] = {"Component Pockets": "flat_2mm",
                                     "Inlays": "flat_2mm",
+                                    # chamfers, bezels, splays and round-overs are
+                                    # slopes: the flat 3.175 left up to a
+                                    # millimeter on them, 14 % of a beveled front
+                                    # short; a 2 mm ball cuts them to 0.1 %
+                                    # (the 2.0 bug hunt)
+                                    "Features": "ball_2mm",
                                     "Sculpt Finish": "ball_1mm"}   # fine detail (M22)
+#: Ops renamed since a file may have been written, old name to new: Hinge
+#: Pockets became Component Pockets with the COMPONENT layer (2.0).
+#: `CastleCamParams` reads an old file's per-op settings under the new name.
+RENAMED_OPS: dict[str, str] = {"Hinge Pockets": "Component Pockets"}
+
 #: Ops a job does not post unless the maker ticks them: the Sculpt Finish
 #: pass is for fine detail the feature pass under it does not need (M22).
 OFF_BY_DEFAULT_OPS: frozenset[str] = frozenset({"Sculpt Finish"})
@@ -799,6 +893,27 @@ class CastleCamParams(BaseModel):
     when None the active material preset supplies them — and are clamped to the
     active machine profile at post time.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _renamed_ops(cls, data):
+        """An older file's per-op settings under the ops' current names
+        (`RENAMED_OPS`): a project or a preference from before 2.0 kept its
+        Hinge Pockets tool and its switch."""
+        if isinstance(data, dict):
+            for key in ("op_tools", "op_enabled"):
+                d = data.get(key)
+                if isinstance(d, dict) and any(old in d for old in RENAMED_OPS):
+                    data = {**data, key: {RENAMED_OPS.get(k, k): v for k, v in d.items()}}
+        return data
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "CastleCamParams":
+        return _sane(self, {"rough_axial_stock_mm": "ge0", "feed_rate_mmpm": "opt",
+                            "plunge_rate_mmpm": "opt", "spindle_rpm": "opt",
+                            "screw_head_diameter_mm": "ge0",
+                            "screw_keepout_margin_mm": "ge0"})
+
     tool_name: str = "flat_3175"          # default / fallback tool for any op
     machine_name: str = "guild_cnc"
 
@@ -816,15 +931,23 @@ class CastleCamParams(BaseModel):
     # Disabling the releasing profile deliberately leaves the part in the blank.
     op_enabled: dict[str, bool] = Field(default_factory=dict)
 
-    # Two-sided machining (M24): ``auto`` posts a second side when the front
-    # takes material off the anterior or seats something there; ``on`` always;
-    # ``off`` never. The through-cuts go last, on side two, so the blank stays
-    # rigid for both faces; ``one`` keeps them on side one with the skin or
-    # the tabs. The probe block emits a G38.2 touch-off for side two's Z when
-    # the machine has a probe; XY re-registration is the pins' job.
+    # Two-sided machining (M24; the anterior first since 2.0): ``auto`` cuts the
+    # anterior first when the front takes material off it or seats something
+    # there; ``on`` always; ``off`` never. The anterior is cut front face up
+    # and only as much as its features need; then the blank is flipped and the
+    # posterior is cut as a one-sided job cuts it, through-cuts and onion skin
+    # and all (the maker, 2026-10-17). `two_sided_output` writes the two
+    # setups as two programs, or as one with a pause for the flip. The probe
+    # block emits a G38.2 touch-off for Z after the flip when the machine has a
+    # probe; XY re-registration is the pins' job. The plate lies on the stock
+    # top, and its thickness is taken off where it touched: 0 is a probe that
+    # touches the stock itself. `through_cuts_side`, which moved the
+    # through-cuts to the side cut last, is gone: the posterior makes them,
+    # and an older file's value is dropped on load.
     two_sided: Literal["auto", "off", "on"] = "auto"
-    through_cuts_side: Literal["two", "one"] = "two"
+    two_sided_output: Literal["two_files", "one_file"] = "two_files"
     probe_block: bool = False
+    probe_plate_mm: float = Field(default=0.0, ge=0.0, le=50.0)
     reprobe_xy: bool = False
 
     # Program zero / G54 work datum (BUILDPLAN M6.2). Default = stock-box
@@ -1001,6 +1124,15 @@ class TempleParams(BaseModel):
     program-zero offset and the safe-Z; defaults match the `temple_right` fixture
     zone (170 × 30 × 4 mm).
     """
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "TempleParams":
+        return _sane(self, {"blank_length_mm": "gt0", "blank_width_mm": "gt0",
+                            "blank_thickness_mm": "gt0",
+                            "hinge_pocket_depth_mm": "ge0",
+                            "engrave_depth_mm": "ge0", "onion_skin_mm": "ge0",
+                            "hand_finishing_allowance_mm": "ge0"})
+
     blank_length_mm: float = 170.0
     blank_width_mm: float = 30.0
     blank_thickness_mm: float = 4.0
@@ -1087,6 +1219,13 @@ class BaseCurveBlockParams(BaseModel):
     pitch, **M4 clearance (≈4.5 mm)** — a bolt passes through the block into a
     tapped jig below. Arrangement and drill Ø stay parameters.
     """
+
+    @model_validator(mode="after")
+    def _sane_values(self) -> "BaseCurveBlockParams":
+        return _sane(self, {"blank_length_mm": "gt0", "blank_width_mm": "gt0",
+                            "blank_thickness_mm": "gt0", "onion_skin_mm": "ge0",
+                            "hand_finishing_allowance_mm": "ge0"})
+
     blank_length_mm: float = 70.0
     blank_width_mm: float = 70.0
     blank_thickness_mm: float = 4.7625     # 3/16"
@@ -1142,8 +1281,9 @@ class RotaryAxis(BaseModel):
     about: Literal["X", "Y"] = "X"
     direction_sign: Literal[1, -1] = 1
     # The centerline in the design frame: a blank centered on it flips about
-    # y = center_y_mm and z = center_z_mm, so side two is side one with Y and
-    # Z negated about them (§11.1). The fixture carries the bed coordinates.
+    # y = center_y_mm and z = center_z_mm, so the anterior setup is the
+    # posterior's with Y and Z negated about them (§11.1). The fixture carries
+    # the bed coordinates.
     center_y_mm: float = 0.0
     center_z_mm: float = 3.0
     max_rate_degpm: float = 3600.0
@@ -1196,6 +1336,11 @@ class MachineProfile(BaseModel):
     # Guild CNC has no ATC, so manual is the default.
     tool_change_mode: Literal["m6", "m0"] = "m0"
     tool_change_seconds: float = 20.0      # nominal dwell per change, cut-time model
+    # Seconds the spindle takes to reach speed. GRBL 1.1 does not wait for it,
+    # and the first move after M3 reached the stock half a second later (the
+    # 2.0 bug hunt). Each M3 that starts the spindle is followed by G4 P this
+    # long; 0 writes none, as every program before 2.0. Set it at the bench.
+    spindle_spinup_s: float = Field(default=0.0, ge=0.0, le=60.0)
 
     # The controller and its axes (M26), additive and off by default: GRBL
     # 1.1 is three-axis; a fourth axis needs grblHAL, FluidNC or grbl-Mega-5X.
@@ -1207,6 +1352,9 @@ class MachineProfile(BaseModel):
     supports_g93: bool = True
     # Spindle nose to table at Z max, mm: what a rotary's swing must fit under.
     spindle_nose_to_table_mm: float | None = None
+    # The longest a tool hangs below the spindle nose, mm: the swing has to
+    # clear the tool's tip at Z max, not the nose.
+    max_tool_stickout_mm: float = 30.0
 
     @property
     def has_rotary(self) -> bool:
@@ -1215,10 +1363,12 @@ class MachineProfile(BaseModel):
     def max_swing_radius_mm(self, center_height_mm: float) -> float | None:
         """The largest swing a blank may have on a rotary whose centerline
         stands `center_height_mm` over the table: the nose-to-table height
-        less that, or None when the height is not measured (§11.4 step 0)."""
+        less that and less the longest tool's stick-out, or None when the
+        height is not measured (§11.4 step 0)."""
         if self.spindle_nose_to_table_mm is None:
             return None
-        return float(self.spindle_nose_to_table_mm) - float(center_height_mm)
+        return (float(self.spindle_nose_to_table_mm) - float(center_height_mm)
+                - float(self.max_tool_stickout_mm))
     notes: str = ""
 
 
@@ -1443,6 +1593,22 @@ class FormingMetadata(BaseModel):
             **self.model_dump(),
             "base_curve": d, "base_radius_mm": max(0.0, r),
             "face_form_wrap_deg": 180.0 - float(face_form_deg), **update})
+
+    def pressed(self) -> "FormingMetadata":
+        """The forming a blank pressed before it is cut takes (M25): the face
+        form and the bridge projection only when the dies carry them
+        (`PressDieParams.face_form_in_die`, `.bridge_in_die`), as `die_map`
+        cuts them. The pre-formed CAM modeled the slab with both whatever the
+        dies did, and with the shipped dies, which leave the projection to the
+        bench, it cut the bridge and the perimeter against a slab 3 mm off
+        the one in the nest (the 2.0 bug hunt). The radius is the target's:
+        the over-bend is the die's allowance for the spring back."""
+        update = {}
+        if not self.dies.bridge_in_die:
+            update["bridge_projection_mm"] = 0.0
+        if not self.dies.face_form_in_die:
+            update["face_form_wrap_deg"] = 0.0
+        return self.model_copy(update=update) if update else self
 
 
 class MaterialRef(BaseModel):
@@ -1906,6 +2072,9 @@ class Component(BaseModel):
     # generated-output record (files under the .gmodel components/<id>/ tree, M7.1)
     program_files: list[str] = Field(default_factory=list)
     has_program: bool = False
+    # The program in the file was generated before the design or its CAM
+    # settings last changed (2.0): a reopen does not offer it as current.
+    program_stale: bool = False
 
     @model_validator(mode="after")
     def _populate_kind_defaults(self) -> "Component":

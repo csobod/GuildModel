@@ -44,11 +44,11 @@ def _names(ops):
 # ------------------------------------------------------------------ the rule
 
 def test_the_least_work_tool_runs_first_within_a_tier():
-    ops = [_op("Hinge Pockets", "flat_2mm", 800),
+    ops = [_op("Component Pockets", "flat_2mm", 800),
            _op("Engraving", "engrave_vbit", 120),
            _op("Temple Profile", "flat_2mm", 600)]
     out = order_by_tool_work(ops, TEMPLE_OP_TIERS)
-    assert _names(out) == ["Engraving", "Hinge Pockets", "Temple Profile"]
+    assert _names(out) == ["Engraving", "Component Pockets", "Temple Profile"]
     assert count_tool_changes(out) == 1                      # bit → end mill, once
     assert count_tool_changes(ops) == 2                      # what it was
 
@@ -56,37 +56,37 @@ def test_the_least_work_tool_runs_first_within_a_tier():
 def test_work_is_the_tool_total_over_the_whole_program():
     # The engraving alone is longer than the pockets alone, but the end mill also
     # cuts the profile, so the bit is still the lesser tool and goes first.
-    ops = [_op("Hinge Pockets", "flat_2mm", 100),
+    ops = [_op("Component Pockets", "flat_2mm", 100),
            _op("Engraving", "engrave_vbit", 300),
            _op("Temple Profile", "flat_2mm", 600)]
     assert _names(order_by_tool_work(ops, TEMPLE_OP_TIERS)) == [
-        "Engraving", "Hinge Pockets", "Temple Profile"]
+        "Engraving", "Component Pockets", "Temple Profile"]
     # ...and with the profile on a third tool the pockets are the lesser tool.
     ops[2] = _op("Temple Profile", "flat_3175", 600)
     assert _names(order_by_tool_work(ops, TEMPLE_OP_TIERS)) == [
-        "Hinge Pockets", "Engraving", "Temple Profile"]
+        "Component Pockets", "Engraving", "Temple Profile"]
 
 
 def test_the_tiers_hold_the_release_last_and_holes_before_it():
-    ops = [_op("Hinge Pockets", "flat_2mm", 800),
+    ops = [_op("Component Pockets", "flat_2mm", 800),
            _op("Engraving", "engrave_vbit", 10),
            _op("Holes", "engrave_vbit", 10),        # bit work is tiny, but a hole is a through-cut
            _op("Temple Profile", "flat_2mm", 5)]     # and the profile is last however short
     out = order_by_tool_work(ops, TEMPLE_OP_TIERS)
-    assert _names(out) == ["Engraving", "Hinge Pockets", "Holes", "Temple Profile"]
+    assert _names(out) == ["Engraving", "Component Pockets", "Holes", "Temple Profile"]
 
 
 def test_a_single_tool_program_keeps_its_order():
-    ops = [_op("Hinge Pockets", "flat_2mm", 10), _op("Engraving", "flat_2mm", 900),
+    ops = [_op("Component Pockets", "flat_2mm", 10), _op("Engraving", "flat_2mm", 900),
            _op("Temple Profile", "flat_2mm", 100)]
     assert order_by_tool_work(ops, TEMPLE_OP_TIERS) == ops
-    untooled = [_op("Hinge Pockets", None, 10), _op("Engraving", None, 900),
+    untooled = [_op("Component Pockets", None, 10), _op("Engraving", None, 900),
                 _op("Temple Profile", None, 100)]
     assert order_by_tool_work(untooled, TEMPLE_OP_TIERS) == untooled
 
 
 def test_an_op_the_tiers_do_not_name_is_a_barrier():
-    ops = [_op("Hinge Pockets", "flat_2mm", 800),
+    ops = [_op("Component Pockets", "flat_2mm", 800),
            _op("Something New", "flat_3175", 5),
            _op("Engraving", "engrave_vbit", 10),
            _op("Temple Profile", "flat_2mm", 600)]
@@ -95,7 +95,7 @@ def test_an_op_the_tiers_do_not_name_is_a_barrier():
 
 
 def test_the_same_objects_come_back():
-    ops = [_op("Hinge Pockets", "flat_2mm", 800), _op("Engraving", "engrave_vbit", 10),
+    ops = [_op("Component Pockets", "flat_2mm", 800), _op("Engraving", "engrave_vbit", 10),
            _op("Temple Profile", "flat_2mm", 600)]
     out = order_by_tool_work(ops, TEMPLE_OP_TIERS)
     assert {id(o) for o in out} == {id(o) for o in ops} and len(out) == 3
@@ -107,7 +107,7 @@ def test_the_makers_temple_posts_the_bit_first_and_one_change():
     t = TempleParams(hinge_tool="flat_2mm", profile_tool="flat_2mm",
                      engrave_tool="engrave_vbit")
     ops = generate_temple_program(OUTLINE, SHORT_ENGRAVING, t, TOOLS, hinge_polys=HINGE)
-    assert _names(ops) == ["Engraving", "Hinge Pockets", "Temple Profile"]
+    assert _names(ops) == ["Engraving", "Component Pockets", "Temple Profile"]
     assert [op.tool_name for op in ops] == ["engrave_vbit", "flat_2mm", "flat_2mm"]
     assert count_tool_changes(ops) == 1
 
@@ -118,8 +118,8 @@ def test_the_default_temple_still_pockets_before_it_engraves_when_that_is_less_w
     ops = generate_temple_program(OUTLINE, long_engraving, TempleParams(), TOOLS,
                                   hinge_polys=HINGE)
     by = {op.name: op for op in ops}
-    assert by["Engraving"].path_length_mm() > by["Hinge Pockets"].path_length_mm()
-    assert _names(ops) == ["Hinge Pockets", "Engraving", "Temple Profile"]
+    assert by["Engraving"].path_length_mm() > by["Component Pockets"].path_length_mm()
+    assert _names(ops) == ["Component Pockets", "Engraving", "Temple Profile"]
 
 
 def test_a_disabled_op_does_not_count_toward_its_tool():
@@ -130,22 +130,22 @@ def test_a_disabled_op_does_not_count_toward_its_tool():
     params = CastleCamParams(op_enabled={"Temple Profile": False})
     ops = generate_temple_program(OUTLINE, long_engraving, t, TOOLS, params=params,
                                   hinge_polys=HINGE)
-    assert _names(ops) == ["Hinge Pockets", "Engraving"]
+    assert _names(ops) == ["Component Pockets", "Engraving"]
 
 
 def test_the_bed_inherits_a_components_order():
-    temple = [_op("Engraving", "engrave_vbit", 120), _op("Hinge Pockets", "flat_2mm", 800),
+    temple = [_op("Engraving", "engrave_vbit", 120), _op("Component Pockets", "flat_2mm", 800),
               _op("Temple Profile", "flat_2mm", 600)]
     block = [_op("Drill Holes", "flat_2mm", 30), _op("Block Profile", "flat_3175", 400)]
     bed = schedule_bed_ops([temple, block])
     assert _names(bed)[0] == "Engraving"                     # the bit, first on the bed
-    assert _names(bed).index("Temple Profile") > _names(bed).index("Hinge Pockets")
+    assert _names(bed).index("Temple Profile") > _names(bed).index("Component Pockets")
 
 
 # ------------------------------------------------------------------ the front
 
 def test_the_fronts_program_is_a_chain_and_does_not_move():
-    ops = [_op("Hinge Pockets", "flat_2mm", 200), _op("Rough Relief", "flat_3175", 9000),
+    ops = [_op("Component Pockets", "flat_2mm", 200), _op("Rough Relief", "flat_3175", 9000),
            _op("Fine Relief", "flat_3175", 12000), _op("Features", "ball_1mm", 50),
            _op("Eyewires", "flat_3175", 700), _op("Holes", "flat_3175", 40),
            _op("Lens Groove", "groove_drageoir", 300), _op("Perimeter", "flat_3175", 900)]
@@ -163,7 +163,7 @@ def test_the_fronts_program_is_a_chain_and_does_not_move():
 def test_an_untooled_op_is_not_the_tool_already_loaded():
     # Before the first op nothing is in the spindle: an op with no tool must be
     # ranked by its work like any other, not taken for the current tool.
-    ops = [_op("Hinge Pockets", "flat_2mm", 100), _op("Engraving", None, 900),
+    ops = [_op("Component Pockets", "flat_2mm", 100), _op("Engraving", None, 900),
            _op("Temple Profile", "flat_2mm", 600)]
     assert _names(order_by_tool_work(ops, TEMPLE_OP_TIERS)) == [
-        "Hinge Pockets", "Engraving", "Temple Profile"]
+        "Component Pockets", "Engraving", "Temple Profile"]

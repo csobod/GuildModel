@@ -553,7 +553,7 @@ def test_reload_keeps_the_settings_and_marks_the_programs_stale(tmp_path, monkey
     tr = _by_kind(win._workspaces)[ComponentKind.TEMPLE_RIGHT]
     tr.temple_params = tr.temple_params.model_copy(update={"engrave_depth_mm": 0.45})
     tr.last_programs = {"temple.nc": "G0 X0"}
-    tr.program_stored = True
+    tr.program_stored = tr.program_fresh = True
     win._set_part_on_bed(_by_kind(win._workspaces)[ComponentKind.BASE_CURVE_LEFT], False)
     placements = {pl.component_id: (pl.dx, pl.dy) for pl in win._wt_nest.placements}
     width_before = tr.outline_poly.bounds[2] - tr.outline_poly.bounds[0]

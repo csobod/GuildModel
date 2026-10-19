@@ -54,7 +54,7 @@ def demo():
     raw = import_dxf(FIXTURES / "demo" / "GuildDraw DXF Export.dxf")
     outline = points_to_polygon(raw["OUTLINE"][0])
     lenses = [points_to_polygon(c) for c in raw["LENS"]]
-    hinges = [points_to_polygon(c) for c in raw["HINGE"]]
+    hinges = [points_to_polygon(c) for c in raw["COMPONENT"]]
     return partition_zones(outline, lenses, raw["SCULPT"]), hinges
 
 
@@ -693,7 +693,7 @@ def test_the_seats_sit_after_the_relief_and_before_the_eyewires_in_the_tiers():
         o = CamOp(name, tool={"name": tool, "radius_mm": 1.0})
         o.paths = [[(0.0, 0.0, 0.0), (length, 0.0, 0.0)]]
         return o
-    ops = [op("Hinge Pockets", "flat_2mm", 50), op("Rough Relief", "flat_3175", 900),
+    ops = [op("Component Pockets", "flat_2mm", 50), op("Rough Relief", "flat_3175", 900),
            op("Fine Relief", "flat_3175", 800), op("Inlays", "flat_2mm", 60),
            op("Eyewires", "flat_3175", 300), op("Perimeter", "flat_3175", 400)]
     assert [o.name for o in order_by_tool_work(ops, CASTLE_OP_TIERS)] == [o.name for o in ops]
@@ -791,7 +791,7 @@ def test_the_panel_round_trips_the_seats_and_the_inlay_depth_on_both_tabs(tmp_pa
     p.set_temple_params(t)
     tp = p.temple_params()
     assert tp.inlay_depth_mm == 0.6 and tp.inlays[0].face == "posterior"
-    assert ("flat_2mm", ["Hinge Pockets", "Inlays"]) in p.tools_for_active_component()
+    assert ("flat_2mm", ["Component Pockets", "Inlays"]) in p.tools_for_active_component()
     assert "Inlays" in p._visible_op_names()
 
 
@@ -805,8 +805,10 @@ def test_the_panel_rows_follow_the_drawing_and_say_what_is_not_posted(tmp_path, 
     assert len(feats) == 3 and all(f.depth_mm == 1.3 for f in feats)
     rows = [p.inlays_front.rows.item(i).text() for i in range(3)]
     in_hinge = next(i for i, f in enumerate(feats) if f.relative_to == "hinge")
-    assert "not posted" in rows[0] and "not posted" not in rows[in_hinge]
-    assert "hinge pocket" in rows[in_hinge]
+    # a front's anterior seat is cut first by a two-sided job (2.0)
+    assert "cut first" in rows[0] and "cut first" not in rows[in_hinge]
+    assert "not posted" not in " ".join(rows)
+    assert "component pocket" in rows[in_hinge]
     p.inlays_front.rows.setCurrentRow(in_hinge)            # the seat in the hinge
     assert not p.inlays_front.face.isEnabled()
     p.inlays_front.rows.setCurrentRow(0)

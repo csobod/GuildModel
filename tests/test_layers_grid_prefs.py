@@ -74,10 +74,24 @@ def test_layer_override_follows_pinned_backdrop():
 
 
 def test_layer_overrides_reset():
-    theme.set_layer_overrides({"HINGE": {"light": "#0000ff", "dark": ""}})
+    theme.set_layer_overrides({"COMPONENT": {"light": "#0000ff", "dark": ""}})
     theme.set_layer_overrides(None)
-    assert theme.layer_color_for("HINGE", dark=False) == "#d94f1a"
+    assert theme.layer_color_for("COMPONENT", dark=False) == "#d94f1a"
     assert theme.layer_overrides() == {}
+
+
+def test_a_color_set_for_hinge_colors_the_component_layer(tmp_path, monkeypatch):
+    """HINGE became COMPONENT (2.0): a color the maker set for the old name
+    is the new layer's when the preferences load."""
+    import json
+    from guildmodel.gui import prefs
+    f = tmp_path / "prefs.json"
+    f.write_text(json.dumps({"layer_colors": {"HINGE": {"light": "#0000ff", "dark": ""},
+                                              "LENS": {"light": "#112233", "dark": ""}}}))
+    monkeypatch.setattr(prefs, "_FILE", f)
+    colors = prefs.load()["layer_colors"]
+    assert colors["COMPONENT"] == {"light": "#0000ff", "dark": ""} and "HINGE" not in colors
+    assert colors["LENS"] == {"light": "#112233", "dark": ""}
 
 
 # ------------------------------------------------------------------ grid config

@@ -74,7 +74,7 @@ def test_amplitude_floor_separates_noise_from_abuse():
 _PROG = """; GuildModel — posterior_cut
 G90
 G21
-; --- Hinge Pockets ---
+; --- Component Pockets ---
 G0 X0 Y0
 G1 Z5.0 F450
 G1 X1 Y0 Z5.0 F750
@@ -90,8 +90,8 @@ G1 X13 Y0 Z4.0 F750
 
 def test_measure_program_splits_by_operation():
     profs = measure_program(_PROG)
-    assert set(profs) == {"Hinge Pockets", "Fine Relief"}
-    assert profs["Hinge Pockets"].reversals == 0
+    assert set(profs) == {"Component Pockets", "Fine Relief"}
+    assert profs["Component Pockets"].reversals == 0
     fr = profs["Fine Relief"]
     assert fr.reversals == 2
     assert fr.max_amplitude_mm == pytest.approx(2.0)
@@ -614,7 +614,7 @@ def _fixture_inputs(name: str):
         return (partition_zones(points_to_polygon(raw["OUTLINE"][0]),
                                 [points_to_polygon(c) for c in raw["LENS"]],
                                 raw["SCULPT"]),
-                [points_to_polygon(c) for c in raw["HINGE"]])
+                [points_to_polygon(c) for c in raw["COMPONENT"]])
 
     import tempfile
     import zipfile
