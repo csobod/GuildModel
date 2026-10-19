@@ -2,23 +2,42 @@
 
 Free, open-source CAM tool for spectacle frame cutting on GRBL CNC machines.
 
-GuildModel takes a GuildDraw frame-front DXF and builds the posterior relief the
-way a maker models it — the **castle**: tower zones (endpieces, bridge,
-nosepads), eyewire walls, and rolling-ball footing fillets — then generates
-the five-operation single-tool GRBL program (hinge pockets → rough relief →
-fine relief → eyewires → perimeter, released by a hand-finished onion skin)
-for the Guild CNC fixture.
+GuildModel takes a GuildDraw drawing (a `.gdraw`, or a frame-front DXF) and
+builds the posterior relief the way a maker models it, the **castle**: tower
+zones (endpieces, bridge, nosepads), eyewire walls, and rolling-ball footing
+fillets. Then it generates the GRBL programs for the Guild CNC fixture
+(component pockets, rough and fine relief, the features, the eyewires and the
+perimeter, released by a hand-finished onion skin), and for a front that
+carries anything on its face, the anterior first in a two-sided job.
 
 ![The GuildModel window: a frame front shaded with its feature edges in the 3D view, the pad-splay parameters on the Model tab, and the cut-simulation and build log below](docs/GuildModel150Screenshot.png)
 
 ## Status
 
-**v1.8.1.** GuildModel builds the posterior castle relief and the
-five-operation single-tool GRBL program for a frame front, its temples, and
-per-lens base-curve forming blocks — with worktable nesting, cut simulation, a
-maker's guide (`docs/USER-GUIDE.md`), an optional lens bevel groove (drageoir
-V-groove in each eyewire wall, off by default), and a Forming view that shows
-and exports the front as it will be after the press and the bench.
+**v2.0.0.** GuildModel builds the castle relief and the GRBL programs for a
+frame front, its temples and per-lens base-curve forming blocks; cuts a front
+on both faces when it needs it; nests the parts on the worktable; and
+simulates every cut on a solid model of the stock. With it come a maker's
+guide (`docs/USER-GUIDE.md`), inlay seats, sculpts, an optional lens bevel
+groove (drageoir V-groove in each eyewire wall, off by default), a Forming
+view that shows and exports the front as it will be after the press and the
+bench, and the press dies that form it.
+
+> **New in v2.0.0 — both faces of the frame.** A front that carries anything
+> on its anterior (a brow chamfer, a bezel, a round-over, an inlay seat) is
+> cut in two setups: the anterior first, front face up, only what its
+> features need; then the flip, and the posterior as a one-sided job cuts it,
+> onion skin and all. The program is two files, or one that pauses for the
+> flip; the simulation plays the whole job, the flip included; and the log
+> says where the anterior takes the onion skin's hold away. 2.0 also brings
+> the INLAY layer's seats for plaques, laminates and plates; sculpts, your own
+> meshes on the frame; press dies for the formed front; a stock engine that
+> simulates a true solid, with a stricter verdict; the Worktable redone;
+> separated rims and the monocle; and the COMPONENT layer, HINGE renamed, for
+> hinges, bridges, endpieces and bridge bars alike. GuildModel reads only the
+> curves you drew, never GuildDraw's Ghost: bake a front drawn as a half
+> before you open it. Re-post every program; the full notes are in
+> `CHANGELOG.md`.
 
 > **New in v1.8.1 — a drawn logo is engraved as a filled shape.** A closed
 > curve drawn on a temple's ENGRAVING layer, a logo or a mark, was treated as
@@ -329,7 +348,7 @@ or, without activating the venv:
 
 The app opens with an empty workspace; use **File ▸ Open Drawing** (a GuildDraw
 `.gdraw`) or **File ▸ Open DXF** to load a design. A reference frame front that
-exercises the full castle pipeline (9 zones, hinge pockets, five-op G-code) is
+exercises the full castle pipeline (9 zones, component pockets, five-op G-code) is
 vendored under `tests/fixtures/demo/`.
 
 ### Linux / Wayland — handled automatically

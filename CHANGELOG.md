@@ -3,7 +3,326 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
-## Unreleased — inlays, the Worktable redone, parts on and off the bed, and a part placed by the drawing's origin
+## v2.0.0 (unreleased) — two-sided cutting, inlays, sculpts, press dies, the stock engine and the Worktable redone
+
+### HINGE becomes COMPONENT (2026-10-17)
+
+**The COMPONENT layer.** The HINGE layer is now COMPONENT. It carries
+anything mounted on the back of a part that needs a classic pocket: hinges,
+bridges, endpieces and bridge bars. Every drawing, library entry and DXF
+made before says HINGE, and GuildModel reads it as COMPONENT for good;
+GuildDraw's component tab, its Hinge tab before, is read under either name.
+The operation that cuts the pockets is *Component Pockets*. A project or a
+CAM preference saved before keeps its per-operation tool and switch under
+the new name, a layer color set for HINGE colors COMPONENT, and a program
+stored before still has its pockets timed. The pocket depth reads
+*Component depth* on the Model and Temple tabs, and the temple's pocket tool
+*Component tool*. *Hinge pocket angle* keeps its name: it tilts the pockets
+on the endpieces, the hinges.
+
+**Parts carry components.** GuildModel calls its own tabs, the frame front,
+the temples and the blocks, parts, as Preferences ▸ Parts and the Worktable
+already did: *Export this part's watertight STL mesh*, *Bed verified — every
+part reached*.
+
+**A front's anterior seat is cut first.** The Inlays list said an anterior
+seat was modeled and not posted; a two-sided job cuts it first, front face
+up, and the list says so. A temple's outer-face seat is still modeled and
+not posted.
+
+### Two-sided jobs: the anterior first (2026-10-17)
+
+**The anterior is cut first, and only what its features need.** A
+two-sided job now cuts the anterior first, with the blank front face up
+while it is still a flat slab, and then the posterior after the flip, front
+face down on the bed. The posterior program is the one-sided program, byte
+for byte: the relief, the hinge pockets, the through-cuts and the onion skin
+or the tabs, in G54. The anterior program, in G55, cuts the Fine Relief and
+the Features pass over the anterior's chamfers, bezels and round-overs, and
+the anterior seats; it cuts the Rough Relief only where the front is cut
+deeper than one contour stepdown, and it never cuts a hinge pocket or a
+through-cut. All the major removal happens in the posterior program, with
+the piece flat on the bed, where it is most secure, and the onion skin holds
+the part through all of it. M24 cut the posterior first, less its
+through-cuts, and released the part on tabs from the front; that order is
+gone, and the *Through-cuts* choice with it. A project that carries the
+choice opens without it.
+
+**The anterior finishes at the edge.** When the anterior is cut, the stock
+past the part's edge still stands, so a feature that runs to the edge, a
+brow chamfer for one, was left uncut there: the relief and the Features
+band stopped one tool radius past the part, and the ball never reached the
+chamfer's foot. The anterior's relief now reaches two tool radii past the
+edge, and the Features pass reaches the ball's radius past its band, so each
+feature is finished to the edge and the posterior's perimeter takes the
+rest. On a library front with a brow chamfer and anterior seats, the ball
+now cuts 0.75 mm deeper, to the chamfer's foot, and the anterior simulates
+99.9 percent complete.
+
+**Two files, or one with a pause.** *Output*, under *Two-sided* on the
+Cut tab, chooses how a two-sided job is posted. *Two files*, the
+default, writes `anterior_cut.nc` and `posterior_cut.nc`; the posterior's
+header says what to do after the anterior. *One file, pausing for the flip*
+writes `two_sided_cut.nc`: the anterior; then the spindle stopped, the tool
+raised and the flip's pause (`M0`); then the posterior in G54, with a tool
+change where the tool differs, and one `M30`. One tool table serves both
+setups, so a tool keeps its number. On a rotary (M26) the turn is the
+program's own, with no pause. The setup sheet lists the setups in the order
+they run, and its `run_mode` is `two_file`, `single_file` or
+`rotary_indexed`. GuildSend stops at the one file's flip as at any flip; its
+guided two-file sequence still looks for M24's `back_cut.nc`, so until it
+reads the setups it offers the two programs to choose from, and the anterior
+is the one to run first.
+
+**The flip, simulated.** Simulate cuts the anterior from the fresh blank
+turned front face up, then turns the result back over and cuts the posterior
+from it. The log gives both verdicts, *Anterior* and *Posterior*, and an
+anterior that fails or warns carries into the job's verdict. The 3D view
+plays both setups as one: the playback stops at the flip and names it, and
+▶ turns the block over about the flip line and goes on with the posterior.
+The one file is split at its flip for the simulation and gives the same
+verdict as the two files. In the Toolpaths inspector the anterior's
+operations, listed first as *Anterior · …*, are colored and name their
+tools, and the 2D view draws their paths where they fall on the part,
+turned back over the flip line; a row's checkbox shows or hides them as it
+does the posterior's.
+
+**After the flip.** With *Probe Z after the flip* on, the probe now runs at
+the start of the posterior, on the blank's back. Without it, the posterior
+of a manual flip says where its Z0 is: the bed, which the flip does not
+move, or with a top-face zero the blank's back, to touch off on. A blank
+with the pad block lies front face up for the anterior on a spacer as thick
+as the pad, the pad in its cut-out; with the default zero, Z0 is the bed
+for both setups, and the anterior program says so. On a pressed blank the anterior is cut with the
+slab back down over the dome nest, and the posterior with the slab front
+down in the cup; the nest's files are named for that, `nest_back_down` and
+`nest_front_down`. A one-setup program still leaves an anterior seat out,
+and the log says that Two-sided cuts it first.
+
+**What the anterior leaves of the hold.** The posterior's through-cuts stop
+an onion skin above the front face, and the anterior, cut first, takes
+material off that same face. The log now says where the anterior cuts deeper
+than the skin at the edge of a through-cut: along part of a ring, how much of
+it, since the rest still holds; all round a ring, with a warning, because a
+whole perimeter so cut leaves the part free when the posterior's Perimeter
+cuts through, and a whole lens opening frees its core when the Eyewires do.
+An anterior bezel is such a ring. On tabs, the perimeter's hold is the tabs'
+height. On the library front, the brow chamfer takes the skin off 38 percent
+of the perimeter, and the rest holds the part.
+
+### The middle of a pocket, and a narrower Stock tab (2026-10-17)
+
+**A pocket's passes overlap at its middle.** A hinge slot exactly two tool
+diameters wide, 4.0 mm for the 2 mm end mill, was cleared by one ring a tool
+radius in. The next ring, a stepover further in, did not fit, and the ring's
+passes met on the slot's center line with no overlap. That is a fin of no
+thickness on paper and a real one under an end mill a hair under size; in
+the simulation it was a column of cells standing the pocket's full depth,
+in one pocket of the pair, wherever the grid fell. Where the passes would
+overlap at a pocket's middle by less than a tenth of the tool's diameter,
+the cascade now goes once round the core it leaves: the hinge pockets, the
+inlay seats and the filled engraving alike. A pocket whose passes already
+overlap posts as before. On the library front both hinge pockets and one
+anterior seat take the extra pass, a few seconds each.
+
+**The Stock tab narrows with the rest.** A checkbox does not wrap, and the
+pre-formed blank's long label held the Stock tab 100 pixels wider than any
+other tab, so a narrowed sidebar scrolled it sideways. The two pressing
+options read *Pre-formed blank* and *Apertures and groove first*; their
+tooltips say the rest.
+
+### The contours over the pad, the splay's seam, and a dock for each kernel (2026-10-17)
+
+**The contours cut where there is material.** On a blank with the pad block,
+every eyewire ring and the perimeter cross the pad, and each ring was cut whole
+from the pad's top down; above the blank's top, most of each pass was in air. A
+pass above the blank's top now cuts only the stretch of the ring over the pad:
+it goes down and comes out in air past the pad's edge. The stock the program
+leaves is the same; three corpus fronts on the shipped stock are cut 42 to 67
+seconds sooner, and across the corpus the eyewires' feed is down 18 to 20
+percent and the perimeter's 18 to 24. On a pressed slab, whose bottom is not
+flat, each pass likewise cuts only where it goes deeper than the one before.
+
+**The tabs stand where the floor is reached early.** On a stock whose bottom
+is not flat, the tab height was the last pass's least depth along the ring,
+which is nothing where the passes reach the floor early, and the part was
+released with no tabs at all. The passes before the last now stop over the
+tabs' tops, and the last pass rises over each tab. A tab is at most one
+depth per pass tall.
+
+**The pad splay is cut the way it is finished by hand.** The angle cut comes
+first, from the crest toward the frame's edge at the splay angle; then the seam
+nearest the front, where that cut meets the edge, is rounded over. **Seam
+blend** sets its radius: 1 mm by default, at most the minimum edge thickness. The
+crest, the most posterior seam, is left sharp for tumbling on every kernel. The
+raster kernel's 2 mm crest round-over, which only kept its grid from shading the
+crest as a jagged ridge, is gone with its Crest blend control; a project that
+carries it opens without it. The three kernels now cut one section. Where the
+angle cut would pass below the minimum edge thickness, it keeps its angle and
+is floored there; the mesh and B-Rep kernels made the angle shallower until
+the cut fit. The raster kernel holds the crest inside the body as the others
+do, walking it back where it would step into the nose notch; it halved it.
+
+**The dock shows what the kernel builds.** Sculpts are built and cut by the
+mesh kernel alone, so the Sculpts section and the Sculpt Finish operation are
+hidden on the B-Rep and raster kernels. A front's sculpts are kept for the mesh
+kernel, and the log says when a build or a program leaves them off.
+
+### The 2.0 bug hunt (2026-10-16)
+
+Seven reviews before the release, each fixed and pinned by a test the same
+day (`tests/test_bug_hunt_v200.py`, `tests/test_bug_hunt_v200_gui.py`).
+
+**At the machine.** The rotary turns the blank from the top of Z travel
+(`G53 G0 Z0`), both for the flip and for the unwind at the end; it turned
+with the tool parked a few millimeters over the stock, inside the blank's
+swing. A flip whose swing the profile cannot show clears the tool is
+refused. A blank with the pad block is turned over onto a spacer as thick
+as the pad, its cut-out holding the pad: the whole stack turns, Z0 is the
+stock's bottom on the bed on both sides, and side two's through-cuts follow
+the stock's bottom down through the pad and stop on the spacer elsewhere.
+They stopped at the sheet, the part still held by the pad, and the program
+says to set the spacer under the blank. With Two-sided On and nothing
+cut on the front, side two on the rotary is turned as the blank is; it was mirrored as for a flip by hand,
+and its perimeter ran where the part is not. Side two's probe runs down
+from where the tool is left (`G91`),
+and the touch sets the stock top's height plus the plate's in the
+program's own frame; it set the plate's top as Z0, and the program's Z0 is
+the blank's bottom by default. The plate's thickness is a new field beside
+*Probe Z after the flip*, and without the probe the note names the value
+to set. Side two and the hybrid's flat program are clamped to the machine
+and checked like side one; they posted the feeds as asked. The low hops
+between passes keep clear of the fixture's own screws, sized for the
+widest tool in the program; they knew only the blank's corners and the
+lens centers, and passed over the inner screws on five of the eight corpus
+fronts. A profile may give the spindle's spin-up time, and each M3 that
+starts it is followed by a dwell; 0, the default, writes none.
+
+**The cut.** A pocket or a seat whose offsets split, or that holds an
+island, is cut without crossing a wall: each loop is entered by ramping
+down from the level above. A mount under the pad block starts above the
+pad, not inside it. An op with nothing to cut posts nothing; hinge pockets
+too small for their tool led the program and paused for a tool change.
+A contour ring that keeps clear of the pad block starts at the blank's
+top, not the pad's; on a pressed blank each pocket starts over its own
+part of the slab, not over the slab's highest point. Generate Base-Curve
+Block from the Front tab posts the block on its own tab, at its own
+program zero; it replaced the front's program. The Features op cuts with
+the 2 mm ball by default: the flat end mill left up to a millimeter on
+chamfers, bezels, the pad splay and round-overs, and the ball leaves about
+a tenth of a percent of them. A job with a Features op therefore changes
+tools for it. On a pressed blank the finishing passes reach two tool
+radii past the part, so a flat tool finishes an edge that the tilted
+surface falls away from; one radius left half a millimeter or more along
+the lens openings. Side two of a pressed blank cuts its anterior features:
+the front's cut depth, carried onto the formed grid, missed cells along a
+chamfer's foot, and they held the tools up off the chamfer.
+
+**The simulation.** A stored program is simulated from its program zero;
+a corner or a top-face zero failed every verdict. Simulate in an unsaved
+session generated the program and then generated it again, forever.
+Side two is simulated whenever there is a back program, and side one's
+warning is carried into the job's verdict. The lens groove cutter's shank
+starts above its neck, so a grooved front no longer fails for the neck in
+the rim; the shank's real reach to tall nosepads is still reported.
+
+**The verdict.** The verdict's stock starts as the stock is; it stood a
+millimeter over the stack and read the nosepads' tops as uncut on every
+front. The largest piece left standing in one place is judged by its
+volume, and the verdict says where it stands: over 0.5 mm³ it warns, and
+over 2 mm³ it fails. The fractions alone passed a hinge pocket left uncut,
+which is a fraction of a percent of the body. A gouge deeper than a
+millimeter counts from two cells out of a step; the band kept for the grid
+hid a perimeter cut into a wall. On a pressed blank the two cells widen by
+the walls' lean, and material the blank never had is short, not gouged. The
+verdict also asks whether the part is released: above the skin or the
+tabs, the body may join neither the blank round it nor the core of a lens
+opening, on the side that makes those cuts. On side two of a pressed blank
+the part's own underside is no longer counted as left standing.
+
+**Forming.** The pressed blank the CAM cuts is the one the dies press: the
+bridge projection and the face form only when the dies carry them. The
+bridge punch's nose stands the projection proud of its shoulders; it went a
+sheet's thickness further. Pre-cut dies are sized to the blank they press,
+with no zone cutaways. A grooved pressed front is cut round its front edge.
+The punch's Auto radius is the forming's own die, and a saved press row's
+radius is carried only when this machine lacks the row. A monocle forms to
+its base curve alone: it has no second eye to wrap toward, so its face form
+is off, and the press's wrap no longer creases it.
+
+**The project file.** A program saved after the design moved on comes back
+stale, not current, and Export G-code asks before writing one. A DXF
+project keeps its part's own settings through a reopen. A damaged file is
+an error the window reports; a damaged file opened from the desktop closed
+the app. A project whose drawing does not parse leaves the window as it
+was. A file from before two-sided machining opens one-sided, as it was cut.
+Opening a project no longer rewrites the CAM preferences the next drawing
+starts from. The libraries and the default bed are written so an
+interruption leaves the old file. A save clears the crash-recovery
+snapshot. The dock keeps the pad block's offset, the footings' order, the
+bezel's minimum thickness and the overrides it has no widget for. A tool or
+a material the library lacks is named in the log. A value out of range (a
+number that is not one, an infinity, or a negative where none is possible)
+is set to its default when the file opens, and the log names each one; it
+reached the post.
+
+**The window.** Each job's progress dialog is its own, and a program or a
+simulation that lands after a tab or a drawing changed is kept on its own
+part or dropped; a quiet rebuild closed Generate's dialog. Reload Drawing
+keeps the sculpts and gives a part drawn since the last open its new
+switch. Generate refuses a lens outside the body, as Build did. A sculpt
+with no flat face is reported. Each part keeps its own mesh verdict, and a
+tab switch no longer checks a mesh again. The pad splay's crest blend is a
+raster kernel setting, and it is disabled on the other kernels. The
+anterior bezel's width answers to the groove's front flank, and the groove's
+anterior offset to the bezel's cut; the shipped bezel took most of the
+flank.
+
+**The drawing.** A front is classified about its own axis, so one drawn
+off the drawing's origin is named as it would be on it. A closed spline of
+two nodes is both of its arcs. A curve that crosses itself keeps its area,
+and one the file describes wrongly is skipped and logged instead of
+stopping the drawing. One lens in an outline drawn for two, a third lens,
+and a lens that crosses its rim are each refused with a warning. Seats
+keep their settings when the front moves on its blank. The rim lip
+re-partitions at any groove depth the drawing allows, so the groove's
+range is the drawing's. The raster kernel leaves decorative openings
+square, carves against the rim lip with the groove on, and cuts an edge
+feature that runs the whole ring at full depth all the way round. Its lens
+groove stays within the rim wall's height; on a short wall the groove's
+edges stood above the wall's top or below its bottom.
+
+### Separated rims, the monocle and the guide sizes (2026-10-16)
+
+A combination frame's front, acetate rims on a metal bridge, is drawn in
+GuildDraw as two closed OUTLINE curves, each holding its lens, and is now one
+Frame Front with a body per rim, cut from one front blank. Of the OUTLINE
+curves inside no other, the largest is a body and so is any that holds a
+lens, as GuildDraw's validator sorts them; a curve that holds no lens is a
+stray, as before. Each rim partitions as a standard half: endpiece, eyewire
+superior and inferior, nosepad, and over the nosepad the rim's end of the
+bridge, at the bridge's height; no zone spans the gap, and the per-kind
+heights apply. The three kernels build a body per rim and the verdict expects
+one; the program cuts both apertures, a perimeter around each rim (one ring
+around both, with a note, where the gap is narrower than the tool needs) and
+both sides of a two-sided job; the keep-outs sit at both lens centers.
+
+The bridge mount is one shape across the gap, on HINGE or on INLAY, and is
+cut into each rim's end. A HINGE pocket that reaches no endpiece is a mount:
+its depth is taken from the terrace it is cut into, its floor is flat, and
+the depth's range answers to that terrace; a pocket on an endpiece keeps the
+endpiece rule. Separated rims form to the base curve and the face form; the
+bridge projection is off, and so are its controls and the dies' bridge
+tooling. The pad splay and the bridge relief need a one-piece front's bridge
+and stay off. A lens that lies in no body stops the castle and is named in
+the log, as is an OUTLINE curve drawn open.
+
+GuildDraw's Ghost is a drawing aid, and GuildModel reads the curves drawn and
+never applies it. A front with one rim and one lens, a monocle, is one rim:
+it partitions as a standard half and builds, cuts and forms as either rim of
+a pair does. A new project sizes the front's blank and pad block, and each
+temple's blank, from the guides the drawing carries; without them the shop's
+defaults stand.
 
 ### The fourth axis: the indexed flip (BUILDPLAN M26, 2026-10-15)
 

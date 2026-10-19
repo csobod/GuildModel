@@ -1,4 +1,4 @@
-# GuildModel User Guide (v1.8.1)
+# GuildModel User Guide (v2.0.0)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -15,11 +15,21 @@ yet cut on real stock. Air-cut them first, then cut a test piece.
 ## 1. Open your drawing
 
 **File ▸ Open Drawing (Ctrl+O)** opens a GuildDraw `.gdraw`. The whole
-model comes in as one project, with one tab per component: **Frame Front**,
+model comes in as one project, with one tab per part: **Frame Front**,
 **Temple R / L**, and a derived **Base Curve R / L** template per lens. A
 **Worktable** tab follows them.
 
-A component you never drew shows as a disabled tab.
+A part you never drew shows as a disabled tab.
+
+**The Ghost.** GuildDraw's Ghost is a drawing aid, and GuildModel reads only
+the curves you drew. Bake the mirror (Mirror (bake)) before you open a front
+drawn as a half; a front left with one rim and one lens is a monocle.
+
+**The guides.** A new project sizes each blank from the stock guide the
+drawing was made against: the front's blank and pad block, and each temple's
+blank. The thickness stays your default. A drawing without guides uses your
+defaults (Preferences ▸ Parts), and a reopened or reloaded project keeps its
+own sizes.
 
 Each tab keeps its own parameters, model, program and readiness state. You can
 switch tabs freely, because nothing is lost.
@@ -28,7 +38,7 @@ A drawing, project or DXF dragged from the file manager onto the window opens
 as the menu would. When a drawing opens, GuildModel builds the frame front and
 shows it in 3D; the temples and blocks are built the first time you visit
 their tab in the 3D view, so a walk through the tabs stays in 3D. Preferences
-▸ General turns the build on open off. The view you chose on a component is
+▸ General turns the build on open off. The view you chose on a part is
 kept across a visit to the Worktable. The 2D view of the front is the back of
 the frame, mirrored from the drawing, and its caption says so.
 
@@ -47,21 +57,27 @@ GuildModel reads these layers:
 |---|---|
 | `OUTLINE` | the frame profile |
 | `LENS` | two apertures |
-| `HINGE` | hinge pockets |
+| `COMPONENT` | pockets for what mounts on the back: hinges, bridges, endpieces, bridge bars |
 | `SCULPT` | the castle layout, 5 cuts per side |
 | `ENGRAVING` | engraving grooves |
 | `INLAY` | seats for plaques and plates (§2, *Seats and plaques*) |
 | `BRIDGE` | the bridge |
 | `REF` | display only |
 
+A drawing made before 2.0 says `HINGE` for the `COMPONENT` layer, and
+GuildModel reads it as `COMPONENT`. GuildDraw's component tab was its Hinge
+tab, and that is read too.
+
 A DXF with an outline and no lenses opens as a temple. GuildModel measures the
 boxing dimensions (ISO 8624 A / B / DBL / ED) from the lens polygons on import
 and shows them on the Info tab.
 
 **Projects.** **File ▸ Save Project (Ctrl+S)** writes a `.gmodel`. This one
-file holds the drawing, every component's parameters, the tagged worktable, and
+file holds the drawing, every part's parameters, the tagged worktable, and
 each generated program with its setup sheet. Reopen it to restore the whole
-session.
+session. A value in the file that is out of range (a number that is not one,
+an infinity, or a negative where none is possible) is set to its default as
+the file opens, and the log names each value it set.
 
 GuildModel folds a generated program into the open project for you. The title
 bar shows a `*` while any work is unsaved. If you close the project, or open
@@ -74,22 +90,31 @@ GuildModel models the posterior relief the way a maker carves it: as the
 The eyewire walls run between them. Rolling-ball footing fillets ease every
 wall into the floor.
 
-The sidebar shows what the active component needs. A frame front has
+The sidebar shows what the active part needs. A frame front has
 **Info · Model · Stock · Cut · Machine**. Every section on every tab folds
 under its header with a click; GuildModel remembers which you folded.
 
 ### The Model tab
 
 The Model tab sets the per-zone tower heights, the footing radius and the
-hinge-pocket depth. Below them are the posterior finishing features, all off by
-default: the pad-splay chamfer, the bezeled eyewire and the bridge relief.
+**Component depth**, the depth of the component pockets. Below them are the
+posterior finishing features, all off by default: the pad-splay chamfer, the
+bezeled eyewire and the bridge relief.
 
-**Hinge pocket angle** tilts the floor of the hinge pockets to change the
-pantoscopic tilt at the hinge. The superior edge of each pocket stays at the
+**Hinge pocket angle** tilts the floor of the component pockets on the
+endpieces, the hinges, to change the pantoscopic tilt at the hinge. The superior edge of each pocket stays at the
 pocket depth; a positive angle makes the inferior edge deeper, and a negative
 angle makes it shallower. At 0° the floor is flat. The slider stops where
 either edge would come out of the surface or get closer than 0.5 mm to the
 anterior face.
+
+**Pad splay** is cut the way it is finished by hand. The angle cut comes first,
+from the crest down toward the frame's edge at the splay angle, and never
+leaves the edge thinner than **Min edge thickness**. Then **Seam blend** rounds
+over the seam nearest the front, where that cut meets the edge: 1 mm by
+default, at most the minimum edge thickness, and 0 leaves it sharp. The crest,
+the most posterior seam, is left sharp for tumbling. Every kernel cuts the same
+section.
 
 **Pad splay ▸ Non-contiguous** is for a **keyhole bridge**. A splay run through
 bottom-center planes the keyhole's shape straight off. Tick this box and set
@@ -112,6 +137,48 @@ A note under the sliders gives the resulting wall angle. It also tells you when
 the width and depth you have set cannot carry the radii you asked for, and
 reduces both in proportion. An interior radius of 0 is a sharp V. That is
 legitimate, but no ball tool can finish it.
+
+### Separated rims — a combination frame
+
+A combination frame's acetate rims sit on a metal bridge and temples. Draw
+both rims in GuildDraw, each a closed OUTLINE curve holding its lens, and bake
+the mirror. GuildModel builds one Frame Front with a body per rim, both cut
+from one front blank.
+
+Each rim partitions as a standard half: endpiece, eyewire superior and
+inferior, and nosepad, with the rim's end of the bridge over the nosepad when
+you draw the fifth section cut. The bridge end takes the bridge's height, as
+on a one-piece front. No zone spans the gap, and the zone list on the Model
+tab reads *a standard half per rim*. A LENS curve that lies in no rim is never
+cut: GuildModel says so in the log, and the castle does not build until the
+lens is inside its rim. A rim drawn in pieces is named in the log too:
+GuildModel closes each piece with a straight line, so join the pieces in
+GuildDraw.
+
+The program cuts both apertures and a perimeter around each rim. Where the
+rims are closer together than the perimeter tool and its allowance need, one
+ring goes around both, and a note on the Perimeter op says that the stock
+between them stays; cut the gap with a smaller tool.
+
+The bridge's mount is one shape across the gap: on COMPONENT for a bridge that
+mounts from behind, and on INLAY, cut on the visible face, for one that mounts
+from the front. Each rim takes its own end of the shape, and the rest of the
+toolpath runs in the waste between the rims. A COMPONENT pocket that reaches no
+endpiece is a mount: the component depth is measured from the terrace it
+is cut into, the rims' bridge ends, and its floor stays flat whatever the
+hinge pocket angle. A pocket on an endpiece is a hinge pocket, as always.
+
+The pad splay and the bridge relief are cut under and into a one-piece
+front's bridge. Separated rims have no such bridge, so both stay off. On the
+Forming panel the rims take the base curve and the face form; the bridge
+projection and its controls are off, and the dies carry no bridge tooling.
+
+**A monocle** is one rim and one lens, drawn on the front. It partitions as a
+standard half, like either rim of a pair, and builds and cuts the same way.
+It forms to its base curve alone: with no second eye to wrap toward, its
+face form and the dies' face form are off, and the projection with them. The
+curve is apexed at the lens, or on the center line when the rim is drawn
+across it.
 
 ### Edge features — a chamfer or a fillet on part of an edge
 
@@ -198,7 +265,10 @@ Finish** operation on the Cut tab, off unless you tick it, runs a ball over
 the footprint at a finer one. A sculpt on the front or the rim is modeled
 and exported, and not posted until the flip setup. The project file carries
 the mesh bytes, so a saved project reopens with its sculpts and no external
-files; the mesh kernel builds them, the raster and B-Rep kernels do not.
+files. The mesh kernel builds them, and the raster and B-Rep kernels do not:
+with either of those chosen in Preferences, the Sculpts section and the
+Sculpt Finish operation are hidden, the sculpts are kept for the mesh kernel,
+and the log says when a build or a program leaves them off.
 
 ### Seats and plaques — the INLAY layer
 
@@ -214,7 +284,7 @@ sit under the section's **Cut details** fold.
 |---|---|
 | **Enabled** | off leaves the seat uncut, and anything drawn inside it |
 | **Name** | your own label for the list, the log and the setup sheet |
-| **Relative to** | read off the drawing: the face, the parent seat's floor, or the hinge pocket's floor |
+| **Relative to** | read off the drawing: the face, the parent seat's floor, or the component pocket's floor |
 | **Face** | which side the seat is cut into. Anterior is the visible side — the front of a frame, the outer side of a temple |
 | **Depth** | the insert's thickness, below what the seat is relative to |
 | **Flush** | cut the seat shallower (+, the insert sits proud) or deeper (−, sunk) than the insert |
@@ -225,11 +295,11 @@ sit under the section's **Cut details** fold.
 
 **Draw nesting to say what a seat is relative to.** A seat on its own is cut
 into a face. A seat drawn inside another seat is a step down from the
-parent's floor, on the parent's face. A seat drawn inside a `HINGE` curve is
-a step in the hinge pocket's floor and takes the pocket's tilt with it, so a
-hinge with a plate under it seats true. The canvas draws a nested seat
+parent's floor, on the parent's face. A seat drawn inside a `COMPONENT`
+curve is a step in that pocket's floor and takes the pocket's tilt with it, so
+a hinge with a plate under it seats true. The canvas draws a nested seat
 darker. GuildDraw refuses a seat that leaves the outline, crosses a lens,
-drill or hinge curve, or half-overlaps another seat.
+drill or component curve, or half-overlaps another seat.
 
 **An island is a raised shape inside a plaque.** Draw the monogram inside the
 seat and set it to *Island*: the seat is pocketed around it and the monogram
@@ -282,7 +352,12 @@ register alike. Turn it off for a drawing that was never drawn on its blank:
 the outline is centered on the blank, and the 2D view shows the drawing moved
 there. Turning it back on restores the drawing exactly.
 
-**Build 3D** builds every loaded component's model in one pass, and each tab
+The pad block stands over the blank across the nose, and the eyewires and
+the perimeter cross it. Above the blank's top only the pad has material, so
+each pass there cuts the stretch of the ring over the pad, going down and
+coming out in air past its edge; below it, the rings are cut whole.
+
+**Build 3D** builds every loaded part's model in one pass, and each tab
 caches its own model. The view strip carries:
 
 - camera presets — Iso / Top / Front / Reset
@@ -319,21 +394,24 @@ groove. A pre-formed front is cut in its nest, not on the worktable; take
 it off the bed.
 
 **Export Nest…** on the Forming panel writes the nest fixture: the cup
-that holds the pressed slab front down for side one, and the dome, cut
-away under the taller zones, that holds the carved back for side two, both
-on the dowels of the flip line. A two-sided job on the pressed blank turns
-the slab over in its nest: side two's stock is side one's result upside
-down, and the simulation cuts it so. What is documented here is the
+that holds the pressed slab front down for the posterior, and the dome,
+cut away under the taller zones, that the slab lies on back down while a
+two-sided job cuts the anterior first, both on the dowels of the flip
+line. The simulation cuts the anterior from the pressed slab turned over,
+then the posterior from its result. The dome was shaped for a carved back,
+and it bears on the slab's uncut back only where it is not cut away; work
+on pressed blanks is paused, and the dome is to be reshaped before a
+two-sided pressed part is cut. What is documented here is the
 geometry and the programs; the pressing of a blank for cutting, the nest
 and the flip on a curved blank are the maker's own tests, and the first
 parts should be measured before a batch.
 
 ### Export STL
 
-**File ▸ Export STL (Ctrl+E)** writes the component you are looking at.
+**File ▸ Export STL (Ctrl+E)** writes the part you are looking at.
 **File ▸ Export All STL (Ctrl+Shift+E)** asks for a folder and writes every
-component that can be built — the frame front, both temples and each base-curve
-template — one file each, named for the component. A drawing with more than two
+part that can be built — the frame front, both temples and each base-curve
+template — one file each, named for the part. A drawing with more than two
 lens curves makes more than two templates, and those are numbered.
 
 Export always rebuilds at the **export resolution** in Preferences, never from
@@ -425,7 +503,7 @@ print job is one folder.
 
 Forming is a way of looking at the model, not a change to it. The cut model
 does not change, no program is generated for a formed front, the readiness dot
-ignores forming entirely, and the forming values are saved with the component
+ignores forming entirely, and the forming values are saved with the part
 in the `.gmodel` — a drawing that carries none opens flat.
 
 Your own presses go in `~/.guildmodel/presses.yaml`, one row per die, tagged
@@ -498,8 +576,8 @@ less documented one; you are the test case.
 
 ## 3. Temples and base-curve blocks
 
-**Temple.** The outline extruded on the blank, with hinge blind-pockets from
-the `HINGE` layer and engraving grooves from `ENGRAVING`. Two kinds of
+**Temple.** The outline extruded on the blank, with blind pockets from the
+`COMPONENT` layer, the hinge's, and engraving grooves from `ENGRAVING`. Two kinds of
 engraving share the layer and are told apart when a `.gdraw` opens: text,
 which is engraved as one line down each stroke while *Engrave text as stroke
 centerlines* (Temple tab) is on, and a curve you drew on the layer. A drawn
@@ -525,7 +603,7 @@ loads it, starts, and swaps once — then Holes, then the Temple Profile that
 releases the part. The Holes operation appears only when the drawing has
 decorative openings in the outline.
 
-The Temple tab sets the **Hinge pocket depth** and the **Hinge pocket angle**.
+The Temple tab sets the **Component depth** and the **Hinge pocket angle**.
 The angle tilts the pocket floor along the temple to offset splay built into
 a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
 positive angle makes the posterior edge deeper.
@@ -559,8 +637,8 @@ offers to save them back as your new defaults; *Don't ask again* on that box
 silences the offer, and Preferences ▸ General turns it back on.
 
 **Feeds & Speeds, per tool.** Under the material row, one row per tool the
-open component's program uses — a temple with engraving shows the engraving
-bit, the hinge-pocket end mill and the profile tool. Each row shows what that
+open part's program uses — a temple with engraving shows the engraving
+bit, the component pocket end mill and the profile tool. Each row shows what that
 tool will actually cut at and where the numbers come from: *material* (the row
 above), *tool library* (the tool's own feeds in Preferences ▸ Tools — the
 shipped engraving bit runs at 300 mm/min and 14000 RPM, which its slender tip
@@ -586,11 +664,13 @@ The **Machine** tab is setup. It holds:
 - the no-`SCULPT` profile fallback
 
 **The Features operation.** The posterior finishing features cut in their own
-**Features** operation, so they can take their own tool. The everyday job is a
-**ball nose** for the chamfers and scoops, and an end mill for everything else —
-the hinges, the footing and the posterior sculpting. Left at *(same as Tool)*
-it follows Fine Relief, which is what cut these features before they became a
-separate operation.
+**Features** operation, so they can take their own tool. It is the **2 mm ball**
+by default, for the chamfers, bezels, splays and scoops; an end mill cuts
+everything else, such as the hinges, the footing and the posterior sculpting.
+A flat end mill left up to a millimeter on these slopes. To cut the features
+with another tool, pick the tool by name; as for the Component Pockets, *(same as
+Tool)* keeps the default. A job with features therefore changes tools for
+them.
 
 GuildModel warns you when the assigned tool cannot finish a feature, and names
 one from your library that fits. A flat leaves a lip at every chamfer toe, and
@@ -613,9 +693,17 @@ is deeper than a tool's flute length.
 **File ▸ Generate G-code** posts the active component's program. The 2D view
 overlays the toolpaths, color-coded per operation, with rapids dashed. The
 per-op table beside it shows the totals for cut length and estimated time.
-Check a row to show or hide it, and click a row to highlight it. GuildModel
+Check a row to show or hide it, and click a row to highlight it. A pocket, a
+hinge pocket or a seat, is cleared in rings a tool radius in from its wall
+and a stepover apart; where the last rings' passes would overlap at the
+middle by less than a tenth of the tool's diameter, one more pass goes round
+the middle, so no fin stands there. GuildModel
 lints the program against the machine limits — envelope, feed, spindle and arcs
-— and reports any reach warnings.
+— and reports any reach warnings. A machine profile may give
+`spindle_spinup_s`, the seconds its spindle takes to reach speed: GRBL does not
+wait for it, so each M3 that starts the spindle is followed by a `G4` dwell
+that long. The shipped profiles leave it at 0, which writes none; set it at the
+bench.
 
 The **readiness dot** in the status bar tracks the job:
 
@@ -634,6 +722,19 @@ highlights cuts below target, and the badge gives a ✓ / ⚠ / ✕ verdict; the
 log and the Simulation page add the volumes left standing and taken, in
 cubic millimeters.
 
+The verdict fails a cut that reaches less than 90% of the body, or gouges it
+deeper than half a millimeter; it warns below 96%, or on a shallower gouge.
+It also judges the
+largest piece left standing in one place by its volume, and says where it
+stands: over 0.5 mm³ it warns, and over 2 mm³ it fails. A hinge pocket left
+uncut is a fraction of a percent of the body, so the fractions alone pass
+it. A gouge deeper than a millimeter counts even beside a step, where a
+shallower one is the grid's. Last, the verdict asks whether the part is
+released: above the skin or the tabs, the body may join neither the blank
+round it nor the core of a lens opening. On a two-sided job it asks this of
+the posterior, which makes the through-cuts, and a cut you switched off is
+not asked for.
+
 The stock is a true solid, not a surface: every column of the blank keeps
 the intervals of material it still holds, so a side-cutting form such as the
 lens groove's drageoir takes its slot out of the eyewire wall and leaves the
@@ -649,7 +750,11 @@ The playback scrubber replays the cut, operation by operation. Use play/pause
 warning if the tool would foul a hold-down.
 
 **File ▸ Export G-code (Ctrl+Shift+G)** writes a loose `.nc` when you want a
-bare file. The program also always lives inside the saved project.
+bare file. The program also always lives inside the saved project. A program
+generated before the design or its CAM settings last changed does not cut
+what the tabs show: Export G-code asks before writing it, and a project saved
+with it brings it back marked stale, so Simulate generates the program again
+first.
 
 **Turntable (Alt+T)** is the record button on the 3D viewer's strip, beside the
 camera presets, with a speed slider next to it. It spins the part about **the
@@ -665,41 +770,88 @@ another view, so you do not have to re-arm it when you come back.
 ### Two-sided jobs — the flip
 
 A front that takes material off the front, a brow chamfer, an anterior
-bezel, a seat or a sculpt on the front, is cut in two setups. **Side one**
-is the posterior program as always, in G54, less the eyewires, the holes
-and the perimeter. Then the blank is flipped about the fixture's flip line,
-the station's vertical center line, onto its two dowel pins, Z is re-zeroed
-on the new top, and **side two** cuts the anterior in G55: the relief where
-the front carries material to remove, the Features pass over it, the seats
-and sculpts on the front, and the through-cuts last, so the blank stays
-rigid for both faces; the part is released on tabs. A front that takes
-nothing off the front posts one setup, byte for byte as before.
+bezel, a round-over or a seat on the front, is cut in two setups, and the
+anterior always comes first. **The anterior** is cut with the blank front
+face up, in G55, while the blank is still a flat slab: the Fine Relief and
+the Features pass over the anterior's features, and the anterior seats, and
+nothing more. It cuts the Rough Relief only where the front is cut deeper
+than one contour stepdown, and never a hinge pocket or a through-cut. Then
+the blank is flipped about the fixture's flip line, the station's vertical
+center line, onto its two dowel pins, front face down on the bed, and
+**the posterior** is cut in G54 exactly as a one-sided job cuts it: the
+relief, the hinge pockets, the eyewires, the holes and the perimeter, with
+the onion skin or the tabs you chose. All the major removal happens there,
+with the piece flat on the bed, where it is most secure, and the onion skin
+holds the part through all of it. A front that takes nothing off the front
+posts the posterior alone, byte for byte as before.
 
-The Cut tab's **Operations** group has the choice: **Two-sided** *Auto*
-posts the second side when the front is cut, *Off* never, *On* always;
-**Through-cuts** on side two (the default) or on side one with the skin or
-the tabs you chose; a grooved front keeps them on side one, since the
-groove is cut from the back through the open apertures. **Probe Z after the
-flip** begins side two with a G38.2 touch-off on the stock top that sets
-G55's Z0, for a machine with a probe plate; without it the program says to
-re-zero Z. The project holds both programs, `posterior_cut.nc` and
-`back_cut.nc`, Export G-code writes both to a folder, and the setup sheet
-lists the two setups, the flip line and what to re-probe. The simulation
-reads both: side two is cut from the stock side one left, flipped, and the
-log carries both verdicts; a side one that fails fails the job.
+When the anterior is cut, the stock past the part's edge still stands, so
+the anterior reaches past the edge: the relief by two tool radii, the
+Features pass by the ball's radius past its band. A feature that runs to
+the edge, as a brow chamfer does, is finished to the edge, and the
+posterior's perimeter takes the rest away. The onion skin is the layer next
+to the front face, so where the anterior cuts deeper than the skin at the
+edge of a through-cut, the skin there holds nothing. The log says how much of
+each ring the anterior takes the skin off, and warns when it takes it off a
+whole ring: an anterior bezel all round a lens opening frees the opening's
+core when the posterior's eyewires cut through, and a brow chamfer along part
+of the perimeter leaves the part held by the rest. On tabs, the perimeter's
+hold is the tabs' height.
+
+The Cut tab's **Operations** group has the choices. **Two-sided** *Auto*
+cuts the anterior first when the front is cut or carries a seat, *Off*
+never, *On* always. **Output** writes *Two files*, `anterior_cut.nc` and
+`posterior_cut.nc`, or *One file, pausing for the flip*,
+`two_sided_cut.nc`: the anterior; then the spindle stopped, the tool raised
+and the flip's pause, `M0`; then the posterior, with a tool change where
+the tool differs. **Probe Z after the flip** begins the posterior with a
+G38.2 touch-off on the blank's back, for a machine with a probe plate: the
+probe runs down from where the tool is left, and the touch sets G54's Z to
+the back's height plus the plate's, in the program's own frame. Give the
+plate's thickness in **Plate**; 0 is a probe that touches the stock itself.
+Without the probe, the posterior says where its Z0 is: the bed, which the
+flip does not move, with the default zero on the blank's bottom; the
+blank's back, to touch off on after the flip, with a top-face zero. With
+the default zero both setups are cut from the bed up, so give the sheet's
+measured thickness on the Stock tab: a sheet thicker than the tab says puts
+the difference into the depth of the anterior's chamfers and seats.
+
+A blank with the pad block lies front face up for the anterior on a
+**spacer** as thick as the pad block, with a cut-out for it: the pad goes
+into the cut-out and stands on the bed, and the sheet stands on the spacer.
+Z0 is the bed for both setups: the pad block's back for the anterior, the
+front's face for the posterior. The anterior makes no through-cut, so the
+cut-out needs only to hold the pad. The anterior program and the setup
+sheet name the spacer.
+
+The project holds the programs, and Export G-code writes them to a folder;
+the setup sheet lists the two setups in the order they run, the flip line
+and what to re-probe. The simulation runs the whole job: it cuts the
+anterior from the fresh blank turned front face up, turns the result back
+over and cuts the posterior from it, and the log carries both verdicts; an
+anterior that fails fails the job. In the 3D view the playback stops at the
+flip and names it; ▶ turns the block over about the flip line and goes on
+with the posterior. The per-op table lists the anterior's operations first,
+as *Anterior · …*, each with its tool and color, and the 2D view, which
+shows the design from the back, draws their paths where they fall on the
+part. GuildSend stops at the one file's flip as at any flip;
+its guided two-file sequence still looks for M24's names, so until it reads
+the setups it offers the two programs to choose from. Run `anterior_cut.nc`
+first.
 
 Registration on this class of machine is 0.05 to 0.1 mm, and every error is
 doubled in a two-sided cut: press-fit pins in the wasteboard, a slip fit in
 the stock, and the flip the way the program assumes. The bench test is a
-through-hole pattern from side one and a matching counterbore from side two
-in a scrap blank, measured at four corners under a loupe.
+counterbore pattern from the anterior and a matching through-hole pattern
+from the posterior in a scrap blank, measured at four corners under a loupe.
 
 ### The fourth axis — what a rotary does and does not do
 
 A rotary on the Guild CNC is for the **indexed flip**: with the blank
-centered on the rotary's centerline on a bar fixture, side two of a
-two-sided job is side one with Y and Z negated about that line, and the
-back program begins with the turn, `G0 A180`, then the side's work offset,
+centered on the rotary's centerline on a bar fixture, the anterior setup
+of a two-sided job is the posterior's with Y and Z negated about that line.
+The anterior program begins with the turn to A180, then its work offset,
+and turns back to A0 at its end, so the posterior runs as it would alone,
 with no pause to re-fixture by hand. The machine profile says whether the
 machine has the axis (**Guild CNC (fourth axis)** is the shipped
 four-axis profile, its figures placeholders for the bench), what it is
@@ -724,8 +876,9 @@ the spindle nose to the table at Z max; the swing of the blank and its
 fixture must fit under it, and the profile holds both numbers.
 
 The bench test is the flip test of a two-sided job with the flip done by
-`G0 A180`: a through-hole pattern from side one and a matching counterbore
-from side two, concentric at four corners within 0.1 mm, and the rotary
+the rotary: a counterbore pattern from the anterior and a matching
+through-hole pattern from the posterior, concentric at four corners within
+0.1 mm, and the rotary
 back at zero within 0.05 degrees over ten turns. GuildSend's side, the
 A axis in its status, jog and settings, is its own work.
 
@@ -751,7 +904,7 @@ blank flush left. *Centered* places the blank in the middle of the zone on
 that axis. The stop is saved with the bed. Remove, Undo and Redo sit beside
 the count; Undo and Redo cover every bed edit.
 
-**Parts.** One row per component, with a checkbox: on the bed, or not. A part
+**Parts.** One row per part, with a checkbox: on the bed, or not. A part
 left unchecked keeps its tab, builds and posts on its own, and is left out of
 the worktable program, its setup sheet and the bed simulation; its placement
 is kept, so checking it again puts it back where it was. Each row names the
