@@ -233,16 +233,17 @@ def test_cancel_reaches_a_running_build_and_nothing_stale_lands(tmp_path, monkey
     assert any("no longer open" in m for m in log)
 
     # A failure is said to the maker: the dialog names it, carries the
-    # exception's own line, and its button opens the log.
+    # exception's own line, and its button opens the log. The name is read
+    # from the text: macOS ignores a message box's window title.
     win._on_gcode_error("Traceback (most recent call last):\n  ...\nValueError: no feed for acetal")
     box = win._failure_box
-    assert box.isVisible() and "G-code generation" in box.windowTitle()
+    assert box.isVisible() and "G-code generation" in box.text()
     assert "no feed for acetal" in box.informativeText()
     win._on_failure_box_clicked(win._failure_show_log)
     _pump(app, lambda: False, 0.2)                 # the dock arranges on a zero timer
     assert win._log_dock.isVisible() or win._log_want
     win._on_sim_error("boom")                      # one dialog, updated, not a second
-    assert win._failure_box is box and "Simulation" in box.windowTitle()
+    assert win._failure_box is box and "Simulation" in box.text()
     box.hide()
     win._wind_down_threads()
 

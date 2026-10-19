@@ -32,7 +32,7 @@ jobs:
     continue-on-error: ${{ !matrix.required }}
     # Raised from 50 for v1.5.0 — see the Windows workflow for the measurement;
     # the test gate below is now most of the budget.
-    timeout-minutes: 160            # VTK freeze + dmg is heavy; never burn hours
+    timeout-minutes: 180            # VTK freeze + dmg is heavy; never burn hours
     steps:
       - uses: actions/checkout@v4
 
@@ -40,13 +40,37 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The release notes promise macOS 13, Qt 6.11's floor. numpy and scipy
+      # publish a macOS 14 build on Accelerate beside one for older macOS on
+      # OpenBLAS, and pip on a runner at 14 or later takes the newer; the 2.0
+      # bundles first came out needing macOS 14 that way. The older wheels go
+      # in first, so the editable install finds numpy and scipy satisfied, and
+      # the kernel is compiled for 13.
       - name: Install dependencies
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
+          .venv/bin/pip download --only-binary=:all: --no-deps --platform macosx_13_0_${{ matrix.arch }} numpy scipy -d wheels-macos13
+          .venv/bin/pip install wheels-macos13/*.whl
           .venv/bin/pip install -e ".[dev,packaging]"
           .venv/bin/pip install pytest-timeout   # CI-only: per-test hang guard
-          .venv/bin/pip install ./ext   # the stock engine's C++ kernel (BUILDPLAN M21 §6.3)
+          MACOSX_DEPLOYMENT_TARGET=13.0 .venv/bin/pip install ./ext   # the stock engine's C++ kernel (BUILDPLAN M21 §6.3)
+
+      # A wheel whose every macOS tag is newer than 13 cannot be in the bundle.
+      - name: Every wheel installs on macOS 13
+        run: |
+          .venv/bin/python - <<'EOF'
+          import importlib.metadata as md, re, sys
+          late = []
+          for dist in md.distributions():
+              tags = [ln.split(":", 1)[1].strip() for ln in (dist.read_text("WHEEL") or "").splitlines()
+                      if ln.startswith("Tag:")]
+              macs = [int(m.group(1)) for t in tags if (m := re.search(r"macosx_(\d+)_", t))]
+              if macs and min(macs) > 13:
+                  late.append(f"{dist.metadata['Name']} {dist.version}: {', '.join(tags)}")
+          print("\n".join(late) or "every wheel installs on macOS 13")
+          sys.exit(1 if late else 0)
+          EOF
 
       # The gate, minus the tests that build a real MainWindow. offscreen keeps
       # Qt off the window server; the thread timeout method turns any
@@ -63,8 +87,11 @@ jobs:
       # (macos-14: 29), and M18 plus the hinge pocket angle added 110
       # non-gui tests, about a tenth of the suite. A gate that trips on the
       # optional leg leaves the workflow green with no x86_64 artifact.
+      #
+      # 130 for v2.0.0: the Intel gate ran 89 of its 110 minutes (macos-14:
+      # 33) with 1,726 tests, up from 1,350 at v1.8.1.
       - name: Test gate
-        timeout-minutes: 110
+        timeout-minutes: 130
         env:
           QT_QPA_PLATFORM: offscreen
         run: .venv/bin/python -m pytest tests -q -m "not gui" --timeout=300 --timeout-method=thread

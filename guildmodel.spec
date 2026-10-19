@@ -75,7 +75,7 @@ if sys.platform == "darwin":
         info_plist={
             "NSHighResolutionCapable": True,
             "NSPrincipalClass": "NSApplication",
-            "LSMinimumSystemVersion": "11.0",
+            "LSMinimumSystemVersion": "13.0",    # Qt 6.11's floor; the release notes say 13
             "CFBundleDocumentTypes": [{
                 "CFBundleTypeName": "GuildModel Project",
                 "CFBundleTypeExtensions": ["gmodel"],
