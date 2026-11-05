@@ -257,8 +257,7 @@ def measure(asm: DraftAssembly) -> DraftMeasures:
         add("front_to_bend", "Front to bend",
             float(0.5 * (R.temple.ear_point[2] + L.temple.ear_point[2])), status=REF, view="top")
         add("temple_thickness", "Temple thickness", t, status=LOCKED, view="top")
-        tb = R.temple.bend
-        add("inward_angle", "Inward angle of drop", R.temple.bend3d.inward_angle_deg,
+        add("inward_angle", "Inward angle, seen from above", R.temple.bend3d.inward_angle_deg,
             unit="°", status=TARGET, view="top")
     if zones_thick := getattr(getattr(castle, "zones", None), "endpiece_mm", None):
         add("front_thickness", "Front thickness at the endpiece", float(zones_thick),

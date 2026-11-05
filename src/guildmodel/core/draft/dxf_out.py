@@ -23,12 +23,27 @@ LAYERS = {
 _SHEET_GAP_MM = 20.0
 
 
-def write_dxf(path, sheets: list) -> None:
+def write_dxf(path, sheets: list, font_family: str = "") -> None:
+    """`font_family` names the text style's font for the CAD to map; the
+    colors are the layers' own, not the sheet's."""
     import ezdxf
 
     doc = ezdxf.new("R2010")
     doc.header["$INSUNITS"] = 4          # millimeters
-    for name, color, ltype in set(LAYERS.values()):
+    text_style = "STANDARD"
+    if font_family:
+        # the file name is a guess; the family in the style's extended
+        # font data is what AutoCAD and BricsCAD resolve a TrueType by
+        try:
+            style = doc.styles.add("BLUEPRINT", font=f"{font_family}.ttf")
+            try:
+                style.set_extended_font_data(font_family)
+            except Exception:                               # noqa: BLE001
+                pass
+            text_style = "BLUEPRINT"
+        except Exception:                                   # noqa: BLE001
+            text_style = "STANDARD"
+    for name, color, ltype in sorted(set(LAYERS.values())):
         if ltype not in doc.linetypes:
             try:
                 doc.linetypes.add(ltype, pattern=_PATTERNS[ltype], description=ltype)
@@ -43,7 +58,7 @@ def write_dxf(path, sheets: list) -> None:
         def to_model(x, y, _o=offset, _h=sheet.height):
             return (_o + x, _h - y)
 
-        _write_page(msp, sheet, to_model)
+        _write_page(msp, sheet, to_model, text_style)
         offset += sheet.width + _SHEET_GAP_MM
     doc.saveas(str(path))
 
@@ -59,15 +74,16 @@ def _layer(style: str) -> str:
     return LAYERS.get(style, LAYERS["visible"])[0]
 
 
-def _write_page(msp, sheet: Sheet, to_model) -> None:
+def _write_page(msp, sheet: Sheet, to_model, text_style: str = "STANDARD") -> None:
     for s in sheet.strokes:
         pts = [to_model(x, y) for x, y in s.pts]
         msp.add_lwpolyline(pts, close=s.closed, dxfattribs={"layer": _layer(s.style)})
     for f in sheet.fills:
         pts = [to_model(x, y) for x, y in f.pts]
-        msp.add_solid(pts[:4] if len(pts) >= 3 else pts, dxfattribs={"layer": _layer(f.style)})
+        if len(pts) >= 3:
+            msp.add_solid(pts[:4], dxfattribs={"layer": _layer(f.style)})
     for t in sheet.texts:
-        _text(msp, to_model(t.x, t.y), t, 0.0)
+        _text(msp, to_model(t.x, t.y), t, 0.0, 1.0, text_style)
     for p in sheet.placed:
         v = p.view
         for s in v.strokes:
@@ -78,10 +94,10 @@ def _write_page(msp, sheet: Sheet, to_model) -> None:
             if len(pts) >= 3:
                 msp.add_solid(pts[:4], dxfattribs={"layer": _layer(f.style)})
         for t in v.texts:
-            _text(msp, to_model(*p.to_page(t.x, t.y)), t, t.angle, p.scale)
+            _text(msp, to_model(*p.to_page(t.x, t.y)), t, t.angle, p.scale, text_style)
 
 
-def _text(msp, at, t, angle: float, scale: float = 1.0) -> None:
+def _text(msp, at, t, angle: float, scale: float = 1.0, text_style: str = "STANDARD") -> None:
     height = 0.72 * t.size * scale
     align = {"left": "LEFT", "center": "CENTER", "right": "RIGHT"}.get(t.align, "LEFT")
     # the page's own texts hang from their anchor; a view's sit on their baseline
@@ -89,12 +105,11 @@ def _text(msp, at, t, angle: float, scale: float = 1.0) -> None:
     try:
         from ezdxf.enums import TextEntityAlignment
         key = f"{valign}_{align}" if valign != "BASELINE" else align
-        key = {"LEFT": "LEFT", "CENTER": "CENTER", "RIGHT": "RIGHT"}.get(key, key)
         alignment = getattr(TextEntityAlignment, key, TextEntityAlignment.LEFT)
     except Exception:                                           # noqa: BLE001
         alignment = None
     e = msp.add_text(t.text, dxfattribs={"layer": LAYERS["text"][0], "height": height,
-                                         "rotation": angle})
+                                         "rotation": angle, "style": text_style})
     if alignment is not None:
         e.set_placement(at, align=alignment)
     else:

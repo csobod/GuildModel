@@ -359,7 +359,8 @@ def test_the_hotkey_migration_drops_a_save_as_chord(tmp_path, monkeypatch):
     assert "simulate" not in p["hotkeys"]                          # back to its default, F6
     assert p["hotkeys"]["build"] == "F7"
     assert p["hotkeys"]["save_project_as"] == "Ctrl+Shift+S"
-    assert p["prefs_version"] == 2 and p["build_on_open"] is True
+    # stamped with the current version (3 since the 2.3 round of 2026-11-05)
+    assert p["prefs_version"] == prefs_mod.PREFS_VERSION and p["build_on_open"] is True
     # a file already at version 2 is left alone
     (tmp_path / "prefs.json").write_text(json.dumps(
         {"prefs_version": 2, "hotkeys": {"simulate": "Ctrl+Shift+S"}}), encoding="utf-8")

@@ -11,7 +11,7 @@ temples, and says when something moved; what the numbers mean lives in
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QSizePolicy, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QPushButton, QWidget)
 
 from guildmodel.core.project.schema import (BARREL_COUNTS, HINGE_KIND_LABELS,
@@ -23,8 +23,9 @@ from guildmodel.gui.widgets.param_slider import ParamSlider
 #: The angle of side the temples hang at, degrees; the trade fits 5-15.
 SIDE_RANGE = (0.0, 20.0)
 #: The splay per side, degrees from the front plane's normal; negative
-#: converges, the hinge alone usually does on a wrapped front.
-SPLAY_RANGE = (-10.0, 20.0)
+#: converges, the hinge alone usually does on a wrapped front. The
+#: schema's own bounds (`DraftParams`).
+SPLAY_RANGE = (-20.0, 30.0)
 
 
 def _spin(value, lo, hi, step=1.0, decimals=1, suffix="") -> QDoubleSpinBox:
@@ -72,6 +73,9 @@ class DraftPanel(QFrame):
             "makes up the difference, read beside it.")
         self.side_readout = QLabel("")
         self.side_readout.setObjectName("mutedSmallLabel")
+        self.side_readout.setWordWrap(True)
+        self.side_readout.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.side_readout.setMinimumWidth(120)
         grid.addWidget(QLabel("Angle of side"), 0, 0)
         grid.addWidget(self.side, 0, 1)
         grid.addWidget(self.side_readout, 0, 2)
@@ -83,6 +87,9 @@ class DraftPanel(QFrame):
             "temples; the butt cut takes that out.")
         self.splay_readout = QLabel("")
         self.splay_readout.setObjectName("mutedSmallLabel")
+        self.splay_readout.setWordWrap(True)
+        self.splay_readout.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.splay_readout.setMinimumWidth(120)
         grid.addWidget(QLabel("Splay"), 0, 3)
         grid.addWidget(self.splay, 0, 4)
         grid.addWidget(self.splay_readout, 0, 5)
@@ -134,7 +141,7 @@ class DraftPanel(QFrame):
                               "hangs; more tucks the temple toward the hinge pocket.")
         hl.addWidget(self.inset)
         hl.addWidget(QLabel("Butt gap"))
-        self.butt_gap = _spin(0.0, 0.0, 5.0, 0.25, 2, " mm")
+        self.butt_gap = _spin(0.0, -5.0, 10.0, 0.25, 2, " mm")
         self.butt_gap.setToolTip("The barrel axis behind the endpiece's back face, which is\n"
                                  "how far the temple's butt stands off it; 0 is the butt joint.")
         hl.addWidget(self.butt_gap)
@@ -169,6 +176,9 @@ class DraftPanel(QFrame):
         bl.addWidget(self.bend_inward)
         self.bend_readout = QLabel("")
         self.bend_readout.setObjectName("mutedSmallLabel")
+        self.bend_readout.setWordWrap(True)
+        self.bend_readout.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.bend_readout.setMinimumWidth(120)
         bl.addWidget(self.bend_readout, 1)
         grid.addWidget(bend_row, 2, 1, 1, 6)
 
@@ -183,6 +193,10 @@ class DraftPanel(QFrame):
         self.checks = QLabel("")
         self.checks.setObjectName("mutedSmallLabel")
         self.checks.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # wrapped: a long check line must not set the window's minimum width
+        self.checks.setWordWrap(True)
+        self.checks.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.checks.setMinimumWidth(120)
         row.addWidget(self.checks, 2)
         self.blueprint_btn = QPushButton("Blueprint…")
         self.blueprint_btn.setToolTip(
@@ -293,7 +307,10 @@ class DraftPanel(QFrame):
             self.checks.setText("")
             return
         sides = asm.ordered_sides()
-        if sides:
+        if not sides:
+            self.side_readout.setText("")
+            self.splay_readout.setText("")
+        else:
             self.side_readout.setText(" · ".join(
                 f"{s.label}: hinge {s.side_from_hinge_deg:.1f}°, cut {s.panto_cut_deg:.1f}°"
                 for s in sides))

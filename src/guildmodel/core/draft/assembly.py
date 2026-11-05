@@ -24,8 +24,11 @@ What the view asserts, so the maker can disagree with any of it:
   own tilt and turn at the pocket, the hinge's slant and stop) is reported
   beside them, and the butt is cut where the temple meets the endpiece's
   back face: the panto and splay cut into the butt are the difference.
-* The inward angle of the drop is not drawn: the temple tab has no third
-  dimension for it (research section 5.1).
+* The temple bends as a bar: the drop from the drawing's tip bend and the
+  inward angle (`TipBendParams.inward_angle_deg`, seen from above) are
+  composed along the core (`tipbend.TempleBend3D`). The curl a bent drop
+  takes toward the head is not drawn: the drawing's temple tab has no
+  third dimension for it (research section 5.1).
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ from guildmodel.core.geometry.pocket_floor import (castle_pocket_floors,
 from guildmodel.core.project.schema import (ComponentKind, DraftParams,
                                             FormingMetadata, TempleParams)
 
-from .hinges import HingeFill, PocketFit, fill_hinge, fit_pocket
+from .hinges import HingeFill, PocketFit, fill_hinge, fit_pocket, leaf_from_pocket
 from .tipbend import TempleBend3D, TipBend, resolve_tip_bend, temple_axes
 
 __all__ = ["Check", "DraftAssembly", "FrontInput", "SideResult", "TempleInput",
@@ -255,6 +258,9 @@ class SideResult:
     temple: TemplePlacement | None
     joint_height_mm: float          # the axis above the boxed center line, flat
     hinge: HingeFill
+    front_leaf: object = None       # HingeLeaf: the drawn front pocket, for the detail
+    temple_leaf: object = None      # HingeLeaf: the drawn temple pocket
+    axis_inset_mm: float = 0.0      # the end face to the axis, along the front
 
     @property
     def panto_cut_deg(self) -> float:
@@ -748,6 +754,19 @@ def build_assembly(front: FrontInput, temples: list, draft: DraftParams,
         if temple is not None:
             placement = _place_temple(lateral, temple, t_fit, t_floor, fill, axis_point,
                                       basis, face_point, n)
+        # the pockets as drawn, for the hinge detail: the front's in the
+        # flat frame, the temple's in its normalized frame (s along from
+        # the hinge end, up), each read toward its butt face
+        front_leaf = temple_leaf = None
+        if got is not None:
+            front_leaf = leaf_from_pocket(_ring_xy(poly), (dx, dy), (0.0, 1.0), fit.setback_mm,
+                                          z_post, depth_f)
+        if placement is not None and t_poly is not None and t_fit is not None:
+            valid = [hp for hp in temple.hinge_polys if hp is not None and not hp.is_empty]
+            idx = next((j for j, hp in enumerate(valid) if hp is t_poly), None)
+            if idx is not None and idx < len(placement.pockets_norm):
+                temple_leaf = leaf_from_pocket(placement.pockets_norm[idx], (-1.0, 0.0),
+                                               (0.0, 1.0), t_fit.setback_mm, t_temple, depth_t)
         asm.sides[lateral] = SideResult(
             lateral=lateral, kind=kind, pocket=fit if got is not None else None,
             temple_pocket=t_fit, axis_point=axis_point, axis_dir=axis_dir,
@@ -756,7 +775,8 @@ def build_assembly(front: FrontInput, temples: list, draft: DraftParams,
             temple_pocket_angle_deg=t_angle, slant_deg=slant,
             side_from_hinge_deg=side_h, splay_from_hinge_deg=splay_h,
             side_target_deg=side_target, splay_target_deg=splay_target,
-            temple=placement, joint_height_mm=float(axis_flat[1] - center_y), hinge=fill)
+            temple=placement, joint_height_mm=float(axis_flat[1] - center_y), hinge=fill,
+            front_leaf=front_leaf, temple_leaf=temple_leaf, axis_inset_mm=inset)
 
     asm.checks = _checks(asm, endpiece_z, depth_f)
     return asm

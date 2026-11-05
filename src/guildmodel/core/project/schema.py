@@ -1899,6 +1899,25 @@ PAPER_SIZES: dict[str, tuple[str, float, float]] = {
 #: with 1:1.5 and 1:2.5 between, as eyewear sheets use them to fit a page.
 STANDARD_SCALES = (2.0, 1.0, 2.0 / 3.0, 0.5, 0.4, 0.2)
 
+#: The blueprint's color presets, (line, paper) as hex: the drawing office's
+#: black on white, the true blueprint (white lines on Prussian blue, the
+#: cyanotype), and blue lines on white.
+BLUEPRINT_COLOR_PRESETS: dict[str, tuple[str, str, str]] = {
+    "black":     ("Black on white",            "#000000", "#ffffff"),
+    "blueprint": ("Blueprint (white on blue)", "#ffffff", "#163a7a"),
+    "blue":      ("Blue on white",             "#1f3f8f", "#ffffff"),
+}
+
+
+def hex_color(value, default: str) -> str:
+    """A color as #rrggbb, lower case; `default` for anything else."""
+    text = str(value or "").strip().lower()
+    if len(text) == 4 and text[0] == "#" and all(c in "0123456789abcdef" for c in text[1:]):
+        text = "#" + "".join(c * 2 for c in text[1:])
+    if len(text) == 7 and text[0] == "#" and all(c in "0123456789abcdef" for c in text[1:]):
+        return text
+    return default
+
 
 class BlueprintSettings(BaseModel):
     """How the blueprint is laid out: the paper, the projection, the views
@@ -1925,6 +1944,21 @@ class BlueprintSettings(BaseModel):
     scale: float = 0.0             # 0 = auto, else the drawing scale (0.5 = 1:2)
     border: bool = True
     line_weight_mm: float = 0.35
+    # The lettering: a font family the machine has ("" = Helvetica, or the
+    # nearest sans the machine offers), and the average glyph advance of
+    # that family as a fraction of its em, measured by the window from the
+    # font itself so the sheet's layout (the dimension breaks, the notes
+    # column) sizes its texts right. Not a control.
+    font_family: str = ""
+    text_width_em: float = 0.52
+    # Where a dimension's value sits: in a break in the dimension line
+    # (ASME Y14.5's unidirectional practice, the value centered in the
+    # interrupted line) or above the line (ISO 129's).
+    dim_text: Literal["inline", "above"] = "inline"
+    # The ink and the paper, #rrggbb: black on white, or a true blueprint
+    # (`BLUEPRINT_COLOR_PRESETS`). The DXF carries neither.
+    line_color: str = "#000000"
+    paper_color: str = "#ffffff"
     # ISO 7200's cells
     owner: str = ""                # the legal owner (the shop)
     author: str = ""               # the creator
@@ -1945,7 +1979,19 @@ class BlueprintSettings(BaseModel):
             self.paper = "letter"
         self.scale = min(max(float(self.scale), 0.0), 10.0)
         self.line_weight_mm = min(max(float(self.line_weight_mm), 0.1), 1.0)
+        self.font_family = str(self.font_family or "").strip()
+        self.text_width_em = min(max(float(self.text_width_em), 0.3), 0.9)
+        self.line_color = hex_color(self.line_color, "#000000")
+        self.paper_color = hex_color(self.paper_color, "#ffffff")
         return self
+
+    @property
+    def color_preset(self) -> str:
+        """The preset the two colors match, else "custom"."""
+        for key, (_label, line, paper) in BLUEPRINT_COLOR_PRESETS.items():
+            if line == self.line_color and paper == self.paper_color:
+                return key
+        return "custom"
 
     def page_size_mm(self) -> tuple[float, float]:
         """(width, height) portrait, mm."""

@@ -148,5 +148,6 @@ def test_the_marker_is_not_over_applied():
     # unlinking and its file in `test_temples_link` (which replaced the
     # Apply-to-both one). Five more on 2026-11-04: the draft view, its panel,
     # the Temple tab's tip bend, the blueprint and the preferences in
-    # `test_draft_gui_v230`.
-    assert marked == 88, f"{marked} tests marked `gui`, expected 88"
+    # `test_draft_gui_v230`. One more on 2026-11-05: the Preferences dialog
+    # opening at the General tab's height, there too.
+    assert marked == 89, f"{marked} tests marked `gui`, expected 89"

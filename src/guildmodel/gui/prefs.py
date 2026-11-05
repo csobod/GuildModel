@@ -28,7 +28,11 @@ _FILE = _DIR / "prefs.json"
 #: 1 — M-N3 (2026-08-08): the model kernel default moved raster -> mesh.
 #: 2 — M20 (2026-10-14): Save As took Ctrl+Shift+S from Simulation (now F6);
 #:     a saved override that binds that chord elsewhere is dropped.
-PREFS_VERSION = 2
+#: 3 — 2.3 (2026-11-05): the Preferences dialog's size was saved on every
+#:     close, from a default the Blueprint tab had inflated to the screen's
+#:     height; a size saved before is dropped so the dialog opens at the
+#:     corrected default. `draft.let_back_deg` (one day old) is `splay_deg`.
+PREFS_VERSION = 3
 
 DEFAULTS: dict = {
     "prefs_version":         PREFS_VERSION,
@@ -253,6 +257,22 @@ def _migrate_save_as_chord(data: dict, merged: dict) -> None:
                 "hotkey override %s=Ctrl+Shift+S dropped: the chord is Save As since M20", key)
 
 
+def _migrate_prefs_dialog_size(data: dict, merged: dict) -> None:
+    """Before version 3 `_open_preferences` saved the dialog's size on every
+    close, resized or not, and the default it saved was the tallest tab's
+    demand clamped to the screen. Such a size says nothing about what the
+    maker wanted, so it is dropped once; a size they set from here on is
+    kept. The draft's `let_back_deg`, written for a day, is `splay_deg`."""
+    if data.get("prefs_version", 0) >= 3:
+        return
+    merged["prefs_dialog_size"] = []
+    draft = merged.get("draft")
+    if isinstance(draft, dict) and "let_back_deg" in draft:
+        if "splay_deg" not in (data.get("draft") or {}):
+            draft["splay_deg"] = draft["let_back_deg"]
+        del draft["let_back_deg"]
+
+
 def load() -> dict:
     """Return prefs dict, merged with DEFAULTS so all keys are present.
 
@@ -280,6 +300,7 @@ def load() -> dict:
             _retire_m124_stepdown(merged["cam_params"])
             _rename_aliased_layers(merged["layer_colors"])
             _migrate_save_as_chord(data, merged)
+            _migrate_prefs_dialog_size(data, merged)
             return merged
     except Exception:
         pass

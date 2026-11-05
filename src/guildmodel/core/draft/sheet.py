@@ -6,16 +6,20 @@ at a scale. `gui.draft_render` paints a sheet on any QPainter and
 `dxf_out` writes it for the factory's CAD; both walk the same model, so the
 PDF and the DXF say the same thing.
 
-Sheet 1 is the dimensioned assembly after forming: the front, top and side
-views in first-angle projection by default (third on request), the hinge
-detail (reference only), the notes with the tolerance table and the checks,
-and the ISO 7200 title block. Sheet 2 is the 1:1 alignment template: the
-plan of the open frame with the tip targets, and the tip-bend profile.
+Sheet 1 is the dimensioned assembly after forming: the plan, the front and
+the side view stacked down the page in third-angle projection by default
+(first on request), the hinge detail (reference only), the notes with the
+tolerance table and the checks, and the ISO 7200 title block. Sheet 2 is
+the 1:1 alignment template: the plan of the open frame with the tip
+targets, and the tip-bend profile.
 
-Every view is composed from known curves rather than hidden-line removal
-(research Q9b): the front view is the formed outlines head-on, the top view
-the formed rings with the front's thickness and the temples, the side view
-the near temple and the front's edge.
+Each view is an edge rendering of the formed solid with hidden lines
+removed (`hidden.py`, a depth buffer of the scene; the maker's reading of
+the trade's sheets reversed research Q9b): the built front's creases and
+its silhouette for the view's direction, the temples' rings, the pockets
+dashed where hidden. Without a built front the views fall back to the
+drawing's curves. A dimension's value sits in a break in its line or above
+it (`set_lettering`).
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ from .hinges import hinge_detail
 from .measure import DraftMeasures
 
 __all__ = ["Fill", "Placed", "Sheet", "Stroke", "Text", "View", "compose_sheets",
-           "page_size", "projection_symbol"]
+           "page_size", "projection_symbol", "set_lettering"]
 
 MARGIN_MM = 10.0
 TITLE_H_MM = 28.0
@@ -43,8 +47,21 @@ LABEL_TEXT = 3.4
 SMALL_TEXT = 2.2
 TITLE_TEXT = 5.0
 #: An average glyph's advance as a fraction of the em, for the layout's
-#: estimate of a text's width.
+#: estimate of a text's width; `compose_sheets` sets it from the settings,
+#: where the window has measured the chosen font.
 _GLYPH_W = 0.52
+#: Where a dimension's value sits: "inline", in a break in the dimension
+#: line (ASME Y14.5), or "above" it (ISO 129). Set with the glyph width.
+_DIM_TEXT = "inline"
+
+
+def set_lettering(text_width_em: float = 0.52, dim_text: str = "inline") -> None:
+    """The lettering the sheets are composed with, from the blueprint's
+    settings: the font's average glyph advance (a fraction of the em) and
+    the dimension-text practice."""
+    global _GLYPH_W, _DIM_TEXT
+    _GLYPH_W = min(max(float(text_width_em), 0.3), 0.9)
+    _DIM_TEXT = "above" if dim_text == "above" else "inline"
 
 
 # ------------------------------------------------------------------ the model
@@ -225,12 +242,18 @@ def _arrow(view: View, tip, direction, k: float = 1.0) -> None:
 
 
 def linear_dim(view: View, p1, p2, offset: float, label: str, *, along=None,
-               k: float = 1.0, ext_gap: float = 1.0) -> None:
+               k: float = 1.0, ext_gap: float = 1.0, outside: str = "end") -> None:
     """An aligned linear dimension between p1 and p2, its line `offset` view
     mm to the left of p1->p2 (negative: to the right). `along`, when given,
     measures the projection on that direction instead (a horizontal
     dimension between two points at different heights). Everything sized
-    for the paper (the text, the arrows, the overshoots) is divided by `k`."""
+    for the paper (the text, the arrows, the overshoots) is divided by `k`.
+
+    The value sits in a break in the line or above it (`set_lettering`);
+    a value the dimension is too short for goes outside the extension
+    lines, past the reading end (`outside="end"`: the right, or the top)
+    or before the reading start (`"start"`), whichever the caller knows is
+    clear."""
     p1, p2 = np.asarray(p1, dtype=np.float64), np.asarray(p2, dtype=np.float64)
     if along is None:
         d = p2 - p1
@@ -246,7 +269,9 @@ def linear_dim(view: View, p1, p2, offset: float, label: str, *, along=None,
     b = base + u * float((p2 - p1) @ u)
     span = float((p2 - p1) @ u)
     if span < 0:
-        a, b, u, span = b, a, -u, -span
+        # p2 lies before p1 along the direction: swap the points and their
+        # feet, keeping u and n (the line's direction is the direction)
+        p1, p2, a, b, span = p2, p1, b, a, -span
     # extension lines, from each point toward its dimension point, past it
     for p, q in ((p1, a), (p2, b)):
         gap = np.asarray(q) - np.asarray(p)
@@ -256,9 +281,26 @@ def linear_dim(view: View, p1, p2, offset: float, label: str, *, along=None,
             start = np.asarray(p) + gu * min(ext_gap / k, 0.5 * g)
             end = np.asarray(q) + gu * (1.5 / k)
             view.add([start, end], "dim")
-    view.add([a, b], "dim")
     al = _ARROW_L / k
-    if span >= 2.6 * al:
+    size = DIM_TEXT / k
+    text_w = _GLYPH_W * size * len(label)
+    pad = 1.0 / k                      # clear paper on each side of an inline value
+    mid = 0.5 * (a + b)
+    ang = math.degrees(math.atan2(u[1], u[0]))
+    # read from the bottom or from the right
+    flipped = ang > 90.0 or ang <= -90.0
+    if flipped:
+        ang += 180.0
+    n_text = -n if flipped else n
+    u_text = -u if flipped else u      # the reading direction along the line
+    inline = _DIM_TEXT == "inline"
+    arrows_in = span >= 2.6 * al
+    # the value fits between the extension lines when the line can hold the
+    # arrows and the value (inline) or the value alone (above)
+    fits = (span >= text_w + 2.0 * pad + 2.0 * al) if inline else (span >= text_w + 2.0 * pad)
+    if not arrows_in:
+        fits = False
+    if arrows_in:
         _arrow(view, a, -u, k)
         _arrow(view, b, u, k)
     else:
@@ -266,16 +308,38 @@ def linear_dim(view: View, p1, p2, offset: float, label: str, *, along=None,
         _arrow(view, b, -u, k)
         view.add([a - u * (al + 1.0 / k), a], "dim")
         view.add([b, b + u * (al + 1.0 / k)], "dim")
-    mid = 0.5 * (a + b)
-    ang = math.degrees(math.atan2(u[1], u[0]))
-    # read from the bottom or from the right
-    if ang > 90.0 or ang <= -90.0:
-        ang += 180.0
-        n_text = -n
+    if fits and inline:
+        # the line broken for the value, centered in the break
+        half = 0.5 * text_w + pad
+        view.add([a, mid - u * half], "dim")
+        view.add([mid + u * half, b], "dim")
+        view.text(mid[0], mid[1], label, size, align="center", valign="middle", angle=ang)
+        return
+    view.add([a, b], "dim")
+    if fits:
+        # above the line, parallel, clear of it (ISO 129)
+        tx, ty = mid + n_text * (0.7 / k)
+        view.text(tx, ty, label, size, align="center", valign="baseline", angle=ang)
+        return
+    # too short for the value: it goes outside, past the reading end (or
+    # before the start), on the line's extension (inline) or above it (ISO)
+    tail = al + 1.0 / k if not arrows_in else 0.0
+    if outside == "start":
+        end = a if not flipped else b
+        far = end - u_text * (tail + pad)              # the value's near edge
+        line_end = far - u_text * (text_w + pad)
+        anchor, align = far, "right"
     else:
-        n_text = n
-    tx, ty = mid + n_text * (0.9 / k)
-    view.text(tx, ty, label, DIM_TEXT / k, align="center", valign="baseline", angle=ang)
+        end = b if not flipped else a
+        far = end + u_text * (tail + pad)
+        line_end = far + u_text * (text_w + pad)
+        anchor, align = far, "left"
+    if inline:
+        view.text(anchor[0], anchor[1], label, size, align=align, valign="middle", angle=ang)
+    else:
+        view.add([end + u_text * (tail if outside != "start" else -tail), line_end], "dim")
+        tx, ty = anchor + n_text * (0.7 / k)
+        view.text(tx, ty, label, size, align=align, valign="baseline", angle=ang)
 
 
 def angular_dim(view: View, center, radius: float, a0_deg: float, a1_deg: float,
@@ -287,21 +351,42 @@ def angular_dim(view: View, center, radius: float, a0_deg: float, a1_deg: float,
     cx, cy = float(center[0]), float(center[1])
     if a1_deg < a0_deg:
         a0_deg, a1_deg = a1_deg, a0_deg
-    n = max(int(abs(a1_deg - a0_deg) / 4.0) + 2, 4)
-    angs = np.radians(np.linspace(a0_deg, a1_deg, n))
-    arc = np.column_stack([cx + radius * np.cos(angs), cy + radius * np.sin(angs)])
-    view.add(arc, "dim")
+    size = DIM_TEXT / k
+    text_w = _GLYPH_W * size * len(label)
+    la = label_angle if label_angle is not None else 0.5 * (a0_deg + a1_deg)
+    lr = label_radius if label_radius is not None else radius + 2.0 / k
+    r0, r1 = math.radians(a0_deg), math.radians(a1_deg)
+    al = _ARROW_L / k
+
+    def _arc(d0, d1):
+        n = max(int(abs(d1 - d0) / 4.0) + 2, 4)
+        angs = np.radians(np.linspace(d0, d1, n))
+        return np.column_stack([cx + radius * np.cos(angs), cy + radius * np.sin(angs)])
+
+    # the value in a break in the arc when it sits on the arc and the arc
+    # can hold it with its arrowheads; else beside the arc, as before
+    half_deg = math.degrees((0.5 * text_w + 1.0 / k) / max(radius, 1e-6))
+    on_arc = (abs(lr - radius) < 1e-9 and _DIM_TEXT == "inline"
+              and a0_deg + math.degrees(al / max(radius, 1e-6)) < la - half_deg
+              and la + half_deg < a1_deg - math.degrees(al / max(radius, 1e-6)))
+    if on_arc:
+        first, second = _arc(a0_deg, la - half_deg), _arc(la + half_deg, a1_deg)
+        view.add(first, "dim")
+        view.add(second, "dim")
+        head, tail = first[0], second[-1]
+    else:
+        arc = _arc(a0_deg, a1_deg)
+        view.add(arc, "dim")
+        head, tail = arc[0], arc[-1]
     if legs:
         for a in (a0_deg, a1_deg):
             r = math.radians(a)
             view.add([(cx, cy), (cx + (radius + 2.0 / k) * math.cos(r),
                                  cy + (radius + 2.0 / k) * math.sin(r))], "dim")
-    r0, r1 = math.radians(a0_deg), math.radians(a1_deg)
-    _arrow(view, arc[0], (math.sin(r0), -math.cos(r0)), k)
-    _arrow(view, arc[-1], (-math.sin(r1), math.cos(r1)), k)
-    am = math.radians(label_angle if label_angle is not None else 0.5 * (a0_deg + a1_deg))
-    lr = label_radius if label_radius is not None else radius + 2.0 / k
-    view.text(cx + lr * math.cos(am), cy + lr * math.sin(am), label, DIM_TEXT / k,
+    _arrow(view, head, (math.sin(r0), -math.cos(r0)), k)
+    _arrow(view, tail, (-math.sin(r1), math.cos(r1)), k)
+    am = math.radians(la)
+    view.text(cx + lr * math.cos(am), cy + lr * math.sin(am), label, size,
               align="center", valign="middle")
 
 
@@ -325,15 +410,14 @@ def tagged(dim, value_text: str | None = None) -> str:
 
 
 # ------------------------------------------------------------------ the views
-
-# ------------------------------------------------------------------ the views
 #
 # The three views as eyewear drawings lay them out: the plan with the
 # temples running up the page (third angle, above the front view) or down
 # it (first angle, below); the front view facing the wearer, the OD lens on
 # the observer's left; the side view in the temple's own frame, the temple
 # horizontal to the right and the front tilted by the angle of side, as a
-# bench sees it. Each is composed from known curves (research Q9b).
+# bench sees it. Each is an edge rendering of the formed solid when the
+# front is built (`_draw_solid`), else the drawing's curves.
 
 
 def _pts(P):
@@ -476,7 +560,6 @@ def _front_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSetting
     if not with_dims:
         return v
     x0, y0, x1, y1 = v.bbox()
-    # above the front: the DBL between the lenses, the front's width over all
     # above: the DBL between the lenses, the front's width over all
     d = m.get("dbl")
     top = y1
@@ -495,7 +578,10 @@ def _front_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSetting
     if d is not None and 1.0 in boxes:
         bx0, by0, bx1, by1 = boxes[1.0]
         label = tagged(d) + (f"  ({d.note})" if d.note else "")
-        linear_dim(v, (bx0, by0), (bx1, by0), -(by0 - y0 + pm(6.0)), label, k=k)
+        # too wide for a lens at 1:2: the value goes out the temporal side,
+        # clear of the boxed-center line from the other lens
+        linear_dim(v, (bx0, by0), (bx1, by0), -(by0 - y0 + pm(6.0)), label, k=k,
+                   outside="start")
         bottom = y0 - pm(6.0)
     d = m.get("bcd")
     if d is not None and len(boxes) == 2:
@@ -526,7 +612,10 @@ def _front_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSetting
         near = pts[np.abs(pts[:, 0] - bx) < 1.0]
         if len(near) >= 2:
             by0, by1 = float(near[:, 1].min()), float(near[:, 1].max())
-            linear_dim(v, (bx, by0), (bx, by1), pm(3.0), tagged(d), along=(0.0, 1.0), k=k)
+            # a short dimension: its value goes below its foot, into the
+            # bridge's gap, clear of the DBL above
+            linear_dim(v, (bx, by0), (bx, by1), pm(3.0), tagged(d), along=(0.0, 1.0), k=k,
+                       outside="start")
     return v
 
 
@@ -616,8 +705,9 @@ def _plan_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings
     if d is not None and R is not None and R.temple is not None:
         c = proj(R.temple.core)
         i = min(len(c) - 1, int(0.35 * len(c)))
-        leader(v, (c[i][0], c[i][1]), (c[i][0] + np.sign(c[i][0]) * pm(10.0), c[i][1] + up * pm(4.0)),
-               "t " + tagged(d), k=k, align="left" if c[i][0] > 0 else "right")
+        # inward, between the temples: outward crosses the front-to-bend line
+        leader(v, (c[i][0], c[i][1]), (c[i][0] - np.sign(c[i][0]) * pm(10.0), c[i][1] + up * pm(4.0)),
+               "t " + tagged(d), k=k, align="right" if c[i][0] > 0 else "left")
     d = m.get("base_curve")
     if d is not None:
         pts = np.concatenate([proj(r) for r in asm.outline_rings])
@@ -639,7 +729,7 @@ def _plan_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings
             continue
         out = 1.0 if a[0] < 0 else -1.0
         angular_dim(v, a, pm(30.0), lo, hi, tagged(d), label_radius=pm(14.0), legs=False,
-                    k=k, label_angle=-up * 90.0 + out * 20.0)
+                    k=k, label_angle=up * 90.0 + out * 20.0)
     return v
 
 
@@ -741,7 +831,8 @@ def _side_view(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings
             w = (near_pts - tip) @ nn
             p1 = tip + nn * w.min()
             p2 = tip + nn * w.max()
-            linear_dim(v, p1, p2, pm(6.0), tagged(d), k=k)
+            # beyond the tip, away from the drop angle's leg and arc
+            linear_dim(v, p1, p2, -pm(6.0), tagged(d), k=k)
             continue
         near_pts = outer[np.abs(outer[:, 0] - x_at) < pm(1.5)]
         if len(near_pts) < 2:
@@ -780,10 +871,15 @@ def _hinge_view(asm: DraftAssembly, k: float = 1.0) -> View | None:
         return None
     v = View("hinge", "HINGE DETAIL (reference only)")
     pm = lambda mm: mm / k      # noqa: E731
-    det = hinge_detail(s.hinge)
+    det = hinge_detail(s.hinge, front_leaf=s.front_leaf, temple_leaf=s.temple_leaf,
+                       axis_inset_mm=s.axis_inset_mm, axis_offset_mm=s.hinge.spec.axis_offset_mm)
     el, pl = det["elevation"], det["plan"]
-    xs = [p[0] for ring in el["visible"] for p in ring]
-    shift = (max(xs) - min(xs)) + 10.0 if xs else 20.0
+    el_xs = [p[0] for ring in el["visible"] for p in ring]
+    pl_xs = [p[0] for ring in pl["visible"] + pl["center"] for p in ring]
+    shift = ((max(el_xs) if el_xs else 0.0) - (min(pl_xs) if pl_xs else 0.0)) + pm(10.0)
+    # the captions under the two views must not run into each other
+    caption_w = _GLYPH_W * (SMALL_TEXT / k) * len("opened flat, seen from behind") + pm(4.0)
+    shift = max(shift, (min(el_xs) if el_xs else 0.0) + caption_w - (min(pl_xs) if pl_xs else 0.0))
     for key, style in (("visible", "visible"), ("hidden", "hidden"), ("center", "center")):
         for ring in el[key]:
             v.add(ring, style, closed=(key != "center"))
@@ -795,7 +891,7 @@ def _hinge_view(asm: DraftAssembly, k: float = 1.0) -> View | None:
     for x, y, t in pl["labels"]:
         v.text(x + shift, y, t, SMALL_TEXT / k, align="center")
     x0, y0, x1, y1 = v.bbox()
-    v.text(x0, y1 + pm(1.5), "seen from behind", SMALL_TEXT / k, style="muted")
+    v.text(x0, y1 + pm(1.5), "opened flat, seen from behind", SMALL_TEXT / k, style="muted")
     v.text(x0 + shift, y1 + pm(1.5), "from above, at the stop", SMALL_TEXT / k, style="muted")
     return v
 
@@ -856,13 +952,16 @@ def _title_block(sheet: Sheet, settings: BlueprintSettings, fields: dict,
 
 
 def _notes_views(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings,
-                 material: str) -> tuple[View, View]:
+                 material: str, width_mm: float = 74.0) -> tuple[View, View]:
     """The notes as two views of texts laid out in mm at scale 1: the text
     (the marking, the material, the forming, the temples and the bench, the
     hinge's lines, the maker's notes) and the tables (the tolerances, the
-    checks), so the composer can put the tables where the page has room."""
+    checks), so the composer can put the tables where the page has room.
+    The lines wrap to `width_mm`, the column they are placed in, in the
+    font the sheet is lettered in."""
     import textwrap
-    width_chars = 62
+    width_mm = max(float(width_mm), 40.0)
+    width_chars = max(int((width_mm - 2.0) / (_GLYPH_W * SMALL_TEXT)), 20)
     lh = 3.3
 
     class _Col:
@@ -884,16 +983,16 @@ def _notes_views(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettin
     c = _Col("notes", "NOTES")
     c.line("NOTES", LABEL_TEXT, "bold")
     if m.marking:
-        c.line(f"Marking: {m.marking}")
+        c.wrapped(f"Marking: {m.marking}")
     if material:
-        c.line(f"Material: {material}")
+        c.wrapped(f"Material: {material}")
     if settings.finish:
-        c.line(f"Finish: {settings.finish}")
-    c.line("After forming. [L] locked · [T] target · [O] open · [ref] reference")
+        c.wrapped(f"Finish: {settings.finish}")
+    c.wrapped("After forming. [L] locked · [T] target · [O] open · [ref] reference")
     for key in ("crest_height", "apical_radius"):
         d = m.get(key)
         if d is not None:
-            c.line(f"{d.label}: {tagged(d)}")
+            c.wrapped(f"{d.label}: {tagged(d)}")
     rims = [(lab, m.get(key)) for key, lab in (("rim_top", "top"), ("rim_bottom", "bottom"),
                                               ("rim_outer", "temporal"), ("rim_inner", "nasal"))]
     rims = [(lab, d) for lab, d in rims if d is not None]
@@ -905,16 +1004,16 @@ def _notes_views(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettin
     for key in ("base_curve", "face_form", "projection"):
         d = m.get(key)
         if d is not None:
-            c.line(f"{d.label}: {tagged(d)}")
+            c.wrapped(f"{d.label}: {tagged(d)}")
     for s_ in asm.ordered_sides():
-        c.line(f"Endpiece {s_.label} turns {s_.surface_turn_deg:.1f}° and leans "
+        c.wrapped(f"Endpiece {s_.label} turns {s_.surface_turn_deg:.1f}° and leans "
                f"{s_.surface_tilt_deg:.1f}° at the hinge")
     c.gap()
     c.line("TEMPLES AND BENCH", LABEL_TEXT, "bold")
     for key in ("overall", "bend_radius", "inward_angle"):
         d = m.get(key)
         if d is not None:
-            c.line(f"{d.label}: {tagged(d)}")
+            c.wrapped(f"{d.label}: {tagged(d)}")
     for s_ in asm.ordered_sides():
         c.wrapped(f"Side {s_.label}: angle of side {s_.side_target_deg:.1f}° (hinge alone "
                   f"{s_.side_from_hinge_deg:.1f}°), butt cut {s_.panto_cut_deg:.1f}°; splay "
@@ -938,7 +1037,8 @@ def _notes_views(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettin
 
     t = _Col("tables", "TOLERANCES")
     t.line("TOLERANCES", LABEL_TEXT, "bold")
-    col = (0.0, 42.0, 60.0)
+    width = min(74.0, width_mm - 2.0)
+    col = (0.0, width * 42.0 / 74.0, width * 60.0 / 74.0)
     top = t.y + 0.9 * SMALL_TEXT
     for name, value, source in (("Dimension", "Tolerance", "Source"),) + tuple(
             (r.name, r.value, r.source) for r in settings.tolerances):
@@ -947,7 +1047,6 @@ def _notes_views(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettin
         t.v.text(col[2] + 1.0, t.y, source, SMALL_TEXT)
         t.y -= lh
     bottom = t.y + lh - 0.4 * SMALL_TEXT
-    width = 74.0
     t.v.add([(0.0, top), (width, top), (width, bottom), (0.0, bottom)], "thin", closed=True)
     t.v.add([(col[1], top), (col[1], bottom)], "thin")
     t.v.add([(col[2], top), (col[2], bottom)], "thin")
@@ -1048,11 +1147,8 @@ _COLUMN_MIN_MM = 56.0
 
 def compose_sheet1(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings,
                    fields: dict, landscape: bool | None = None) -> Sheet:
-    notes = tables = None
-    if settings.view_notes:
-        notes, tables = _notes_views(asm, m, settings, fields.get("material", ""))
     hinge = _hinge_view(asm, 1.0) if settings.view_hinge else None
-    column = notes is not None or hinge is not None
+    column = settings.view_notes or hinge is not None
     if landscape is None:
         landscape = settings.orientation == "landscape"
     w, h = page_size(settings, landscape)
@@ -1089,6 +1185,9 @@ def compose_sheet1(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSett
             sheet.line(rx - 3.0, y0, rx - 3.0, tb_y0, "thin")
         else:
             rx, ry, rw, r_bottom = x0 + 2.0, bottom + 8.0, inner_w, tb_y0 - 3.0
+        notes = tables = None
+        if settings.view_notes:
+            notes, tables = _notes_views(asm, m, settings, fields.get("material", ""), rw)
         _place_column(sheet, [hinge, notes, tables, temples], rx, ry, rw, r_bottom,
                       recompose={"hinge": lambda kk: _hinge_view(asm, kk)})
     _title_block(sheet, settings, {**fields, "sheet": f"1 / {sheet.count}",
@@ -1111,11 +1210,21 @@ def _place_column(sheet: Sheet, items: list, x: float, y: float, w: float, botto
         b = v.bbox()
         vw, vh = b[2] - b[0], b[3] - b[1]
         if v.key == "hinge":
-            k = next((c for c in (3.0, 2.5, 2.0, 1.5, 1.0, 0.5) if vw * c <= w - 2.0), 0.5)
-            if recompose and v.key in recompose:
-                v = recompose[v.key](k)
-                b = v.bbox()
-                vw, vh = b[2] - b[0], b[3] - b[1]
+            # the scale from the drawing alone (its captions are paper-sized
+            # and do not scale), then checked with the captions once
+            # recomposed at that scale
+            xs = [pt[0] for st in v.strokes for pt in st.pts]
+            sw = (max(xs) - min(xs)) if xs else vw
+            k = 0.5
+            for c in (3.0, 2.5, 2.0, 1.5, 1.0, 0.5):
+                if sw * c > w - 2.0:
+                    continue
+                cand = recompose[v.key](c) if recompose and v.key in recompose else v
+                cb = cand.bbox()
+                if (cb[2] - cb[0]) * c <= w - 2.0 or c == 0.5:
+                    v, b, k = cand, cb, c
+                    vw, vh = b[2] - b[0], b[3] - b[1]
+                    break
         elif v.key == "temples":
             k = min(1.0, (w - 2.0) / max(vw, 1e-6))
             k = next((c for c in (1.0, 0.5, 0.4) if c <= k + 1e-9), 0.4)
@@ -1135,6 +1244,8 @@ def _place_column(sheet: Sheet, items: list, x: float, y: float, w: float, botto
         keep = False
         if total(1.0, False) > avail:
             shrink = max(0.55, avail / max(total(1.0, False), 1e-6))
+            if total(shrink, False) > avail + 1e-6:
+                sheet.clipped = True       # into the title block even so
     yy = y
     for v, k, vw, vh in sizes:
         if v.key == "temples" and not keep:
@@ -1146,7 +1257,7 @@ def _place_column(sheet: Sheet, items: list, x: float, y: float, w: float, botto
         px = x + (0.5 * (w - vw * shrink) if v.key in ("hinge", "temples") else 0.0)
         p = sheet.place(v, px, yy, kk)
         if v.key == "hinge":
-            sheet.text(x, p.y + p.height + 1.0, f"scale {_scale_text(k)}", SMALL_TEXT * 0.9,
+            sheet.text(x, p.y + p.height + 1.0, f"scale {_scale_text(kk)}", SMALL_TEXT * 0.9,
                        style="muted")
         yy = p.y + p.height + gap * shrink
 
@@ -1216,6 +1327,7 @@ def compose_sheet2(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSett
 def compose_sheets(asm: DraftAssembly, m: DraftMeasures, settings: BlueprintSettings,
                    *, job_name: str = "", material: str = "", issue_date: str = "") -> list:
     """Every sheet of the blueprint, in order."""
+    set_lettering(settings.text_width_em, settings.dim_text)
     fields = {
         "owner": settings.owner,
         "author": settings.author,

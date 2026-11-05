@@ -688,8 +688,17 @@ angle (the default) puts the plan above the front and the side view below;
 first angle the side view above and the plan below, the temples running
 down; the symbol in the title block says which. Each dimension is tagged
 **[L]** locked by the drawing, **[T]** a target of the forming or the bench,
-**[O]** open, which the bench may move, or **[ref]** for reference. Beside the
-views: the hinge detail, reference only; the notes with the marking (a□d-l),
+**[O]** open, which the bench may move, or **[ref]** for reference. A
+dimension's value sits in a break in its line, centered, as ASME Y14.5
+draws it, or above the line as ISO 129 does (**Dimension text** in the
+dialog); a value wider than its dimension goes outside the extension lines.
+Beside the views: the hinge detail, reference only, drawn from the pockets
+as drawn: the front pocket's shape and the temple pocket's, joined by the
+barrel's knuckles as the hinge looks opened flat and seen from behind, and
+beside it the joint from above at the stop, the endpiece's and the temple's
+sections with their pockets sunk in them and the barrel a temple's thickness
+inside the end face; the
+notes with the marking (a□d-l),
 the material, the rim widths, the forming, the bench numbers, the hinge's
 lines, the tolerance table (ISO 12870's rows and the factory's, every row
 editable), the checks, and the temples as cut; and the ISO 7200 title block
@@ -701,16 +710,22 @@ in ±2 mm targets, the side view, and a ruler to check the print.
 The dialog sets the paper (letter, legal, tabloid, A4, A3), the orientation,
 the projection, the views, the scale (auto picks the largest of 2:1, 1:1,
 1:1.5, 1:2, 1:2.5 and 1:5 that fits: A3 and tabloid in portrait hold the
-views at 1:1, letter and A4 at 1:2), the line weight, the title block's
-cells, the notes and the tolerances, and writes **PDF**, **SVG** (one file a
-sheet), **DXF** (the lines, the text and the arrowheads on layers, for the
-factory's CAD) or prints. The sheets are composed under a progress dialog
+views at 1:1, letter and A4 at 1:2), the line weight, the **font** (any
+family this machine has; the default is Helvetica, or the nearest sans; the
+PDF embeds it), the dimension text, the **colors** (black on white; the
+true blueprint, white lines on Prussian blue; blue on white; or any two
+colors from the swatches), the title block's cells, the notes and the
+tolerances, and writes **PDF**, **SVG** (one file a sheet), **DXF** (the
+lines, the text and the arrowheads on layers, for the factory's CAD, in the
+layers' own colors) or prints. The sheets are composed under a progress dialog
 (the depth test of each view takes a few seconds, and the front is built
-first when it has not been); Cancel stops it between stages. *Save these
-as my defaults* keeps the page, the
-projection, the views, the owner, the author and the tolerances in
-Preferences ▸ Blueprint; the design's name, number and date stay with the
-project.
+first when it has not been); Cancel stops it between stages. A printer
+leaves its own unprintable margin white; for a true blueprint on a dark
+paper, export the PDF. *Save these as my defaults* keeps everything in the
+dialog but this design's name, number, revision, approver and date in
+Preferences ▸ Blueprint: the page, the lettering, the colors, the views,
+the owner, the author, the document type, the material, the finish, the
+notes and the tolerances.
 
 ## 3. Temples and base-curve blocks
 
@@ -1190,8 +1205,8 @@ that any sender can run.
 - **Blueprint** — what a new project's draft view and blueprint start from
   (§2): the angle of side, the splay and the hinge; the paper, the
   orientation, the projection, the views, the scale, the line weight, the
-  owner, the author, the document type, the material, the finish, the notes
-  and the tolerance table. A project keeps its own copy; the blueprint
+  font, the dimension text, the colors, the owner, the author, the document
+  type, the material, the finish, the notes and the tolerance table. A project keeps its own copy; the blueprint
   dialog's *Save these as my defaults* writes them here.
 - **Appearance** — dark mode; the viewport presets (Parchment, Dimmed,
   Blueprint, Matte Dark, Plain White, or a custom canvas color) that pin the

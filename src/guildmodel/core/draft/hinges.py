@@ -21,8 +21,8 @@ from shapely.geometry import LineString, Point, Polygon
 from guildmodel.core.project.schema import (SCREW_LENGTH_STEP_MM, DraftHinge,
                                             HingeKind)
 
-__all__ = ["HingeFill", "PocketFit", "fill_hinge", "fit_pocket", "hinge_detail",
-           "knuckle_split", "screw_length"]
+__all__ = ["HingeFill", "HingeLeaf", "PocketFit", "fill_hinge", "fit_pocket",
+           "hinge_detail", "knuckle_split", "leaf_from_pocket", "screw_length"]
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,8 @@ class PocketFit:
     datum: tuple[float, float]    # where that ray leaves the outline: the butt face
     setback_mm: float             # the datum to the pocket's near edge
     found: bool                   # the ray met the outline
+    length_mm: float = 0.0        # the pocket's extent along the ray: the plate's length
+    width_mm: float = 0.0         # its extent across the ray: along the barrel axis
 
     @property
     def far_edge(self) -> tuple[float, float]:
@@ -83,6 +85,9 @@ def fit_pocket(poly: Polygon, outline, direction: tuple[float, float],
     # the pocket's far edge along the ray: its extent in that direction
     coords = np.asarray(poly.exterior.coords)
     proj = coords[:, 0] * ux + coords[:, 1] * uy
+    across = -coords[:, 0] * uy + coords[:, 1] * ux
+    length = float(proj.max() - proj.min())
+    width = float(across.max() - across.min())
     c_proj = center[0] * ux + center[1] * uy
     far = float(proj.max())
     far_pt = (center[0] + ux * (far - c_proj), center[1] + uy * (far - c_proj))
@@ -107,7 +112,8 @@ def fit_pocket(poly: Polygon, outline, direction: tuple[float, float],
     return PocketFit(center=(float(center[0]), float(center[1])),
                      along_axis_mm=float(long_l), across_mm=float(short_l),
                      axis_angle_deg=float(ang), direction=(ux, uy),
-                     datum=datum, setback_mm=setback, found=found)
+                     datum=datum, setback_mm=setback, found=found,
+                     length_mm=length, width_mm=width)
 
 
 def knuckle_split(barrels: int) -> tuple[int, int]:
@@ -181,13 +187,15 @@ class HingeFill:
 
 def fill_hinge(spec: DraftHinge, front: PocketFit | None, temple: PocketFit | None,
                front_depth_mm: float, temple_depth_mm: float) -> HingeFill:
-    """The hinge for a pocket pair. W is the front pocket's long side, less
-    0.2 mm of clearance; the temple's pocket, when drawn, says its plate."""
-    width = (front.along_axis_mm if front is not None
-             else temple.along_axis_mm if temple is not None else 10.0)
+    """The hinge for a pocket pair. W is the front pocket's extent along the
+    barrel axis (across its ray to the butt face), less 0.2 mm of
+    clearance; each plate's length is its pocket's extent toward the butt
+    (a temple's pocket is usually longer along the temple than across)."""
+    width = (front.width_mm if front is not None
+             else temple.width_mm if temple is not None else 10.0)
     width = max(width - 0.2, 1.0)
-    plate = front.across_mm if front is not None else 4.0
-    t_plate = temple.across_mm if temple is not None else plate
+    plate = front.length_mm if front is not None else 4.0
+    t_plate = temple.length_mm if temple is not None else plate
     bf, bt = knuckle_split(spec.barrels)
     length = (spec.screw_length_mm if spec.screw_length_mm > 0.0
               else screw_length(width))
@@ -205,29 +213,105 @@ def _circle(cx: float, cy: float, r: float, n: int = 24) -> list[tuple[float, fl
             for i in range(n)]
 
 
-def hinge_detail(fill: HingeFill) -> dict:
-    """The reference-only detail, two schematic views in mm, y up, the
-    barrel axis at x = 0: ``elevation`` (seen from behind the front: the
-    front leaf to the left of the barrel column, the temple leaf to the
-    right, the knuckles stacked along the axis) and ``plan`` (seen from
-    above: the front leaf lying across, the barrel's circle, the temple leaf
-    swung to the stop). Each is ``{"visible": [rings], "hidden": [rings],
-    "center": [polylines], "labels": [(x, y, text)]}``."""
+@dataclass(frozen=True)
+class HingeLeaf:
+    """One drawn pocket as the detail draws it: its ring in a frame whose
+    x runs toward the butt face and y along the barrel axis, both measured
+    from the pocket's own center, so the ring's edge nearest the butt is at
+    x = `reach`; plus the part's thickness and the pocket's depth, for the
+    plan's section."""
+    ring: list                    # [(x, y)], the pocket's shape in that frame
+    reach: float                  # the ring's extent toward the butt face
+    setback_mm: float             # that edge to the butt face
+    part_thickness_mm: float
+    depth_mm: float
+
+    @property
+    def length(self) -> float:
+        xs = [p[0] for p in self.ring]
+        return (max(xs) - min(xs)) if xs else 0.0
+
+    @property
+    def half_width(self) -> float:
+        ys = [p[1] for p in self.ring]
+        return 0.5 * (max(ys) - min(ys)) if ys else 0.0
+
+
+def leaf_from_pocket(ring_xy, direction, up, setback_mm: float,
+                     part_thickness_mm: float, depth_mm: float) -> HingeLeaf:
+    """A pocket's ring (any frame) read into a leaf: `direction` is the
+    vector from the pocket toward the butt face in that frame, `up` the
+    barrel axis's direction there; the leaf is centered on its own bounds."""
+    P = np.asarray(ring_xy, dtype=np.float64).reshape(-1, 2)
+    ux, uy = float(direction[0]), float(direction[1])
+    n = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / n, uy / n
+    vx, vy = float(up[0]), float(up[1])
+    n = math.hypot(vx, vy) or 1.0
+    vx, vy = vx / n, vy / n
+    x = P[:, 0] * ux + P[:, 1] * uy
+    y = P[:, 0] * vx + P[:, 1] * vy
+    if len(x):
+        x = x - 0.5 * (x.min() + x.max())
+        y = y - 0.5 * (y.min() + y.max())
+    ring = [(float(a), float(b)) for a, b in zip(x, y)]
+    return HingeLeaf(ring=ring, reach=float(x.max()) if len(x) else 0.0,
+                     setback_mm=float(setback_mm), part_thickness_mm=float(part_thickness_mm),
+                     depth_mm=float(depth_mm))
+
+
+def _rect_leaf(length: float, half: float, thickness: float, depth: float) -> HingeLeaf:
+    """A leaf without a drawn pocket: the plate's rectangle."""
+    ring = [(-length, -half), (0.0, -half), (0.0, half), (-length, half)]
+    return HingeLeaf(ring=ring, reach=0.0, setback_mm=0.0, part_thickness_mm=thickness,
+                     depth_mm=depth)
+
+
+def hinge_detail(fill: HingeFill, *, front_leaf: HingeLeaf | None = None,
+                 temple_leaf: HingeLeaf | None = None, axis_inset_mm: float | None = None,
+                 axis_offset_mm: float | None = None) -> dict:
+    """The reference-only detail, two views in mm, y up, the barrel axis at
+    x = 0, drawn from the pockets as they were drawn when the leaves are
+    given, else from the fill's plate rectangles.
+
+    ``elevation``: the hinge opened flat and seen from behind the front, the
+    front's pocket shape to the left of the barrel column, the temple's to
+    the right, each with its edge nearest the butt face against the column,
+    their centers on one axis, the knuckles stacked along it (the front's
+    joined to its leaf by a bar, the temple's to its), the installation on
+    each leaf. ``plan``: the joint seen from above at the stop: the
+    endpiece's section lying across with its pocket sunk in its back face,
+    the barrel's circle at the axis, a temple's thickness inside the end
+    face and `axis_offset_mm` behind the back face, and the temple's section
+    swung to the stop with its pocket sunk in its inner face. Each is
+    ``{"visible": [rings], "hidden": [rings], "center": [polylines],
+    "labels": [(x, y, text)]}``."""
     s = fill.spec
     W, r = fill.width_mm, 0.5 * s.barrel_diameter_mm
-    plate, tplate = fill.plate_length_mm, fill.temple_plate_length_mm
+    half = 0.5 * W
+    if front_leaf is None:
+        front_leaf = _rect_leaf(fill.plate_length_mm, half, fill.plate_thickness_mm + 3.0,
+                                fill.plate_thickness_mm)
+    if temple_leaf is None:
+        temple_leaf = _rect_leaf(fill.temple_plate_length_mm, half,
+                                 fill.temple_plate_thickness_mm + 3.0,
+                                 fill.temple_plate_thickness_mm)
     gap = 0.3                       # between the barrel column and each leaf
     vis, hid, cen, labels = [], [], [], []
-    # --- elevation
-    half = 0.5 * W
-    # the front leaf, left of the column; the temple leaf, right of it
-    fl = (-r - gap - plate, -r - gap)
-    tl = (r + gap, r + gap + tplate)
-    vis.append([(fl[0], -half), (fl[1], -half), (fl[1], half), (fl[0], half)])
-    vis.append([(tl[0], -half), (tl[1], -half), (tl[1], half), (tl[0], half)])
+    # --- elevation: the front leaf to the left of the column, its butt
+    # edge at -r - gap; the temple leaf to the right, opened flat, its butt
+    # edge at r + gap (x runs away from the column on each side)
+    fx0 = -r - gap
+    fl_ring = [(fx0 - (front_leaf.reach - x), y) for x, y in front_leaf.ring]
+    tx0 = r + gap
+    tl_ring = [(tx0 + (temple_leaf.reach - x), y) for x, y in temple_leaf.ring]
+    vis.append(fl_ring)
+    vis.append(tl_ring)
+    fl = (min(p[0] for p in fl_ring), fx0)
+    tl = (tx0, max(p[0] for p in tl_ring))
     # the knuckles, alternating front / temple from the top; the front's are
     # drawn joined to its leaf by a bar, the temple's to its
-    n = s.barrels
+    n = max(int(s.barrels), 1)
     kh = W / n
     for i in range(n):
         y1, y0 = half - i * kh, half - (i + 1) * kh
@@ -242,51 +326,104 @@ def hinge_detail(fill: HingeFill) -> dict:
     # the screw head on top of the column
     hr = 0.5 * s.screw_head_mm
     vis.append(_circle(0.0, half + hr + 0.4, hr))
-    # the installation
+    # the installation, on each leaf's own shape
+    leaves = ((fl_ring, fl), (tl_ring, tl))
     if fill.kind == HingeKind.RIVET:
         n_r, rr = s.rivet_count, 0.5 * s.rivet_diameter_mm
-        for leaf in (fl, tl):
+        for ring, leaf in leaves:
+            ys = [p[1] for p in ring]
+            y_lo, y_hi = min(ys), max(ys)
             cx = 0.5 * (leaf[0] + leaf[1])
             for k in range(n_r):
-                cy = -half + (k + 1) * W / (n_r + 1)
+                cy = y_lo + (k + 1) * (y_hi - y_lo) / (n_r + 1)
                 vis.append(_circle(cx, cy, rr, 16))
     elif fill.kind == HingeKind.HEAT_SET:
-        # cleats: teeth along the leaf's long edges, hidden in the acetate
-        for leaf in (fl, tl):
-            for x in leaf:
-                sign = -1.0 if x < 0 else 1.0
-                tooth = 0.6
-                k = 0
-                y = -half + 1.0
-                while y < half - 0.5:
-                    hid.append([(x, y), (x + sign * tooth, y + 0.5), (x, y + 1.0)])
+        # cleats: teeth along the leaf's long edges, hidden in the acetate,
+        # on the leaf's own edge at each height (a rounded end narrows)
+        for ring, leaf in leaves:
+            ys = [p[1] for p in ring]
+            y_lo, y_hi = min(ys), max(ys)
+            shape = Polygon(ring)
+            if not shape.is_valid:
+                shape = shape.buffer(0)
+            tooth = 0.6
+            y = y_lo + 1.0
+            while y < y_hi - 0.5:
+                cut = shape.intersection(LineString([(leaf[0] - 1.0, y + 0.5),
+                                                     (leaf[1] + 1.0, y + 0.5)]))
+                if cut.is_empty:
                     y += 2.0
-                    k += 1
+                    continue
+                bx0, _b1, bx1, _b3 = cut.bounds
+                for x, sign in ((bx0, 1.0), (bx1, -1.0)):
+                    hid.append([(x, y), (x + sign * tooth, y + 0.5), (x, y + 1.0)])
+                y += 2.0
     else:
         # the spring box on the temple leaf, past the leaf
         bl, bd = s.spring_box_length_mm, s.spring_box_depth_mm
-        vis.append([(tl[1], -0.5 * bd * 2.0), (tl[1] + bl, -0.5 * bd * 2.0),
-                    (tl[1] + bl, 0.5 * bd * 2.0), (tl[1], 0.5 * bd * 2.0)])
-        labels.append((tl[1] + 0.5 * bl, 0.5 * bd * 2.0 + 1.5, "spring box"))
-    labels.append((0.5 * (fl[0] + fl[1]), half + 2 * hr + 1.4, "front"))
-    labels.append((0.5 * (tl[0] + tl[1]), half + 2 * hr + 1.4, "temple"))
+        vis.append([(tl[1], -bd), (tl[1] + bl, -bd), (tl[1] + bl, bd), (tl[1], bd)])
+        labels.append((tl[1] + 0.5 * bl, bd + 1.5, "spring box"))
+    top = max(half + 2 * hr + 1.4, max(p[1] for p in fl_ring + tl_ring) + 1.6)
+    labels.append((0.5 * (fl[0] + fl[1]), top, "front"))
+    labels.append((0.5 * (tl[0] + tl[1]), top, "temple"))
     elevation = {"visible": vis, "hidden": hid, "center": cen, "labels": labels}
-    # --- plan: the front leaf lies along -x from the barrel, the temple leaf
-    # swings to the stop (the open angle from the front leaf's line)
+    # --- plan, from above at the stop: x runs along the front toward the
+    # end face, y toward the wearer; the barrel axis at the origin
     vis, hid, cen, labels = [], [], [], []
-    t_f, t_t = fill.plate_thickness_mm, fill.temple_plate_thickness_mm
+    t_f, t_t = front_leaf.part_thickness_mm, temple_leaf.part_thickness_mm
+    d_f, d_t = front_leaf.depth_mm, temple_leaf.depth_mm
+    off = float(axis_offset_mm if axis_offset_mm is not None else s.axis_offset_mm)
+    # the end face: the axis is a temple's thickness (and the inset) inside it
+    inset = float(axis_inset_mm) if axis_inset_mm is not None else t_t + off
+    f_len = front_leaf.length
+    f_near = inset - front_leaf.setback_mm          # the pocket's edge nearest the end face
+    x_left = f_near - f_len - 4.0
+    back = -off                                     # the back face's y
     vis.append(_circle(0.0, 0.0, r))
-    vis.append([(-r - gap - plate, -0.5 * t_f), (-r - gap, -0.5 * t_f),
-                (-r - gap, 0.5 * t_f), (-r - gap - plate, 0.5 * t_f)])
-    a = math.radians(180.0 - s.open_deg)   # the temple leaf's direction from +x
-    ca, sa = math.cos(a), math.sin(a)
-    x0 = r + gap
-    corners = [(x0, -0.5 * t_t), (x0 + tplate, -0.5 * t_t),
-               (x0 + tplate, 0.5 * t_t), (x0, 0.5 * t_t)]
-    vis.append([(x * ca - y * sa, x * sa + y * ca) for x, y in corners])
-    cen.append([(-r - gap - plate - 2.0, 0.0), (r + 2.0, 0.0)])
-    reach = x0 + tplate + 2.0
-    cen.append([(0.0, 0.0), (reach * ca, reach * sa)])
-    labels.append((0.5 * reach * ca + 1.5, 0.5 * reach * sa + 1.5, f"{s.open_deg:g}°"))
+    # the endpiece's section, open toward the frame's center
+    vis.append([(x_left, back), (inset, back), (inset, back - t_f), (x_left, back - t_f)])
+    # its pocket, sunk from the back face
+    vis.append([(f_near - f_len, back), (f_near, back), (f_near, back - d_f),
+                (f_near - f_len, back - d_f)])
+    # the temple's section at the stop: the butt face through the axis,
+    # the inner face `off` from it, the outer face a thickness beyond
+    theta = math.radians(float(s.open_deg) - 90.0)
+    d = (math.sin(theta), math.cos(theta))          # along the temple
+    nrm = (math.cos(theta), -math.sin(theta))       # across it, toward the outer face
+
+    def at(along: float, across: float) -> tuple[float, float]:
+        return (d[0] * along + nrm[0] * across, d[1] * along + nrm[1] * across)
+
+    t_len = temple_leaf.length
+    butt = float(s.axis_setback_mm)                 # the butt beyond the axis
+    s0 = butt + temple_leaf.setback_mm              # the pocket's near edge
+    reach = s0 + t_len + 4.0
+    endpiece = Polygon([(x_left - 1.0, back + 1e-6), (inset, back + 1e-6),
+                        (inset, back - t_f - 1.0), (x_left - 1.0, back - t_f - 1.0)])
+
+    def outside(ring):
+        """The part of a section the endpiece does not occupy."""
+        shape = Polygon(ring)
+        try:
+            left = shape.difference(endpiece)
+        except Exception:                                   # noqa: BLE001
+            return ring
+        if left.is_empty:
+            return None
+        piece = max(getattr(left, "geoms", [left]), key=lambda g: g.area)
+        return [(float(x), float(y)) for x, y in piece.exterior.coords[:-1]]
+
+    for ring in ([at(butt, off), at(reach, off), at(reach, off + t_t), at(butt, off + t_t)],
+                 [at(s0, off), at(s0 + t_len, off), at(s0 + t_len, off + d_t), at(s0, off + d_t)]):
+        kept = outside(ring)
+        if kept:
+            vis.append(kept)
+    cen.append([(x_left - 2.0, 0.0), (inset + 2.0, 0.0)])
+    cen.append([at(-2.0, 0.0), at(reach + 2.0, 0.0)])
+    labels.append((0.5 * (x_left + f_near - f_len), back - t_f - 3.2, "front"))
+    lx, ly = at(reach + 1.0, 0.5 * (off + t_t))
+    labels.append((lx + 2.0 * d[0], ly + 2.0 * d[1], "temple"))
+    ax, ay = at(0.6 * reach, 0.0)
+    labels.append((ax - 3.0 * nrm[0] - 1.5, ay - 3.0 * nrm[1], f"{s.open_deg:g}°"))
     plan = {"visible": vis, "hidden": hid, "center": cen, "labels": labels}
     return {"elevation": elevation, "plan": plan}

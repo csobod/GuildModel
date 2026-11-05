@@ -265,3 +265,61 @@ def test_preferences_carry_forming_and_blueprint(tmp_path, monkeypatch):
     # and the active forming carries the neutral surface
     win._load_model(_gabriel(tmp_path))
     assert win._active_forming().neutral_fraction == 0.5
+
+
+def test_the_dialog_round_trips_the_lettering_and_the_colors(tmp_path, monkeypatch):
+    """The second round (2026-11-05): the font, the dimension-text practice
+    and the ink and paper reach the settings and back; a preset sets both
+    swatches and a picked color reads as Custom."""
+    from guildmodel.core.project.schema import BlueprintSettings
+    from guildmodel.gui.blueprint_dialog import BlueprintDialog
+    _qt(monkeypatch, tmp_path)
+    s = BlueprintSettings(font_family="No Such Family 123", dim_text="above",
+                          line_color="#ffffff", paper_color="#163a7a")
+    dlg = BlueprintDialog(s, None)
+    ed = dlg.editor
+    assert ed.color_preset.currentData() == "blueprint"
+    assert ed.dim_text.currentData() == "above"
+    assert ed.font.currentData() == "No Such Family 123", "kept, though this machine lacks it"
+    out = dlg.settings()
+    assert (out.font_family, out.dim_text) == ("No Such Family 123", "above")
+    assert (out.line_color, out.paper_color) == ("#ffffff", "#163a7a")
+    # a preset drives the swatches
+    ed.color_preset.setCurrentIndex(ed.color_preset.findData("blue"))
+    assert ed.line_color.color == "#1f3f8f" and ed.paper_color.color == "#ffffff"
+    # a picked color is Custom
+    ed.paper_color.set_color("#fff8e1")
+    ed._on_swatch()
+    assert ed.color_preset.currentData() == "custom"
+    assert dlg.settings().paper_color == "#fff8e1"
+    ed.font.setCurrentIndex(0)
+    assert dlg.settings().font_family == ""
+
+
+@pytest.mark.gui
+def test_preferences_open_at_the_general_tabs_height(tmp_path, monkeypatch):
+    """The dialog's height follows the General tab, not the tallest tab (the
+    Blueprint tab with its tolerance table asked for a screen); the size is
+    saved only when the maker resized it."""
+    from guildmodel.gui import prefs as prefs_mod
+    from guildmodel.gui.app import PrefsDialog, _available_screen
+    monkeypatch.setattr(prefs_mod, "_FILE", tmp_path / "prefs.json")
+    win = _window(monkeypatch, tmp_path)
+    win._prefs["prefs_dialog_size"] = []
+    dlg = PrefsDialog(win._prefs, win)
+    from PySide6.QtWidgets import QScrollArea
+    general = dlg._tabs.widget(0)
+    inner = general.widget() if isinstance(general, QScrollArea) else general
+    chrome = dlg._tabs.tabBar().sizeHint().height() + 72
+    avail = _available_screen(dlg)
+    expect_h = max(min(inner.sizeHint().height() + chrome, int(avail.height() * 0.8)),
+                   dlg.minimumHeight())
+    assert dlg._opened_size.height() == expect_h
+    tallest = max((dlg._tabs.widget(i).widget() if isinstance(dlg._tabs.widget(i), QScrollArea)
+                   else dlg._tabs.widget(i)).sizeHint().height() for i in range(dlg._tabs.count()))
+    assert tallest > inner.sizeHint().height(), "some tab is taller than General"
+    # the window saves the size only when it differs from the one it opened at
+    from PySide6.QtWidgets import QDialog
+    monkeypatch.setattr(PrefsDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+    win._open_preferences()
+    assert win._prefs["prefs_dialog_size"] == []

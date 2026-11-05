@@ -3390,7 +3390,8 @@ class PrefsDialog(QDialog):
         # opened at Qt's fallback (two thirds of the screen width) and its
         # height was whatever the one non-scrolling tab demanded, which on a
         # panel with the UI scale up put the OK button below the screen edge.
-        self.resize(self._initial_size(prefs))
+        self._opened_size = self._initial_size(prefs)
+        self.resize(self._opened_size)
 
         # A typed number settles when the typing is done, here as in the dock:
         # the tool editor rebuilt and redrew its tool on every digit otherwise.
@@ -3407,10 +3408,16 @@ class PrefsDialog(QDialog):
         return scroll
 
     def _initial_size(self, prefs: dict) -> QSize:
-        """The remembered size (`prefs_dialog_size`), else the widest and tallest
-        tab content plus the scroll bar and the chrome; either way no more than
-        80 % of the screen the dialog will show on, and never under the
-        minimums."""
+        """The size the maker set (`prefs_dialog_size`, saved when they
+        resized the dialog), else the widest tab's content for the width
+        and the General tab's for the height, plus the scroll bar and the
+        chrome; either way no more than 80 % of the screen the dialog will
+        show on, and never under the minimums.
+
+        The height follows the tab the dialog opens on: every tab scrolls,
+        and the tallest (Blueprint, with its tolerance table) asked for
+        more than a screen until 2.3, which opened the dialog at the 80 %
+        clamp and then saved that as the maker's choice."""
         avail = _available_screen(self)
         max_w, max_h = int(avail.width() * 0.8), int(avail.height() * 0.8)
         floor_w, floor_h = self.minimumWidth(), self.minimumHeight()
@@ -3425,7 +3432,9 @@ class PrefsDialog(QDialog):
             page = self._tabs.widget(i)
             inner = page.widget() if isinstance(page, QScrollArea) else page
             hint = inner.sizeHint()
-            w, h = max(w, hint.width()), max(h, hint.height())
+            w = max(w, hint.width())
+            if i == 0:
+                h = hint.height()
         bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
         chrome = self._tabs.tabBar().sizeHint().height() + 72     # tab bar + OK row
         return QSize(max(min(w + bar + 8, max_w), floor_w),
@@ -8221,8 +8230,12 @@ class MainWindow(QMainWindow):
         current = {**self._prefs, "dark_mode": self._dark_mode}
         dlg = PrefsDialog(current, self)
         accepted = dlg.exec() == QDialog.DialogCode.Accepted
-        # The size the maker left it at is theirs to keep, Cancel or OK.
-        self._prefs["prefs_dialog_size"] = [int(dlg.width()), int(dlg.height())]
+        # A size the maker set is theirs to keep, Cancel or OK; the size it
+        # opened at is not a choice and is not saved (2.3: the saved default
+        # had been the tallest tab's demand).
+        opened = getattr(dlg, "_opened_size", None)
+        if opened is None or (int(dlg.width()), int(dlg.height())) != (opened.width(), opened.height()):
+            self._prefs["prefs_dialog_size"] = [int(dlg.width()), int(dlg.height())]
         if not accepted:
             prefs_mod.save(self._prefs)
             return
@@ -11594,11 +11607,19 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.action:
             return
         settings = dlg.settings()
-        self._draft = self._draft.model_copy(update={"blueprint": settings})
-        self._mark_dirty()
+        # the project keeps the dialog's settings; an export that changed
+        # nothing leaves the project clean
+        if settings != self._draft.blueprint:
+            self._draft = self._draft.model_copy(update={"blueprint": settings})
+            self._mark_dirty()
         if dlg.save_defaults:
             self._adopt_blueprint_defaults(settings)
-        self._start_blueprint(dlg.action, settings)
+        # the chosen font's average glyph width, for the sheet's layout: a
+        # measure of this machine's font, for the worker, not the file
+        from guildmodel.gui.draft_render import measure_text_width_em
+        composed = settings.model_copy(
+            update={"text_width_em": measure_text_width_em(settings.font_family)})
+        self._start_blueprint(dlg.action, composed)
 
     def _start_blueprint(self, action: str, settings) -> None:
         """Compose the blueprint on a worker under the progress dialog; the
@@ -11641,7 +11662,8 @@ class MainWindow(QMainWindow):
     def _on_blueprint_finished(self, sheets) -> None:
         self._close_progress("blueprint")
         action, self._blueprint_action = self._blueprint_action, None
-        settings = self._draft.blueprint
+        worker = self._blueprint_worker
+        settings = worker.settings if worker is not None else self._draft.blueprint
         if not sheets or not action:
             return
         self._write_blueprint(action, sheets, settings)
@@ -11658,12 +11680,15 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText("Blueprint canceled")
 
     def _adopt_blueprint_defaults(self, settings) -> None:
-        """The dialog's page, projection, views, owner, author and
-        tolerances into Preferences ▸ Blueprint; not the design's cells."""
+        """Everything in the dialog but this design's name, number, revision,
+        approver and date into Preferences ▸ Blueprint: the page, the
+        lettering, the colors, the views, the shop's cells, the material,
+        the notes and the tolerances."""
         from guildmodel.core.project.schema import BlueprintSettings
         from guildmodel.gui.widgets.blueprint_widgets import sparse_dump
         keep = settings.model_copy(update={"design_name": "", "id_number": "", "issue_date": "",
-                                           "approver": "", "revision": BlueprintSettings().revision})
+                                           "approver": "", "revision": BlueprintSettings().revision,
+                                           "text_width_em": BlueprintSettings().text_width_em})
         draft = self._prefs.setdefault("draft", {})
         if not isinstance(draft, dict):
             draft = self._prefs["draft"] = {}
@@ -11672,9 +11697,10 @@ class MainWindow(QMainWindow):
 
     def _write_blueprint(self, action: str, sheets, settings) -> None:
         from guildmodel.core.draft.dxf_out import write_dxf
-        from guildmodel.gui.draft_render import export_pdf, export_svg, print_sheets
+        from guildmodel.gui.draft_render import (RenderStyle, export_pdf, export_svg,
+                                                 print_sheets)
         stem = (self._source_name.rsplit(".", 1)[0] if self._source_name else "frame") + "_blueprint"
-        lw = float(settings.line_weight_mm)
+        style = RenderStyle.from_settings(settings)
         if action == "print":
             from PySide6.QtPrintSupport import QPrintDialog, QPrinter
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -11684,7 +11710,7 @@ class MainWindow(QMainWindow):
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
             try:
-                n = print_sheets(printer, sheets, lw)
+                n = print_sheets(printer, sheets, style=style)
             except OSError as exc:
                 QMessageBox.warning(self, "Print Blueprint", str(exc))
                 return
@@ -11703,16 +11729,18 @@ class MainWindow(QMainWindow):
         written = []
         try:
             if action == "pdf":
-                export_pdf(path, sheets, lw)
+                export_pdf(path, sheets, style=style)
                 written.append(path)
             elif action == "svg":
+                # sheet 1 under the chosen name, which the file dialog
+                # guarded; the sheets after it beside it
                 for sheet in sheets:
-                    p = (path if len(sheets) == 1
+                    p = (path if sheet.number == 1
                          else path.with_name(f"{path.stem}_sheet{sheet.number}{path.suffix}"))
-                    export_svg(p, sheet, lw)
+                    export_svg(p, sheet, style=style)
                     written.append(p)
             else:
-                write_dxf(path, sheets)
+                write_dxf(path, sheets, settings.font_family)
                 written.append(path)
         except OSError as exc:
             QMessageBox.warning(self, "Export Blueprint", str(exc))

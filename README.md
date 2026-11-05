@@ -33,8 +33,8 @@ dimensioned blueprint.
 > Blueprint…** writes the dimensioned drawing: the front, top and side views
 > in first- or third-angle projection, the hinge detail, the tolerances, the
 > ISO 7200 title block, and a 1:1 alignment template on sheet 2; PDF, SVG,
-> DXF or a printer, with the paper, the views and the title block's cells as
-> defaults in Preferences. GuildDraw 2.3's forming and tip bend are read from
+> DXF or a printer, with the paper, the views, the font, the colors and the
+> shop's title-block cells as defaults in Preferences. GuildDraw 2.3's forming and tip bend are read from
 > the drawing, and the Forming panel speaks per side, as GuildDraw's group
 > does. From the held 2.1 round: a temple's second side, cut first in G55 and
 > flipped over its length; the temples' link; Embossing on a temple; meshes

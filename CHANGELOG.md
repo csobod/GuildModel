@@ -110,9 +110,43 @@ every design uses them and a drawing's own copy is read for the record. The
 neutral surface is applied around the map, never inside it, so the two
 apps' maps stay identical.
 
-**Not done, and said so.** The inward angle of the drop is not drawn (the
-temple tab has no third dimension for it). The side view shows the far
-temple only where it differs. Dimensions in the DXF are lines and text, not
+**The maker's review before publishing (2026-11-05).** Four additions.
+*The lettering is the maker's:* the blueprint dialog and Preferences ▸
+Blueprint offer every font family the machine has (the default stays
+Helvetica, or the nearest sans), the window measures the chosen family's
+average glyph width and the sheet lays its texts out by it, the PDF embeds
+the font, the SVG names it, the DXF's text style carries it for the CAD to
+map. *A dimension's value sits in a break in its line,* centered, as ASME
+Y14.5 draws it (**Dimension text**: in a break in the line, or above the
+line as ISO 129 draws it); a value wider than its dimension goes outside
+the extension lines, past the reading end, or before the start where the
+view knows that side is clear (the bridge width reads below its foot, out
+of the DBL's way); an angle's value breaks its arc the same way when it
+sits on it. *The hinge detail is drawn from the pockets as drawn:* the
+front pocket's shape and the temple pocket's shape, each centered on the
+barrel axis with its edge nearest the butt face against the barrel column,
+the knuckles between them, as the hinge looks opened flat and seen from
+behind; the plan beside it is the joint from above at the stop, the
+endpiece's section with its pocket sunk in the back face, the barrel at
+the axis a temple's thickness inside the end face, and the temple's section
+swung to the stop with its pocket sunk in its inner face. *The ink and the
+paper are settings:* black on white, the true blueprint (white lines on
+Prussian blue, the cyanotype's look), blue on white, or any two colors
+picked from the color dialog; the PDF, the SVG and the printer
+take them, the DXF keeps its layers' colors.
+
+A gremlin with them: the Preferences dialog opened at the height of its
+tallest tab, which the Blueprint tab's tolerance table had made the
+screen's, and that size was then saved as the maker's on every close. It
+opens at the General tab's height now, a size the maker sets is the only
+one saved, and a size saved before is dropped once (prefs version 3). The
+note *Inward angle of drop* on the sheet is *Inward angle, seen from above*;
+the drop's own curl is still not drawn.
+
+**Not done, and said so.** The curl a bent drop takes toward the head is
+not drawn (the drawing's temple tab has no third dimension for it); the
+inward angle before the ear point is. The side view shows the far temple
+only where it differs. Dimensions in the DXF are lines and text, not
 dimension entities.
 
 ### The 2.1 bug hunt (2026-11-03)
