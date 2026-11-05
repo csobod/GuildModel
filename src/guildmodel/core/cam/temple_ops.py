@@ -42,8 +42,9 @@ TEMPLE_CONTOUR_OPS = {"Temple Profile", "Holes"}
 # and keeps its place.
 TEMPLE_OP_TIERS: tuple[frozenset[str], ...] = (
     # The inlay seats (§8a) want the blank rigid too, and share the hinge
-    # tool by default, so they ride in the first tier beside the pockets.
-    frozenset({"Component Pockets", "Engraving", "Inlays"}),
+    # tool by default, so they ride in the first tier beside the pockets; so
+    # do the debossed meshes (2026-11-02), on their ball.
+    frozenset({"Component Pockets", "Engraving", "Embossing", "Inlays"}),
     frozenset({"Holes"}),
     frozenset({"Temple Profile"}),
 )
@@ -251,10 +252,18 @@ def generate_temple_program(
     hinge_polys: list[Polygon] = (),
     graphic_curves: list[list[tuple[float, float]]] = (),
     inlay_polys: list[Polygon] = (),
+    relief=None,
 ) -> list[CamOp]:
-    """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), pocket
-    the inlay seats on the hinge side (if any, §8a), then profile-cut the temple
+    """Pocket the HINGE recess (if any), engrave (if any ENGRAVING curves), cut
+    the debossed meshes on the hinge face (if any, 2026-11-02), pocket the
+    inlay seats on the hinge side (if any, §8a), then profile-cut the temple
     outline.
+
+    `relief` is the temple's `FlatRelief` with the meshes baked in
+    (`relief.flat.emboss_flat_relief`): its `sculpt_footprints` are what the
+    Embossing op rides over, on the temple's emboss tool, confined to each
+    shadow grown by the tool's radius. Without it, or with nothing debossed
+    on the hinge face, the program is what it was.
 
     `inlay_polys` are the INLAY seats, placed on the blank like the outline and
     index-aligned with `temple.inlays`. A seat on the outer face is modeled and
@@ -302,6 +311,15 @@ def generate_temple_program(
         ops.append(engrave_op(engraving_curves, engrave_z, engrave_tool,
                               params.simplify_tol_mm, top_z=top_z,
                               stepdown_mm=temple.engrave_stepdown_mm))
+    footprints = list(getattr(relief, "sculpt_footprints", None) or [])
+    if footprints and params.is_op_enabled("Embossing"):
+        from .castle_ops import sculpt_finish_op
+        emboss_tool = resolve_tool(temple.emboss_tool, tools_cfg)
+        emboss = sculpt_finish_op(relief, temple.stock(), emboss_tool, params, footprints)
+        emboss.name = "Embossing"
+        if emboss.paths:
+            emboss.tool = emboss_tool
+            ops.append(emboss)
     if temple.inlays and inlay_polys:
         from ..geometry.inlays import inlay_cuts
         from ..geometry.pocket_floor import temple_pocket_floors

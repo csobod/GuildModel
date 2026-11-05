@@ -25,9 +25,8 @@ def _panel(tmp_path, monkeypatch):
     return ParamsPanel()
 
 
-MODEL_TAB = ("Frame style", "Model Properties", "Posterior Finishing",
-             "Lens Bevel Groove", "Edge Features  (chamfers && fillets)",
-             "Inlays  (seats for plaques && plates)", "Zones")
+MODEL_TAB = ("Frame Style", "Model Properties", "Posterior Finishing",
+             "Lens Bevel Groove", "Edge Features", "Inlays (front)", "Zones")
 
 
 def test_every_section_of_the_dock_is_a_fold(tmp_path, monkeypatch):
@@ -35,11 +34,17 @@ def test_every_section_of_the_dock_is_a_fold(tmp_path, monkeypatch):
     p = _panel(tmp_path, monkeypatch)
     for title in MODEL_TAB:
         assert title in p._folds, title
-    for title in ("Stock", "Temple", "Inlays  (seats on this temple)",
-                  "Base-Curve Holding Block", "Material && Allowances",
-                  "Operations  (uncheck to skip)", "Program Zero  (G54 work datum)"):
+    for title in ("Stock", "Temple", "Inlays (temple)",
+                  "Base-Curve Holding Block", "Material && Allowance",
+                  "Two-sided", "Operations", "Program Zero", "Part Overrides"):
         assert title in p._folds, title
     assert all(isinstance(b, CollapsibleBox) for b in p._folds.values())
+    # no parenthetical on any section title (the maker, 2026-11-02): what one
+    # said is on the header's tooltip instead
+    assert not any("(" in b.header.text() for b in p._folds.values())
+    assert p._folds["Program Zero"].header.toolTip().startswith("The G54 work datum")
+    assert p._folds["Inlays (front)"].header.text() == "Inlays"
+    assert p._folds["Inlays (temple)"].header.text() == "Inlays"
     assert all(b.is_expanded() for t, b in p._folds.items() if "cut details" not in t)
 
 
@@ -62,7 +67,7 @@ def test_a_fold_hides_its_body_and_is_remembered_by_title(tmp_path, monkeypatch)
 
 def test_a_section_hidden_for_a_kind_hides_its_header_too(tmp_path, monkeypatch):
     p = _panel(tmp_path, monkeypatch)
-    box = p._folds["Per-operation tools  (multi-tool jobs)"]
+    box = p._folds["Tool per Operation"]
     assert box.header.parentWidget() is box          # hiding the box hides its header
     p.set_component_kind(ComponentKind.TEMPLE_RIGHT)
     assert box.isHidden() and not box.body.isHidden()   # the whole fold, not just the body
@@ -74,7 +79,7 @@ def test_the_inlays_section_keeps_its_explanation_on_the_header(tmp_path, monkey
     from PySide6.QtWidgets import QLabel
     from guildmodel.gui.widgets.inlays_group import InlaysGroup
     p = _panel(tmp_path, monkeypatch)
-    box = p._folds["Inlays  (seats for plaques && plates)"]
+    box = p._folds["Inlays (front)"]
     assert box.header.toolTip() == InlaysGroup.TIP
     paragraphs = [w for w in p.inlays_front.findChildren(QLabel)
                   if w.objectName() == "hintLabel"]
@@ -82,11 +87,11 @@ def test_the_inlays_section_keeps_its_explanation_on_the_header(tmp_path, monkey
     assert p.inlays_front.rows.height() < 100
     # the rarer numbers are folded away, and remembered as their own section
     assert not p.inlays_front.details.is_expanded()
-    assert p._folds["Inlays  (seats for plaques && plates) · cut details"] is p.inlays_front.details
+    assert p._folds["Inlays (front) · cut details"] is p.inlays_front.details
     # built closed, so closed is not written down and open is
     assert p.fold_state() == {}
     p.inlays_front.details.header.click()
-    assert p.fold_state() == {"Inlays  (seats for plaques && plates) · cut details": True}
+    assert p.fold_state() == {"Inlays (front) · cut details": True}
     p.inlays_front.details.header.click()
     assert p.fold_state() == {}
 

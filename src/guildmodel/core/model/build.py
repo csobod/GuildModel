@@ -515,7 +515,7 @@ def build_castle_model(partition: CastlePartition, castle: CastleParams,
 
     if sculpts:
         from .sculpt import bake
-        _report(progress, "Sculpts", 0.92)
+        _report(progress, "Embossing", 0.92)
         solid = bake(solid, list(sculpts))
 
     # Once more at the end, for the reason `build_base` gives. With the blends

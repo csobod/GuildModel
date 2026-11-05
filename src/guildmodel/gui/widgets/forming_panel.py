@@ -28,6 +28,7 @@ from guildmodel.core.forming.presses import on_row
 from guildmodel.core.forming import (CUSTOM_LABEL, FLAT_LABEL, ThermoformMap,
                                      find_press, matching_press, press_rows,
                                      radius_for)
+from guildmodel.core.project.schema import TOOLING_INDEX_DEFAULT, rule_for_index
 from guildmodel.gui.widgets.collapsible import CollapsibleBox
 from guildmodel.gui.widgets.param_slider import ParamSlider
 
@@ -36,8 +37,21 @@ from guildmodel.gui.widgets.param_slider import ParamSlider
 #: the range starts there. The SBT dies are tagged base 2, 3 and 4.
 BASE_CURVE_RANGE = (0.0, 16.0)
 BASE_CURVE_STEP = 0.25
-#: Face form, degrees: 180 is flat; 150 is a hard wrap.
-FACE_FORM_RANGE = (150.0, 180.0)
+#: Face form per side, degrees, as it is usually stated: each lens plane's
+#: angle to the front from the center of the bridge; 0 is flat, 15 a hard
+#: wrap (since 2.3, as GuildDraw shows it; the stored value is 180 minus the
+#: included angle, which is twice this).
+FACE_FORM_RANGE = (0.0, 15.0)
+
+
+def per_side(included_deg: float) -> float:
+    """The face form per side from the included angle (180 flat)."""
+    return 0.5 * (180.0 - float(included_deg))
+
+
+def included(per_side_deg: float) -> float:
+    """The included angle from the face form per side (0 flat)."""
+    return 180.0 - 2.0 * float(per_side_deg)
 #: Bridge projection, mm, forward (away from the face). The die only ever
 #: presses forward, so there is no negative projection.
 PROJECTION_RANGE = (0.0, 8.0)
@@ -45,7 +59,7 @@ PROJECTION_RANGE = (0.0, 8.0)
 CREASE_GAP_RANGE = (4.0, 40.0)
 #: The V plate's included angle, degrees: 0 is parallel creases.
 CREASE_ANGLE_RANGE = (0.0, 120.0)
-#: The V's centre line off the frame's axis, mm, for a bridge not drawn centred.
+#: The V's center line off the frame's axis, mm, for a bridge not drawn centered.
 OFFSET_RANGE = (-10.0, 10.0)
 #: The die's convex face, mm; 0 is Auto — the largest die that still reaches
 #: the projection through the gap, which is the arc through both creases.
@@ -83,21 +97,22 @@ class FormingPanel(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self._applying = 0            # >0 while a preset or a restore sets the sliders
         self._carried = (0.0, 0.0)    # (base curve, radius) the project came in with
+        self._tooling_index = TOOLING_INDEX_DEFAULT   # Preferences ▸ Forming (2.3)
 
         grid = QGridLayout(self)
         grid.setContentsMargins(8, 4, 8, 4)
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(2)
 
-        # ---- row 0: press · base curve · face form -------------------------
+        # ---- row 0: preset · base curve · face form -----------------------
         self.press = QComboBox()
         self.press.setToolTip(
-            "The press the front will be formed on. Picking a row sets the base\n"
-            "curve and the face form together, because on the press they come\n"
-            "as a pair; touching either slider makes the choice Custom.\n"
+            "The press row the front will be formed on. Picking a row sets the\n"
+            "base curve and the face form together, because on the press they\n"
+            "come as a pair; touching either slider makes the choice Custom.\n"
             "Your own presses go in ~/.guildmodel/presses.yaml.")
         self.press.currentIndexChanged.connect(self._on_press_picked)
-        grid.addWidget(QLabel("Press"), 0, 0)
+        grid.addWidget(QLabel("Preset"), 0, 0)
         grid.addWidget(self.press, 0, 1)
 
         self.base_curve = ParamSlider(0.0, *BASE_CURVE_RANGE, step=BASE_CURVE_STEP,
@@ -106,8 +121,9 @@ class FormingPanel(QFrame):
         self.base_curve.setToolTip(
             "Lens base curve, in diopters, in the quarter steps a frame is\n"
             "ordered in. 0 is flat. On a press row the die's own radius is\n"
-            "used; elsewhere the optical convention, 530 / D. The radius in\n"
-            "use is shown beside it.")
+            "used; elsewhere the tooling index's rule, 530 / D at the\n"
+            "default 1.53 (Preferences ▸ Forming). The radius in use is\n"
+            "shown beside it.")
         self.radius_readout = QLabel("")
         self.radius_readout.setObjectName("mutedSmallLabel")
         self.radius_readout.setMinimumWidth(64)
@@ -115,12 +131,13 @@ class FormingPanel(QFrame):
         grid.addWidget(self.base_curve, 0, 3)
         grid.addWidget(self.radius_readout, 0, 4)
 
-        self.face_form = ParamSlider(180.0, *FACE_FORM_RANGE, step=0.5,
+        self.face_form = ParamSlider(0.0, *FACE_FORM_RANGE, step=0.25,
                                      decimals=2, suffix="°")
         self.face_form.setToolTip(
-            "Face form: the included angle between the two eyewire planes,\n"
-            "formed at the bridge center line. 180° is flat; the press forms\n"
-            "164-175°. The wrap beside it is 180° minus this.")
+            "Face form, per side: each lens plane's angle to the front from\n"
+            "the center of the bridge, as it is usually stated. 0° is flat;\n"
+            "the press forms 2.5-8°. The included angle between the eyewire\n"
+            "planes, 180° minus twice this, reads beside it.")
         self.face_form_readout = QLabel("")
         self.face_form_readout.setObjectName("mutedSmallLabel")
         self.face_form_readout.setMinimumWidth(64)
@@ -494,13 +511,13 @@ class FormingPanel(QFrame):
         try:
             if label == FLAT_LABEL:
                 self.base_curve.setValue(0.0)
-                self.face_form.setValue(180.0)
+                self.face_form.setValue(0.0)
             else:
                 p = find_press(label)
                 if p is None:
                     return
                 self.base_curve.setValue(p.base_curve)
-                self.face_form.setValue(p.face_form_deg)
+                self.face_form.setValue(per_side(p.face_form_deg))
         finally:
             self._applying -= 1
         self._refresh_readouts()
@@ -509,7 +526,7 @@ class FormingPanel(QFrame):
     def _name_the_press(self) -> None:
         """Point the combo at whatever row the sliders now describe, or Custom.
         Never emits: this runs *because* a slider moved."""
-        d, f = self.base_curve.value(), self.face_form.value()
+        d, f = self.base_curve.value(), self._slider_included()
         if d <= 0.0 and f >= 180.0:
             label = FLAT_LABEL
         else:
@@ -560,9 +577,26 @@ class FormingPanel(QFrame):
         when the combo was renamed Custom — and the combo follows at release."""
         label = self.press_label()
         row = find_press(label) if label else None
-        if row is None or not on_row(row, self.base_curve.value(), self.face_form.value()):
+        if row is None or not on_row(row, self.base_curve.value(), self._slider_included()):
             return None
         return row
+
+    def _slider_included(self) -> float:
+        """The included angle the slider's per-side value names, 180 flat."""
+        return included(self.face_form.value())
+
+    def face_form_included(self) -> float:
+        """The included angle in use: the row's own while the sliders are on
+        a press row (the slider shows the per-side angle to 0.01°, so an SBT
+        row's 163.97° would read back as 163.96°), else the slider's."""
+        row = self._row_in_use()
+        return float(row.face_form_deg) if row is not None else self._slider_included()
+
+    def set_tooling_index(self, index: float) -> None:
+        """Preferences ▸ Forming's tooling index: the rule behind a base
+        curve off a press row (2.3)."""
+        self._tooling_index = float(index)
+        self._refresh_readouts()
 
     def _custom_radius(self, d: float) -> float:
         """The radius for a base curve on no press row.
@@ -578,7 +612,7 @@ class FormingPanel(QFrame):
         carried_d, carried_r = self._carried
         if carried_r > 0.0 and abs(d - carried_d) < 1e-9:
             return carried_r
-        return radius_for(d)
+        return radius_for(d, rule_for_index(self._tooling_index))
 
     def _die_in_use(self) -> float:
         """The die radius the map uses: the named one, else Auto's for this
@@ -592,9 +626,9 @@ class FormingPanel(QFrame):
     def _refresh_readouts(self) -> None:
         r = self._radius_in_use()
         self.radius_readout.setText(f"R {r:.0f} mm" if r > 0 else "flat")
-        wrap = 180.0 - self.face_form.value()
+        inc = self.face_form_included()
         self.face_form_readout.setText(
-            "no wrap" if not self._wraps else f"{wrap:.0f}° wrap" if wrap > 0 else "flat")
+            "no wrap" if not self._wraps else f"{inc:.2f}° incl." if inc < 180.0 else "flat")
         die = self._die_in_use()
         if self.projection.value() == 0.0 or not die < float("inf"):
             self.die_readout.setText("")
@@ -616,8 +650,15 @@ class FormingPanel(QFrame):
         label = self.press_label()
         row = self._row_in_use()
         d = float(self.base_curve.value())
+        # The slider shows the per-side angle to 0.01°, so an SBT row's
+        # 163.97° included reads back as 163.96°: on a row the row's own
+        # angle stands, and off one the stored angle stands while the slider
+        # still shows it (GuildDraw's rule).
+        inc = self.face_form_included()
+        if row is None and abs(inc - float(base.face_form_deg)) < 0.011:
+            inc = float(base.face_form_deg)
         return base.with_base_curve(
-            d, self.face_form.value(),
+            d, inc,
             radius_mm=row.radius_mm if row is not None else self._custom_radius(d),
             bridge_projection_mm=float(self.projection.value()) if self._projects else 0.0,
             crease_gap_mm=float(self.crease_gap.value()),
@@ -643,7 +684,7 @@ class FormingPanel(QFrame):
             for w in (*self._handles, self.groove):
                 w.blockSignals(True)
             self.base_curve.setValue(float(forming.base_curve))
-            self.face_form.setValue(180.0 - float(forming.face_form_wrap_deg))
+            self.face_form.setValue(0.5 * float(forming.face_form_wrap_deg))
             self.projection.setValue(float(forming.bridge_projection_mm)
                                      if self._projects else 0.0)
             if forming.crease_gap_mm > 0.0:

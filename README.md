@@ -14,14 +14,32 @@ carries anything on its face, the anterior first in a two-sided job.
 
 ## Status
 
-**v2.0.0.** GuildModel builds the castle relief and the GRBL programs for a
+**v2.3.0.** GuildModel builds the castle relief and the GRBL programs for a
 frame front, its temples and per-lens base-curve forming blocks; cuts a front
-on both faces when it needs it; nests the parts on the worktable; and
-simulates every cut on a solid model of the stock. With it come a maker's
-guide (`docs/USER-GUIDE.md`), inlay seats, sculpts, an optional lens bevel
-groove (drageoir V-groove in each eyewire wall, off by default), a Forming
-view that shows and exports the front as it will be after the press and the
-bench, and the press dies that form it.
+or a temple on both faces when it needs it; nests the parts on the worktable;
+and simulates every cut on a solid model of the stock. With it come a maker's
+guide (`docs/USER-GUIDE.md`), inlay seats, embossed meshes on the front and
+the temples, an optional lens bevel groove (drageoir V-groove in each eyewire
+wall, off by default), a Forming view that shows and exports the front as it
+will be after the press and the bench, the press dies that form it, and a
+Draft view that assembles the formed frame with its temples and writes the
+dimensioned blueprint.
+
+> **New in v2.3.0 — the draft view and the blueprint.** **View ▸ Draft (D)**
+> shows the frame after forming with its temples bent and opened at the
+> angle of side and the splay you set, the hinge filled in from the drawn
+> pocket (rivet, heat-set cleat or spring), the butt cut that makes up what
+> the hinge alone does not give, and seven bench checks. **Export
+> Blueprint…** writes the dimensioned drawing: the front, top and side views
+> in first- or third-angle projection, the hinge detail, the tolerances, the
+> ISO 7200 title block, and a 1:1 alignment template on sheet 2; PDF, SVG,
+> DXF or a printer, with the paper, the views and the title block's cells as
+> defaults in Preferences. GuildDraw 2.3's forming and tip bend are read from
+> the drawing, and the Forming panel speaks per side, as GuildDraw's group
+> does. From the held 2.1 round: a temple's second side, cut first in G55 and
+> flipped over its length; the temples' link; Embossing on a temple; meshes
+> placed by hand; Program Zero's Shift X, Y and Z. Re-post temple programs;
+> the full notes are in `CHANGELOG.md`.
 
 > **New in v2.0.0 — both faces of the frame.** A front that carries anything
 > on its anterior (a brow chamfer, a bezel, a round-over, an inlay seat) is
@@ -192,7 +210,7 @@ bench, and the press dies that form it.
 > didn't help for the same reason. Every rebindable action is now reachable by
 > its key.
 
-> **New in v1.4.0 — the frame has a front (first V2 instalment).** The model now
+> **New in v1.4.0 — the frame has a front (first V2 installment).** The model now
 > carries an **anterior surface** as well as the posterior castle, and a new
 > **Edge Features** list on the Model tab cuts partial-span chamfers and fillets
 > into either face — the anterior brow chamfer over each eyewire, stopping short
@@ -236,10 +254,10 @@ real stock in one program on the Guild CNC (LUNYEE 3020 Nova), on top of the
 existing end-to-end frame-front proof (GuildDraw DXF → castle relief → five-op
 GRBL program → cut on a Carbide 3D Nomad).
 
-Still **beta**: the **lens bevel groove** (built and verified in cut-simulation,
-off by default, not yet cut on real stock) — treat its first real cuts as you
-would any new program (air-cut, then a test piece). The two-sided (cut-and-flip)
-workflow is planned for a later release.
+Still **beta**: the **lens bevel groove** (built and verified in cut simulation,
+off by default, not yet cut on real stock), the **two-sided job** on a front or
+a temple, and the **embossed meshes**; treat their first real cuts as you would
+any new program (air-cut, then a test piece).
 
 **Known issue — an edge feature can fold where an outline turns very sharply.**
 Where a run passes a near-cusp — a corner turning tighter than the feature is

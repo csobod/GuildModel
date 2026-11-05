@@ -2,7 +2,7 @@
 
 A front is cut flat and then formed: the **base curve** is moulded into each
 rim on the press, the **face form** is the angle between the two eyewire
-planes at the bridge centre line, and the **bridge** is projected at the
+planes at the bridge center line, and the **bridge** is projected at the
 bench — a convex die pressed against the posterior while a V-shaped plate
 braces the anterior, which leaves the classic crease along the plate's two
 edges and the bulbous bump between them. The app models, previews and exports
@@ -17,28 +17,28 @@ top-down comparison sheet, and the bridge-forming sketch of 2026-09-25:
 
 * **Base curve** is the lens base curve in diopters, in the quarter steps a
   frame is ordered in (0 to 16). The rim it is moulded into is a spherical
-  cap apexed at the lens centre, because the lens block sits in the eyewire
+  cap apexed at the lens center, because the lens block sits in the eyewire
   on the press. On a press row the die's own radius is used — the SBT dies
   are R259 / R181 / R144 for base 2 / 3 / 4 with lens curve 4, which are not
   530 / D — and off a row the optical convention 530 / D is the only radius
   there is. One sphere apexed at the bridge is the special case ``apex_x =
   0`` and is kept as the exactness test.
 * **Face form** is the included angle between the two eyewire planes, formed
-  at the bridge centre line irrespective of the base curve: 180 is flat, the
+  at the bridge center line irrespective of the base curve: 180 is flat, the
   press forms 174.69 / 169.24 / 163.97 / 170.11. The material bends over the
   bridge zone's width, so the bend is spread across that band.
-* **Bridge projection** is the forward set of the bridge, in millimetres,
+* **Bridge projection** is the forward set of the bridge, in millimeters,
   formed between two creases. Seen from the front the creases are the two
   edges of the V plate: they start at the bridge's upper corners, a set
   distance apart, and converge toward the nose at the V's angle. Between
   them the die's convex face leaves a bump that is tallest along the V's
-  centre line, which can sit off the frame's axis for a bridge that is not
-  drawn centred.
+  center line, which can sit off the frame's axis for a bridge that is not
+  drawn centered.
 
 In the flat model's coordinates (anterior face at z = 0, the castle rising to
 +z toward the face, x across the frame, y up) the base curve and the face form
 are curvatures along x, integrated into the tangent angle theta(x) of the
-horizontal line through the lens centres::
+horizontal line through the lens centers::
 
     theta(x) = (x - apex_x * s(x)) / R      rim curvature, apexed at +-apex_x
              + (wrap / 2) * s(x)            wrap = 180 - face form, over the band
@@ -46,7 +46,7 @@ horizontal line through the lens centres::
 ``s(x)`` runs smoothly -1 -> +1 across the band. The midline is ``M(x) = (int
 cos theta, y_c, int sin theta)``, anchored at the bridge. The vertical
 direction is the rim curvature alone: a bend of radius R about the local
-horizontal tangent through the lens-centre height. Thickness rides the local
+horizontal tangent through the lens-center height. Thickness rides the local
 normal, so the castle keeps its depth everywhere.
 
 The bridge bump is applied *before* that, as a displacement along z in the
@@ -54,7 +54,7 @@ flat frame — forward is away from the face, so toward -z — and then rides th
 curved surface as an offset along the local normal like the thickness does.
 It is the die's own shape: a cylinder of one radius, pressed into the V until
 its edges crease, so across the gap it is a parabola that is zero at each
-crease with a kink (the crease) and ``p`` on the centre line at the bridge's
+crease with a kink (the crease) and ``p`` on the center line at the bridge's
 top edge (the bump), and along the V it shrinks with the square of the V's
 width as the creases converge — the same cylinder over a narrower opening
 sags less. Outside the V it is zero. A displacement in z cannot fold
@@ -125,7 +125,7 @@ EXPORT_FINE_MM = 0.25
 #: formed preview: a triangle thinner than the chord sag of its own length
 #: (0.008 mm at 3 mm on R144) comes out of the warp with a normal pointing
 #: along the surface instead of out of it. Simplifying at a millionth of a
-#: millimetre changes no dimension (the gabriel's volume agrees to 1e-3
+#: millimeter changes no dimension (the gabriel's volume agrees to 1e-3
 #: mm^3) and removes 84 % of the pairs the warp had turned sharp.
 SIMPLIFY_TOL_MM = 1e-6
 
@@ -156,7 +156,7 @@ DEFAULT_CREASE_GAP_MM = 20.0
 DEFAULT_CREASE_ANGLE_DEG = 45.0
 
 #: The optical convention's constant: base curve in diopters is this over the
-#: radius in millimetres (the 1.53 index tool-maker's sphere).
+#: radius in millimeters (the 1.53 index tool-maker's sphere).
 # The optical convention lives with the schema (`core.project.schema`), which
 # the CAM imports: were it here, a schema method that needs it would have to
 # import this package, and the CAM could reach the forming code through it.
@@ -183,7 +183,7 @@ class BridgeGeometry:
       of the two lens centroids.
     * ``band_half`` — half-width of the wrap band, the bridge zone's x extent.
     * ``top_y`` — the bridge's edge away from the nose, where the creases
-      start; ``centre_y`` its centroid height, where the readout measures.
+      start; ``center_y`` its centroid height, where the readout measures.
     * ``top_width`` — the bridge's width at that edge: the default gap.
     * ``nose_dir`` — +1 or -1: which way along y the nose lies, so the V
       converges toward it whichever way the intake oriented the frame.
@@ -198,7 +198,7 @@ class BridgeGeometry:
     apex_y: float = 0.0
     band_half: float = DEFAULT_BAND_HALF_MM
     top_y: float = 12.0
-    centre_y: float = 7.0
+    center_y: float = 7.0
     top_width: float = DEFAULT_CREASE_GAP_MM
     nose_dir: float = -1.0
     projects: bool = True
@@ -209,7 +209,7 @@ def rim_apex(lens_od, lens_os) -> tuple[float, float]:
     """Where the rims are apexed: mean |x| and mean y of the two lens centroids.
 
     Symmetric by construction — the map apexes at +-apex_x — so a slightly
-    asymmetric drawing gets the mean rather than one eye's centre.
+    asymmetric drawing gets the mean rather than one eye's center.
     """
     cs = [c.centroid for c in (lens_od, lens_os) if c is not None]
     if not cs:
@@ -249,7 +249,7 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
     the intake mirrors a drawing into posterior coordinates, so "down" is
     not a fixed sign of y and is measured rather than assumed. Without a
     bridge zone the wrap band falls back as `bridge_band` does and the
-    creases start a band's width above the lens centres.
+    creases start a band's width above the lens centers.
     """
     from shapely.geometry import box
 
@@ -260,7 +260,7 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
     projects = not getattr(partition, "halves", False)
     # A monocle is one rim around one lens, and there is no second eye to
     # wrap toward. Its base curve is exact where s(x) is +-1, so the band
-    # stays off the rim, and a rim across the centre line is apexed on it:
+    # stays off the rim, and a rim across the center line is apexed on it:
     # theta = x / R is then one sphere whatever the band.
     wraps = projects or bool(getattr(partition, "separated", False))
     if not wraps:
@@ -278,12 +278,12 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
         return BridgeGeometry(apex_x, apex_y, band, apex_y + band, apex_y,
                               2.0 * band, -1.0, projects=projects, wraps=wraps)
     x0, y0, x1, y1 = bridge.bounds
-    centre_y = float(bridge.centroid.y)
+    center_y = float(bridge.centroid.y)
     pads = [z.polygon.centroid.y for z in getattr(partition, "zones", [])
             if z.name.startswith("nosepad")]
     nose_dir = -1.0
-    if pads and abs(float(np.mean(pads)) - centre_y) > 1e-6:
-        nose_dir = 1.0 if float(np.mean(pads)) > centre_y else -1.0
+    if pads and abs(float(np.mean(pads)) - center_y) > 1e-6:
+        nose_dir = 1.0 if float(np.mean(pads)) > center_y else -1.0
     top_y = float(y0 if nose_dir > 0 else y1)
     strip = bridge.intersection(box(x0 - 1.0, top_y - 1.0, x1 + 1.0, top_y + 1.0))
     if strip.is_empty:
@@ -291,14 +291,14 @@ def bridge_geometry(partition, lens_od=None, lens_os=None) -> BridgeGeometry:
     else:
         sx0, _, sx1, _ = strip.bounds
         top_width = float(sx1 - sx0)
-    return BridgeGeometry(apex_x, apex_y, band, top_y, centre_y,
+    return BridgeGeometry(apex_x, apex_y, band, top_y, center_y,
                           max(top_width, 1.0), nose_dir, projects=projects, wraps=wraps)
 
 
 # ------------------------------------------------------------ the die's section
 
 def _die_profile(u, h, R: float, p: float, blend: float = 0.0):
-    """The bump's section across the gap, mm, for ``u >= 0`` off the centre
+    """The bump's section across the gap, mm, for ``u >= 0`` off the center
     line at a height where the crease is ``h`` from it; vectorised over both.
 
     The die is a cylinder of radius ``R`` pressed ``p`` into the sheet while
@@ -324,7 +324,7 @@ def _die_profile(u, h, R: float, p: float, blend: float = 0.0):
     tiny = 1e-12
     p_eff = min(p, R)
     a = np.minimum(p_eff, R - np.sqrt(np.clip(R * R - h * h, 0.0, None)))
-    c = a - R                                              # the die's centre height, <= 0
+    c = a - R                                              # the die's center height, <= 0
     D2 = h * h + c * c
     L = np.sqrt(np.clip(D2 - R * R, 0.0, None))            # crease -> tangent point
     Tu = R * (h * R + c * L) / np.maximum(D2, tiny)
@@ -344,7 +344,7 @@ def _die_profile(u, h, R: float, p: float, blend: float = 0.0):
     s_len = rf * np.tan(0.5 * phi)                         # kink -> tangent point
     flank_len = np.sqrt((h - Tu) ** 2 + Td ** 2)
     on_flank = s_len <= flank_len
-    # fillet against the flank: centre (h + s, rf); against the arc: the
+    # fillet against the flank: center (h + s, rf); against the arc: the
     # circle of radius rf tangent to the flat and to the die's circle
     uc_flank = h + s_len
     uc_arc = np.sqrt(np.clip(a * (R + 2.0 * rf - c), 0.0, None))
@@ -428,12 +428,12 @@ class ThermoformMap:
         projection)``, by the sign of the midline's curvature.
 
         Where the midline turns the way the rims do (``theta' > 0``) the
-        centre of curvature is behind the part; the castle's depth runs into
+        center of curvature is behind the part; the castle's depth runs into
         it, and the map folds when the part is thicker than that radius (or
         than ``R``, the y direction's). Between two rims apexed at their own
-        lens centres the midline turns the other way (``theta' < 0``): the
-        centre is in front, thickness cannot fold there — but the bridge
-        bump is an offset *toward* that centre, so a projection larger than
+        lens centers the midline turns the other way (``theta' < 0``): the
+        center is in front, thickness cannot fold there — but the bridge
+        bump is an offset *toward* that center, so a projection larger than
         that radius folds the bridge. The first version took |theta'| for
         both and read a safe 16 D aviator as folding while an 8 mm
         projection on the same frame folded 1,159 triangles unreported.
@@ -469,7 +469,7 @@ class ThermoformMap:
         on parallel, so an aviator's brow bar or an eyewire's upper rim that
         sits over the bridge corners is carried forward with the bridge
         rather than stepped — the first version cut the bump off a
-        millimetre above the edge, and on the aviator that step ran straight
+        millimeter above the edge, and on the aviator that step ran straight
         through the bar."""
         y = np.asarray(y, dtype=np.float64)
         t = (y - self.bridge.top_y) * self.bridge.nose_dir       # depth toward the nose
@@ -480,7 +480,7 @@ class ThermoformMap:
         """Forward displacement of the bridge bump at ``(x, y)``, mm.
 
         Across the gap it is the die's own section: a circular arc of the
-        die's radius on the centre line, a straight flank tangent to it
+        die's radius on the center line, a straight flank tangent to it
         running down to each crease where the die does not reach the plate,
         and a crease blend of ``crease_blend_mm`` where the maker asks for
         one. Along the V it is the same die at every height, resting on the
@@ -517,7 +517,7 @@ class ThermoformMap:
         return self.auto_die_radius(self.gap, self.p)
 
     def apex_mm(self) -> float:
-        """How far the die actually sets the bridge on the centre line at the
+        """How far the die actually sets the bridge on the center line at the
         top edge, mm: the projection, unless the die is too wide for the gap
         (it rests on the plate's edges first) or the projection is deeper
         than the die's own radius (the sheet cannot wrap past its equator)."""
@@ -577,7 +577,7 @@ class ThermoformMap:
         return np.zeros(len(xy), dtype=bool)
 
     def bump_margin_mm(self) -> float:
-        """How far past the creases the bump can reach, mm, plus a millimetre:
+        """How far past the creases the bump can reach, mm, plus a millimeter:
         a blend spreads outward by up to its radius on a flank and, against
         the arc, by ``r p / h`` — under twice its radius wherever the gap is
         at least half the projection. A bound rather than the current value
@@ -631,13 +631,13 @@ class ThermoformMap:
         return M + arc + z[:, None] * n2
 
     def bridge_set_mm(self) -> float:
-        """z of the bridge's centre line relative to the rims at the same
+        """z of the bridge's center line relative to the rims at the same
         height; negative means the bridge sits forward of them (away from
         the face).
 
         Measured at the bridge's top edge, where the bump is its full height,
         against the rims at the same height so the rim's own sag in y
-        cancels. With the rims apexed at the lens centres their sag puts the
+        cancels. With the rims apexed at the lens centers their sag puts the
         bridge *behind* the apexes and the face form pulls it forward again;
         at the press's pairings the two nearly cancel, which is what makes
         the front read as one continuous bow rather than a W. The bump then
@@ -670,6 +670,40 @@ class ThermoformMap:
                    die_radius_mm=float(getattr(forming, "die_radius_mm", 0.0)),
                    crease_blend_mm=float(getattr(forming, "crease_blend_mm", 0.0)),
                    bridge=bridge)
+
+
+# ------------------------------------------------- the length-keeping surface
+
+class NeutralMap:
+    """A `ThermoformMap` with the length-keeping surface moved behind the
+    anterior face (2.3; research section 2.6): the flat part is shifted so
+    that surface lies at z = 0, formed, and shifted back, so the map's own
+    arithmetic (which GuildDraw's parity test holds) is untouched. Every
+    other attribute is the base map's. `shift_mm` is k x t, the neutral
+    fraction times the sheet's thickness; 0 is the base map itself."""
+
+    def __init__(self, base: ThermoformMap, shift_mm: float = 0.0) -> None:
+        self._base = base
+        self.shift_mm = float(shift_mm)
+        self._shift = np.array([0.0, 0.0, self.shift_mm])
+
+    def __call__(self, pts):
+        P = np.asarray(pts, dtype=np.float64)
+        if self.shift_mm == 0.0:
+            return self._base(P)
+        return self._base(P - self._shift) + self._shift
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def neutral_map(fmap, forming, thickness_mm: float):
+    """`fmap` with the forming's neutral fraction applied over a part this
+    thick; the map itself when the fraction is 0."""
+    k = float(getattr(forming, "neutral_fraction", 0.0) or 0.0)
+    if k <= 0.0 or thickness_mm <= 0.0:
+        return fmap
+    return NeutralMap(fmap, k * float(thickness_mm))
 
 
 # ---------------------------------------------------------------- the meshes

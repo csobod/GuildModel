@@ -313,7 +313,7 @@ def test_the_panel_round_trips_a_components_forming(tmp_path, monkeypatch):
     assert not changed, "a restore never emits"
     assert panel.press.currentText() == PRESET
     assert panel.base_curve.value() == 4.0
-    assert panel.face_form.value() == pytest.approx(163.97)
+    assert panel.face_form_included() == pytest.approx(163.97)
     assert panel.projection.value() == 4.0
     assert panel.crease_gap.value() == 18.5
     assert panel.crease_angle.value() == 50.0
@@ -323,7 +323,7 @@ def test_the_panel_round_trips_a_components_forming(tmp_path, monkeypatch):
     assert panel.groove.isChecked() is False
     assert panel.forming(FormingMetadata(apical_radius_mm=12.0)) == f
     assert panel.radius_readout.text() == "R 144 mm"
-    assert "16° wrap" in panel.face_form_readout.text()
+    assert "163.97° incl." in panel.face_form_readout.text()
     assert panel.die_readout.text() == "", "a named die needs no readout"
     # Auto names the die it uses: the arc through both creases
     panel.die_radius.setValue(0.0)
@@ -348,7 +348,7 @@ def test_touching_a_slider_makes_the_press_custom(tmp_path, monkeypatch):
 
     panel.press.setCurrentIndex(panel.press.findText(PRESET))
     assert changed == [1]
-    assert panel.base_curve.value() == 4.0 and panel.face_form.value() == pytest.approx(163.97)
+    assert panel.base_curve.value() == 4.0 and panel.face_form_included() == pytest.approx(163.97)
     assert panel.radius_readout.text() == "R 144 mm"
 
     panel.base_curve.setValue(4.25)            # typed: settled, custom, 530 / D
@@ -372,7 +372,7 @@ def test_touching_a_slider_makes_the_press_custom(tmp_path, monkeypatch):
     assert panel.projection.value() == 0.0
 
     panel.press.setCurrentIndex(panel.press.findText("Flat"))
-    assert panel.base_curve.value() == 0.0 and panel.face_form.value() == 180.0
+    assert panel.base_curve.value() == 0.0 and panel.face_form_included() == 180.0
     assert panel.forming(FormingMetadata()).press_preset == ""
     assert panel.radius_readout.text() == "flat"
 

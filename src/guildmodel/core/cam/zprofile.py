@@ -1,4 +1,4 @@
-"""Z-profile guard: measure a posted program's vertical behaviour, per operation.
+"""Z-profile guard: measure a posted program's vertical behavior, per operation.
 
 **Why this exists.** Corner Optical caught the Fine Relief sawtooth by reading a
 Mach3 toolpath display and writing their own analyzer, because nothing in this
@@ -122,7 +122,7 @@ class Limits:
 
 @dataclass
 class OpProfile:
-    """One operation's Z behaviour."""
+    """One operation's Z behavior."""
     name: str
     moves: int = 0
     xy_mm: float = 0.0

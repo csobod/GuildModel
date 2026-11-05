@@ -17,10 +17,10 @@ from .tessellate import FormingMesh, weld_for_file
 from .thermoform import (DEFAULT_BAND_HALF_MM, DEFAULT_CREASE_ANGLE_DEG,
                          DEFAULT_CREASE_GAP_MM, EXPORT_FINE_MM,
                          EXPORT_REFINE_MM, PREVIEW_FINE_MM, PREVIEW_REFINE_MM,
-                         SIMPLIFY_TOL_MM, BridgeGeometry, ThermoformMap,
-                         bridge_band, bridge_geometry, diopters, form_trimesh,
-                         formed_model, manifold_from_trimesh, radius_for,
-                         refine, rim_apex, warp)
+                         SIMPLIFY_TOL_MM, BridgeGeometry, NeutralMap,
+                         ThermoformMap, bridge_band, bridge_geometry, diopters,
+                         form_trimesh, formed_model, manifold_from_trimesh,
+                         neutral_map, radius_for, refine, rim_apex, warp)
 
 __all__ = [
     "CUSTOM_LABEL",
@@ -39,6 +39,8 @@ __all__ = [
     "die_map",
     "forming_readouts",
     "FormingMesh",
+    "NeutralMap",
+    "neutral_map",
     "weld_for_file",
     "Press",
     "ThermoformMap",

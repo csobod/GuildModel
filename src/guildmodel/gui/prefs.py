@@ -146,6 +146,28 @@ DEFAULTS: dict = {
     "cam_params":            {},
     # Selected material (drives feeds/speeds/stepover/stepdown) — M4.x.
     "material_name":         "acetate",
+    # The shop's press and sheet (2.3; GuildDraw's Preferences ▸ Forming, the
+    # same three): the tooling index behind the radius a base curve names off
+    # a press row, (index − 1) × 1000 / D; the sheet the front is cut from;
+    # and the length-keeping surface's depth as a fraction of it (research
+    # §2.6; 0 = the anterior face, the map's own assumption). Every design
+    # uses them; a drawing's own copy is read and these win.
+    "forming": {
+        "tooling_index":      1.53,
+        "sheet_thickness_mm": 6.0,
+        "neutral_fraction":   0.0,
+    },
+    # The draft view's defaults (2.3): what a new project's draft starts
+    # from. "blueprint" is a sparse `BlueprintSettings` dump (the paper, the
+    # projection, the views, the title block's cells, the tolerances);
+    # "hinge" a sparse `DraftHinge` dump; the two angles the targets a new
+    # project's temples hang at.
+    "draft": {
+        "angle_of_side_deg":  8.0,
+        "splay_deg":       0.0,
+        "hinge":              {},
+        "blueprint":          {},
+    },
     # Hotkey overrides (action-key → shortcut string) — M7.15. {} = shipped defaults.
     "hotkeys":               {},
     # Toolbar action order (list of action keys) — M7.15. [] = the default toolbar.
@@ -250,7 +272,7 @@ def load() -> dict:
             # here — a missing entry means old files silently clobber new
             # defaults. ("toolbar" is a list, not a dict — excluded.)
             for key in ("viewport", "render3d", "grid", "layer_colors",
-                        "cam_params", "hotkeys", "part_defaults"):
+                        "cam_params", "hotkeys", "part_defaults", "forming", "draft"):
                 if isinstance(data.get(key), dict):
                     merged[key] = {**copy.deepcopy(DEFAULTS[key]), **data[key]}
                 else:

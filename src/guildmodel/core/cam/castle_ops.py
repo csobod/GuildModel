@@ -162,7 +162,7 @@ CASTLE_OP_TIERS: tuple[frozenset[str], ...] = (
     frozenset({"Rough Relief"}),
     frozenset({"Fine Relief"}),
     frozenset({"Features"}),
-    frozenset({"Sculpt Finish"}),   # the fine pass over a sculpt, after the band it stands in (M22)
+    frozenset({"Emboss Finish"}),   # the fine pass over a sculpt, after the band it stands in (M22)
     frozenset({"Inlays"}),       # the seats, after the relief finishes what they measure from (§8a)
     frozenset({"Eyewires"}),
     frozenset({"Holes"}),
@@ -433,7 +433,7 @@ def hinge_pocket_op(
             levels = pocket_levels(start, floor.z_fixed, params.pocket_stepdown_mm)
         elif tilted:
             lift = tool_radius_mm * abs(floor.slope)
-            # The plane's low point over the region the tool *centre* can
+            # The plane's low point over the region the tool *center* can
             # reach: over the whole pocket it sat r·tan lower than any point
             # the tool touches, and a last level under the reachable floor
             # clamped to the level before it and was posted twice.
@@ -597,7 +597,7 @@ def _link_breaks(idx: np.ndarray, zline: np.ndarray,
     string of retract+plunge stubs. Two things disqualify a gap:
 
     * too **wide** (`gap_cells`) — the original M11 test;
-    * too **tall** (`max_rise_mm`) — how far above its two cut neighbours the
+    * too **tall** (`max_rise_mm`) — how far above its two cut neighbors the
       bridge would carry the tool. The linking was written for a thin cap, where
       that is nearly zero. Where the gap is a nosepad tower, masked out precisely
       because it stands at stock height, the bridge climbs the whole terrace step
@@ -1888,18 +1888,21 @@ def sculpt_finish_op(relief: CastleRelief, stock, tool: dict, params: CastleCamP
     from scipy.ndimage import distance_transform_edt
     from shapely.ops import unary_union
 
-    op = CamOp("Sculpt Finish")
+    op = CamOp("Emboss Finish")
     shadows = [p for p in footprints if p is not None and not p.is_empty]
     if not shadows:
         return op
     f = relief.field
-    surf = relief.surface_field if relief.surface_field is not None else f
+    # a flat part's relief (a temple's, since 2026-11-02) has neither field
+    surf = getattr(relief, "surface_field", None)
+    surf = surf if surf is not None else f
     res = f.resolution
     ox, oy = f.origin
     inside = relief.inside
     r = float(tool["radius_mm"])
-    stock_hf = (relief.stock_top if relief.stock_top is not None
-                else stock_top_heightfield(stock, resolution=res, origin=f.origin, shape=f.z.shape))
+    stock_hf = getattr(relief, "stock_top", None)
+    if stock_hf is None:
+        stock_hf = stock_top_heightfield(stock, resolution=res, origin=f.origin, shape=f.z.shape)
     band_mm = max(r, params.relief_stepover_mm)
     dist, (iy, ix) = distance_transform_edt(~inside, sampling=res, return_indices=True)
     band = inside | (dist <= band_mm + 1e-9)
@@ -2040,9 +2043,9 @@ def generate_castle_program(
 
     # 3b — the fine pass over the sculpts (M22 §7.5), off unless the maker
     # ticks it: the band under a sculpt is finished by Features already.
-    if (relief.sculpt_footprints and params.is_op_enabled("Sculpt Finish")
+    if (relief.sculpt_footprints and params.is_op_enabled("Emboss Finish")
             and any(s.mount.face != "anterior" for s in castle.resolved_sculpts())):
-        sculpt_tool = _tool_for("Sculpt Finish")
+        sculpt_tool = _tool_for("Emboss Finish")
         op3b = sculpt_finish_op(relief, stock, sculpt_tool, params, relief.sculpt_footprints)
         if op3b.paths:
             op3b.tool = sculpt_tool

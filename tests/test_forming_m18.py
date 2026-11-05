@@ -9,7 +9,7 @@ never reads a forming value.
 
 The numbers are BUILDPLAN §0.4's, measured by `scripts/spike_thermoform.py`
 on 2026-09-24. The bridge-set pins are the loud ones: a sign error anywhere
-in the map moves them by millimetres.
+in the map moves them by millimeters.
 """
 import ast
 import inspect
@@ -165,7 +165,7 @@ def test_projection_is_forward_and_independent_of_the_curve():
 
 
 def test_the_bump_is_the_dies_section_between_the_creases():
-    """Across the gap the die's own section: p on the centre line, zero at
+    """Across the gap the die's own section: p on the center line, zero at
     each crease with a kink, an arc of the die's radius between. With no die
     named the die is the arc through both creases, ``(h^2 + p^2) / 2p``.
     Along the V the same die rests on the plate's two edges as the creases
@@ -189,7 +189,7 @@ def test_the_bump_is_the_dies_section_between_the_creases():
     inside = (m.bump(9.999, 12.0) - m.bump(9.99, 12.0)) / 0.009
     assert inside == pytest.approx(-10.0 / np.sqrt(R * R - 100.0), rel=0.02)
     # converging toward the nose at the V's angle: 45 degrees included, so
-    # each crease leans tan(22.5) per millimetre of depth, and the die rests
+    # each crease leans tan(22.5) per millimeter of depth, and the die rests
     # on the narrower gap at R - sqrt(R^2 - h^2)
     h5 = float(m.crease_half_width(7.0))
     assert h5 == pytest.approx(10.0 - 5.0 * np.tan(np.radians(22.5)))
@@ -215,7 +215,7 @@ def test_the_bump_is_the_dies_section_between_the_creases():
 
 def test_a_named_die_gives_the_bump_flanks():
     """A die smaller than the arc through the creases floats between them:
-    its arc on the centre line, then a straight flank tangent to it down to
+    its arc on the center line, then a straight flank tangent to it down to
     each crease, where the kink is the flank's own slope. The bump keeps the
     full projection until the V narrows to the die's footprint, then rests.
     A die *wider* than the arc rests on the plate at the top edge already
@@ -229,7 +229,7 @@ def test_a_named_die_gives_the_bump_flanks():
     assert small.die_radius_mm() == 5.0
     assert small.apex_mm() == pytest.approx(4.0)
     assert small.bump(0.0, 12.0) == pytest.approx(4.0)
-    # the arc of radius 5 centred at (0, -1) on the centre line
+    # the arc of radius 5 centered at (0, -1) on the center line
     assert small.bump(1.0, 12.0) == pytest.approx(-1.0 + np.sqrt(24.0))
     # a straight flank from the tangent point to the crease: constant slope
     us = np.linspace(7.0, 9.9, 30)
@@ -270,7 +270,7 @@ def test_a_named_die_gives_the_bump_flanks():
 def test_a_crease_blend_rounds_the_fold():
     """With a blend the fold at each crease becomes a fillet of that radius:
     the bump is smooth through the crease (no kink), spreads a little past
-    it, is unchanged on the centre line, and the map says it is no longer
+    it, is unchanged on the center line, and the map says it is no longer
     creased so the tessellation neither cuts nor splits there."""
     from guildmodel.core.forming import BridgeGeometry, ThermoformMap
 
@@ -354,9 +354,9 @@ def test_the_offset_moves_the_ridge_and_nothing_else():
     g = BridgeGeometry(top_y=12.0, top_width=20.0)
     m = ThermoformMap(projection_mm=4.0, crease_gap_mm=20.0, bridge=g,
                       bridge_offset_mm=3.0)
-    centred = ThermoformMap(projection_mm=4.0, crease_gap_mm=20.0, bridge=g)
+    centered = ThermoformMap(projection_mm=4.0, crease_gap_mm=20.0, bridge=g)
     assert m.bump(3.0, 12.0) == pytest.approx(4.0)
-    assert m.bump(0.0, 12.0) == pytest.approx(centred.bump(3.0, 12.0))
+    assert m.bump(0.0, 12.0) == pytest.approx(centered.bump(3.0, 12.0))
     assert m.bump(13.0, 12.0) == pytest.approx(0.0)
     assert m.bump(-7.0, 12.0) == pytest.approx(0.0)
     assert m.bridge_set_mm() == pytest.approx(-4.0, abs=1e-9)
@@ -384,7 +384,7 @@ def test_thickness_rides_the_normal():
 def test_the_bridge_lands_where_it_was_measured(fixture, row, request):
     """The bridge-set column, per drawing and press row, to 0.02 mm. A sign
     error in the rim curvature, the wrap or the bump would move these by
-    millimetres, which is the point of pinning all twelve."""
+    millimeters, which is the point of pinning all twelve."""
     ws = request.getfixturevalue(fixture)
     _, _, R, F = SBT[row]
     fmap = _map_for(ws, R, F)
@@ -409,7 +409,7 @@ def test_the_press_rows_bend_nowhere_tighter_than_the_part(fixture, request):
     """A map is injective through a thickness exactly when that thickness is
     under its tightest bend radius. The bump is a shear along z and cannot
     tighten anything; what can is the reverse bend between two rims apexed
-    at their own lens centres. Held at every press row, at the panel's
+    at their own lens centers. Held at every press row, at the panel's
     150 degree face-form floor, and across the projection range."""
     ws = request.getfixturevalue(fixture)
     rows = [(R, F) for _, _, R, F in SBT] + [(100.0, 150.0), (400.0, 180.0)]
@@ -423,10 +423,10 @@ def test_the_press_rows_bend_nowhere_tighter_than_the_part(fixture, request):
 def test_a_sixteen_diopter_curve_says_when_it_folds(aviator_front):
     """The slider goes to 16 diopters because that is how the forms are
     tagged. At R 33 the reverse bend between the rims drops to R 7 on the
-    aviator — but its centre is in *front* of the part, so the castle's
+    aviator — but its center is in *front* of the part, so the castle's
     depth cannot fold there, and the first version of this test pinned a
     false alarm. What folds is the bridge bump, an offset toward that
-    centre: an 8 mm set through a 20 mm gap inverted 1,159 triangles while
+    center: an 8 mm set through a 20 mm gap inverted 1,159 triangles while
     the check stayed quiet. The report reads the sign of the bend."""
     from guildmodel.core.forming import ThermoformMap
     from guildmodel.core.project.schema import FormingMetadata
@@ -456,7 +456,7 @@ def test_the_rims_and_the_face_form_nearly_cancel(gabriel_front):
     apexes; the face form pulls it forward again and at the press's pairings
     the two land within 1.3 mm of each other — one continuous bow, not a W.
     The plan's "0.5-1.2 mm forward" was the middle rows only: the base 2 die
-    leaves the bridge a quarter millimetre behind."""
+    leaves the bridge a quarter millimeter behind."""
     for _, _, R, F in SBT:
         s = _map_for(gabriel_front, R, F, projection=0.0).bridge_set_mm()
         assert -1.3 < s < 0.5, f"R{R}: bridge set {s:.2f} mm"
@@ -502,12 +502,12 @@ def test_the_bridge_geometry_is_read_off_the_partition(fixture, top_width,
     b = ws.partition.zone("bridge").polygon
     assert g.nose_dir == -1.0
     assert g.top_y == pytest.approx(b.bounds[3])
-    assert g.centre_y == pytest.approx(b.centroid.y)
+    assert g.center_y == pytest.approx(b.centroid.y)
     assert g.top_width == pytest.approx(top_width, abs=0.1)
     assert g.band_half == pytest.approx(0.5 * (b.bounds[2] - b.bounds[0]))
     pads = np.mean([z.polygon.centroid.y for z in ws.partition.zones
                     if z.name.startswith("nosepad")])
-    assert pads < g.centre_y, "the nose is below the bridge on every fixture"
+    assert pads < g.center_y, "the nose is below the bridge on every fixture"
 
 
 def test_a_front_without_a_bridge_zone_still_has_a_geometry(gabriel_front):
@@ -695,7 +695,7 @@ def test_a_plane_cut_keeps_both_sides_and_closes():
 def test_band_refinement_is_conforming_and_stops_at_the_target():
     """`refine_band` on a coarse box with a band down its middle: every edge
     in the band ends up under the target, the faces outside are touched
-    only to match a neighbour, and the mesh stays closed with no
+    only to match a neighbor, and the mesh stays closed with no
     T-junction — which `is_watertight` on the index topology is the test
     of."""
     import trimesh
@@ -768,7 +768,7 @@ def test_the_formed_mesh_is_cut_along_the_creases(gabriel_front, flat_models):
     assert verify_mesh(shown).watertight, "welds closed"
     assert len(welded_surface(shown).split(only_watertight=False)) == 1, "to one body"
     # no sliver became a patch of its own: every vertex of the display mesh
-    # carries a normal within a right angle of its neighbours' average
+    # carries a normal within a right angle of its neighbors' average
     from guildmodel.core.forming.tessellate import area_weighted_normals
     smooth = area_weighted_normals(plain.vertices, plain.faces)[fm.prepared(fmap).origin]
     agree = np.einsum("ij,ij->i", smooth, shown.vertex_normals)
@@ -1155,7 +1155,7 @@ def test_the_shipped_presses_file_is_packaged():
 def test_a_sliver_sides_with_the_smooth_side_it_lies_on():
     """The Paula's posterior chatter (2026-09-25): a sliver thinner than the
     simplification's tolerance has a normal pointing anywhere. It must take
-    the normal of its neighbours' largest mutually smooth group: inside a
+    the normal of its neighbors' largest mutually smooth group: inside a
     flat patch it joins both sides, at a corner it sides with one and never
     bridges the corner, and a fan of slivers resolves from its ends."""
     from guildmodel.core.forming.tessellate import _borrowed_normals

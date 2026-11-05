@@ -235,6 +235,27 @@ def test_one_rim_and_one_lens_is_a_monocle(tmp_path):
     assert {z.name for z in p.zones} == {n for n in HALF_NAMES if n.endswith("_od")}
 
 
+@pytest.mark.parametrize("side, larger", [("left", False), ("right", False),
+                                          ("right", True)],
+                         ids=["left empty", "right empty", "right empty, larger"])
+def test_a_rim_drawn_without_its_lens_is_refused(tmp_path, side, larger):
+    """Two rims, one lens: GuildDraw 2.0.1 refuses it. Here the empty rim was
+    a body when it was the larger of the two, and the partition failed with
+    no word why; and a stray when the two were alike and it came second, and
+    the front was built as a monocle, the other rim dropped."""
+    front = _front()
+    lenses = [c for c in front["curves"] if c["layer"] == "LENS"]
+    gone = (min if side == "left" else max)(lenses, key=lambda c: c["nodes"][0]["x"])
+    front["curves"].remove(gone)
+    if larger:
+        for c in front["curves"]:
+            if c["layer"] == "OUTLINE" and (c["nodes"][0]["x"] > 0) == (side == "right"):
+                for node in c["nodes"]:
+                    node["y"] *= 1.2
+    ws = build_workspaces_from_gdraw(_gdraw(tmp_path / "rims.gdraw", front))[0][0]
+    assert ws.empty_rims == 1 and ws.partition is None and not ws.castle_ready
+
+
 def test_a_monocle_builds_and_cuts(tmp_path):
     from guildmodel.core.mesh_check import verify_mesh
     from guildmodel.core.model import build_castle_model, to_trimesh

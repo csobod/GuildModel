@@ -52,6 +52,11 @@ class FlatRelief:
     # every temple without an INLAY curve and the fast path the mesher keeps.
     anterior: "np.ndarray | None" = None
     anterior_pocket_polys: list = dc_field(default_factory=list)
+    # The debossed meshes' shadows (2026-11-02): on the hinge face, what the
+    # temple program's Embossing op rides over; on the outer face, what the
+    # anterior setup of a two-sided job rides over.
+    sculpt_footprints: list = dc_field(default_factory=list)
+    anterior_sculpt_footprints: list = dc_field(default_factory=list)
 
     @property
     def anterior_z(self) -> np.ndarray:
@@ -312,6 +317,150 @@ def temple_core_guide(
     else:
         x0, x1 = minx, minx + length
     return box(x0, cy - w / 2.0, x1, cy + w / 2.0)
+
+
+# ------------------------------------------------------------------ the meshes
+
+@dataclass
+class EmbossedFlat:
+    """A flat part with the maker's meshes baked in (`emboss_flat_relief`)."""
+    relief: FlatRelief           # the fields with the debosses cut in
+    mesh: object                 # the baked solid (trimesh), for the viewer and the export
+    host: object = None          # the solid without the meshes; a snap or a drag reads it
+    notes: list = dc_field(default_factory=list)
+
+
+def _face_of(feature) -> str:
+    """Which face of the part a mesh sits on: its mount's face, or, for a
+    pick, the face its normal names."""
+    face = feature.mount.face
+    if face in ("posterior", "anterior", "rim"):
+        return face
+    n = feature.mount.normal or [0.0, 0.0, 1.0]
+    if len(n) >= 3 and n[2] < -0.5:
+        return "anterior"
+    if len(n) >= 3 and abs(n[2]) <= 0.5:
+        return "rim"
+    return "posterior"
+
+
+def _shadow(placed):
+    """A placed mesh's footprint on the grid plane, or None."""
+    try:
+        rings = placed.manifold.project().to_polygons()
+    except Exception:                                    # noqa: BLE001
+        return None
+    polys = [Polygon(np.asarray(r)) for r in rings if len(r) >= 3]
+    polys = [q.buffer(0) for q in polys if q.is_valid or q.buffer(0).area > 0]
+    if not polys:
+        return None
+    shadow = unary_union(polys)
+    if shadow.geom_type != "Polygon":
+        shadow = max(shadow.geoms, key=lambda g: g.area)
+    return shadow if shadow.area > 0 else None
+
+
+def emboss_flat_relief(relief: FlatRelief, features, sources: dict, *,
+                       progress: Optional[ProgressFn] = None) -> EmbossedFlat:
+    """The flat part with the maker's meshes baked in (2026-11-02; the front
+    has had them since M22).
+
+    The part is built as a solid, the embosses added and the debosses taken
+    away (`model.sculpt.bake`), and the solid is what the viewer shows and
+    the export writes. The CAM reads the relief: under each mesh's shadow the
+    hinge face takes the baked solid's upper envelope and the outer face its
+    lower one, so a deboss on either face is in the map the program and the
+    simulation cut from. An emboss stands above the blank's face: it is in
+    the solid, and clamped out of the map with a note, since no program can
+    put material on. `features` are the part's `SculptFeature`s, `sources`
+    their STL bytes (or loaded sources) by sha256. A part with no mesh to
+    bake comes back with its own relief and its plain solid.
+    """
+    import dataclasses
+
+    from .castle import build_castle_mesh
+
+    host = build_castle_mesh(relief, progress=progress)
+    enabled = [f for f in (features or []) if getattr(f, "enabled", True)]
+    if not enabled or not sources:
+        return EmbossedFlat(relief, host, None, [])
+    from ..model.kernel import ManifoldError, drop_degenerate, to_trimesh
+    from ..model.sculpt import bake, manifold_from_arrays, placed_sculpts
+    from ..zmap import triangle_envelopes
+
+    _report(progress, "Baking the meshes", 0.80)
+    solid = manifold_from_arrays(host.vertices, host.faces)
+    per_face: dict = {"posterior": [], "anterior": [], "rim": []}
+    # one call, so a source several meshes share is repaired once, not once
+    # per mesh on every rebuild (the 2.1 bug hunt)
+    placed_all = placed_sculpts(enabled, sources)
+    by_id = {f.id: f for f in enabled}
+    for p in placed_all:
+        f = by_id.get(p.feature_id)
+        if f is not None:
+            per_face[_face_of(f)].append((f, p))
+    if not placed_all:
+        return EmbossedFlat(relief, host, None, [])
+    try:
+        baked = drop_degenerate(bake(solid, placed_all))
+    except ManifoldError as exc:
+        return EmbossedFlat(relief, host, None, [f"the meshes could not be baked: {exc}"])
+    mesh = to_trimesh(baked)
+
+    notes: list[str] = []
+    hf = relief.field
+    rows, cols = hf.z.shape
+    res = float(hf.resolution)
+    thickness = float(np.nanmax(hf.z)) if hf.z.size else 0.0
+    upper, lower = triangle_envelopes(mesh.vertices, mesh.faces, hf.origin, rows, cols,
+                                      res, background=np.nan, progress=None)
+    xs = hf.origin[0] + np.arange(cols) * res
+    ys = hf.origin[1] + np.arange(rows) * res
+    Xs, Ys = np.meshgrid(xs, ys)
+    fx, fy = Xs.ravel(), Ys.ravel()
+
+    def mask_of(shadows):
+        m = np.zeros((rows, cols), dtype=bool)
+        for sh in shadows:
+            grown = sh.buffer(res, join_style="round")
+            prepare(grown)
+            m |= contains_xy(grown, fx, fy).reshape(rows, cols)
+        return m & relief.inside
+
+    z = hf.z.copy()
+    footprints, anterior_footprints = [], []
+    post = [(f, _shadow(p)) for f, p in per_face["posterior"]]
+    post = [(f, sh) for f, sh in post if sh is not None]
+    if post:
+        m = mask_of([sh for _, sh in post]) & np.isfinite(upper)
+        z[m] = upper[m]
+        if (z[m] > thickness + 1e-6).any():
+            z = np.minimum(z, thickness)
+        footprints = [sh for f, sh in post if f.op == "deboss"]
+        if any(f.op == "emboss" for f, _ in post):
+            notes.append("An emboss on the hinge face stands above the blank's face: it is "
+                         "modeled and not cut. Deboss it, or cut it from the other face.")
+    anterior = relief.anterior.copy() if relief.anterior is not None else np.zeros_like(z)
+    ant = [(f, _shadow(p)) for f, p in per_face["anterior"]]
+    ant = [(f, sh) for f, sh in ant if sh is not None]
+    if ant:
+        m = mask_of([sh for _, sh in ant]) & np.isfinite(lower)
+        anterior[m] = np.maximum(anterior[m], np.maximum(lower[m], 0.0))
+        anterior_footprints = [sh for f, sh in ant if f.op == "deboss"]
+        if any(f.op == "emboss" for f, _ in ant):
+            notes.append("An emboss on the outer face stands below the blank's face: it is "
+                         "modeled and not cut. Deboss it instead.")
+    if per_face["rim"]:
+        notes.append("A mesh on the rim is modeled and not cut: a three-axis program "
+                     "reaches the two faces alone.")
+    anterior[~relief.inside] = 0.0
+    z[~relief.inside] = 0.0
+    out = dataclasses.replace(
+        relief, field=Heightfield(z=z, origin=hf.origin, resolution=res),
+        anterior=anterior if anterior.any() else None,
+        sculpt_footprints=footprints, anterior_sculpt_footprints=anterior_footprints)
+    _report(progress, "Meshes baked", 0.90)
+    return EmbossedFlat(out, mesh, host, notes)
 
 
 def build_temple_relief(

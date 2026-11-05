@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QPushButton,
     QButtonGroup, QLabel, QCheckBox, QSizePolicy, QSlider,
 )
-from PySide6.QtCore import Qt, QSize, Signal, QTimer, QPointF
+from PySide6.QtCore import Qt, QEvent, QSize, Signal, QTimer, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen
 
 from guildmodel.gui.style import theme
@@ -222,13 +222,20 @@ class Viewer3D(QWidget):
 
         # model-mode scene cache
         self._model_pv = None                     # pv.PolyData (computed normals)
-        # The sculpt handle (M22 §7.4): a translucent overlay of the placed
-        # sculpt with pyvista's affine widget on it; re-added after every
-        # model render, since a render clears the plotter.
+        # The sculpt overlay (M22 §7.4, redone 2026-11-01): the placed sculpt
+        # drawn translucent over the model, dragged over the frame's surface
+        # with the cursor's ray; re-added after every model render, since a
+        # render clears the plotter.
         self._sculpt_pv = None
         self._sculpt_actor = None
-        self._sculpt_widget = None
-        self._sculpt_release = None
+        self._sculpt_anchor = None                # the mount point, world
+        self._sculpt_preview = None               # (point, normal, offset) -> 4 x 4
+        self._sculpt_commit = None                # (point, normal, offset) -> None
+        self._sculpt_drag = None                  # {"offset", "last"} while the button is down
+        self._model_actor = None                  # the surface the sculpt rides
+        self._sculpt_host_pv = None               # the frame without its sculpts (M22 §7.8)
+        self._sculpt_host_actor = None            # drawn invisible, picked instead of the model
+        self._locators: dict = {}                 # id(polydata) -> vtkStaticCellLocator
         self._model_stock = None
         self._model_core_guide = None
         self._model_zero = None
@@ -526,6 +533,8 @@ class Viewer3D(QWidget):
             self._layout.addWidget(self._plotter)
             self._layout.activate()               # size it now, not next event-loop pass
             self._plotter.set_background(self._palette.canvas_bg)
+            # the sculpt drag reads the mouse before VTK's camera does
+            self._plotter.installEventFilter(self)
             self._aa_pending = True               # AA renders immediately — defer
             self._enable_aa_if_sized()
             return True
@@ -801,6 +810,12 @@ class Viewer3D(QWidget):
         self._plotter.clear()
         self._clear_plane_widgets()
         self._zero_actors = []
+        # the cleared scene has no model and no overlay to pick until they
+        # are added again below (the formed view adds neither: a sculpt is
+        # placed on the flat front)
+        self._model_actor = None
+        self._sculpt_actor = None
+        self._sculpt_host_actor = None
         # The formed front (M18) stands in for the flat model wholesale: same
         # surface and edge drawing, no stock, no guide, no datum, its own label.
         formed = self._formed_on and self._formed_pv is not None
@@ -834,8 +849,9 @@ class Viewer3D(QWidget):
                 sectioned = True
             except Exception:
                 sectioned = False
+        self._model_actor = None
         if not sectioned and mode != "wireframe":
-            self._plotter.add_mesh(scene_pv, **mesh_kwargs)
+            self._model_actor = self._plotter.add_mesh(scene_pv, name="model", **mesh_kwargs)
         if mode != "shaded" and scene_edges is not None:
             self._plotter.add_mesh(
                 scene_edges, color=self._palette.mesh_edge,
@@ -890,7 +906,8 @@ class Viewer3D(QWidget):
                 color="#7a7a7a", opacity=0.45, show_edges=True, edge_color="#555555")
 
         self._draw_program_zero(self._model_zero, stock)
-        self._add_sculpt_handle()
+        self._add_sculpt_host()
+        self._add_sculpt_overlay()
         if reset_camera:
             self._plotter.reset_camera(render=False)
         else:
@@ -898,58 +915,93 @@ class Viewer3D(QWidget):
         self._safe_render()
         self._mesh_label.setText(self._model_label_text)
 
-    # -------------------------------------------------------- sculpt handle (M22)
+    # ------------------------------------------- sculpt overlay (M22, redone 2026-11-01)
 
-    def show_sculpt_handle(self, mesh, on_release) -> None:
-        """The transform widget on a sculpt (BUILDPLAN M22 §7.4): `mesh` is
-        the placed sculpt as a trimesh, drawn translucent over the model with
-        pyvista's affine widget attached — arrows to move, rings to turn.
-        `on_release(matrix)` gets the 4 x 4 the drag applied on top of the
-        placement when the button goes up; the caller rebuilds and calls
-        this again with the new placement, so the handle rides along.
+    def show_sculpt_overlay(self, mesh, anchor, preview, commit) -> None:
+        """The placed sculpt drawn translucent over the model, and a drag that
+        slides it over the frame (BUILDPLAN §7.8).
+
+        `mesh` is the placed sculpt as a trimesh and `anchor` its mount
+        point in the world (where its leading face meets the surface). A
+        left press on the overlay starts a drag, and VTK's camera does not
+        see it; at every move the cursor's ray is cast on the model, and
+        `preview(point, normal, offset)` — the host surface under the
+        cursor, its outward normal there, and the anchor's offset from the
+        grabbed point at the press — returns the 4 x 4 the overlay is drawn
+        under meanwhile, the caller's own placement arithmetic. Where the
+        button goes up on the model, `commit(point, normal, offset)` is
+        called once; the caller re-places the sculpt, rebuilds, and calls
+        this again with the new placement, so the overlay rides along. A
+        press beside the overlay turns the camera as before.
         """
         if not self._ensure_plotter():
             return
-        self.clear_sculpt_handle()
+        self.clear_sculpt_overlay()
         self._sculpt_pv, _ = self._polydata(mesh)
-        self._sculpt_release = on_release
-        self._add_sculpt_handle()
+        self._sculpt_anchor = np.asarray(anchor, dtype=float).reshape(3)
+        self._sculpt_preview = preview
+        self._sculpt_commit = commit
+        self._add_sculpt_overlay()
         self._safe_render()
 
-    def _add_sculpt_handle(self) -> None:
+    def set_sculpt_host(self, mesh) -> None:
+        """The frame's surface without its sculpts (a trimesh, or None): what
+        the overlay drag and a drop pick on, so a short move never lands on
+        the sculpt's own copy in the baked model. Drawn all but transparent:
+        VTK's pickers skip an actor at opacity 0, and the eye cannot tell
+        1 % on a surface the model already covers."""
+        if mesh is None:
+            self._sculpt_host_pv = None
+            self._sculpt_host_actor = None
+            if self._plotter is not None:
+                try:
+                    self._plotter.remove_actor("sculptHost", render=False)
+                except Exception:                           # noqa: BLE001
+                    pass
+            return
+        if not self._ensure_plotter():
+            return
+        self._sculpt_host_pv, _ = self._polydata(mesh)
+        self._add_sculpt_host()
+
+    def _add_sculpt_host(self) -> None:
+        if self._plotter is None or self._sculpt_host_pv is None:
+            return
+        try:
+            self._plotter.remove_actor("sculptHost", render=False)
+        except Exception:                                   # noqa: BLE001
+            pass
+        try:
+            self._sculpt_host_actor = self._plotter.add_mesh(
+                self._sculpt_host_pv, name="sculptHost", opacity=0.01, pickable=True,
+                lighting=False)
+        except Exception:                                   # noqa: BLE001
+            self._sculpt_host_actor = None
+
+    def _pick_host(self):
+        """What a surface pick reads: the sculpt-free host when there is
+        one, else the model."""
+        return self._sculpt_host_actor if self._sculpt_host_actor is not None else self._model_actor
+
+    def _add_sculpt_overlay(self) -> None:
         if self._plotter is None or self._sculpt_pv is None:
             return
         try:
             self._sculpt_actor = self._plotter.add_mesh(
                 self._sculpt_pv, name="sculptHandle", color=self._palette.measure,
                 opacity=0.45, smooth_shading=True, pickable=True)
-            self._sculpt_widget = self._plotter.add_affine_transform_widget(
-                self._sculpt_actor, release_callback=self._on_sculpt_released)
         except Exception:                                   # noqa: BLE001
-            self._sculpt_widget = None                      # a plotter without widgets
+            self._sculpt_actor = None
 
-    def _on_sculpt_released(self, matrix) -> None:
-        cb = self._sculpt_release
-        if cb is None:
-            return
-        try:
-            M = np.asarray(matrix, dtype=float).reshape(4, 4)
-        except Exception:                                   # noqa: BLE001
-            return
-        cb(M)
-
-    def clear_sculpt_handle(self) -> None:
-        """Take the widget and its overlay down (the sculpt is baked, or the
-        maker is done moving it)."""
-        w, self._sculpt_widget = self._sculpt_widget, None
-        if w is not None:
-            try:
-                w.remove()
-            except Exception:                               # noqa: BLE001
-                pass
+    def clear_sculpt_overlay(self) -> None:
+        """Take the overlay down (the sculpt is baked, or the maker is done
+        moving it); a drag in flight is dropped."""
         self._sculpt_pv = None
         self._sculpt_actor = None
-        self._sculpt_release = None
+        self._sculpt_anchor = None
+        self._sculpt_preview = None
+        self._sculpt_commit = None
+        self._end_sculpt_drag()
         if self._plotter is not None:
             try:
                 self._plotter.remove_actor("sculptHandle", render=False)
@@ -957,8 +1009,161 @@ class Viewer3D(QWidget):
                 pass
 
     @property
-    def sculpt_handle_active(self) -> bool:
+    def sculpt_overlay_active(self) -> bool:
         return self._sculpt_pv is not None
+
+
+    def _display_xy(self, pos) -> tuple[float, float]:
+        """VTK display coordinates of a point of the plotter widget (Qt's
+        origin is the top left, VTK's the bottom left; HiDPI scales both)."""
+        try:
+            ratio = float(self._plotter.devicePixelRatioF())
+        except Exception:                                   # noqa: BLE001
+            ratio = 1.0
+        h = self._plotter.height()
+        return float(pos.x()) * ratio, float(h - pos.y() - 1) * ratio
+
+    def _locator(self, actor):
+        """A static cell locator on the actor's polydata, built once, so a
+        pick on a 200k-triangle model costs a tree walk, not a sweep."""
+        try:
+            data = actor.mapper.dataset if hasattr(actor, "mapper") else actor.GetMapper().GetInput()
+        except Exception:                                   # noqa: BLE001
+            return None
+        key = id(data)
+        cached = self._locators.get(key)
+        if cached is not None and cached[1] is data:        # the same polydata, not a reused id
+            return cached[0]
+        try:
+            import vtk
+            loc = vtk.vtkStaticCellLocator()
+            loc.SetDataSet(data)
+            loc.BuildLocator()
+        except Exception:                                   # noqa: BLE001
+            return None
+        if len(self._locators) > 4:
+            self._locators.clear()
+        self._locators[key] = (loc, data)
+        return loc
+
+    def _pick(self, x: float, y: float, actors) -> tuple | None:
+        """The nearest surface point of `actors` under VTK display point
+        (x, y): (point, outward unit normal, actor), or None when the ray
+        misses them all. A cell picker restricted to the list, so the
+        overlay never hides the model it is dragged over."""
+        if self._plotter is None:
+            return None
+        actors = [a for a in actors if a is not None]
+        if not actors:
+            return None
+        try:
+            import vtk
+            picker = vtk.vtkCellPicker()
+            picker.SetTolerance(0.0005)
+            picker.PickFromListOn()
+            for a in actors:
+                picker.AddPickList(a)
+                loc = self._locator(a)
+                if loc is not None:
+                    picker.AddLocator(loc)
+            picker.Pick(float(x), float(y), 0.0, self._plotter.renderer)
+            if picker.GetCellId() < 0:
+                return None
+            p = np.asarray(picker.GetPickPosition(), dtype=float)
+            n = np.asarray(picker.GetPickNormal(), dtype=float)
+            if not np.all(np.isfinite(n)) or np.linalg.norm(n) < 1e-9:
+                n = np.array([0.0, 0.0, 1.0])
+            n = n / np.linalg.norm(n)
+            # outward is toward the eye: the face the ray hit is the one seen
+            try:
+                eye = np.asarray(self._plotter.camera.position, dtype=float)
+                if float(n @ (eye - p)) < 0:
+                    n = -n
+            except Exception:                               # noqa: BLE001
+                pass
+            return p, n, picker.GetActor()
+        except Exception:                                   # noqa: BLE001
+            return None
+
+    def pick_surface(self, pos):
+        """The model's surface under `pos` (a QPoint in this widget's
+        coordinates): (point, outward normal), or None off the model or
+        before a model is drawn. What a dropped STL lands under."""
+        if self._plotter is None or self._pick_host() is None:
+            return None
+        local = self._plotter.mapFrom(self, pos)
+        if not self._plotter.rect().contains(local):
+            return None
+        hit = self._pick(*self._display_xy(local), [self._pick_host()])
+        return None if hit is None else (hit[0], hit[1])
+
+    def _end_sculpt_drag(self) -> None:
+        self._sculpt_drag = None
+        if self._plotter is not None:
+            try:
+                self._plotter.unsetCursor()
+            except Exception:                               # noqa: BLE001
+                pass
+
+    def eventFilter(self, obj, event) -> bool:              # noqa: N802 (Qt)
+        """The sculpt drag, ahead of VTK's camera: a press on the overlay
+        takes the mouse until the release; a move with the button down
+        slides the overlay to the surface under the cursor; the release on
+        the model commits. Anything else passes through."""
+        if obj is not self._plotter or self._sculpt_pv is None or self._sculpt_actor is None:
+            return super().eventFilter(obj, event)
+        t = event.type()
+        if t == QEvent.Type.MouseButtonPress:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return super().eventFilter(obj, event)
+            pos = event.position().toPoint()
+            hit = self._pick(*self._display_xy(pos), [self._sculpt_actor])
+            if hit is None:
+                return super().eventFilter(obj, event)
+            anchor = self._sculpt_anchor if self._sculpt_anchor is not None else hit[0]
+            self._sculpt_drag = {"offset": anchor - hit[0], "last": None}
+            try:
+                self._plotter.setCursor(Qt.CursorShape.ClosedHandCursor)
+            except Exception:                               # noqa: BLE001
+                pass
+            return True
+        if t == QEvent.Type.MouseMove:
+            pos = event.position().toPoint()
+            if self._sculpt_drag is None:
+                # hover: an open hand over the overlay says it can be dragged
+                over = self._pick(*self._display_xy(pos), [self._sculpt_actor]) is not None
+                try:
+                    if over:
+                        self._plotter.setCursor(Qt.CursorShape.OpenHandCursor)
+                    else:
+                        self._plotter.unsetCursor()
+                except Exception:                           # noqa: BLE001
+                    pass
+                return super().eventFilter(obj, event)
+            hit = self._pick(*self._display_xy(pos), [self._pick_host()])
+            if hit is not None and self._sculpt_preview is not None:
+                point, normal, _ = hit
+                offset = self._sculpt_drag["offset"]
+                try:
+                    M = self._sculpt_preview(point, normal, offset)
+                except Exception:                           # noqa: BLE001
+                    M = None
+                if M is not None:
+                    try:
+                        self._sculpt_actor.user_matrix = np.asarray(M, dtype=float).reshape(4, 4)
+                    except Exception:                       # noqa: BLE001
+                        pass
+                    self._sculpt_drag["last"] = (point, normal, offset)
+                    self._safe_render()
+            return True
+        if t == QEvent.Type.MouseButtonRelease and self._sculpt_drag is not None:
+            last = self._sculpt_drag.get("last")
+            commit = self._sculpt_commit
+            self._end_sculpt_drag()
+            if last is not None and commit is not None:
+                commit(*last)
+            return True
+        return super().eventFilter(obj, event)
 
     # -------------------------------------------------------- section (M7.13)
     def _on_toggle_section(self, on: bool) -> None:
@@ -1606,9 +1811,10 @@ class Viewer3D(QWidget):
     # ------------------------------------------------------------------ clear
 
     def clear(self) -> None:
-        self.clear_sculpt_handle()
         """Drop the model scene (called when the active component has no mesh). The
         sim scene is left cached; sim isn't shared across tabs anyway."""
+        self.clear_sculpt_overlay()
+        self.set_sculpt_host(None)       # the last part's surface is not this one's
         self._model_pv = None
         self._model_stock = None
         self._model_core_guide = None

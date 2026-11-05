@@ -70,7 +70,9 @@ def test_an_open_mesh_repairs():
     holed = sph.submesh([np.flatnonzero(keep)], append=True)
     assert not holed.is_watertight
     src = load_sculpt(_stl(holed), "holed.stl")
-    assert src.repaired == 1 and src.hulled == 0
+    # the hole is capped along the faces' fans; pymeshfix is not reached
+    assert src.capped == 1 and src.repaired == 0 and src.hulled == 0
+    assert "1 hole capped" in src.notes()
     assert src.mesh.is_watertight
     assert src.volume == pytest.approx(sph.volume, rel=0.02)
 
@@ -93,7 +95,7 @@ def test_a_multi_shell_input_survives_repair():
     a_open = a.submesh([np.flatnonzero(keep)], append=True)
     b = trimesh.creation.box(extents=(2, 2, 2)).apply_translation([6, 0, 0])
     src = load_sculpt(_stl(trimesh.util.concatenate([a_open, b])), "two.stl")
-    assert src.shells == 2 and src.repaired == 1
+    assert src.shells == 2 and src.capped == 1 and src.repaired == 0
     assert src.volume == pytest.approx(a.volume + 8.0, rel=0.03)
 
 

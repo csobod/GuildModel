@@ -104,7 +104,7 @@ def test_a_posterior_sculpt_lands_in_the_relief_and_its_footprint_joins_the_band
     assert relief.feature_band is not None and relief.feature_band[r, c]
     assert relief.feature_max_slope_deg >= 75.0
     assert any(op.name == "Features" for op in ops)
-    assert not any(op.name == "Sculpt Finish" for op in ops)  # off unless ticked
+    assert not any(op.name == "Emboss Finish" for op in ops)  # off unless ticked
 
 
 def test_the_sculpt_finish_op_rides_the_footprint_when_ticked(demo):
@@ -112,13 +112,13 @@ def test_the_sculpt_finish_op_rides_the_footprint_when_ticked(demo):
     from guildmodel.core.cam.cuttime import _CANON
     partition, hinges = demo
     castle, sources, at = _sculpted(demo)
-    params = CastleCamParams(op_enabled={"Sculpt Finish": True})
-    assert params.is_op_enabled("Sculpt Finish") and not CastleCamParams().is_op_enabled("Sculpt Finish")
+    params = CastleCamParams(op_enabled={"Emboss Finish": True})
+    assert params.is_op_enabled("Emboss Finish") and not CastleCamParams().is_op_enabled("Emboss Finish")
     relief, ops, text = _program(partition, hinges, castle, sources, params)
     names = [op.name for op in ops]
-    assert "Sculpt Finish" in names
-    assert names.index("Features") < names.index("Sculpt Finish") < names.index("Eyewires")
-    op = next(o for o in ops if o.name == "Sculpt Finish")
+    assert "Emboss Finish" in names
+    assert names.index("Features") < names.index("Emboss Finish") < names.index("Eyewires")
+    op = next(o for o in ops if o.name == "Emboss Finish")
     assert op.tool["type"] == "ball"                           # ball_1mm by default
     shadow = relief.sculpt_footprints[0].buffer(op.tool["radius_mm"] + 0.5)
     pts = np.array([p for path in op.paths for p in path])
@@ -131,9 +131,9 @@ def test_the_sculpt_finish_op_rides_the_footprint_when_ticked(demo):
         max(FEATURE_STEP_MIN_MM, 2.0 * np.sqrt(h * (2.0 * 0.5 - h))))
     assert sculpt_stepover(dict(type="ball", radius_mm=1.0)) == pytest.approx(
         2.0 * np.sqrt(h * (2.0 - h)))                           # a 2 mm ball: 0.345 mm
-    assert any("Sculpt Finish" in t for t in CASTLE_OP_TIERS)
-    assert ("sculpt", "Sculpt Finish") in _CANON
-    assert "Sculpt Finish" in text
+    assert any("Emboss Finish" in t for t in CASTLE_OP_TIERS)
+    assert ("sculpt", "Emboss Finish") in _CANON
+    assert "Emboss Finish" in text
 
 
 def test_anterior_is_not_cut(demo):

@@ -48,7 +48,7 @@ real triangles of zero area, and both halves of the pipeline mishandled them.
 
 **The validity check was wrong.** It dropped zero-area faces before counting
 open edges. A face with no area carries no surface, but it does carry the seam
-between its neighbours; dropping one unpairs three edges that were never open.
+between its neighbors; dropping one unpairs three edges that were never open.
 On a base-curve template that turned 86 collinear faces into a report of 258
 gaps, in a solid that trimesh, an STL round-trip and the Euler characteristic
 all agreed was closed. `welded_surfaces` now returns both surfaces, and gaps

@@ -59,6 +59,9 @@ from guildmodel.core.project.schema import (
     ComponentKind,
     FormingMetadata,
     ProjectSchema,
+    TempleParams,
+    TipBendParams,
+    component_fixture_zone,
 )
 
 CHORD_TOL_MM = 0.01
@@ -311,6 +314,12 @@ class GdrawWorkspace:
     #: Curves skipped because the file describes them wrongly
     #: (`unreadable_curve_count`).
     unreadable: int = 0
+    #: The 2.3 blocks, as the file carries them (`_thermoform_of`,
+    #: `_tip_bend_of`): None in a file from before.
+    thermoform: dict | None = None
+    tip_bend: dict | None = None
+    #: What each COMPONENT curve was placed from (`read_component_kinds`).
+    component_kinds: list = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(self.layers.values())
@@ -425,6 +434,101 @@ def _guides_of(raw) -> dict:
         size = _guide_size(raw.get(key))
         if size is not None:
             out[key] = size
+    # The front's construction guides (GuildDraw's Nose Fit): the crest
+    # height and width the blueprint lists (2.3). Read as numbers, never
+    # drawn or cut.
+    cons = raw.get("construction")
+    if isinstance(cons, dict):
+        kept = {}
+        for key in ("crest_height_mm", "crest_width_mm", "angle_height_mm"):
+            v = _number_in(cons, key, -100.0, 100.0)
+            if v is not None:
+                kept[key] = v
+        if kept:
+            out["construction"] = kept
+    return out
+
+
+def _number_in(block: dict, key: str, lo: float, hi: float) -> float | None:
+    """A number of the block held to [lo, hi], or None when the key is
+    missing, not a number or not finite (GuildDraw's own reader's rule)."""
+    try:
+        f = float(block.get(key))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return min(max(f, lo), hi)
+
+
+#: The `thermoform` block GuildDraw 2.3 writes on the front tab (its
+#: `ThermoformParams`): key -> (low, high), the bounds its own reader holds a
+#: file to. The first four are named after `FormingMetadata` on purpose.
+THERMOFORM_KEYS = {
+    "base_curve": (0.0, 16.0),
+    "base_radius_mm": (0.0, 1e4),
+    "face_form_wrap_deg": (0.0, 30.0),
+    "bridge_projection_mm": (0.0, 8.0),
+    "radius_rule": (400.0, 1000.0),
+    "sheet_thickness_mm": (1.0, 12.0),
+    "neutral_fraction": (0.0, 1.0),
+}
+#: The `tip_bend` block on each temple tab (GuildDraw's `TipBendParams`).
+TIP_BEND_KEYS = {
+    "length_to_bend_mm": (0.0, 300.0),
+    "drop_angle_deg": (0.0, 90.0),
+    "bend_radius_mm": (0.5, 100.0),
+}
+
+
+def _thermoform_of(raw) -> dict | None:
+    """The front's forming as the drawing stores it (2.3), or None for a file
+    from before, which carries no block. Every key is optional: a missing or
+    unreadable number takes GuildDraw's default, and the press row's label is
+    carried as written (the project decides whether it is one of its own)."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    for key, (lo, hi) in THERMOFORM_KEYS.items():
+        v = _number_in(raw, key, lo, hi)
+        if v is not None:
+            out[key] = v
+    preset = raw.get("press_preset", "")
+    out["press_preset"] = preset if isinstance(preset, str) else ""
+    # A radius of 0 beside a base curve: the rule decides, as it does there.
+    if out.get("base_curve", 0.0) > 0.0 and out.get("base_radius_mm", 0.0) <= 0.0:
+        out["base_radius_mm"] = out.get("radius_rule", 530.0) / out["base_curve"]
+    return out
+
+
+def _tip_bend_of(raw) -> dict | None:
+    """A temple's tip bend as the drawing stores it (2.3), or None for a file
+    from before."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    for key, (lo, hi) in TIP_BEND_KEYS.items():
+        v = _number_in(raw, key, lo, hi)
+        if v is not None:
+            out[key] = v
+    return out
+
+
+def read_component_kinds(state: dict, chord_tol: float = CHORD_TOL_MM) -> list:
+    """What each COMPONENT curve was placed from, index-aligned with the
+    COMPONENT layer `read_workspace_curves` gives: the library folder's name
+    ("Hinges", "Bridges"), or None where the curve was drawn by hand or the
+    file is from before 2.0 (which says HINGE and carries no kind)."""
+    out = []
+    for curve in (state.get("curves") or []):
+        layer = canonical_layer(curve.get("layer")) if isinstance(curve, dict) else None
+        if layer != "COMPONENT":
+            continue
+        pts = _flatten_readable(curve, chord_tol)
+        if pts is None or len(pts) < 2:
+            continue
+        kind = curve.get("component_kind")
+        out.append(kind if isinstance(kind, str) and kind else None)
     return out
 
 
@@ -469,6 +573,9 @@ def _workspace_from_state(name: str, state: dict, chord_tol: float,
         guides=_guides_of(state.get("guides")),
         open_outline=open_outline_count(state, chord_tol),
         unreadable=unreadable_curve_count(state, chord_tol),
+        thermoform=_thermoform_of(state.get("thermoform")),
+        tip_bend=_tip_bend_of(state.get("tip_bend")),
+        component_kinds=read_component_kinds(state, chord_tol),
     )
 
 
@@ -548,6 +655,8 @@ class GdrawComponent:
     open_outline: int = 0
     #: Curves skipped as unreadable (see :class:`GdrawWorkspace.unreadable`).
     unreadable: int = 0
+    #: What each COMPONENT curve was placed from (`read_component_kinds`).
+    component_kinds: list = field(default_factory=list)
 
 
 @dataclass
@@ -569,8 +678,30 @@ def _lens_centroid_x(pts: list[Point]) -> float:
 
 
 def _forming_of(ws: GdrawWorkspace) -> FormingMetadata:
-    return FormingMetadata(apical_radius_mm=ws.apical_radius_mm,
-                           bridge_angle_deg=ws.bridge_angle_deg)
+    """The forming a workspace seeds: the drawing's nose-fit values and, from
+    a front that carries GuildDraw 2.3's `thermoform` block, the design's own
+    forming as the default (research Q3). The press row's label is kept only
+    when it names one of this installation's presses; the values stand
+    either way, since they are the design's. A file without the block seeds
+    flat, exactly as before."""
+    out = FormingMetadata(apical_radius_mm=ws.apical_radius_mm,
+                          bridge_angle_deg=ws.bridge_angle_deg)
+    tf = ws.thermoform
+    if not tf:
+        return out
+    d = float(tf.get("base_curve", 0.0))
+    radius = float(tf.get("base_radius_mm", 0.0))
+    label = tf.get("press_preset", "")
+    if label:
+        from guildmodel.core.forming.presses import find as find_press
+        if find_press(label) is None:
+            label = ""
+    return out.with_base_curve(
+        d, 180.0 - float(tf.get("face_form_wrap_deg", 0.0)),
+        radius_mm=radius if radius > 0.0 else None,
+        bridge_projection_mm=float(tf.get("bridge_projection_mm", 0.0)),
+        neutral_fraction=float(tf.get("neutral_fraction", 0.0)),
+        press_preset=label)
 
 
 def build_project_from_gdraw(path) -> GdrawProject:
@@ -597,20 +728,25 @@ def build_project_from_gdraw(path) -> GdrawProject:
     comps.append(GdrawComponent(ff, front.layers, texts=list(front.texts),
                                 curves=front.curves, guides=dict(front.guides),
                                 open_outline=front.open_outline,
-                                unreadable=front.unreadable))
+                                unreadable=front.unreadable,
+                                component_kinds=list(front.component_kinds)))
 
-    # temples (disabled when the workspace is empty / has no outline)
+    # temples (disabled when the workspace is empty / has no outline); each
+    # carries its drawn tip bend (2.3), the library's straight temple without
     for tab, kind in _TAB_KIND.items():
         ws = doc.workspaces.get(tab) or _empty_workspace(tab)
         has_outline = bool(ws.layers.get("OUTLINE"))
+        temple = TempleParams(fixture_zone=component_fixture_zone(kind),
+                              tip_bend=TipBendParams(**(ws.tip_bend or {})))
         comp = Component.for_kind(
-            kind, enabled=has_outline, forming=_forming_of(ws),
+            kind, enabled=has_outline, forming=_forming_of(ws), temple=temple,
             source_file=str(path), source_workspace=tab)
         project.add_component(comp)
         comps.append(GdrawComponent(comp, ws.layers, texts=list(ws.texts),
                                     curves=ws.curves, guides=dict(ws.guides),
                                     open_outline=ws.open_outline,
-                                    unreadable=ws.unreadable))
+                                    unreadable=ws.unreadable,
+                                    component_kinds=list(ws.component_kinds)))
 
     # base-curve templates, one per front LENS (OD/+x → right, OS/-x → left),
     # the side taken about the front's axis midway between its outermost

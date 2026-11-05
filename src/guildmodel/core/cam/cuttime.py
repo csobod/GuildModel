@@ -67,7 +67,9 @@ _CANON = [
     # Relief — and the per-op breakdown silently mis-bills the one op most likely
     # to be carrying a different (slower) tool.
     ("features", "Features"),
-    ("sculpt", "Sculpt Finish"),  # the fine pass over a sculpt (M22)
+    ("embossing", "Embossing"),   # the temple's debosses (2026-11-02); before "emboss", which it contains
+    ("emboss", "Emboss Finish"),  # the fine pass over an embossed mesh (M22; "Sculpt Finish" until 2026-11-02)
+    ("sculpt", "Emboss Finish"),  # its name until then, in a stored program
     ("eyewire", "Eyewires"),
     ("perimeter", "Perimeter"),
     # The rest of the ops, each its own row: their time was billed to the

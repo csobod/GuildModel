@@ -40,7 +40,8 @@ from .castle_ops import CamOp, generate_castle_program
 
 __all__ = ["TwoSidedJob", "RingHold", "anterior_castle", "anterior_setup_relief",
            "mirror_points", "mirror_polygon", "mirrored_partition", "needs_second_side",
-           "plan_two_sided",
+           "plan_two_sided", "plan_temple_two_sided", "temple_flip_line",
+           "temple_anterior_relief",
            "skin_holds", "skin_hold_notes", "FLIP_PAUSE", "ANTERIOR_BAND_MM",
            "THROUGH_CUT_OPS"]
 
@@ -449,9 +450,15 @@ def flip_pause_text(setup: Setup) -> str:
         return "; ".join(parts)
     parts = [FLIP_PAUSE]
     if setup.side == "posterior":
-        parts.append("front face down on the bed")
-    if setup.flip_axis_x_mm is not None:
-        parts.append(f"flip about machine X {setup.flip_axis_x_mm:.3f} mm")
+        parts.append("hinge face up" if setup.part == "temple" else "front face down on the bed")
+    line = setup.flip_line_mm
+    if line is not None:
+        # a front turns about a line along Y (its X mirrored); a temple about
+        # its own length, a line along X (its Y mirrored), end for end
+        if setup.mirror == "y":
+            parts.append(f"flip about machine Y {line:.3f} mm, over its length")
+        else:
+            parts.append(f"flip about machine X {line:.3f} mm")
     parts.append(f"then {setup.wcs}")
     if setup.reprobe:
         parts.append("re-probe " + " and ".join(setup.reprobe))
@@ -554,3 +561,169 @@ def skin_hold_notes(holds: list[RingHold]) -> list[tuple[bool, str]]:
                                f"{100.0 * (1.0 - h.held):.0f}% of {where}; "
                                f"{'they hold' if h.tabs else 'it holds'} on the rest."))
     return out
+
+
+# ------------------------------------------------------------------ a temple
+
+TEMPLE_POSTERIOR_PROGRAM = "temple_cut.nc"
+TEMPLE_ANTERIOR_PROGRAM = "temple_anterior_cut.nc"
+TEMPLE_ONE_FILE = "temple_two_sided_cut.nc"
+
+
+def temple_flip_line(fixture: dict, zone: str) -> tuple[str, float | None]:
+    """How a temple's blank turns over on its zone, and where: ``(mirror,
+    line_mm)``, `mirror` the coordinate the flip reverses and `line_mm` the
+    flip line in machine coordinates, or None when the fixture does not
+    place the zone.
+
+    By default a temple turns over about its own length (2.1): the flip
+    reverses Y about the zone's horizontal center line, where the blank's
+    center line lies, with the dowel pins at either end of the blank in its
+    waste margin; the hinge end stays at the end it was, against the stop. A
+    front turns the other way, about the fixture's vertical line, with the
+    pins above and below the blank, and a zone that names `flip_axis_x_mm`
+    asks for that flip instead; `flip_axis_y_mm` names the line of the
+    default flip when it is not the zone's center."""
+    z = (fixture or {}).get("blank_zones", {}).get(zone) or {}
+    if z.get("flip_axis_x_mm") is not None:
+        return "x", float(z["flip_axis_x_mm"])
+    if z.get("flip_axis_y_mm") is not None:
+        return "y", float(z["flip_axis_y_mm"])
+    if z.get("y_mm") is not None and z.get("height_mm") is not None:
+        return "y", float(z["y_mm"]) + float(z["height_mm"]) / 2.0
+    return "y", None
+
+
+def temple_anterior_relief(relief, outline: Polygon, thickness_mm: float, *,
+                           mirror: str = "y", mirror_at: float = 0.0):
+    """A temple's outer face as a relief of its own, for the anterior setup
+    (2026-11-02; the flip about the length since 2.1): the anterior map
+    turned over about the flip line in the design frame and re-zeroed with
+    the outer face as the top, at the blank's thickness, so the seats pocket
+    down from it and a deboss rides the mirrored map. `mirror` is the
+    coordinate the flip reverses (`temple_flip_line`); `mirror_at` the flip
+    line on it, the blank's center line, 0 in the blank frame."""
+    from ..geometry.regions import CastlePartition
+    from ..relief.flat import FlatRelief
+    T = float(thickness_mm)
+    f = relief.field
+    rows, cols = f.z.shape
+    res = float(f.resolution)
+    ox, oy = f.origin
+    m = float(mirror_at)
+    if mirror == "y":
+        flipg = np.flipud
+        origin2 = (float(ox), float(2.0 * m - (oy + (rows - 1) * res)))
+    else:
+        flipg = np.fliplr
+        origin2 = (float(2.0 * m - (ox + (cols - 1) * res)), float(oy))
+    shadows = [mirror_polygon(p, m, mirror)
+               for p in (getattr(relief, "anterior_sculpt_footprints", None) or [])]
+    return FlatRelief(field=Heightfield(z=flipg(T - relief.anterior_z).copy(),
+                                        origin=origin2, resolution=res),
+                      inside=flipg(relief.inside).copy(),
+                      partition=CastlePartition(body=mirror_polygon(outline, m, mirror)),
+                      sculpt_footprints=shadows)
+
+
+def plan_temple_two_sided(relief, temple, posterior: list, params: CastleCamParams,
+                          tools_cfg: dict | None, *, outline: Polygon, inlay_polys=(),
+                          mirror: str = "y", mirror_at: float = 0.0,
+                          flip_axis_mm: float | None = None,
+                          progress=None) -> TwoSidedJob:
+    """A temple's setups and their ops, in the order they run (2026-11-02):
+    the front's rule (`plan_two_sided`) on a flat part.
+
+    The posterior is the temple program, hinge face up, as a one-sided job
+    cuts it. The anterior is the outer face: the seats drawn there and the
+    meshes debossed there, which a one-sided job models and never posts.
+    `params.two_sided` decides: ``off`` never; ``on`` always, a temple with
+    nothing on its outer face then posting the temple program alone with a
+    note; ``auto`` when the outer face carries a seat or a deboss. The
+    anterior is turned over about the flip line in the design frame
+    (`mirror`, the coordinate the flip reverses, and `mirror_at`, the line
+    on it: by default Y about the blank's center line, 0 in the blank frame,
+    the temple flipped over its length, 2.1; see `temple_flip_line`) and
+    re-zeroed with the outer face as the top, at the blank's thickness, so
+    the seats pocket down from it and the deboss rides the mirrored anterior
+    map. `flip_axis_mm` is that line in machine coordinates, for the sheet.
+    The flip is by hand; a temple never rides the rotary bar.
+
+    `relief` is the temple's `FlatRelief` with the meshes baked in
+    (`relief.flat.emboss_flat_relief`), on the placed outline, as the
+    posterior ops were generated from.
+    """
+    from ..geometry.inlays import inlay_cuts
+    from .castle_ops import resolve_tool, sculpt_finish_op
+    from .inlay_ops import inlay_ops
+
+    mode = getattr(params, "two_sided", "auto")
+    mirror = "y" if mirror == "y" else "x"
+    m = float(mirror_at)
+    T = float(temple.blank_thickness_mm)
+    alone = [Setup(side="posterior", wcs="G54", program=TEMPLE_POSTERIOR_PROGRAM,
+                   part="temple", stock_top_mm=T)]
+    notes: list = []
+    if mode == "off":
+        return TwoSidedJob(posterior, [], None, None, alone, notes)
+
+    # what the outer face carries
+    polys = list(inlay_polys)
+    seats = []
+    if temple.inlays and polys:
+        inlays_a = [i.model_copy(update={"face": "posterior" if i.face == "anterior" else "anterior"})
+                    for i in temple.inlays]
+        polys2 = [mirror_polygon(p, m, mirror) for p in polys]
+        seats = [s for s in inlay_cuts(inlays_a, polys2, [], posterior_reference=T)
+                 if s.posterior and s.depth_mm > 0.0]
+    shadows = [mirror_polygon(p, m, mirror)
+               for p in (getattr(relief, "anterior_sculpt_footprints", None) or [])]
+    depth = relief.anterior_z if relief.anterior is not None else None
+    deep = bool(depth is not None and (np.where(relief.inside, depth, 0.0) > ANTERIOR_BAND_MM).any())
+    if not (seats or shadows or deep) and mode != "on":
+        return TwoSidedJob(posterior, [], None, None, alone, notes)
+
+    # the anterior as a relief of its own: turned over, the outer face the top
+    relief_a = temple_anterior_relief(relief, outline, T, mirror=mirror, mirror_at=m)
+
+    anterior: list = []
+    cfg = tools_cfg or {}
+    # a headless caller without a tool library: the posterior's own tool
+    # stands in, rather than a StopIteration out of an empty mapping
+    fallback = next((o.tool for o in posterior if getattr(o, "tool", None)), None)
+    if not cfg and fallback is None:
+        notes.append("No tool library to cut the outer face with; the temple program is "
+                     "posted alone.")
+        return TwoSidedJob(posterior, [], None, None, alone, notes)
+    if shadows and params.is_op_enabled("Embossing"):
+        emboss_tool = resolve_tool(temple.emboss_tool, cfg, default=fallback)
+        op = sculpt_finish_op(relief_a, temple.stock(), emboss_tool, params, shadows)
+        op.name = "Embossing"
+        if op.paths:
+            op.tool = emboss_tool
+            anterior.append(op)
+    if seats and params.is_op_enabled("Inlays"):
+        seat_tool = resolve_tool(temple.hinge_tool, cfg, default=fallback)
+        anterior += inlay_ops(seats, params, cfg, seat_tool)
+    if not anterior:
+        notes.append("The outer face had nothing to cut after all; the temple program is "
+                     "posted alone.")
+        return TwoSidedJob(posterior, [], None, None, alone, notes)
+    reprobe = ((["Z"] if getattr(params, "probe_block", False) else [])
+               + (["XY"] if getattr(params, "reprobe_xy", False) else []))
+    line = dict(part="temple", mirror=mirror, stock_top_mm=T)
+    if mirror == "y":
+        line.update(mirror_y_mm=m, flip_axis_y_mm=flip_axis_mm)
+        turn = "turned over its length, end for end"
+    else:
+        line.update(mirror_x_mm=m, flip_axis_x_mm=flip_axis_mm)
+        turn = "turned over about the zone's vertical line"
+    setups = [
+        Setup(side="anterior", wcs="G55", program=TEMPLE_ANTERIOR_PROGRAM, flip="none",
+              notes=["outer face up, cut first: its seats and its debosses alone"], **line),
+        Setup(side="posterior", wcs="G54", program=TEMPLE_POSTERIOR_PROGRAM, flip="manual",
+              reprobe=reprobe,
+              notes=[f"hinge face up, the blank {turn} on its pins: the temple program, "
+                     "pockets, engraving, seats, profile and onion skin"], **line),
+    ]
+    return TwoSidedJob(posterior, anterior, relief_a, None, setups, notes)

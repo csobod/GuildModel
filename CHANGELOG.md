@@ -3,7 +3,322 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
-## v2.0.0 (unreleased) — two-sided cutting, inlays, sculpts, press dies, the stock engine and the Worktable redone
+## v2.3.0 — the draft view and the blueprint; a temple's second side, the temples' link, Embossing, Program Zero's shift
+
+The prepared 2.1.0 was not released: both apps jump to 2.3.0 together, built
+on the forming research of 2026-10-29. The 2.1 entries follow the 2.3 ones.
+
+### The draft view and the blueprint (2026-11-04)
+
+**The drawing's forming and tip bend are read.** GuildDraw 2.3 stores the
+front's forming under `thermoform` and each temple's tip bend under
+`tip_bend`. A front's block seeds the project's forming (the base curve, the
+radius in use, the face form, the bridge projection, the press row when it
+is one of this installation's, the neutral surface); the project's own
+forming wins once it is saved. Each temple's block lands on its params as
+`tip_bend`. The library folder a component was placed from
+(`component_kind`) is read too, so a bridge placed from *Bridges* is not
+taken for a hinge. A file from before carries none of this and opens as it
+did.
+
+**View ▸ Draft (D).** The assembled frame after forming, in the 3D view: the
+formed front, the temples bent by their tip bend and opened to the **angle
+of side** and the **splay** the panel under the view sets, the hinge
+filled in. The angle of side is the front's `pantoscopic_tilt_deg`, which
+nothing read before. What the hinge alone would give reads beside each
+target: the pocket floor's angle, the endpiece's own lean and turn on the
+formed front, the hinge's slant and stop. The temples hang at the targets,
+and the butt is cut where they would pass the endpiece's back face; the
+panto and the splay cut into the butt are the difference, and *Match pocket
+angle* sets the front's pocket angle so the hinge agrees. The hinge is marked
+rivet, heat-set cleat or spring, with its barrels, screw thread, slant and
+stop; the drawn pocket gives its plate and the width along the axis, the
+shipped library's datum (the butt face, the REF line's setback) gives the
+axis. Seven bench checks run: the angle of side and the splay left against
+right, the four-point touch, the tips on a common plane, no X-ing, and each
+folded temple crossing the center and clearing the back. The Forming view and
+the Draft view share the viewer's one formed slot.
+
+**Export Blueprint… (File, and the panel's button).** Sheet 1 is the
+dimensioned assembly after forming, laid out as eyewear sheets are: the
+plan, the front view and the side view stacked down a portrait page on the
+frame's center line. The plan shows the front from above with the temples
+curving in, and carries the front's width, the dowel-to-dowel width, the
+tip spread, the front's thickness, the temple's thickness, the front-to-bend
+and the base curve; the front view faces the wearer with A and B in the
+lens plane, DBL, the boxed-center distance, the joint height and the bridge
+width, the folded temples dashed behind the lenses on request; the side view is drawn
+in the temple's frame, the temple horizontal and the front tilted by the
+angle of side, with the length to bend, the drop, the downward angle and
+the temple's heights. Third angle puts the plan above the front; first
+angle below, the temples running down. Each dimension is tagged locked,
+target, open or reference. Beside the views: the hinge detail, reference
+only; the notes with the marking, the rim widths, the forming, the bench
+numbers, the hinge's lines, the tolerance table (ISO 12870's rows and the
+factory's, editable), the checks and the temples as cut; the ISO 7200 title
+block. Sheet 2 is the 1:1 alignment template: the plan with the tips and
+ear points in ±2 mm targets, the side view, and a ruler. The scale is the
+largest of 2:1, 1:1, 1:1.5, 1:2, 1:2.5 and 1:5 that fits: A3 and tabloid
+hold the views at 1:1, letter and A4 at 1:2. PDF, SVG (one file a sheet),
+DXF (exploded, layered, for the factory's CAD) or a printer. The settings
+(the paper, the projection, the views, the scale, the title block's cells,
+the tolerances) are the project's, seeded from **Preferences ▸ Blueprint**,
+where *Save these as my defaults* in the dialog writes them back.
+
+**The temple hangs as an acetate temple does.** Its outer face is flush
+with the endpiece's end face (the Draft panel's *Inset* tucks it toward the
+hinge pocket), the barrel axis a temple's thickness inside the edge on the
+endpiece's back face, where the shipped library's front pockets end, the
+butt face through the axis (*Butt gap* stands it off).
+
+**The views are edge renderings of the solid.** The front as built is
+bent by the forming map (`FormingMesh`, as the Forming view bends it), its
+creases and its silhouette from each direction chained into polylines, the
+temples' rings added, and every run tested against a depth buffer of the
+scene (`core/draft/hidden.py`): what can be seen from that direction is
+drawn, what lies behind other material is left out, and the pockets are
+dashed where hidden. The blueprint is composed on a worker under the
+progress dialog (`BlueprintWorker`), the front built through the kernel
+first when it has not been, and Cancel stops it between stages; the file
+or the print job follows on the window's thread. The folded temples in the
+front view are an option, off; a front without its mesh is drawn from the
+drawing's curves.
+
+**The temple bends as a bar.** The drop (GuildDraw's tip bend) and a new
+**inward angle**, the turn toward the head seen from above that ISO 8624
+names and the temple tab cannot draw, are composed along the temple's core:
+the inward bend runs from 40 % of the length to bend to the ear point and the
+drop keeps its heading, so the tips sit closer together than the hinges, as
+on every worn frame. 15° is assumed until the maker sets it (the trade bends
+10 to 20°); *Inward bend from* moves where it begins. The temple's solid in
+the 3D view is the flat outline extruded, bent and cut by the endpiece's
+back face, so the butt shows its panto and splay cut.
+
+**The Temple tab's Forming section.** *Length to bend* (Auto: the drawn
+length less 37 mm), *Downward angle* and *Bend radius*, the names GuildDraw
+uses, then *Inward angle* and *Inward bend from*; the readout says where
+the ear point lands and how far the tip drops, or why a bend is out of
+range. The Draft panel's own fields set both temples at once.
+
+**The Forming panel matches GuildDraw's group.** *Preset*, not *Press*; the
+face form is stated per side in low degrees (0 flat, 8 on the SBT base-4
+row), the included angle reading beside it; the stored value does not
+change. **Preferences ▸ General ▸ Forming** holds the tooling index (1.53 by
+default: the radius a base curve names off a press row is (index − 1) ×
+1000 / D), the sheet thickness and the neutral surface, as GuildDraw's does;
+every design uses them and a drawing's own copy is read for the record. The
+neutral surface is applied around the map, never inside it, so the two
+apps' maps stay identical.
+
+**Not done, and said so.** The inward angle of the drop is not drawn (the
+temple tab has no third dimension for it). The side view shows the far
+temple only where it differs. Dimensions in the DXF are lines and text, not
+dimension entities.
+
+### The 2.1 bug hunt (2026-11-03)
+
+Three reviews of the two November rounds, before the release.
+
+**Two-sided is each part's own.** The *Two-sided* fold shows for the front
+and for a temple and read as the open part's, and was one project-wide
+setting: a front switched *Off* took a temple's outer face with it. The
+choice and the output are the part's own now (`cam_overrides`), *Auto* as
+shipped for both; a 2.0 project's parts carry none and cut as they did.
+
+**A temple's meshes.** *Mirror to the other side* put a twin at the other
+end of the same temple, which has no center line to mirror about; the box
+is hidden on a temple and a saved mirror is ignored there. The face list
+says *Hinge face*, *Outer face* and *Edge* on a temple, and no longer says a
+mesh on the front waits for "the flip setup". A deboss removed or switched
+off on the 2D page stayed in the 3D model; the temple's records rebuild the
+part as the front's do. Linked temples copied a mesh's record without its
+file, so the other temple showed the record and built, posted and saved
+nothing of it; the bytes travel with the record. The viewer kept the
+front's surface as the one a drop or a drag on a temple read, and seated
+the mesh on the front's point; each part hands the viewer its own. The
+drag's overlay outlived its row when another was selected or the row
+removed, taking the clicks over it and dropping the wrong mesh; it is put
+away with the row. A source several meshes share was repaired once per
+mesh on every rebuild; once. A simplified sculpt took the largest flat face
+as its back where the maker had chosen another; it keeps the one that
+faces the way the chosen one faced. One plane in pieces whose fitted
+normals straddled a rounding boundary came as two backs; facets are grouped
+by angle. The repair's record said *inside-out, flipped* for a shell the
+turn did not save and reported the coarsest remesh grid as the finest.
+
+**Smaller things.** The temple planner raised out of an empty tool library
+instead of posting the temple alone; the viewer's `clear` carried a stray
+docstring; British spellings in comments, docstrings and one identifier are
+American. The user guide no longer says the flip setup is a later release,
+names the controls as the sidebar does, lists the readiness dot's fourth
+state and the simulation's key, F6.
+
+### A temple turns over its length; its simulation shows the flip (2026-11-03)
+
+**A temple's two-sided job flips the blank over its length.** The front
+turns over about the fixture's vertical line, its X mirrored, the dowel
+pins above and below the blank. A temple blank is a long strip: it now
+turns over its length, Y mirrored about the blank's center line, the pins
+at either end in the waste margin, so the hinge end stays at the end it
+was, against the zone's stop. The fixture names the line as `flip_axis_y_mm`
+on each temple zone, the zone's horizontal center by default; a temple zone
+that names `flip_axis_x_mm` asks for the front's flip instead. The anterior
+program is mirrored accordingly, the flip's pause says *hinge face up; flip
+about machine Y … mm, over its length*, and the setup sheet carries `part`,
+`mirror`, `flip_axis_y_mm` and `mirror_y_mm` beside the fields it had; a
+2.0 sheet reads as it was. GuildSend reads the front's form only for now
+and describes a temple's flip as the front's.
+
+**The temple's simulation plays both setups.** It simulated the hinge
+face's program alone. It now cuts the outer face from the blank turned over,
+turns the result back and cuts the temple program from it; the log carries
+both verdicts as *Anterior:* and *Posterior:* lines, an anterior that fails
+fails the job, and the 3D playback stops at the flip and ▶ turns the blank
+over its length and goes on. A temple posted as one file,
+`temple_two_sided_cut.nc`, had nothing the simulation would read; it is
+split at the pause and simulated like the two files. Two-sided is *Auto*
+for the front and the temples alike, as shipped; a test now holds it so.
+
+### Section titles, the temples' link, Embossing, and a temple's second side (2026-11-02)
+
+**The sidebar's titles lose their parentheses.** *Operations (uncheck to
+skip)*, *Program Zero (G54 work datum)*, *Holding (how the part stays put)*
+and the rest are *Operations*, *Program Zero*, *Holding*; what the title used
+to say is on the header's tooltip, and Operations carries the line *Uncheck
+to skip an operation* above its boxes, which now stand in the open part's
+machining order. *This part only (overrides)* is *Part Overrides*,
+*Per-operation tools* is *Tool per Operation*, *Machine & Tool* is *Machine*,
+*Through-cut lead-in & output* is *Lead-in & Output*, and the pocket rows are
+*Component pocket depth* and *Component pocket angle* on both tabs. A pass
+that is off unless ticked is no longer listed as "skipping".
+
+**The temples' link replaces Apply to both temples.** The button at the foot
+of the Temple tab copied that tab alone and was easy to miss. A chain switch
+now sits at the right end of the sidebar's tab strip while a temple is open,
+on every tab. *Linked*, the default, keeps the two temples alike: the open
+temple's Temple, Cut and Machine settings, the program zero and the part
+overrides included, are copied to the other whenever the sidebar is read
+back; each keeps its own seats and fixture zone. *Unlinked*, each temple
+keeps its own. Linking again asks first, since the other temple then takes
+the open one's settings. The link is saved with the project; a project from
+before it opens linked when its temples match.
+
+**Sculpts are Embossing.** A SCULPT is the posterior's scalloping, so the
+section of the maker's own meshes is *Embossing*, each record a *mesh*, and
+the fine pass over them *Emboss Finish* (a project or a preference saved with
+*Sculpt Finish* reads under the new name). The code and the project file keep
+the word *sculpt*.
+
+**A temple takes meshes and a second side.** The Temple tab carries its own
+*Embossing* section and an *Emboss tool*. A deboss on the hinge face is baked
+into the temple's solid and cut into the map the program and the simulation
+read, by an *Embossing* operation on the ball nose in the first tier beside
+the pockets; a deboss on the outer face goes into the anterior map. An
+emboss stands above the blank's face and is modeled only, with a note. The
+*Two-sided* section now shows for a temple: its outer face, the seats drawn
+there and its debosses, which a one-sided job modeled and never posted, is
+cut first as the front's anterior is, mirrored about the blank's center line
+in G55 with the flip by hand, then the temple program as a one-sided job
+posts it; `temple_anterior_cut.nc` and `temple_cut.nc`, or
+`temple_two_sided_cut.nc` with the flip's pause, with the setups on the
+sheet GuildSend reads. Preferences ▸ Parts carries the temple's *Emboss
+tool* beside its other tools, and the Save offer compares it. The `.gmodel`
+records the temple's meshes, the link and the setups' flip; a 2.0.0 file
+reads as it was.
+
+### The sidebar comes back from a minimized window; one control per setting (2026-11-02)
+
+**The sidebar survives minimize and restore.** Minimizing the window makes Qt
+report every dock not-visible; the Parameters toggle took that as a click and
+hid the dock for real, so the restored window had no sidebar until View ▸
+Parameters was ticked again. The toggle now answers only to a click, and
+reads its state from whether the dock was hidden, as the Log, Toolpaths and
+Inspector toggles already did.
+
+**Program Zero loses its dead mode and gains a shift.** *Zero mode ▸ Fixture
+(design frame)* posted the same program as *Stock box* at its default datum
+and grayed the lists (GitHub issue #1); it is gone from the Machine tab and
+from Preferences ▸ Parts, and a project or a preference saved with it reads
+as that datum, so the program is byte-identical. The three lists are always
+live and say where the point is on the machine: *Bottom of the blank (the
+bed)* is the face the blank lies on. **Shift X, Y and Z** move the zero from
+the datum, in mm along the blank's own axes, for a touch-off on a stop, a pin
+or an edge that is not the blank's corner, a blank larger than the stock box,
+or the spoilboard under a spacer; the log, the setup sheet and the 2D marker
+say the shift. The Worktable's *Bed zero* keeps *Raw bed coordinates*, which
+is a real choice there.
+
+**One onion skin, one allowance, one tool.** The Cut tab's *Onion skin* and
+*Hand finishing allowance* were the front's and showed on every part, while
+the Temple and Base Curve tabs carried their own, so a temple showed two of
+each with one dead. Each is one control now, the open part's: the allowance
+under *Material & Allowance*, the onion skin in the *Holding* group beside
+the strategy it belongs to, grayed when tabs hold the part. The Machine tab's
+default *Tool* is the front's and hides on a temple or a block, which name
+their own tools; the two-sided setup is the front's too and is a fold of its
+own, *Two-sided*, its tooltip the anterior setup, rather than the foot of *Operations*
+on every part. The *Profile fallback (no SCULPT)* group, a hard-coded tool
+list with its own tabs that was never saved, is gone: a drawing without
+`SCULPT` zones cuts with the default tool, the Cut tab's depth per pass and
+the Holding group. The rapid clearances moved from the foot of *Feeds &
+Speeds* to *Machine & Tool* (now *Machine*), and *Work-holding height* is *Hold-down height*,
+the Worktable's word for it. The per-tool feeds are captioned *Per tool*:
+they are the project's by tool, not one part's. The shift is saved with the
+project and with Preferences ▸ Parts, and the setup sheet's `program_zero`
+carries it.
+
+### Sculpts: placed by hand, flipped, imported whole (2026-11-01)
+
+**A sculpt slides over the frame.** *Move on the part* replaces pyvista's
+arrow-and-ring widget, which moved a sculpt along world axes and could not
+keep its back on the surface. The sculpt is drawn translucent in the 3D
+view; drag it and it follows the surface under the cursor, its flat back
+seated to the surface normal there, on the back, the front or the rim as
+the surface says; the model rebuilds when you let go. An `.stl` dropped on
+the model lands under the cursor. *Size* reads the sculpt's longest side in
+mm beside *Scale*, and a sculpt wider than 15 mm is scaled to 15 mm when it
+is added. Every snap and drag reads the frame's surface without its
+sculpts, so a short move never seats a sculpt on its own old copy.
+
+**Deboss imprints the relief.** A deboss subtracted the sculpt in the same
+pose as an emboss, its back sunk 0.05 mm, so it removed a sliver and
+nothing of the relief. *Flip* turns the sculpt over, its relief into the
+surface, and *Sink* is then the depth of the imprint; choosing Deboss sets
+both, halfway into the relief, and the stamp cuts as a seal into wax. *Sink*
+ranges to the relief's height. A deboss that touches nothing says so in the
+log, with the gap; an emboss lifted clear is reported as the two pieces it
+makes.
+
+**The maker's elements import whole, in two seconds.** A 326 mm baroque
+panel with 123 small holes and pinched vertices took 38 seconds and came
+back as one corner of itself: pymeshfix handed back a mended corner with
+NoError. A 16-piece ornament with its backs cut away took 7 seconds and
+lost a tenth of its volume. Holes are now capped along the faces' own fans
+(a long planar loop ear-clipped, a small one fanned, a pinch walked on its
+own side), a shell past capping is rebuilt as a relief over its back plane,
+and pymeshfix sits last behind a loss guard. The notes say what each step
+did. A large sculpt that is simplified on import is simplified in place
+rather than read twice. Facets on one plane (an ornament in pieces, each
+capped) are one back, so the whole of it is seated and read for sag.
+`core/model/mesh_repair.py` is new; the `.gmodel` records a sculpt's
+`height_mm`, `extent_mm` and the mount's `flip`, and a 2.0.0 file reads as
+it was.
+
+### The intake agrees with GuildDraw 2.0.1's readiness dot (2026-10-29)
+
+**Two fronts are refused, as GuildDraw 2.0.1 refuses them.** A one-piece
+front with both lenses on one eye (a redrawn lens left behind) was
+castle-ready, split into an `ou` side, with the other eye solid. Separated
+rims with one rim drawn without its lens were built as a monocle, the other
+rim dropped, when the two rims were alike and the empty one came second;
+when the empty rim was the larger, the partition failed with no word why.
+Both now stop the castle, with a line in the log and a reason that says what
+to draw. `regions.half_drawn_front` tests a lens against the other lens as
+well, and `regions.empty_rims` counts a rim with no lens whether the
+assembly made it a body or a stray. The Frame Library's 46 fronts are not
+affected.
+
+## v2.0.0 — two-sided cutting, inlays, sculpts, press dies, the stock engine and the Worktable redone
 
 ### HINGE becomes COMPONENT (2026-10-17)
 

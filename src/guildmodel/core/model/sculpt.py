@@ -8,21 +8,30 @@ Qt-free and importable headless:
 
 * **Import.** `load_sculpt` reads the bytes with trimesh, splits the soup
   into shells, welds each through Manifold's merge map, flips a shell whose
-  winding is inside out, hands a shell Manifold rejects to pymeshfix, and
-  unions the shells. A shell nothing can mend is offered as its hull, and
-  the record says so. Two traps the constructor does not catch, both
-  tested: a self-intersecting single shell constructs with NoError and the
-  wrong volume (so the shells are split first, always), and a sculpt
-  hovering a hair off the host unions into two bodies (`contact_gap`).
+  winding is inside out, and climbs `mesh_repair`'s ladder for a shell
+  Manifold rejects: its holes capped along the faces' own fans (a relief
+  whose back was cut away at export, a filigree with pinched holes), then
+  rebuilt as a heightfield over its back plane, then pymeshfix behind a
+  loss guard (it handed back one corner of a 326 mm panel with NoError);
+  the shells are unioned. A shell nothing can mend is offered as its hull,
+  and the record says what each step did. Two traps the constructor does
+  not catch, both tested: a self-intersecting single shell constructs with
+  NoError and the wrong volume (so the shells are split first, always), and
+  a sculpt hovering a hair off the host unions into two bodies
+  (`contact_gap`). `SculptSource.simplified` coarsens a loaded sculpt in
+  place of a second read.
 * **The flat back.** `flat_back` ranks the candidate mounting faces: the
   exactly planar facets of a sculpt cut by a plane (the common case), or,
   on a scanned back, a plane grown from coarse normal bins, a robust plane
   per bin, connected components and a PCA refit.
 * **Mounting.** `snap_target` reads where the back goes on the host —
   anterior, posterior, the rim wall, or a picked point — and
-  `mount_transform` builds the 4 x 4 that puts the back there, sunk by
-  `overlap_mm` so the union is one body. `sag_under` reads how far the host
-  falls away under the back's footprint, which sets the default overlap.
+  `mount_transform` builds the 4 x 4 that puts the sculpt there. Relief
+  out (the default), the back sits on the surface sunk by `overlap_mm`, so
+  the union is one body; `flip` turns the relief into the frame, the back
+  up, and `overlap_mm` is then how deep the crown goes: a deboss imprints
+  the relief as a stamp. `sag_under` reads how far the host falls away
+  under the back's footprint, which sets the default overlap of an emboss.
 * **Baking.** `bake` unions the embosses, then subtracts the debosses, so a
   deboss can cut an emboss; the result is degenerate-dropped like every
   other model. `mirror_twin` is the x-mirrored sculpt, derived and never
@@ -44,12 +53,14 @@ import numpy as np
 from manifold3d import Error, Manifold, Mesh64, OpType
 
 from .kernel import ManifoldError, drop_degenerate, surface_z_at, to_trimesh
+from .mesh_repair import boundary_loops, cap_holes, kept_enough, relief_remesh
 
 __all__ = [
     "BackCandidate", "PlacedSculpt", "SculptSource", "SnapTarget", "UndercutReport",
-    "SIMPLIFY_ABOVE", "bake", "contact_gap", "flat_back", "load_sculpt",
-    "manifold_from_arrays", "mirror_twin", "mount_transform", "placed_sculpts",
-    "sag_under", "snap_target", "undercuts",
+    "SIMPLIFY_ABOVE", "apply_transform", "bake", "contact_gap", "default_overlap", "flat_back",
+    "load_sculpt", "manifold_from_arrays", "mirror_twin", "mount_transform",
+    "placed_sculpts", "relief_height", "sag_under", "snap_target", "transform_points",
+    "undercuts",
 ]
 
 #: A sculpt with more triangles than this is offered `simplify` on import.
@@ -60,6 +71,11 @@ SIMPLIFY_ABOVE = 250_000
 #: degrees under ten microns of noise, so the distance test does the work.
 PLANE_DIST_MM = 0.05
 PLANE_ANGLE_DEG = 60.0
+#: Facets whose fitted normals lean less than this from each other lie on one
+#: plane as far as `flat_back` is concerned: float noise on one cap, or the
+#: caps of a back in pieces, never a scanned back's jitter (which the grown
+#: path finds, inexact).
+FACET_MERGE_DEG = 0.5
 #: The least overlap that makes a union one body; measured on a flat back
 #: tangent to a curved host, which unions into two bodies at zero.
 MIN_OVERLAP_MM = 0.05
@@ -78,14 +94,30 @@ class SculptSource:
     sha256: str = ""
     triangles: int = 0
     shells: int = 1
+    capped: int = 0                    # holes closed along the faces' fans
+    remeshed: int = 0                  # shells rebuilt as a relief over their back
+    remesh_mm: float = 0.0             # the finest grid such a rebuild used
     repaired: int = 0                  # shells pymeshfix mended
     hulled: int = 0                    # shells replaced by their hull
     flipped: int = 0                   # shells whose winding was inside out
     simplify_tol: float = 0.0
+    #: The mounting face, once `flat_back` has been asked; the GUI keeps it here.
+    back: BackCandidate | None = None
 
     @property
     def volume(self) -> float:
         return float(self.manifold.volume())
+
+    @property
+    def extent_mm(self) -> float:
+        """The longest side of the sculpt's box: what *Size* in the panel scales."""
+        b = np.asarray(self.mesh.bounds, dtype=np.float64)
+        return float((b[1] - b[0]).max())
+
+    @property
+    def height_mm(self) -> float:
+        """The relief's height off the back, 0 until the back is known."""
+        return relief_height(self.mesh, self.back) if self.back is not None else 0.0
 
     def notes(self) -> list[str]:
         out = []
@@ -93,12 +125,38 @@ class SculptSource:
             out.append(f"{self.shells} shells unioned")
         if self.flipped:
             out.append(f"{self.flipped} inside-out, flipped")
+        if self.capped:
+            out.append(f"{self.capped} hole{'s' if self.capped > 1 else ''} capped")
+        if self.remeshed:
+            out.append(f"{self.remeshed} rebuilt as a relief at {self.remesh_mm:.2g} mm")
         if self.repaired:
             out.append(f"{self.repaired} repaired")
         if self.hulled:
             out.append(f"{self.hulled} replaced by its hull")
         if self.simplify_tol > 0:
             out.append(f"simplified to {self.simplify_tol:g} mm")
+        return out
+
+    def simplified(self, tol: float) -> "SculptSource":
+        """This sculpt coarsened to `tol` (mm), the repair kept: what the
+        GUI offers a large sculpt instead of reading the file again."""
+        man = drop_degenerate(self.manifold.simplify(float(tol)))
+        out = SculptSource(
+            manifold=man, mesh=to_trimesh(man), name=self.name, sha256=self.sha256,
+            triangles=int(man.num_tri()), shells=self.shells, capped=self.capped,
+            remeshed=self.remeshed, remesh_mm=self.remesh_mm, repaired=self.repaired,
+            hulled=self.hulled, flipped=self.flipped, simplify_tol=float(tol))
+        if self.back is not None:
+            # the same back, found again on the coarser mesh: the candidate
+            # facing the way the chosen one faces, not the largest, which
+            # a merge could reorder (the 2.1 bug hunt)
+            try:
+                cands = flat_back(out.mesh)
+            except ManifoldError:
+                cands = []
+            n0 = np.asarray(self.back.normal, dtype=float)
+            out.back = (max(cands, key=lambda c: float(np.asarray(c.normal) @ n0))
+                        if cands else None)
         return out
 
 
@@ -182,38 +240,111 @@ def _shells(mesh) -> list:
     return list(mesh.submesh(comps, repair=False, only_watertight=False, append=False))
 
 
+def _construct(v: np.ndarray, f: np.ndarray, info: dict) -> Manifold | None:
+    """A solid from the arrays, winding corrected, or None when Manifold
+    rejects them or they enclose nothing."""
+    man = manifold_from_arrays(v, f)
+    flipped = False
+    if man.status() == Error.NoError and man.volume() < 0:
+        man = manifold_from_arrays(v, f[:, ::-1])
+        flipped = True
+    if man.status() != Error.NoError or man.is_empty() or man.volume() <= 1e-12:
+        return None
+    if flipped:
+        info["flipped"] = 1       # counted only when the turned shell is the one kept
+    return man
+
+
+def _shell_back_plane(shell) -> tuple[np.ndarray, np.ndarray] | None:
+    """(outward normal, point) of a shell's back, for the relief remesh.
+
+    A hole as wide as the shell is the back cut away at export (the
+    maker's ornament, a box without its bottom): its plane, facing away
+    from the shell's bulk. Otherwise the largest exact facet, when nothing
+    of the shell lies beyond it. Otherwise the largest hole's plane anyway,
+    and None when there is neither.
+    """
+    V = np.asarray(shell.vertices, dtype=np.float64)
+    if len(V) == 0:
+        return None
+    extent = float((V.max(axis=0) - V.min(axis=0)).max())
+    loops, _ = boundary_loops(np.asarray(shell.faces, dtype=np.int64))
+    loop_plane = None
+    if loops:
+        loop = max(loops, key=lambda lp: float((V[lp].max(axis=0) - V[lp].min(axis=0)).max()))
+        P = V[loop]
+        n, c = _plane_fit(P)
+        if float((c - V.mean(axis=0)) @ n) < 0:
+            n = -n
+        loop_plane = (n, c)
+        if float((P.max(axis=0) - P.min(axis=0)).max()) >= 0.5 * extent:
+            return loop_plane
+    try:
+        facets = list(shell.facets)
+        if facets:
+            areas = np.asarray(shell.facets_area, dtype=np.float64)
+            i = int(np.argmax(areas))
+            if areas[i] >= 0.02 * float(shell.area):
+                faces = np.asarray(facets[i], dtype=np.int64)
+                n = np.asarray(shell.facets_normal[i], dtype=np.float64)
+                n = n / np.linalg.norm(n)
+                pts = np.asarray(shell.triangles_center)[faces]
+                w = np.asarray(shell.area_faces)[faces]
+                pt = (pts * w[:, None]).sum(axis=0) / w.sum()
+                if float(((V - pt) @ n).max()) <= PLANE_DIST_MM:
+                    return n, pt
+    except Exception:                                      # noqa: BLE001
+        pass
+    return loop_plane
+
+
 def _shell_solid(shell) -> tuple[Manifold | None, dict]:
-    """One shell as a solid: constructed, flipped if inside out, repaired by
-    pymeshfix when Manifold rejects it, or None when nothing helped."""
-    info = {"flipped": 0, "repaired": 0, "hulled": 0}
+    """One shell as a solid, up the ladder: as it came (flipped if inside
+    out); its holes capped and its fins dropped; rebuilt as a relief over
+    its back plane; mended by pymeshfix when that keeps enough of it; or
+    None, for the hull."""
+    info = {"flipped": 0, "capped": 0, "remeshed": 0, "remesh_mm": 0.0,
+            "repaired": 0, "hulled": 0}
     v = np.asarray(shell.vertices, dtype=np.float64)
     f = np.asarray(shell.faces, dtype=np.int64)
     if len(f) < 4:
         return None, info
-    man = manifold_from_arrays(v, f)
-    if man.status() == Error.NoError and man.volume() < 0:
-        man = manifold_from_arrays(v, f[:, ::-1])
-        info["flipped"] = 1
-    if man.status() != Error.NoError or man.is_empty():
+    man = _construct(v, f, info)
+    if man is not None:
+        return man, info
+    try:
+        cv, cf, cinfo = cap_holes(v, f)
+        if cinfo["capped"] or cinfo["fins"]:
+            man = _construct(cv, cf, info)
+            if man is not None:
+                info["capped"] = cinfo["capped"]
+                return man, info
+    except Exception:                                      # noqa: BLE001
+        pass
+    plane = _shell_back_plane(shell)
+    if plane is not None:
         try:
-            import pymeshfix
-            fix = pymeshfix.MeshFix(v, f)
-            fix.repair(joincomp=False, remove_smallest_components=False)
-            rv = np.asarray(fix.points, dtype=np.float64)
-            rf = np.asarray(fix.faces, dtype=np.int64)
-            if len(rf) >= 4:
-                cand = manifold_from_arrays(rv, rf)
-                if cand.status() == Error.NoError and cand.volume() < 0:
-                    cand = manifold_from_arrays(rv, rf[:, ::-1])
-                    info["flipped"] = 1
-                if cand.status() == Error.NoError and not cand.is_empty():
-                    man = cand
-                    info["repaired"] = 1
-        except Exception:
+            rv, rf, res = relief_remesh(v, f, plane[0], plane[1])
+            man = _construct(rv, rf, info)
+            if man is not None:
+                info["remeshed"], info["remesh_mm"] = 1, float(res)
+                return man, info
+        except Exception:                                  # noqa: BLE001
             pass
-    if man.status() != Error.NoError or man.is_empty():
-        return None, info
-    return man, info
+    try:
+        import pymeshfix
+        fix = pymeshfix.MeshFix(v, f)
+        fix.repair(joincomp=False, remove_smallest_components=False)
+        rv = np.asarray(fix.points, dtype=np.float64)
+        rf = np.asarray(fix.faces, dtype=np.int64)
+        if len(rf) >= 4 and kept_enough(v, f, rv, rf):
+            man = _construct(rv, rf, info)
+            if man is not None:
+                info["repaired"] = 1
+                return man, info
+    except Exception:                                      # noqa: BLE001
+        pass
+    return None, info
 
 
 def load_sculpt(data: bytes, name: str = "", *, simplify_tol: float = 0.0,
@@ -223,8 +354,10 @@ def load_sculpt(data: bytes, name: str = "", *, simplify_tol: float = 0.0,
     Shells are split first, always: a self-intersecting single shell
     constructs with NoError and the wrong volume, and two overlapping shells
     in one soup read as the sum of their volumes rather than their union.
-    A shell nothing can mend becomes its convex hull, and the record counts
-    it. With `simplify_tol` > 0 the union is simplified to that tolerance.
+    A shell Manifold rejects climbs `mesh_repair`'s ladder (capped, rebuilt
+    as a relief, pymeshfix behind the loss guard); one nothing can mend
+    becomes its convex hull, and the record counts each. With
+    `simplify_tol` > 0 the union is simplified to that tolerance.
     """
     import trimesh
 
@@ -236,7 +369,9 @@ def load_sculpt(data: bytes, name: str = "", *, simplify_tol: float = 0.0,
     if raw.is_empty or len(raw.faces) == 0:
         raise ManifoldError(f"{name or 'the sculpt'} has no triangles")
     shells = _shells(raw)
-    solids, counts = [], {"flipped": 0, "repaired": 0, "hulled": 0}
+    solids = []
+    counts = {"flipped": 0, "capped": 0, "remeshed": 0, "repaired": 0, "hulled": 0}
+    remesh_mm = 0.0
     for shell in shells:
         man, info = _shell_solid(shell)
         if man is None and len(shell.faces) >= 4:
@@ -251,6 +386,10 @@ def load_sculpt(data: bytes, name: str = "", *, simplify_tol: float = 0.0,
             continue
         for k in counts:
             counts[k] += info[k]
+        if info.get("remesh_mm"):
+            # the finest grid a rebuild used, as the field says
+            remesh_mm = (float(info["remesh_mm"]) if not remesh_mm
+                         else min(remesh_mm, float(info["remesh_mm"])))
         solids.append(man)
     if not solids:
         raise ManifoldError(f"{name or 'the sculpt'} holds no closed shell")
@@ -263,7 +402,8 @@ def load_sculpt(data: bytes, name: str = "", *, simplify_tol: float = 0.0,
     return SculptSource(
         manifold=man, mesh=to_trimesh(man), name=name,
         sha256=hashlib.sha256(data).hexdigest(), triangles=int(man.num_tri()),
-        shells=len(solids), repaired=counts["repaired"], hulled=counts["hulled"],
+        shells=len(solids), capped=counts["capped"], remeshed=counts["remeshed"],
+        remesh_mm=remesh_mm, repaired=counts["repaired"], hulled=counts["hulled"],
         flipped=counts["flipped"], simplify_tol=float(simplify_tol))
 
 
@@ -376,23 +516,80 @@ def flat_back(mesh, *, dist_tol: float = PLANE_DIST_MM,
     if facets:
         f_area = np.asarray(mesh.facets_area, dtype=np.float64)
         f_norm = np.asarray(mesh.facets_normal, dtype=np.float64)
-        order = np.argsort(-f_area)
-        if f_area[order[0]] >= min_fraction * total:
-            for i in order:
-                faces = np.asarray(facets[i], dtype=np.int64)
-                if f_area[i] < min_fraction * total:
+        f_norm = f_norm / np.maximum(np.linalg.norm(f_norm, axis=1, keepdims=True), 1e-15)
+        centers = np.asarray(mesh.triangles_center, dtype=np.float64)
+        w_all = np.asarray(mesh.area_faces, dtype=np.float64)
+        # One back can come as many facets: a relief in pieces, each capped
+        # on the same plane (the maker's 16-piece ornament), or a cap split
+        # by a sliver. Facets on one plane (normal and offset alike, within
+        # the tolerances) are one candidate, so the whole back is mounted,
+        # read for sag and counted toward `min_fraction`.
+        # facets grouped by normal within the angle (not by rounding the
+        # normal, which split one plane whose fitted normals straddled a
+        # rounding boundary, the 2.1 bug hunt); the first facet of a group
+        # is its reference
+        by_normal: list[tuple[np.ndarray, list[int]]] = []
+        cos_tol = float(np.cos(np.radians(FACET_MERGE_DEG)))
+        points = []
+        offsets = []
+        for i in range(len(facets)):
+            faces_i = np.asarray(facets[i], dtype=np.int64)
+            w = w_all[faces_i]
+            pt = (centers[faces_i] * w[:, None]).sum(axis=0) / w.sum()
+            points.append(pt)
+            n = f_norm[i]
+            offsets.append(float(pt @ n))
+            for ref, members in by_normal:
+                if float(ref @ n) >= cos_tol:
+                    members.append(i)
                     break
-                pts = np.asarray(mesh.triangles_center)[faces]
-                w = np.asarray(mesh.area_faces)[faces]
-                point = (pts * w[:, None]).sum(axis=0) / w.sum()
-                n = f_norm[i] / np.linalg.norm(f_norm[i])
-                cands.append(BackCandidate(normal=n, point=point, area=float(f_area[i]),
-                                           faces=faces, exact=True))
+            else:
+                by_normal.append((n, [i]))
+        # facets with one normal, clustered by offset where a gap exceeds
+        # the tolerance (not by rounding the offset, which splits a plane
+        # on float noise at a half-unit)
+        groups: list[list[int]] = []
+        for _ref, members in by_normal:
+            members = sorted(members, key=lambda i: offsets[i])
+            run = [members[0]]
+            for i in members[1:]:
+                if offsets[i] - offsets[run[-1]] > dist_tol:
+                    groups.append(run)
+                    run = [i]
+                else:
+                    run.append(i)
+            groups.append(run)
+        merged = []
+        for members in groups:
+            area = float(f_area[members].sum())
+            faces = np.concatenate([np.asarray(facets[i], dtype=np.int64) for i in members])
+            n = (f_norm[members] * f_area[members, None]).sum(axis=0)
+            n = n / max(np.linalg.norm(n), 1e-15)
+            pt = (np.asarray([points[i] for i in members]) * f_area[members, None]
+                  ).sum(axis=0) / area
+            merged.append((area, n, pt, faces))
+        merged.sort(key=lambda m: -m[0])
+        if merged and merged[0][0] >= min_fraction * total:
+            for area, n, pt, faces in merged:
+                if area < min_fraction * total:
+                    break
+                cands.append(BackCandidate(normal=n, point=pt, area=area, faces=faces,
+                                           exact=True))
     if not cands:
         cands = _grown_backs(mesh, dist_tol, angle_deg)
     if not cands:
         raise ManifoldError("no planar face to mount on; pick one by hand")
     return cands
+
+
+def relief_height(mesh, back: BackCandidate) -> float:
+    """How far the relief stands off the back plane, mm: the farthest
+    vertex against the back's outward normal. What a flipped mount lifts
+    the back by, less the sink, so the crown goes in by the sink."""
+    V = np.asarray(mesh.vertices, dtype=np.float64)
+    if len(V) == 0:
+        return 0.0
+    return float(max(0.0, ((back.point - V) @ back.normal).max()))
 
 
 # ------------------------------------------------------------------ mounting
@@ -487,14 +684,26 @@ def snap_target(host_mesh, face: str, point=None, *, outline=None,
 
 def mount_transform(back: BackCandidate, target: SnapTarget, *,
                     overlap_mm: float = MIN_OVERLAP_MM, spin_deg: float = 0.0,
-                    scale: float = 1.0) -> np.ndarray:
-    """The 4 x 4 that puts the sculpt's back on the target: scaled about the
-    back's point, turned so the back faces into the host, spun `spin_deg`
-    about the host normal, and sunk `overlap_mm` below the target point."""
-    R = _axis_rotation(target.normal, spin_deg) @ _rotation_between(back.normal, -target.normal)
+                    scale: float = 1.0, flip: bool = False,
+                    height_mm: float = 0.0) -> np.ndarray:
+    """The 4 x 4 that puts the sculpt on the target, scaled about the back's
+    point and spun `spin_deg` about the host normal.
+
+    Relief out (`flip` False): the back faces into the host and sits
+    `overlap_mm` below the target point, so an emboss unions into one body.
+    Relief in (`flip` True): the back faces away, the relief points into the
+    host, and the crown (`height_mm` off the back, in the sculpt's own
+    units) sits `overlap_mm` below the target point; the back then stands
+    `height_mm * scale - overlap_mm` above the surface. A deboss so placed
+    imprints the relief as a stamp would.
+    """
+    n = _unit(target.normal)
+    facing = n if flip else -n
+    R = _axis_rotation(n, spin_deg) @ _rotation_between(back.normal, facing)
+    lift = (float(height_mm) * float(scale) - float(overlap_mm)) if flip else -float(overlap_mm)
     T = np.eye(4)
     T[:3, :3] = R * float(scale)
-    T[:3, 3] = target.point - target.normal * float(overlap_mm) - (R * float(scale)) @ back.point
+    T[:3, 3] = target.point + n * lift - (R * float(scale)) @ back.point
     return T
 
 
@@ -510,24 +719,49 @@ def transform_points(points, T) -> np.ndarray:
     return P @ T[:3, :3].T + T[:3, 3]
 
 
-def sag_under(host_mesh, back: BackCandidate, source_mesh, T, target: SnapTarget) -> float:
-    """How far the host falls away under the back, mm: the largest drop from
-    the mounting plane to the host surface over the back's boundary, read by
-    vertical ray for the two faces. Zero on a flat terrace, the step height
-    across a seam, and the sag of a curve. Zero for the rim and a pick,
-    whose hosts are read at the point alone."""
-    if target.face not in ("posterior", "anterior"):
-        return 0.0
+def sag_under(host_mesh, back: BackCandidate, source_mesh, T, target: SnapTarget,
+              reach_mm: float = 5.0) -> float:
+    """How far the back must sink for the host to hold it, mm.
+
+    On the two faces, the largest drop from the mounting plane to the host
+    surface over the back's boundary, by vertical ray: zero on a flat
+    terrace, the step height across a seam, the sag of a curve; the whole
+    back then bears. On the rim and a pick, the *smallest* drop, by a ray
+    along the mount normal from `reach_mm` out: a wide back on a curved or
+    short wall touches at its middle and stands clear at its ends, and
+    sinking it by the largest drop would bury it in the frame (a 15 mm
+    ornament on the nose wall went 9.6 mm in); what is needed is contact,
+    which the nearest point gives, and the depth of a recess only when the
+    whole back floats over one."""
     pts = transform_points(back.boundary_points(source_mesh), T)
     if len(pts) == 0:
         return 0.0
-    z = surface_z_at(host_mesh, pts[:, :2], face="top" if target.face == "posterior" else "bottom")
-    z = z[np.isfinite(z)]
-    if len(z) == 0:
+    if target.face in ("posterior", "anterior"):
+        z = surface_z_at(host_mesh, pts[:, :2], face="top" if target.face == "posterior" else "bottom")
+        z = z[np.isfinite(z)]
+        if len(z) == 0:
+            return 0.0
+        plane_z = float(target.point[2])
+        drop = (plane_z - z) if target.face == "posterior" else (z - plane_z)
+        return float(max(0.0, drop.max()))
+    n = _unit(target.normal)
+    # the boundary points lie on the mounting plane: cast from `reach_mm`
+    # outside it, along -n, and read where the host is met. A back taller
+    # than the wall it stands on has its rim above and below the wall, so
+    # the samples are held within the host's own height first.
+    hb = np.asarray(host_mesh.bounds, dtype=np.float64)
+    eps = 1e-3 * max(float((hb[1] - hb[0]).max()), 1e-6)
+    pts = pts.copy()
+    pts[:, 2] = np.clip(pts[:, 2], hb[0, 2] + eps, hb[1, 2] - eps)
+    origins = pts + n * float(reach_mm)
+    directions = np.tile(-n, (len(pts), 1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hits, index_ray, _ = host_mesh.ray.intersects_location(origins, directions,
+                                                               multiple_hits=False)
+    if len(hits) == 0:
         return 0.0
-    plane_z = float(target.point[2])
-    drop = (plane_z - z) if target.face == "posterior" else (z - plane_z)
-    return float(max(0.0, drop.max()))
+    depth = ((hits - origins[index_ray]) @ (-n)) - float(reach_mm)
+    return float(max(0.0, depth.min()))
 
 
 def default_overlap(sag: float) -> float:

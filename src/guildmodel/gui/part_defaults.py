@@ -58,6 +58,7 @@ from guildmodel.core.project.schema import (
     ProgramZero,
     TempleParams,
     component_fixture_zone,
+    part_program_zero,
 )
 
 GROUPS: tuple[str, ...] = ("frame_front", "temple", "base_curve")
@@ -83,7 +84,8 @@ PARAM_FIELDS: dict[str, tuple[str, ...]] = {
     "frame_front": ("stock", "origin_from_drawing", "inlay_depth_mm"),
     "temple": ("snap_to_blank_end", "stock_side", "origin_from_drawing",
                "blank_length_mm", "blank_width_mm", "blank_thickness_mm",
-               "engrave_tool", "hinge_tool", "profile_tool", "inlay_depth_mm"),
+               "engrave_tool", "hinge_tool", "profile_tool", "emboss_tool",
+               "inlay_depth_mm"),
     "base_curve": ("blank_length_mm", "blank_width_mm", "blank_thickness_mm",
                    "hole_count", "hole_spacing_mm", "hole_diameter_mm",
                    "hole_arrangement", "profile_tool", "drill_tool"),
@@ -95,7 +97,7 @@ PARAM_FIELDS: dict[str, tuple[str, ...]] = {
 #: an inactive part fell back to the library's first entry, and the page kept
 #: the dead name — three different tools for one stored word, none announced.
 TOOL_FIELDS: frozenset[str] = frozenset(
-    {"engrave_tool", "hinge_tool", "profile_tool", "drill_tool"})
+    {"engrave_tool", "hinge_tool", "profile_tool", "emboss_tool", "drill_tool"})
 
 #: What a saved project offers to adopt, besides the program zero and the stock
 #: (every group).
@@ -173,7 +175,7 @@ def default_program_zero(prefs: dict | None, kind) -> ProgramZero:
     raw = _group_prefs(prefs, group_of(kind)).get("program_zero")
     if isinstance(raw, dict):
         try:
-            return ProgramZero(**raw)
+            return ProgramZero(**part_program_zero(raw))
         except ValidationError:
             pass
     return ProgramZero()

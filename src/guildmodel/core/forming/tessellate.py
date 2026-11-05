@@ -27,12 +27,12 @@ tessellation, not the map, and this module is the answer to both:
 4. **Vertex normals are the map's, area-weighted, split at the creases.**
    The viewer used to let VTK derive normals from the formed faces and split
    them at 40 degrees; a 30 degree crease came out smooth-shaded and a
-   sliver's normal counted as much as its neighbours'. `FormingMesh.formed`
+   sliver's normal counted as much as its neighbors'. `FormingMesh.formed`
    hands over normals it computed itself: area-weighted over the formed
    faces, with a vertex duplicated wherever the flat part has a real edge
    (walls, pockets) and wherever a live crease runs, so a crease is sharp at
    any angle and a blended crease is not.
-5. **A sliver borrows its neighbours' normal.** The simplification moves
+5. **A sliver borrows its neighbors' normal.** The simplification moves
    vertices by up to a micron, and a face thinner than that
    (`SLIVER_HEIGHT_MM`) has a normal pointing anywhere. Read as a fold it
    cut the smooth patch at the outline into flat wedges with a hairline
@@ -40,7 +40,7 @@ tessellation, not the map, and this module is the answer to both:
    the Paula; joined blindly it could bridge a wall and a top face into one
    patch and put a spot at the corner. So it takes the normal of the smooth
    side it lies on — the largest mutually smooth group among its
-   neighbours — and is judged like any other face, while a face thick
+   neighbors — and is judged like any other face, while a face thick
    enough to have a normal of its own keeps it, however thin. Slivers weigh
    nothing in the vertex normals, and no edge is drawn along a face under
    `THIN_HEIGHT_MM`.
@@ -100,7 +100,7 @@ _SNAP_MM = 1e-6
 #: Under this height over its longest edge, mm, a face is a sliver whose
 #: normal is noise: the simplification moves vertices by up to
 #: `SIMPLIFY_TOL_MM`, which can tilt the normal of a face this thin by 27
-#: degrees and one half as thick by 45. It borrows its neighbours' normal
+#: degrees and one half as thick by 45. It borrows its neighbors' normal
 #: for the split (see `prepared`) and weighs nothing in the vertex normals.
 SLIVER_HEIGHT_MM = 2e-6
 
@@ -205,7 +205,7 @@ def refine_band(V, F, target_mm: float, inside, max_rounds: int = 10):
 
     A face with all three edges halved splits into four, with two into three
     (the quad along its shorter diagonal), with one into two; a face outside
-    the band only ever splits to match a neighbour, so there is never a
+    the band only ever splits to match a neighbor, so there is never a
     T-junction. The rule is per *edge*, not per face, on purpose: the castle's
     faces are slivers, and halving all three edges of a sliver makes four
     slivers, whereas halving only its long edges makes three shorter ones
@@ -274,11 +274,11 @@ def _face_normals(V, F):
 
 def _borrowed_normals(fn, w, sliver, nbr, cos_split, max_rounds: int = 64):
     """``fn`` with every sliver's normal replaced by that of the largest
-    mutually smooth group among its three edge neighbours (``nbr``, -1 at a
+    mutually smooth group among its three edge neighbors (``nbr``, -1 at a
     boundary): largest by count, then by area. A sliver in the middle of a
     smooth patch so joins both its sides, and one at a corner sides with the
     faces on one side of the corner and never bridges it. Zero where it has
-    no neighbour with a normal (a cluster of slivers, which then stands
+    no neighbor with a normal (a cluster of slivers, which then stands
     alone); a fan of slivers resolves from both ends inward, one face a
     round, until nothing changes."""
     eff = fn.copy()
@@ -487,7 +487,7 @@ class FormingMesh:
             # outline); joined blindly, it can bridge a wall and a top face
             # into one patch and put a 45-degree spot at the corner. So it
             # takes the normal of the smooth side it lies on (its
-            # neighbours' largest mutually smooth group) and is then judged
+            # neighbors' largest mutually smooth group) and is then judged
             # like any other face; a face thick enough to have a normal of
             # its own keeps it, however thin.
             longest = np.linalg.norm(V[F[:, [1, 2, 0]]] - V[F], axis=2).max(axis=1)

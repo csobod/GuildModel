@@ -49,10 +49,18 @@ class ComponentWorkspace:
     open_outline: int = 0
     # Curves the file describes wrongly, skipped; reported at intake.
     unreadable: int = 0
+    # What each COMPONENT curve was placed from, index-aligned with the
+    # layer's curves as read ("Hinges", "Bridges", or None); the draft view
+    # fills a hinge in for the hinge pockets only (2.3). Never saved.
+    component_kinds: list = field(default_factory=list)
     # LENS curves past two, and one lens in an outline drawn for two: either
     # stops the castle (`derive_workspace`); reported at intake.
     extra_lenses: int = 0
     half_drawn: bool = False
+    # Both lenses on one eye, and separated rims with a rim drawn without its
+    # lens: either stops the castle too (GuildDraw 2.0.1's readiness rules).
+    one_eye: bool = False
+    empty_rims: int = 0
     # Set once derive_workspace has applied the temple Y-axis re-orientation, so a
     # re-derive never double-flips the layers.
     layers_oriented: bool = False
@@ -249,15 +257,25 @@ def derive_workspace(ws: ComponentWorkspace, boxing=None) -> ComponentWorkspace:
     # guessed at: the partition took the first two in drawing order while the
     # eyes were the outermost two. One lens in an outline drawn for two is
     # refused too: the other eye would be cut solid (the 2.0 bug hunt).
-    from guildmodel.core.geometry.regions import half_drawn_front
+    # Both lenses on one eye leave the other with none, and a rim drawn
+    # without its lens was built as a monocle or not at all, by which rim was
+    # the larger (GuildDraw 2.0.1 refuses both).
+    from guildmodel.core.geometry.regions import empty_rims, half_drawn_front
     ws.extra_lenses = (max(0, len(valid_lens) - 2)
                        if ws.outline_poly is not None else 0)
     ws.half_drawn = (ws.outline_poly is not None and len(valid_lens) == 1
                      and half_drawn_front(ws.outline_poly, valid_lens[0]))
+    ws.one_eye = (ws.outline_poly is not None and len(valid_lens) == 2 and any(
+        half_drawn_front(ws.outline_poly, lens,
+                         [o for o in valid_lens if o is not lens])
+        for lens in valid_lens))
+    ws.empty_rims = (empty_rims(ws.outline_poly, ws.outline_stray, valid_lens)
+                     if ws.outline_poly is not None else 0)
     # Two lenses, or one: a monocle's single rim partitions as a standard half
     # (`regions._classify_rims`), as each rim of a separated pair does.
     if (ws.outline_poly is not None and valid_lens and sculpt
-            and not ws.extra_lenses and not ws.half_drawn):
+            and not ws.extra_lenses and not ws.half_drawn
+            and not ws.one_eye and not ws.empty_rims):
         # Only OUTLINE and LENS: those are the rings that bound the body, and a
         # ring is the only thing `source_curves` is ever looked up by. SCULPT
         # cuts are open polylines (straight in every drawing so far) and
@@ -425,6 +443,7 @@ def build_workspaces_from_gdraw(path) -> tuple[list[ComponentWorkspace], str]:
             enabled=c.enabled, source_workspace=c.source_workspace, forming=c.forming,
             texts=list(gc.texts), guides=dict(gc.guides),
             open_outline=gc.open_outline, unreadable=gc.unreadable,
+            component_kinds=list(gc.component_kinds),
             castle_params=c.castle, temple_params=c.temple,
             block_params=c.base_curve_block,
             # Every model component starts with its OWN G54 datum (M11 + 2026-07-09

@@ -1,9 +1,10 @@
-"""Sculpts on screen (BUILDPLAN M22 §7.4), without a MainWindow.
+"""Sculpts on screen (BUILDPLAN M22 §7.4, the drag redone in §7.8), without
+a MainWindow.
 
 The Sculpts group on the Model tab keeps the records and says when one
-moved; the viewer's handle puts pyvista's affine widget on the placed sculpt
-and hands the drag back once; the build spec carries the STL bytes to the
-mesh kernel, which bakes them in.
+moved; the viewer's overlay slides the placed sculpt over the model under
+the cursor and hands the placement back once; the build spec carries the
+STL bytes to the mesh kernel, which bakes them in.
 """
 import numpy as np
 import pytest
@@ -12,6 +13,8 @@ import trimesh
 from guildmodel.core.project.schema import CastleParams, SculptFeature, SculptMount
 
 pytest.importorskip("PySide6.QtWidgets")
+from PySide6.QtCore import QEvent, Qt                          # noqa: E402
+from PySide6.QtWidgets import QWidget                          # noqa: E402
 
 
 @pytest.fixture
@@ -38,7 +41,8 @@ def _feature(i=1, **kw):
 def test_the_sculpts_group_keeps_the_records_and_rides_the_castle_params(qapp):
     from guildmodel.gui.widgets.params_panel import ParamsPanel
     p = ParamsPanel()
-    assert "Sculpts  (your own meshes, embossed or debossed)" in p._folds
+    from guildmodel.gui.widgets.params_panel import SCULPTS_FOLD
+    assert SCULPTS_FOLD in p._folds and p._folds[SCULPTS_FOLD].header.text() == "Embossing"
     assert p.castle_params().sculpts == []
     heard = []
     p.castle_changed.connect(lambda: heard.append("castle"))
@@ -52,10 +56,14 @@ def test_the_sculpts_group_keeps_the_records_and_rides_the_castle_params(qapp):
     # the editor edits the record's own fields and says the castle changed
     p.sculpt_list.setCurrentRow(1)
     heard.clear()
+    moved = []
+    p.sculpt_mount_changed.connect(lambda row, requery: moved.append((row, requery)))
     p.sc_op.setCurrentIndex(1)
     p.sc_mirror.setChecked(True)
     assert p.sculpts()[1].op == "deboss" and p.sculpts()[1].mirror
-    assert heard == ["castle", "castle"]
+    # the op switch flips the mount and asks the window to re-place it (which
+    # rebuilds); the mirror is the record's own and says the castle changed
+    assert heard == ["castle"] and moved == [(1, False)]
     assert "deboss" in p.sculpt_list.item(1).text() and "⇔" in p.sculpt_list.item(1).text()
     # restoring from params brings every record back
     castle = CastleParams(sculpts=[_feature(3)])
@@ -100,32 +108,31 @@ def test_a_mount_edit_says_which_row_moved_and_whether_the_face_did(qapp):
 
 # ------------------------------------------------------------- the viewer
 
-class _Widget:
+class _Actor:
     def __init__(self):
-        self.removed = False
-
-    def remove(self):
-        self.removed = True
+        self.user_matrix = np.eye(4)
 
 
-class _Plotter:
+class _Plotter(QWidget):
+    """Enough of a QtInteractor for the overlay: a widget the event filter
+    sees, actors by name, a camera and a renderer the pick never reaches
+    (the pick itself is replaced in the tests)."""
+
     def __init__(self):
+        super().__init__()
         self.actors: dict = {}
-        self.widgets: list = []
         self.renders = 0
+        self.renderer = object()
+        self.camera = type("Cam", (), {"position": (0.0, 0.0, 100.0)})()
+        self.resize(400, 300)
 
     def clear(self):
         self.actors.clear()
 
     def add_mesh(self, mesh, name=None, **kw):
-        self.actors[name or f"actor{len(self.actors)}"] = mesh
-        return object()
-
-    def add_affine_transform_widget(self, actor, release_callback=None, **kw):
-        w = _Widget()
-        w.release = release_callback
-        self.widgets.append(w)
-        return w
+        a = _Actor()
+        self.actors[name or f"actor{len(self.actors)}"] = a
+        return a
 
     def remove_actor(self, name, render=True):
         self.actors.pop(name, None)
@@ -136,6 +143,12 @@ class _Plotter:
     def render(self):
         self.renders += 1
 
+    def set_background(self, *a, **k):
+        pass
+
+    def enable_anti_aliasing(self):
+        pass
+
 
 @pytest.fixture
 def viewer(qapp, monkeypatch):
@@ -144,6 +157,7 @@ def viewer(qapp, monkeypatch):
     def fake_ensure(self):
         if self._plotter is None:
             self._plotter = _Plotter()
+            self._plotter.installEventFilter(self)
         return True
     monkeypatch.setattr(Viewer3D, "_ensure_plotter", fake_ensure)
     monkeypatch.setattr(Viewer3D, "_safe_render", lambda self: self._plotter.render())
@@ -151,25 +165,99 @@ def viewer(qapp, monkeypatch):
     return Viewer3D()
 
 
-def test_the_handle_attaches_fires_release_once_and_comes_down(viewer):
+def _mouse(kind, x, y, button=Qt.MouseButton.LeftButton):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    buttons = button if kind != QEvent.Type.MouseButtonRelease else Qt.MouseButton.NoButton
+    return QMouseEvent(kind, QPointF(x, y), QPointF(x, y), button, buttons,
+                       Qt.KeyboardModifier.NoModifier)
+
+
+def test_the_overlay_drags_over_the_surface_and_commits_once(viewer, monkeypatch):
+    """A press on the overlay takes the mouse from the camera; every move
+    casts the cursor on the model and previews the placement with the grab
+    offset; the release commits once; a press beside it passes through."""
     v = viewer
+    v._ensure_plotter()
     dome = trimesh.creation.icosphere(subdivisions=2, radius=3.0)
-    got = []
-    v.show_sculpt_handle(dome, got.append)
-    assert v.sculpt_handle_active and "sculptHandle" in v._plotter.actors
-    assert len(v._plotter.widgets) == 1
-    M = np.eye(4)
-    M[:3, 3] = [1.0, 2.0, 3.0]
-    v._plotter.widgets[0].release(M)
-    assert len(got) == 1 and np.allclose(got[0], M)
-    # a second show replaces the first: one widget live, the old one removed
-    v.show_sculpt_handle(dome, got.append)
-    assert v._plotter.widgets[0].removed and len(v._plotter.widgets) == 2
-    v.clear_sculpt_handle()
-    assert not v.sculpt_handle_active and "sculptHandle" not in v._plotter.actors
-    assert v._plotter.widgets[1].removed
-    v._plotter.widgets[1].release(M)                 # a late release is dropped
-    assert len(got) == 1
+    model_actor = _Actor()
+    v._model_actor = model_actor
+    hits = {"overlay": None, "model": None}
+
+    def fake_pick(self, x, y, actors):
+        a = actors[0]
+        key = "overlay" if a is self._sculpt_actor else "model"
+        h = hits[key]
+        return None if h is None else (np.asarray(h[0], float), np.asarray(h[1], float), a)
+    monkeypatch.setattr(type(v), "_pick", fake_pick)
+
+    previews, commits = [], []
+
+    def preview(point, normal, offset):
+        previews.append((point.copy(), normal.copy(), offset.copy()))
+        M = np.eye(4)
+        M[:3, 3] = point
+        return M
+
+    def commit(point, normal, offset):
+        commits.append((point.copy(), normal.copy(), offset.copy()))
+
+    v.show_sculpt_overlay(dome, anchor=[1.0, 2.0, 4.0], preview=preview, commit=commit)
+    assert v.sculpt_overlay_active and "sculptHandle" in v._plotter.actors
+    pl = v._plotter
+    # a press beside the overlay is the camera's
+    hits["overlay"] = None
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseButtonPress, 10, 10)) is False
+    assert v._sculpt_drag is None
+    # a press on it starts the drag with the anchor's offset from the grab
+    hits["overlay"] = ([0.5, 2.0, 4.0], [0, 0, 1])
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseButtonPress, 10, 10)) is True
+    assert v._sculpt_drag is not None and np.allclose(v._sculpt_drag["offset"], [0.5, 0, 0])
+    # a move over the model previews the placement under the cursor
+    hits["model"] = ([7.0, 8.0, 4.0], [0, 0, 1])
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseMove, 20, 20)) is True
+    assert len(previews) == 1 and np.allclose(previews[0][0], [7, 8, 4])
+    assert np.allclose(previews[0][2], [0.5, 0, 0])
+    assert np.allclose(v._sculpt_actor.user_matrix[:3, 3], [7, 8, 4])
+    # a move off the model keeps the last preview and still owns the mouse
+    hits["model"] = None
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseMove, 30, 30)) is True
+    assert len(previews) == 1
+    # the release commits the last hit once
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseButtonRelease, 30, 30)) is True
+    assert len(commits) == 1 and np.allclose(commits[0][0], [7, 8, 4])
+    assert v._sculpt_drag is None
+    # a release with nothing in flight passes through
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseButtonRelease, 30, 30)) is False
+    # clearing takes the overlay down, and a later event is nobody's
+    v.clear_sculpt_overlay()
+    assert not v.sculpt_overlay_active and "sculptHandle" not in pl.actors
+    hits["overlay"] = ([0.5, 2.0, 4.0], [0, 0, 1])
+    assert v.eventFilter(pl, _mouse(QEvent.Type.MouseButtonPress, 10, 10)) is False
+
+
+def test_pick_surface_reads_the_model_under_a_point(viewer, monkeypatch):
+    v = viewer
+    v._ensure_plotter()
+    assert v.pick_surface(v._plotter.rect().center()) is None      # no model yet
+    v._model_actor = _Actor()
+    monkeypatch.setattr(type(v), "_pick", lambda self, x, y, actors: (
+        np.array([1.0, 2.0, 3.0]), np.array([0.0, 0.0, 1.0]), actors[0]))
+    hit = v.pick_surface(v._plotter.rect().center())
+    assert hit is not None and np.allclose(hit[0], [1, 2, 3]) and np.allclose(hit[1], [0, 0, 1])
+    # a point outside the plotter is off the model
+    from PySide6.QtCore import QPoint
+    assert v.pick_surface(QPoint(-50, -50)) is None
+
+
+def test_display_coordinates_flip_y(viewer):
+    from PySide6.QtCore import QPoint
+    v = viewer
+    v._ensure_plotter()
+    v._plotter.resize(400, 300)
+    x, y = v._display_xy(QPoint(10, 20))
+    assert x == pytest.approx(10 * v._plotter.devicePixelRatioF())
+    assert y == pytest.approx((300 - 20 - 1) * v._plotter.devicePixelRatioF())
 
 
 # ------------------------------------------------------------- the build
@@ -215,6 +303,10 @@ def test_the_spec_carries_the_bytes_and_the_mesh_kernel_bakes_them(demo_spec):
     with_sculpt, _, _ = build_component_mesh(spec, resolution=0.3, kernel="mesh")
     assert with_sculpt.is_watertight
     assert with_sculpt.volume > plain.volume + 0.9 * src.volume
+    # the surface without the sculpt rides along, for the snaps and the drag
+    host = with_sculpt.metadata["sculpt_host"]
+    assert host.volume == pytest.approx(plain.volume, rel=1e-6)
+    assert "sculpt_host" not in plain.metadata
     assert spec["sculpt_sources"][src.sha256] == data        # the bytes are left as they came
     # the raster kernel does not know sculpts, and says nothing
     raster, _, _ = build_component_mesh(spec, resolution=0.3, kernel="raster")

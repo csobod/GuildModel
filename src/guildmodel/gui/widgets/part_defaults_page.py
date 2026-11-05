@@ -21,15 +21,14 @@ from PySide6.QtWidgets import (
 
 from guildmodel.core.project.schema import (
     BaseCurveBlockParams, CastleParams, ProgramZero, StockDefinition, TempleParams,
+    part_program_zero,
 )
 from guildmodel.gui import part_defaults
 from guildmodel.gui.widgets.params_panel import _tool_names
 
-# Schema literal ↔ display order, shared with the dock's Program Zero group.
-_PZ_MODE = [("stock_box", "Stock box"), ("fixture", "Fixture (design frame)")]
-_PZ_X = [("left", "Left"), ("center", "Center"), ("right", "Right")]
-_PZ_Y = [("bottom", "Bottom"), ("center", "Center"), ("top", "Top")]
-_PZ_Z = [("top", "Top face"), ("bottom", "Bottom face (anterior)")]
+# Schema literal ↔ display order, the dock's Program Zero group's.
+from guildmodel.gui.widgets.params_panel import ParamsPanel as _Dock
+_PZ_X, _PZ_Y, _PZ_Z, _PZ_TIPS = _Dock._PZ_X, _Dock._PZ_Y, _Dock._PZ_Z, _Dock._PZ_TIPS
 
 
 def _spin(value: float, lo: float, hi: float, step: float, decimals: int,
@@ -59,20 +58,38 @@ def _set_text(cb: QComboBox, text: str) -> None:
 
 
 class ZeroPicker(QWidget):
-    """Mode + X / Y / Z datum on one row — the dock's Program Zero group, compact."""
+    """The dock's Program Zero group, compact: the X / Y / Z datum on one row
+    and the shift from it on the next. (*Fixture* went on 2026-11-02; a stored
+    one reads as the default datum, `part_program_zero`.)"""
 
     def __init__(self, pz: ProgramZero | None = None, parent=None) -> None:
         super().__init__(parent)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        self.mode = self._combo(_PZ_MODE, "Zero mode")
-        self.x = self._combo(_PZ_X, "X datum on the blank")
-        self.y = self._combo(_PZ_Y, "Y datum on the blank")
-        self.z = self._combo(_PZ_Z, "Z datum on the blank")
-        for cb in (self.mode, self.x, self.y, self.z):
-            lay.addWidget(cb)
-        self.mode.currentIndexChanged.connect(self._sync_enabled)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.x = self._combo(_PZ_X, _PZ_TIPS["x"])
+        self.y = self._combo(_PZ_Y, _PZ_TIPS["y"])
+        self.z = self._combo(_PZ_Z, _PZ_TIPS["z"])
+        for cb in (self.x, self.y, self.z):
+            row.addWidget(cb)
+        col.addLayout(row)
+        shift = QHBoxLayout()
+        shift.setSpacing(6)
+        lbl = QLabel("Shift:")
+        lbl.setToolTip(_PZ_TIPS["shift"])
+        shift.addWidget(lbl)
+        self.shift_x = _spin(0.0, -1000.0, 1000.0, 0.5, 2)
+        self.shift_y = _spin(0.0, -1000.0, 1000.0, 0.5, 2)
+        self.shift_z = _spin(0.0, -1000.0, 1000.0, 0.5, 2)
+        for sb, axis, tip in ((self.shift_x, "X", _PZ_TIPS["shift"]),
+                              (self.shift_y, "Y", _PZ_TIPS["shift"]),
+                              (self.shift_z, "Z", _PZ_TIPS["shift_z"])):
+            sb.setPrefix(f"{axis} ")
+            sb.setToolTip(tip)
+            shift.addWidget(sb)
+        col.addLayout(shift)
         self.set_value(pz or ProgramZero())
 
     @staticmethod
@@ -83,28 +100,29 @@ class ZeroPicker(QWidget):
         cb.setToolTip(tip)
         return cb
 
-    def _sync_enabled(self) -> None:
-        stock_box = _PZ_MODE[self.mode.currentIndex()][0] == "stock_box"
-        for cb in (self.x, self.y, self.z):
-            cb.setEnabled(stock_box)
-
     def value(self) -> ProgramZero:
         return ProgramZero(
-            mode=_PZ_MODE[self.mode.currentIndex()][0],
+            mode="stock_box",
             x_ref=_PZ_X[self.x.currentIndex()][0],
             y_ref=_PZ_Y[self.y.currentIndex()][0],
             z_ref=_PZ_Z[self.z.currentIndex()][0],
+            shift_x_mm=self.shift_x.value(),
+            shift_y_mm=self.shift_y.value(),
+            shift_z_mm=self.shift_z.value(),
         )
 
     def set_value(self, pz: ProgramZero) -> None:
-        for cb, pairs, val in ((self.mode, _PZ_MODE, pz.mode), (self.x, _PZ_X, pz.x_ref),
-                               (self.y, _PZ_Y, pz.y_ref), (self.z, _PZ_Z, pz.z_ref)):
+        pz = ProgramZero(**part_program_zero(pz))
+        for cb, pairs, val in ((self.x, _PZ_X, pz.x_ref), (self.y, _PZ_Y, pz.y_ref),
+                               (self.z, _PZ_Z, pz.z_ref)):
             keys = [k for k, _ in pairs]
             if val in keys:
                 cb.blockSignals(True)
                 cb.setCurrentIndex(keys.index(val))
                 cb.blockSignals(False)
-        self._sync_enabled()
+        for sb, val in ((self.shift_x, pz.shift_x_mm), (self.shift_y, pz.shift_y_mm),
+                        (self.shift_z, pz.shift_z_mm)):
+            _set(sb, val)
 
 
 class PartDefaultsPage(QWidget):
@@ -261,14 +279,17 @@ class PartDefaultsPage(QWidget):
         self.temple_engrave_tool = QComboBox()
         self.temple_hinge_tool = QComboBox()
         self.temple_profile_tool = QComboBox()
+        self.temple_emboss_tool = QComboBox()
         for cb, name in ((self.temple_engrave_tool, t.engrave_tool),
                          (self.temple_hinge_tool, t.hinge_tool),
-                         (self.temple_profile_tool, t.profile_tool)):
+                         (self.temple_profile_tool, t.profile_tool),
+                         (self.temple_emboss_tool, t.emboss_tool)):
             cb.addItems(tools)
             _set_text(cb, name)
         form.addRow("Engrave tool:", self.temple_engrave_tool)
         form.addRow("Component tool:", self.temple_hinge_tool)
         form.addRow("Profile tool:", self.temple_profile_tool)
+        form.addRow("Emboss tool:", self.temple_emboss_tool)
         self.temple_inlay_depth = _spin(t.inlay_depth_mm, 0.0, 6.0, 0.05, 2)
         self.temple_inlay_depth.setToolTip(
             "The depth a new inlay seat starts at on a temple. Each seat keeps "
@@ -289,6 +310,7 @@ class PartDefaultsPage(QWidget):
         _set(self.temple_blank_thickness, t.blank_thickness_mm)
         _set_text(self.temple_engrave_tool, t.engrave_tool)
         _set_text(self.temple_hinge_tool, t.hinge_tool)
+        _set_text(self.temple_emboss_tool, t.emboss_tool)
         _set_text(self.temple_profile_tool, t.profile_tool)
         _set(self.temple_inlay_depth, t.inlay_depth_mm)
 
@@ -376,6 +398,7 @@ class PartDefaultsPage(QWidget):
             engrave_tool=self.temple_engrave_tool.currentText(),
             hinge_tool=self.temple_hinge_tool.currentText(),
             profile_tool=self.temple_profile_tool.currentText(),
+            emboss_tool=self.temple_emboss_tool.currentText(),
             inlay_depth_mm=self.temple_inlay_depth.value(),
         ))
 

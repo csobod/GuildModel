@@ -359,12 +359,15 @@ def _classify_zones(regions: list[Polygon], lenses: list[Polygon]) -> list[Zone]
     return _named_zones(picked)
 
 
-def half_drawn_front(body, lens: Polygon) -> bool:
-    """One lens in an outline drawn for two: the lens mirrored across the
-    body's vertical center line lands inside the body and clear of the lens.
-    A monocle's rim surrounds its lens, and the mirror image falls on the lens
-    itself; a front drawn whole with the second lens left to the Ghost, which
-    GuildModel never reads, would be cut with the other eye solid."""
+def half_drawn_front(body, lens: Polygon, others=()) -> bool:
+    """A lens with no partner in an outline drawn for two: the lens mirrored
+    across the body's vertical center line lands inside the body, clear of
+    the lens and of every other lens (*others*). A monocle's rim surrounds
+    its lens, and the mirror image falls on the lens itself; a pair's mirror
+    images fall on each other. A front drawn whole with the second lens left
+    to the Ghost, which GuildModel never reads, would be cut with the other
+    eye solid; so would one with both lenses on one eye (a redrawn lens left
+    behind), which GuildDraw 2.0.1 refuses as well."""
     from shapely.affinity import scale
     parts = body_parts(body)
     if len(parts) != 1:
@@ -373,7 +376,26 @@ def half_drawn_front(body, lens: Polygon) -> bool:
     twin = scale(lens, xfact=-1.0, yfact=1.0, origin=(0.5 * (x0 + x1), 0.0))
     if twin.intersection(lens).area > 0.5 * lens.area:
         return False
+    if any(twin.intersection(o).area > 0.1 * lens.area for o in others):
+        return False
     return twin.difference(parts[0]).area < 0.1 * lens.area
+
+
+def empty_rims(body, strays, lenses) -> int:
+    """Rims drawn without their lens, beside one that has it: of the body's
+    parts and the *strays*, those as large as half a rim with a lens that
+    hold none. The assembly makes such a rim a body when it is the larger of
+    the two, and a stray when the two tie and it comes second, so both are
+    counted (GuildDraw 2.0.1 refuses either)."""
+    parts = body_parts(body)
+    held = [p for p in parts
+            if any(p.contains(lens.representative_point()) for lens in lenses)]
+    if not held or len(lenses) > 2:
+        return 0
+    least = min(p.area for p in held)
+    return sum(1 for p in list(parts) + list(strays)
+               if p.area >= 0.5 * least and not any(
+                   p.contains(lens.representative_point()) for lens in lenses))
 
 
 def _named_zones(picked: list[tuple[str, str, Polygon]]) -> list[Zone]:

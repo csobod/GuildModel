@@ -404,6 +404,19 @@ def test_one_lens_in_an_outline_drawn_for_two_is_not_a_monocle():
     assert not mono.half_drawn and mono.castle_ready
 
 
+def test_both_lenses_on_one_eye_are_refused():
+    """A redrawn lens left behind: GuildDraw 2.0.1 refuses the front. Here it
+    was castle-ready, split into an `ou` side, with the other eye solid."""
+    cuts = [("SCULPT", [(s * 70, -10), (s * 62, -10)]) for s in (-1, 1)] + [
+        ("SCULPT", [(s * 70, 10), (s * 62, 10)]) for s in (-1, 1)]
+    one_eye = [("OUTLINE", _rect(-70, -22, 70, 22)), ("LENS", _rect(14, -16, 62, 16)),
+               ("LENS", _rect(16, -15, 60, 15))] + cuts
+    ws = _front_workspace(one_eye)
+    assert ws.one_eye and ws.partition is None and not ws.castle_ready
+    pair = one_eye[:2] + [("LENS", _rect(-62, -16, -14, 16))] + cuts
+    assert not _front_workspace(pair).one_eye
+
+
 def test_a_third_lens_is_refused_not_guessed():
     """The partition took the first two lenses in drawing order, the boxing
     the same two, while the eyes were the outermost two."""
@@ -742,7 +755,7 @@ def test_the_verdict_asks_whether_the_part_is_released(monkeypatch):
 
 def test_the_dock_shows_only_what_the_kernel_builds(monkeypatch, tmp_path):
     """A control a kernel ignores is not shown (the maker, 2026-10-17). The
-    Sculpts section and the Sculpt Finish op belong to the mesh kernel; the
+    Embossing section and the Emboss Finish op belong to the mesh kernel; the
     splay's crest blend, the raster's alone, is gone, and its seam blend,
     which every kernel cuts, takes its place."""
     pytest.importorskip("PySide6.QtWidgets")
@@ -759,8 +772,8 @@ def test_the_dock_shows_only_what_the_kernel_builds(monkeypatch, tmp_path):
     for kernel, shown in (("mesh", True), ("brep", False), ("raster", False), ("mesh", True)):
         p.set_model_kernel(kernel)
         assert box.isHidden() is not shown, kernel
-        assert p.op_checks["Sculpt Finish"].isHidden() is not shown, kernel
-        assert all(w.isHidden() is not shown for w in p._op_tool_rows["Sculpt Finish"]), kernel
+        assert p.op_checks["Emboss Finish"].isHidden() is not shown, kernel
+        assert all(w.isHidden() is not shown for w in p._op_tool_rows["Emboss Finish"]), kernel
     assert not hasattr(p, "splay_blend")
     assert p.castle_params().pad_splay.seam_blend_mm == 1.0
     p.splay_seam.setValue(0.6)

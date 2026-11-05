@@ -168,10 +168,25 @@ def _build_castle_mesh(spec, progress):
                if getattr(castle, "sculpts", None) else None)
     model = build_castle_model(
         spec["partition"], castle, spec["hinge"], progress=progress,
-        inlays=spec.get("inlay", ()), sculpts=sculpts)
+        inlays=spec.get("inlay", ()))
+    host = None
+    if sculpts:
+        # The bake is the build's last step (build.py does the same when
+        # handed the sculpts); done here so the surface *without* them rides
+        # along as `metadata["sculpt_host"]`: what a snap, a drag or a drop
+        # reads the frame off. Read off the baked model, a short drag lands
+        # on the sculpt's own old copy (the 2026-11-01 review).
+        from guildmodel.core.model.kernel import drop_degenerate
+        from guildmodel.core.model.sculpt import bake
+        if progress is not None:
+            progress("Embossing", 0.92)
+        host = to_trimesh(model)
+        model = drop_degenerate(bake(model, list(sculpts)))
     if progress is not None:
         progress("Edges", 0.97)
     mesh = to_trimesh(model)
+    if host is not None:
+        mesh.metadata["sculpt_host"] = host
     return mesh, feature_edges(mesh), None
 
 
@@ -234,6 +249,18 @@ def _build_temple(spec, resolution, progress):
         outline, temple, hinge, eng, graphic_curves=gfx, inlay_polys=seats,
         resolution=temple_preview_res(resolution, eng or gfx), progress=progress)
     guide = temple_core_guide(outline, hinge, temple).bounds
+    sculpts = getattr(temple, "sculpts", None)
+    if sculpts and spec.get("sculpt_sources"):
+        # The maker's meshes (2026-11-02): the solid with them baked in, and
+        # the surface without them riding along for a snap or a drag, as the
+        # front's does (`_build_castle_mesh`).
+        from guildmodel.core.relief.flat import emboss_flat_relief
+        baked = emboss_flat_relief(relief, temple.resolved_sculpts(),
+                                   spec["sculpt_sources"], progress=progress)
+        if baked.host is not None:
+            baked.mesh.metadata["sculpt_host"] = baked.host
+        baked.mesh.metadata["emboss_notes"] = list(baked.notes)
+        return baked.mesh, None, guide
     return build_castle_mesh(relief, progress=progress), None, guide
 
 

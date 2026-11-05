@@ -105,7 +105,7 @@ def test_the_marker_is_not_over_applied():
     # 2026-09-27 part defaults five in `test_part_defaults` (a fresh drawing
     # seeded, the Save offer, Save itself committing a typed number, Don't ask
     # again, the material write-back), one in
-    # `test_temple_apply_both` (the Temple tab onto the other temple), one in
+    # `test_temples_link` (the temples' link; one, the Apply-to-both button, until 2026-11-02), one in
     # `test_tool_feeds_writeback` (the library offer on Generate), one in
     # `test_dialog_sizing` (Preferences opens within the screen) and one in
     # `test_tooltips_and_typing` (the ? switch at the toolbar's end); the
@@ -140,4 +140,13 @@ def test_the_marker_is_not_over_applied():
     # Generate's dialog open; a program landing on its own part; a DXF
     # project's settings through a reopen; Reload Drawing keeping the
     # sculpts; and opening a project leaving the CAM preferences alone.
-    assert marked == 77, f"{marked} tests marked `gui`, expected 77"
+    # One more on 2026-11-01: a sculpt dropped under the cursor and dragged
+    # over the frame, re-seated on the face the surface names, in
+    # `test_sculpts_placement`.
+    # Five more on 2026-11-02: the sidebar through hide, minimize and the
+    # action in `test_housekeeping_2026_11`, and the temples' link, its
+    # unlinking and its file in `test_temples_link` (which replaced the
+    # Apply-to-both one). Five more on 2026-11-04: the draft view, its panel,
+    # the Temple tab's tip bend, the blueprint and the preferences in
+    # `test_draft_gui_v230`.
+    assert marked == 88, f"{marked} tests marked `gui`, expected 88"

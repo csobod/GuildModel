@@ -113,9 +113,9 @@ class _JumpSlider(QSlider):
             # base on screen (the fuzzy bridge the maker saw), and a Model tab
             # slider clicked into place rebuilt the mesh but never invalidated
             # the program or marked the project dirty.
-            centre = self._handle_rect().center()
+            center = self._handle_rect().center()
             event = QMouseEvent(
-                event.type(), centre.toPointF(), event.scenePosition(),
+                event.type(), center.toPointF(), event.scenePosition(),
                 event.globalPosition(), event.button(), event.buttons(),
                 event.modifiers())
         super().mousePressEvent(event)

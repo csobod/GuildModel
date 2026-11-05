@@ -1,4 +1,4 @@
-# GuildModel User Guide (v2.0.0)
+# GuildModel User Guide (v2.3.0)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -7,10 +7,13 @@ middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) �
 You open a drawing, set how each part is modeled and cut, verify the result in
 simulation, then hand the finished job to GuildSend.
 
-**Where things stand.** The frame-front workflow is hardware-proven end to end,
-in real acetate on a Carbide 3D Nomad. The temple, base-curve-block and
-worktable-nesting paths are fully built and verified in cut simulation, but not
-yet cut on real stock. Air-cut them first, then cut a test piece.
+**Where things stand.** The frame-front and whole-bed workflows are
+hardware-proven: a front in real acetate on a Carbide 3D Nomad, and a nested
+worktable with the front, both temples and both blocks on the Guild CNC.
+Two-sided jobs, a temple's second side and the embossed meshes are verified
+in cut simulation and not yet cut on real stock. Air-cut them first, then
+cut a test piece. The draft view and the blueprint (§2) describe the frame
+after forming and change no program.
 
 ## 1. Open your drawing
 
@@ -97,11 +100,11 @@ under its header with a click; GuildModel remembers which you folded.
 ### The Model tab
 
 The Model tab sets the per-zone tower heights, the footing radius and the
-**Component depth**, the depth of the component pockets. Below them are the
+**Component pocket depth**, the depth of the component pockets. Below them are the
 posterior finishing features, all off by default: the pad-splay chamfer, the
 bezeled eyewire and the bridge relief.
 
-**Hinge pocket angle** tilts the floor of the component pockets on the
+**Component pocket angle** tilts the floor of the component pockets on the
 endpieces, the hinges, to change the pantoscopic tilt at the hinge. The superior edge of each pocket stays at the
 pocket depth; a positive angle makes the inferior edge deeper, and a negative
 angle makes it shallower. At 0° the floor is flat. The slider stops where
@@ -191,8 +194,9 @@ This exists for the shape a constant band cannot make — the **anterior brow
 chamfer**, over each eyewire, stopping short of the bridge. The eyewire bezel
 runs all the way round a ring, so it cannot stop at the nose.
 
-**Anterior runs are modeled and shown in 3D only.** Machining the front face
-needs the flip setup, which is a later release. Posterior runs cut normally.
+**An anterior run is cut by the anterior setup of a two-sided job** (§5);
+with Two-sided *Off* it is modeled and shown in 3D only. Posterior runs cut
+in the posterior program.
 
 The controls, in the order they appear:
 
@@ -234,41 +238,74 @@ mirrored feature is one edit instead of two.
 > because a program you have already stored keeps the readiness dot green on
 > its own.
 
-### Sculpts — your own meshes, embossed or debossed
+### Embossing — your own meshes, embossed or debossed
 
-A sculpt is a mesh you made elsewhere: a crest, a rivet head, a plaque, a
-channel. Drop an `.stl` on the 3D view, or use **+ Add STL…** in the
-**Sculpts** section of the Model tab. GuildModel repairs the mesh (a
-duplicated-vertex soup is welded, an inside-out shell is turned, an open
-shell is mended, two overlapping shells become one), finds its flat back,
-and snaps it to the back of the frame at the center, sunk 0.05 mm so the
-two are one body; where the back spans a terrace step the sink grows by the
-step. The log names what the repair did. A sculpt over 250,000 triangles is
-offered a simplification, and the tolerance is recorded with it.
+A mesh you made elsewhere, a crest, a rivet head, a plaque, a baroque
+element, can be embossed onto or debossed into a front and, since 2.1, a
+temple. (The code and the project file still call these
+*sculpts*; on the screen a `SCULPT` is the posterior's scalloping, so the
+section is **Embossing** and each record a *mesh*.) Drop an `.stl` on the
+model in the 3D view and it lands under the cursor; drop it anywhere else,
+or use **+ Add STL…** in the **Embossing** section of the Model tab, or of
+the Temple tab for a temple, and it lands at the center of the part.
+GuildModel repairs the mesh first: a duplicated-vertex soup is welded, an
+inside-out shell is turned, a hole is capped (a relief exported without its
+back, a filigree with pinched holes), a shell no cap can close is rebuilt
+as a relief over its back plane, and overlapping shells become one. The log
+names what the repair did. It then finds the flat back, seats it on the
+surface, and scales a mesh wider than 15 mm down to 15 mm; set **Size** to
+what you want. A mesh over 250,000 triangles is offered a simplification,
+and the tolerance is recorded with it.
 
-Each row has a name, the face it snaps to (back, front or the rim), the
-operation (**Emboss** adds the mesh, **Deboss** cuts it as a tool), a scale
-about the back, a spin about the surface, the overlap, **Flush** for a
-coplanar seat on a flat terrace, and **Mirror** for the twin across the
-center line. **Re-snap** reads the frame again under the sculpt. **Move in
-3D** puts a handle on it in the 3D view: arrows to move, rings to turn; the
-model rebuilds when you let go, and a scale or spin edit afterward keeps the
-place you moved it to. A sculpt lifted clear of the frame is refused with
-the gap named: the union would be two bodies.
+Each row has a name, the face it sits on (the back, the front or the rim),
+the operation, **Flip**, **Size** (the longest side, in mm) and **Scale**
+(the same thing as a factor of the file), a **Spin** about the surface,
+**Sink**, **Flush** for a coplanar seat on a flat terrace, and **Mirror**
+for the twin across the center line.
+
+- **Emboss** adds the mesh, its relief standing out of the surface. Sink is
+  how far the back is buried, so the two are one body: the snap sets it to
+  the sag under the back plus 0.05 mm, and a back across a terrace step
+  needs the step.
+- **Deboss** cuts the mesh out of the part. Choosing it turns **Flip** on:
+  the mesh is turned over, its flat back up and its relief into the
+  surface, and Sink becomes the depth of the imprint, set to half the
+  relief's height to start. The relief is stamped into the part, as a seal
+  into wax. Untick Flip for a deboss shaped like the relief itself, the
+  back buried by Sink.
+
+**Move on the part** draws the mesh translucent in the 3D view and lets you
+drag it: it slides over the surface under the cursor, its back seated to
+the surface there, on the back, the front or the rim as the surface says;
+the model rebuilds when you let go, and Spin, Size and Sink stay as you set
+them. A press beside the mesh turns the camera as always. **Re-snap** reads
+the part again under the mesh. An emboss lifted clear of the part leaves
+the model in two pieces, and the log says so; a deboss that touches nothing
+cuts nothing, and the log names the gap.
 
 After each build the log reports any undercut: a face that points down
 between the top and the bottom of the part, which a three-axis tool cannot
-reach. The program cuts the envelope over it. A sculpt on the back is
-machined by the posterior program: its footprint joins the feature band, so
-the Features pass finishes it at its cusp stepover, and the **Sculpt
+reach. The program cuts the envelope over it. On a front, a mesh on the back
+is machined by the posterior program: its footprint joins the feature band,
+so the Features pass finishes it at its cusp stepover, and the **Emboss
 Finish** operation on the Cut tab, off unless you tick it, runs a ball over
-the footprint at a finer one. A sculpt on the front or the rim is modeled
-and exported, and not posted until the flip setup. The project file carries
-the mesh bytes, so a saved project reopens with its sculpts and no external
-files. The mesh kernel builds them, and the raster and B-Rep kernels do not:
-with either of those chosen in Preferences, the Sculpts section and the
-Sculpt Finish operation are hidden, the sculpts are kept for the mesh kernel,
-and the log says when a build or a program leaves them off.
+the footprint at a finer one. A mesh on the front is cut by the anterior
+program of a two-sided job; one on the rim is modeled and exported. The
+mesh kernel builds a front's meshes, and the raster and B-Rep kernels do
+not: with either of those chosen in Preferences, the front's Embossing
+section and the Emboss Finish operation are hidden, the meshes are kept for
+the mesh kernel, and the log says when a build or a program leaves them
+off.
+
+On a temple, a **deboss** is cut whichever kernel is chosen: one on the
+hinge face by the temple program's **Embossing** operation, on the
+**Emboss tool** of the Temple tab (a 1 mm ball by default), in the first
+tier beside the pockets; one on the outer face, the visible one, by the
+anterior setup of a two-sided job (§5). An **emboss** stands above the
+blank's face, where no program can put material, so it is modeled and
+exported and not cut, and the log says so; deboss it instead. The project
+file carries the mesh bytes for every part, so a saved project reopens with
+its meshes and no external files.
 
 ### Seats and plaques — the INLAY layer
 
@@ -305,17 +342,17 @@ drill or component curve, or half-overlaps another seat.
 seat and set it to *Island*: the seat is pocketed around it and the monogram
 stands. Its own depth sinks its top; 0 leaves it at the surface.
 
-**Inlay depth**, beside the hinge pocket depth, is what a new seat starts
+**Inlay depth**, beside **Component pocket depth**, is what a new seat starts
 at — a plaque's usual 1.0 mm. Each seat then keeps its own depth. The shop
 default is in Preferences ▸ Parts (§8).
 
-**A seat on the visible face is modeled and shown in 3D, and not posted.**
-Machining the front of a frame or the outer side of a temple needs the flip
-setup, which is a later release; the row says *not posted*, and the program
-is exactly the one you would post without the seat. A seat on the back of
-the frame, or on a temple's hinge side, is cut by the **Inlays** operation:
-after the relief has finished the surface the seat is measured from and
-before the eyewires, with the hinge tool unless the seat names another. A
+**A seat on the visible face, the front of a frame or the outer face of a
+temple, is cut first by the anterior setup of a two-sided job** (§5). With
+Two-sided *Off* the row says *not posted*, and the program is exactly the
+one you would post without the seat. A seat on the back of the frame, or on
+a temple's hinge side, is cut by the **Inlays** operation: after the relief
+has finished the surface the seat is measured from and before the eyewires,
+with the part's Component tool unless the seat names another. A
 seat the tool cannot enter is left out and named in the Inspector with a
 tool that fits.
 
@@ -384,7 +421,7 @@ A formed part's walls lean with the curve, and a three-axis cut makes them
 vertical at the front's edge, where the lens seats and the visible edge
 are. The back's rim therefore loses the lean, up to a few millimeters at
 the temporal ends of a steep front; the simulation says how much and
-allows it in its verdict; the fourth axis (2.0) cuts the walls as formed.
+allows it in its verdict; the fourth axis (§5) cuts the walls as formed.
 The lens groove cannot follow a curved rim in three axes: the program
 leaves it out and says so. **Apertures and groove first** is the hybrid:
 the eyewires, the holes and the groove are cut flat first, in a program of
@@ -437,15 +474,21 @@ acetate is cut.
 
 Press **F** on a built frame front and a panel opens under the view:
 
-- **Press** — *Flat*, the SBT press rows, your own presses, or *Custom*. A row
-  sets the base curve and the face form together, because on the press they
-  come as a pair. Touching either slider makes the choice *Custom*.
+- **Preset** — *Flat*, the SBT press rows, your own presses, or *Custom*. A
+  row sets the base curve and the face form together, because on the press
+  they come as a pair. Touching either slider makes the choice *Custom*.
 - **Base curve** — the lens base curve in diopters, 0 to 16 in the quarter
   steps a frame is ordered in, the way the forms are tagged. 0 is flat. On a
-  press row the die's own radius is used; anywhere else the optical
-  convention, 530 / D. The radius in use is shown beside the slider.
-- **Face form** — the included angle at the bridge, as the press states it;
-  180° is flat and the wrap beside it is 180° minus that.
+  press row the die's own radius is used; anywhere else the tooling index's
+  rule, (index − 1) × 1000 / D, which is 530 / D at the default 1.53
+  (Preferences ▸ General ▸ Forming). The radius in use is shown beside the
+  slider.
+- **Face form** — per side, in low degrees, as it is usually stated: each
+  lens plane's angle to the front from the center of the bridge. 0° is flat;
+  the SBT base-4 row forms 8°. The included angle between the eyewire planes,
+  180° minus twice this, reads beside it. A GuildDraw 2.3 drawing seeds these
+  three and the projection from its own Forming group; a saved project's
+  values win.
 - **Bridge projection** — how far the die sets the bridge forward, away from
   the face, in millimeters. The die only presses forward; 0 leaves the bridge
   in the curve.
@@ -528,7 +571,7 @@ for setting the bridge at the bench. **Dies with Export All** adds them to
 Export All STL.
 
 The dies are made from the forming map and the silhouette, never from the
-modeled front: hinge pockets, seats, chamfers and sculpts play no part in a
+modeled front: hinge pockets, seats, chamfers and meshes play no part in a
 mold, and the less a die carries the better it presses. The dome follows
 the eyewire terrace, the surface most of the back rests on, and is cut away
 under every zone that stands taller than it, the nosepads first, by the
@@ -548,7 +591,7 @@ overall width, which the curve and the bridge both shorten.
   relieves the inside of each eyewire so only a rim band is supported and
   the aperture edge is not marked. *Pre-cut* covers the blank plus a
   margin and carries no eyewire geometry; the formed blank it makes is the
-  stock the pre-curved program (2.0) machines.
+  stock the pre-curved program machines.
 - **Mat thickness** and **Clearance** — what sets the closed gap. Hot
   acetate grows about 0.08 mm on a 6 mm front, and the mat is yours.
 - **Over-bend** — a radius multiplier for the springback, 0.97 to 1.00. No
@@ -573,6 +616,101 @@ PAHT/PPA-CF, PC or PEEK. Condition the sheet two days at 45 to 55 % RH and
 pre-bake fresh stock. Check the first part's curve and face form before
 the batch and move the over-bend if it opens. The pre-cut route is the
 less documented one; you are the test case.
+
+### The draft view and the blueprint
+
+A frame is cut flat, formed, and assembled at the bench; the factory and the
+bench align it to a drawing of the finished frame. **View ▸ Draft (D)** shows
+that frame in the 3D view: the formed front, the temples bent at their tip
+bend and opened at the angle of side and the splay, the hinge where the
+pocket puts it. A panel opens under the view:
+
+- **Angle of side** — the open temple's downward angle from the front's
+  normal, the frame's pantoscopic angle. The temples are drawn at it. Beside
+  it, per side, what the hinge alone would give (the pocket floor's angle,
+  the endpiece's own lean on the formed front, the hinge's slant) and the
+  **butt cut** that makes up the difference. **Match pocket angle** sets the
+  front's component pocket angle so the hinge agrees with the target.
+- **Splay** — the open temple's outward angle, per side; 0 is parallel
+  temples. A formed front turns its endpieces toward the face, so the hinge
+  alone converges the temples by that turn; the butt cut takes it out, and
+  the readout says by how much.
+- **Hinge** — **Rivet**, **Heat-set cleat** or **Spring**, with the barrels
+  (3, 5 or 7; the front takes the odd one), the screw thread (ISO 11381), the
+  slant and the stop. The drawn pocket gives the plate's size and the width
+  along the axis; the screw's length is that width plus 0.5, snapped to the
+  catalog's step. The temple hangs with its outer face flush with the
+  endpiece's end face, as an acetate temple does; **Inset** tucks it toward
+  the hinge pocket, or stands it out. The barrel axis then sits a temple's
+  thickness inside the edge, on the endpiece's back face, where the shipped
+  library's front pockets end, and the temple's butt face passes through it:
+  the butt joint an acetate frame closes on. **Butt gap** moves the axis
+  behind the back face, which stands the butt off it by as much.
+- **Tip bend** — *Length to bend*, *Downward angle*, *Bend radius* and
+  *Inward angle* for both temples at once; each temple's own are on its
+  Temple tab (§3). The inward angle is the bend seen from above: the temple
+  turns toward the head from 40 % of the length to bend to the ear point and
+  the drop keeps that heading, so the tips sit closer together than the
+  hinges; the readout gives the tip spread. The trade bends 10 to 20°; the
+  drawing cannot say it, so 15° is assumed until you set it.
+- **The checks** — the angle of side and the splay left against right
+  (within 1°), the four-point touch, the tips on a common plane, no X-ing,
+  and each folded temple crossing the center line and clearing the back of
+  the front. A failing check is named on the panel and in the blueprint.
+
+The draft view reads the drawing's forming and tip bend when a GuildDraw 2.3
+drawing carries them, and the Forming panel's values otherwise. It is a way
+of looking at the model: no program changes, and the settings are saved with
+the project.
+
+**Blueprint…** (on the panel, and **File ▸ Export Blueprint…**) writes the
+drawing the way eyewear sheets are laid out: the three views stacked down a
+portrait page, sharing the frame's center line. Each view is an edge
+rendering of the formed solid, the front as built and bent by the forming
+map, the temples bent and hung: every edge that can be seen from that
+direction is drawn, what lies behind other material is left out, and the
+hinge pockets are dashed where they are hidden. (A front that has not been
+built is drawn from the drawing's curves instead.) Sheet 1 is the assembly
+after forming. The **plan** shows the formed front from above with the temples
+running up the page and curving in, and carries the front's width, the
+dowel-to-dowel width behind the front, the tip spread between the temples'
+inner faces, the front's thickness at the endpiece, the temple's thickness,
+the front-to-bend and the base curve; the **front view** faces the wearer
+(the OD lens on your left) with A and B in the lens plane (A head-on beside
+it), DBL, the boxed-center distance, the joint height and the bridge width,
+the lens centers crossed, and, on request, the folded temples dashed behind
+the lenses as the closed-temple check; the **side view** is drawn as a bench
+sees it, the
+temple horizontal to the right and the front tilted by the angle of side,
+which is dimensioned at the front's foot, with the length to bend, the drop,
+the downward angle and the temple's height at the butt and at the tip. Third
+angle (the default) puts the plan above the front and the side view below;
+first angle the side view above and the plan below, the temples running
+down; the symbol in the title block says which. Each dimension is tagged
+**[L]** locked by the drawing, **[T]** a target of the forming or the bench,
+**[O]** open, which the bench may move, or **[ref]** for reference. Beside the
+views: the hinge detail, reference only; the notes with the marking (a□d-l),
+the material, the rim widths, the forming, the bench numbers, the hinge's
+lines, the tolerance table (ISO 12870's rows and the factory's, every row
+editable), the checks, and the temples as cut; and the ISO 7200 title block
+with the owner, the title, the document type, the author, the approver, the
+number, the date, the revision, the sheet and the scale. Sheet 2 is the 1:1
+alignment template: the plan of the open frame with the tips and ear points
+in ±2 mm targets, the side view, and a ruler to check the print.
+
+The dialog sets the paper (letter, legal, tabloid, A4, A3), the orientation,
+the projection, the views, the scale (auto picks the largest of 2:1, 1:1,
+1:1.5, 1:2, 1:2.5 and 1:5 that fits: A3 and tabloid in portrait hold the
+views at 1:1, letter and A4 at 1:2), the line weight, the title block's
+cells, the notes and the tolerances, and writes **PDF**, **SVG** (one file a
+sheet), **DXF** (the lines, the text and the arrowheads on layers, for the
+factory's CAD) or prints. The sheets are composed under a progress dialog
+(the depth test of each view takes a few seconds, and the front is built
+first when it has not been); Cancel stops it between stages. *Save these
+as my defaults* keeps the page, the
+projection, the views, the owner, the author and the tolerances in
+Preferences ▸ Blueprint; the design's name, number and date stay with the
+project.
 
 ## 3. Temples and base-curve blocks
 
@@ -603,25 +741,49 @@ loads it, starts, and swaps once — then Holes, then the Temple Profile that
 releases the part. The Holes operation appears only when the drawing has
 decorative openings in the outline.
 
-The Temple tab sets the **Component depth** and the **Hinge pocket angle**.
-The angle tilts the pocket floor along the temple to offset splay built into
-a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
+The Temple tab's **Forming** section is the tip bend the draft view and the
+blueprint draw (§2): **Length to bend** from the hinge end of the outline to
+the ear point (*Auto* is the drawn length less 37 mm), **Downward angle**
+(*Straight* leaves the temple as the library draws it), **Bend radius** at
+the core, which keeps its length, **Inward angle** (the turn toward the head
+seen from above, 15° until you set it; *None* keeps the temple straight in
+plan) and **Inward bend from** (where that turn begins; *Auto* is 40 % of the
+length to bend). The readout says where the ear point lands, the drop, the
+overall length and how far the tip drops, or why a bend is out of range, in
+which case the temple is drawn straight. A GuildDraw 2.3 drawing seeds the
+first three from its own Forming section; linked temples share them all.
+Nothing here reaches the program.
+
+The Temple tab sets the **Component pocket depth** and the **Component pocket
+angle**. The angle tilts the pocket floor along the temple to offset splay
+built into a hinge. The anterior edge, nearer the hinge end, stays at the pocket depth; a
 positive angle makes the posterior edge deeper.
 
 A temple's `INLAY` curves are its seats for plates and plaques, one row each
 in the **Inlays** group under the Temple tab; the controls are those of §2,
-*Seats and plaques*. The outer face is the visible one and the default, and
-a seat there is modeled and not posted until the flip setup; a seat on the
-hinge side is pocketed by the Inlays operation beside the hinge pockets, and
-one drawn inside the hinge curve steps the pocket's floor.
+*Seats and plaques*. The outer face is the visible one and the default; a
+seat there is cut by the anterior setup of a two-sided job (§5), and a
+one-sided job models it and does not post it, saying so in the log. A seat on
+the hinge side is pocketed by the Inlays operation beside the hinge pockets,
+and one drawn inside the hinge curve steps the pocket's floor. The temple's
+**Embossing** section, under the seats, takes your own meshes as the front's
+does (§2, *Embossing*): a deboss on either face is cut, an emboss is modeled.
 
-**Apply to both temples**, at the foot of the Temple tab, copies the tab onto
-the other temple — blank, snap, stock side and origin, hinge pocket depth and
-angle, inlay depth, engraving, tools, onion skin, hand allowance and holding —
-so both cut with the same tools and depths; the other temple keeps its own
-seats, which are its drawing's. Each temple keeps its own program zero (Machine
-tab) and cut settings (Cut tab). The copied-to temple needs a rebuild and a
-new program, and its tab shows the copied values on the next visit.
+**The temples' link.** While a temple is open, a chain switch sits at the
+right end of the sidebar's tab strip, on every tab. **Linked**, the default,
+means the two temples cut alike: whatever you set on the open temple's
+Temple, Cut and Machine tabs, the blank, snap, stock side and origin, pocket
+depth and angle, inlay depth, engraving, tools and meshes, the onion skin,
+hand allowance, holding and part overrides, and the program zero, is the
+other temple's too, copied whenever the sidebar is read back (a tab switch,
+a save, a Generate). Each temple keeps its own seats, which are its
+drawing's, and its own fixture zone. The other temple then needs a rebuild
+and a new program, and its tabs show the copied values on the next visit.
+Click the switch to **unlink** and set each temple on its own; click it
+again to link them, and GuildModel asks first, since the other temple then
+takes the open one's settings. The link is saved with the project; a
+project from before it opens linked when its temples match and unlinked
+when they were set apart. A project with one temple has no switch.
 
 **Base-curve block.** The heat-forming template: the lens shape cut from a
 70×70 acetal blank, with three M4 through-holes that double as the fixture's
@@ -632,7 +794,9 @@ Parts. Program: Drill Holes → Block Profile.
 
 The **Cut** tab is the everyday surface. Pick the **material** — acetate,
 acetal and the rest — and its feeds, speeds, stepover and stepdown seed
-themselves. Tune the material row away from the defaults, and GuildModel
+themselves. The hand finishing allowance beside it, and the **Holding** group's
+onion skin or tabs further down, are the open part's own: a temple's, a
+block's or the front's, whichever tab is active, one control each. Tune the material row away from the defaults, and GuildModel
 offers to save them back as your new defaults; *Don't ask again* on that box
 silences the offer, and Preferences ▸ General turns it back on.
 
@@ -654,14 +818,33 @@ own values either way.
 
 The **Machine** tab is setup. It holds:
 
-- the machine profile — Guild CNC, Nomad 3, Shapeoko or generic GRBL
-- **program zero** — each part keeps its own, starting from the default for
+- **Machine** — the profile, Guild CNC, Nomad 3, Shapeoko or generic GRBL,
+  with the front's default tool and the rapid clearances: the safe-Z
+  clearance and the hold-down height
+- **Program Zero** — each part keeps its own, starting from the default for
   its kind of part in Preferences ▸ Parts (shipped as center/center/bottom).
-  The datum crosshair shows on the 2D canvas. Save a project whose zero differs
-  from the default and GuildModel offers, once, to adopt it.
-- the per-operation tool assignments, for multi-tool jobs
-- the cut strategy
-- the no-`SCULPT` profile fallback
+  The X and Y datum are an edge or the center of the stock blank as it lies
+  on the bed; the Z datum is the top of the blank or the face it lies on, the
+  spoilboard or the top of a spacer or sub-table. **Shift X, Y and Z** move
+  the zero from that datum, in mm along the blank's own axes, when you touch
+  off somewhere else: a stop, a pin or an edge that is not the blank's corner,
+  a blank larger than the stock box, or the spoilboard under a 6 mm spacer
+  (shift Z −6). The datum crosshair shows on the 2D canvas. Save a project
+  whose zero differs from the default and GuildModel offers, once, to adopt it.
+- **Lead-in & Output** — how a through-cut enters the material and how
+  arcs are written
+- **Tool per Operation** — a tool per operation, for multi-tool jobs (the
+  front's)
+- **Relief Strategy** — the posterior relief's stepover and what the rough
+  pass leaves (the front's)
+
+Every section of the sidebar folds under its header, and what a title used
+to say in parentheses is on the header's tooltip. The Cut tab's **Part
+Overrides** are the open part's departures from the project's material,
+depth per pass, feed and spindle; *(project)* inherits.
+
+A drawing without `SCULPT` zones gets a profile cut only, with the default
+tool, the Cut tab's through-cut depth per pass and the Holding group.
 
 **The Features operation.** The posterior finishing features cut in their own
 **Features** operation, so they can take their own tool. It is the **2 mm ball**
@@ -710,10 +893,11 @@ The **readiness dot** in the status bar tracks the job:
 | Dot | Meaning |
 |---|---|
 | red | the drawing is loaded |
-| amber | the model is built |
+| yellow | the model is built |
+| yellow, *Program stored · model has problems* | a program is stored but the model has problems; read the log |
 | green | the program is stored in the saved `.gmodel` |
 
-**Simulation (Ctrl+Shift+S)** machines the stored program into a virtual
+**Simulation (F6)** machines the stored program into a virtual
 blank and verifies the result against the target. It simulates the program
 the machine will run: the one stored on the tab, read at the cutting grid.
 With no fresh program stored, GuildModel generates it first and the
@@ -798,8 +982,8 @@ core when the posterior's eyewires cut through, and a brow chamfer along part
 of the perimeter leaves the part held by the rest. On tabs, the perimeter's
 hold is the tabs' height.
 
-The Cut tab's **Operations** group has the choices. **Two-sided** *Auto*
-cuts the anterior first when the front is cut or carries a seat, *Off*
+The Cut tab's **Two-sided** section has the choices. **Two-sided** *Auto*
+cuts the anterior first when the front face is cut or carries a seat, *Off*
 never, *On* always. **Output** writes *Two files*, `anterior_cut.nc` and
 `posterior_cut.nc`, or *One file, pausing for the flip*,
 `two_sided_cut.nc`: the anterior; then the spindle stopped, the tool raised
@@ -815,6 +999,20 @@ blank's back, to touch off on after the flip, with a top-face zero. With
 the default zero both setups are cut from the bed up, so give the sheet's
 measured thickness on the Stock tab: a sheet thicker than the tab says puts
 the difference into the depth of the anterior's chamfers and seats.
+
+**A temple has the same section**, its *Auto* reading *when the outer face
+is cut*; the choice is each part's own, the front's and each temple's,
+and linked temples share theirs. The outer face, the seats drawn there and the meshes debossed
+there, is cut first in G55; then the blank turns over **its length**, not
+about the vertical line the front turns about: a temple blank is a long
+strip, so its pins sit at either end in the waste margin and the hinge end
+stays at the end it was, against the zone's stop. Then the temple program
+runs as a one-sided job. *Output* writes `temple_anterior_cut.nc` and
+`temple_cut.nc`, or `temple_two_sided_cut.nc` with the flip's pause; the
+pause names the line, *flip about machine Y … mm, over its length*. The
+simulation plays both setups with the flip between, as the front's does. A
+fixture whose temple zone names `flip_axis_x_mm` turns the temple as the
+front turns instead.
 
 A blank with the pad block lies front face up for the anterior on a
 **spacer** as thick as the pad block, with a cut-out for it: the pad goes
@@ -967,7 +1165,12 @@ that any sender can run.
 
 - **General** — the log panel on startup, whether a drawing builds its frame
   front on open, the 3D preview and STL export
-  resolution, the default output folder, and the **Prompts**: the four offers
+  resolution, the **Forming** setup (the tooling index behind the radius a
+  base curve names off a press row, 1.53 by default; the sheet thickness;
+  the neutral surface, the depth of the surface that keeps its length in the
+  press as a fraction of the thickness, 0 the anterior face until a pressed
+  coupon says otherwise; every design uses these three, and GuildDraw's
+  Preferences hold the same), the default output folder, and the **Prompts**: the four offers
   GuildModel makes — the default bed, the part defaults, the material
   write-back, the tool-library write-back — each of which has a *Don't ask
   again* on the box and a switch here to turn it back on.
@@ -984,6 +1187,12 @@ that any sender can run.
   per kind of part and is adopted whole. GuildModel asks about each line once;
   a further change asks about that change alone. The hole pattern, the tools
   and the worktable switch are set here only.
+- **Blueprint** — what a new project's draft view and blueprint start from
+  (§2): the angle of side, the splay and the hinge; the paper, the
+  orientation, the projection, the views, the scale, the line weight, the
+  owner, the author, the document type, the material, the finish, the notes
+  and the tolerance table. A project keeps its own copy; the blueprint
+  dialog's *Save these as my defaults* writes them here.
 - **Appearance** — dark mode; the viewport presets (Parchment, Dimmed,
   Blueprint, Matte Dark, Plain White, or a custom canvas color) that pin the
   canvas and 3D backdrop in both UI modes; the 3D light rig (Studio /
@@ -1009,14 +1218,14 @@ beside it, and so do your presses (`presses.yaml`, §2).
 ## 9. Files and data safety
 
 - **`.gmodel` is self-contained.** The embedded drawing means a project reopens
-  identically, even if the original `.gdraw` moved; the sculpts' meshes ride
+  identically, even if the original `.gdraw` moved; the embossed meshes ride
   in the file too.
 - **Autosave** snapshots unsaved work every 3 minutes to
   `~/.guildmodel/autosave/`. After a crash or a power cut, the next launch
   offers to restore it. Recovered work reopens against your original project
   file, marked unsaved. A clean close clears the snapshot.
-- **Frame-style presets** (in Preferences and on the Info tab) recall a house
-  style's parameters in one click.
+- **Frame-style presets** (the *Frame style* list on the Info tab) recall a
+  house style's parameters in one click.
 
 ## 10. Default shortcuts
 
@@ -1038,6 +1247,7 @@ beside it, and so do your presses (`presses.yaml`, §2).
 | Ctrl+0 | Fit to View |
 | Alt+T | Turntable (3D views) |
 | F | Forming (frame front) |
+| D | Draft (the assembled frame) |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
 

@@ -226,7 +226,7 @@ def test_export_stl_is_offered_on_a_base_curve_tab(tmp_path, monkeypatch):
 
     `_on_export_stl` gated on `_castle_ready()` and `_activate_workspace` set
     `_act_export.setEnabled(ws.castle_ready)`, so on a base-curve tab the menu
-    item was greyed out and the shortcut did nothing — while Build 3D on the
+    item was grayed out and the shortcut did nothing — while Build 3D on the
     same tab worked. Both now ask `_workspace_buildable`, the one question.
     """
     pytest.importorskip("PySide6.QtWidgets")
@@ -252,7 +252,7 @@ def test_export_stl_is_offered_on_a_base_curve_tab(tmp_path, monkeypatch):
     for kind in ("frame_front", "temple_right", "base_curve_right"):
         assert kind in kinds, f"fixture has no {kind}"
         win._activate_workspace(kinds.index(kind))
-        assert win._act_export.isEnabled(), f"Export STL greyed out on {kind}"
+        assert win._act_export.isEnabled(), f"Export STL grayed out on {kind}"
         assert win._act_export_all.isEnabled()
 
     # ...and the default filename follows the component, not the frame front.

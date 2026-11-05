@@ -22,9 +22,14 @@ max_z_mm:  80.0
 # Widths and heights are exact (derived from Fusion model); x/y positions are
 # as-measured to three decimal places.
 #
-# The frame front is the only two-sided blank.  For the back-side program the
-# blank sits as-placed.  For the front-side program the blank is flipped about
-# flip_axis_x_mm and re-registered (mirror in X about that line).
+# The frame front and the temples are two-sided blanks.  For the back-side
+# program the blank sits as-placed.  For the front-side program the front
+# blank is flipped about flip_axis_x_mm and re-registered (mirror in X about
+# that line, the pins above and below the blank).  A temple blank turns over
+# its length instead (2.1): mirror in Y about flip_axis_y_mm, the zone's
+# horizontal center line by default, the pins at either end of the blank in
+# its waste margin, so the hinge end stays at the end it was.  A temple zone
+# that names flip_axis_x_mm asks for the front's flip instead.
 #
 # The nosepad sub-zone sits on top of the front blank — the bed carries a
 # 6 mm acetate sheet with a 4 mm nosepad block bonded in the center area,
@@ -75,6 +80,7 @@ blank_zones:
     y_mm:  56.781
     width_mm:  170.0
     height_mm:  30.0
+    flip_axis_y_mm: 71.781   # horizontal center line; flip = mirror Y about this
 
   temple_left:
     label: "Left temple"
@@ -83,6 +89,7 @@ blank_zones:
     y_mm:  22.780
     width_mm:  170.0
     height_mm:  30.0
+    flip_axis_y_mm: 37.780   # horizontal center line; flip = mirror Y about this
 
   bc_template_right:
     label: "Base curve template (right)"

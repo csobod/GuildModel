@@ -330,8 +330,12 @@ def test_the_cut_tab_carries_the_two_sided_choice(tmp_path, monkeypatch):
     p.set_cam_params(CastleCamParams(two_sided="on", two_sided_output="one_file", probe_block=True))
     cp = p.cam_params()
     assert (cp.two_sided, cp.two_sided_output, cp.probe_block) == ("on", "one_file", True)
-    p.two_sided.setCurrentIndex(1)                       # off greys the rest
-    assert not p.two_sided_output.isEnabled() and p.cam_params().two_sided == "off"
+    p.two_sided.setCurrentIndex(1)                       # off grays the rest
+    assert not p.two_sided_output.isEnabled()
+    # the combo is the open part's choice since 2.1 (its override); the
+    # project's default, read back, stays what the file said
+    assert p.cam_overrides().two_sided == "off" and p.effective_cam_params().two_sided == "off"
+    assert p.cam_params().two_sided == "on"
 
 
 def test_an_older_file_with_through_cuts_side_opens_without_it():

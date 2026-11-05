@@ -28,6 +28,7 @@ The full account is in [CHANGELOG.md](CHANGELOG.md).
 - **GuildSend's guided two-file sequence does not know 2.0's names yet.** It offers the two programs to choose from: run `anterior_cut.nc` first. The one file, pausing for the flip, runs in GuildSend as it is.
 - **The pre-formed blank's nest was shaped for a carved back.** A two-sided job now cuts the anterior first, so the nest's dome bears on the slab's uncut back only where it is not cut away. Work on pressed blanks is paused.
 - **The fourth axis has not met the bench.** Measure the spindle nose to the table, and the rotary's centerline and sign, before an indexed flip.
+- **Program Zero's *Fixture (design frame)* mode is the same as *Stock box* at its default.** Both put the work zero at the blank's center, on its bottom face, and post the same program. In *Fixture* mode, the X, Y and Z datum lists are gray and have no effect, whatever they show; use *Stock box*. *Bottom face (anterior)* is the face the blank lies on: Z0 is the top of the spoilboard, or the top of the spacer or sub-table under the blank.
 - **An edge feature can fold at a very sharp corner.** This is still true from 1.5. After a rebuild, read the log, not the readiness dot. To clear it, move the run's **Trim start** or **Trim end** past the corner.
 - **A formed STL is a little lighter than the flat part.** Forming compresses the concave side a few percent. This is expected.
 

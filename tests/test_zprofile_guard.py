@@ -428,7 +428,7 @@ STOCK_TOP_MM = 10.0     # blank 6 + pad block 4, and the fixture sits inside the
 def _rim_slot_relief(slot_w_mm: float = 1.5, slot_h_mm: float = 2.0):
     """A flat body with a narrow slot cut into one rim edge — Corner Optical's gap.
 
-    Their three refused gaps sit a tenth of a millimetre outside the body but
+    Their three refused gaps sit a tenth of a millimeter outside the body but
     inside the machining region (`scripts/probe_gapsite.py`): `zone=outside`,
     `relief=0.00`, `stock=10.00`, `CLS=10.00`. The drop-cutter surface is a max
     over the tool disc, so just past the rim that disc overlaps **uncut stock**
@@ -566,7 +566,7 @@ class TestTheLinkDoesNotClimbTheRim:
 
         fine = _relief_fine(max_rise_mm=1e9)
         peak = max((p for path in fine.paths for p in path), key=lambda p: p[2])
-        # Within a millimetre of the 10 mm stock top: the tool is over uncut
+        # Within a millimeter of the 10 mm stock top: the tool is over uncut
         # material, at cutting feed, on a body whose cut surface is flat at 5 mm.
         assert peak[2] > STOCK_TOP_MM - 1.0
         # And it happens at the RIM, not somewhere in the interior — within a

@@ -421,11 +421,16 @@ class SculptMount(BaseModel):
     # The host's outward normal at the point, as the snap read it; a scale or
     # spin edit recomputes the placement from these two without the host.
     normal: list[float] | None = None
-    # How far the back is sunk into the host, so the union is one body; the
-    # snap sets it to the sag under the back plus the minimum.
+    # How far the sculpt is sunk into the host, measured at its leading face:
+    # relief out, the back (so the union is one body; the snap sets it to the
+    # sag under the back plus the minimum); relief in (`flip`), the crown,
+    # which is the depth of the imprint.
     overlap_mm: float = Field(0.05, ge=0)
     flush: bool = False            # coplanar on a flat host (overlap 0)
     conform: bool = False          # warp the back onto a curved host (2.0)
+    # The relief turned into the frame, the back up (2026-11-01): a deboss so
+    # mounted imprints the relief as a stamp; the default for a deboss.
+    flip: bool = False
 
 
 class SculptFeature(BaseModel):
@@ -453,6 +458,21 @@ class SculptFeature(BaseModel):
     spin_deg: float = 0.0          # the turn about the host normal, at the snap
     simplify_tol: float = Field(0.0, ge=0)   # recorded when import simplified it
     triangles: int = 0             # of the loaded source, for the panel
+    # Of the loaded source, in its own units, recorded at import so the panel
+    # can range *Sink* and show *Size* without the mesh in hand: the relief's
+    # height off the back, and the longest side of its box.
+    height_mm: float = Field(0.0, ge=0)
+    extent_mm: float = Field(0.0, ge=0)
+
+    @property
+    def size_mm(self) -> float:
+        """The longest side of the placed sculpt's box, mm."""
+        return float(self.extent_mm) * float(self.scale)
+
+    @property
+    def placed_height_mm(self) -> float:
+        """The relief's height as placed, mm."""
+        return float(self.height_mm) * float(self.scale)
 
     def transform_matrix(self):
         """The placement as a 4 x 4 numpy array."""
@@ -791,26 +811,36 @@ DEFAULT_OP_TOOLS: dict[str, str] = {"Component Pockets": "flat_2mm",
                                     # short; a 2 mm ball cuts them to 0.1 %
                                     # (the 2.0 bug hunt)
                                     "Features": "ball_2mm",
-                                    "Sculpt Finish": "ball_1mm"}   # fine detail (M22)
+                                    "Emboss Finish": "ball_1mm"}   # fine detail (M22)
 #: Ops renamed since a file may have been written, old name to new: Hinge
 #: Pockets became Component Pockets with the COMPONENT layer (2.0).
 #: `CastleCamParams` reads an old file's per-op settings under the new name.
-RENAMED_OPS: dict[str, str] = {"Hinge Pockets": "Component Pockets"}
+RENAMED_OPS: dict[str, str] = {"Hinge Pockets": "Component Pockets",
+                               # the fine pass over the meshes: Sculpt Finish
+                               # until 2026-11-02, when "sculpt" left the screen
+                               "Sculpt Finish": "Emboss Finish"}
 
-#: Ops a job does not post unless the maker ticks them: the Sculpt Finish
+#: Ops a job does not post unless the maker ticks them: the Emboss Finish
 #: pass is for fine detail the feature pass under it does not need (M22).
-OFF_BY_DEFAULT_OPS: frozenset[str] = frozenset({"Sculpt Finish"})
+OFF_BY_DEFAULT_OPS: frozenset[str] = frozenset({"Emboss Finish"})
 
 
 class ProgramZero(BaseModel):
-    """Where the program's G54 work zero lands (BUILDPLAN M6.2).
+    """Where the program's G54 work zero lands (BUILDPLAN M6.2, §11c).
 
-    `fixture` keeps the design frame (current behavior — zero at the blank
-    center, anterior face; needed for the two-sided flip axis in M8). `stock_box`
-    zeroes to a datum on the stock blank box — a corner or center in X/Y and the
-    top or bottom (anterior) face in Z — what a maker touches off on the blank.
+    `stock_box` zeroes to a datum on the stock blank box — a corner or center
+    in X/Y and the top or bottom face in Z — what a maker touches off on the
+    blank; the shifts then move the zero from that datum, in the blank's own
+    axes, for a maker who touches off on a stop, a pin or an edge that is not
+    the blank's corner, on a blank larger than the stock box, or on the
+    spoilboard under a spacer (`shift_z_mm` negative by the spacer's height).
     Applied as a rigid post-time offset only; geometry / CLS / sim stay in the
     design frame, so the M2/M3 envelopes and the cut simulator are unaffected.
+
+    `fixture` is the Worktable's alone (`Worktable.bed_work_offset`: raw bed
+    coordinates). On a part it was the identity offset, the same program as
+    the default stock-box datum with the lists grayed, and since 2026-11-02 a
+    part's `fixture` reads as that datum (`part_program_zero`).
 
     Design-frame convention (relief.castle.stock_top_heightfield): the blank is
     centered on the world origin and the anterior face is Z = 0, so the blank box
@@ -820,18 +850,32 @@ class ProgramZero(BaseModel):
     x_ref: Literal["left", "center", "right"] = "center"
     y_ref: Literal["bottom", "center", "top"] = "center"
     z_ref: Literal["top", "bottom"] = "bottom"
+    # The zero's distance from the datum, mm, along the blank's axes as it
+    # lies: +X right, +Y away, +Z up. 0 = the datum itself.
+    shift_x_mm: float = Field(0.0, ge=-1000.0, le=1000.0)
+    shift_y_mm: float = Field(0.0, ge=-1000.0, le=1000.0)
+    shift_z_mm: float = Field(0.0, ge=-1000.0, le=1000.0)
+
+    @property
+    def shift(self) -> tuple[float, float, float]:
+        return (float(self.shift_x_mm), float(self.shift_y_mm), float(self.shift_z_mm))
+
+    def is_shifted(self) -> bool:
+        return any(abs(v) > 1e-9 for v in self.shift)
 
     def datum_world(self, stock: "StockDefinition") -> tuple[float, float, float]:
-        """The datum point in design-frame (world) coordinates."""
+        """The zero point in design-frame (world) coordinates: the datum on the
+        stock box, plus the shift."""
         hl = stock.blank_length_mm / 2.0
         hw = stock.blank_width_mm / 2.0
         x = {"left": -hl, "center": 0.0, "right": hl}[self.x_ref]
         y = {"bottom": -hw, "center": 0.0, "top": hw}[self.y_ref]
         z = {"bottom": 0.0, "top": stock.blank_thickness_mm}[self.z_ref]
-        return (x, y, z)
+        sx, sy, sz = self.shift
+        return (x + sx, y + sy, z + sz)
 
     def work_offset(self, stock: "StockDefinition") -> tuple[float, float, float]:
-        """Rigid offset added to every posted coordinate so the datum maps to 0.
+        """Rigid offset added to every posted coordinate so the zero maps to 0.
         Fixture mode is the identity (the design frame is unchanged)."""
         if self.mode == "fixture":
             return (0.0, 0.0, 0.0)
@@ -839,6 +883,9 @@ class ProgramZero(BaseModel):
         return (-dx + 0.0, -dy + 0.0, -dz + 0.0)   # +0.0 normalizes -0.0
 
     def label(self) -> str:
+        """The zero in words, as the log, the setup sheet and the 2D marker say
+        it. GuildSend reads "top face" out of it (`job.gmodel.program_zero_at_bed`),
+        so the face stays the last words of the datum."""
         if self.mode == "fixture":
             return "Fixture (design frame: blank center, anterior face)"
         corner = {
@@ -846,7 +893,27 @@ class ProgramZero(BaseModel):
             ("left", "top"): "upper-left", ("right", "top"): "upper-right",
             ("center", "center"): "center",
         }.get((self.x_ref, self.y_ref), f"{self.y_ref}/{self.x_ref}")
-        return f"Stock blank {corner}, {self.z_ref} face"
+        text = f"Stock blank {corner}, {self.z_ref} face"
+        if self.is_shifted():
+            sx, sy, sz = self.shift
+            text += f", shifted ({sx:+.2f}, {sy:+.2f}, {sz:+.2f}) mm"
+        return text
+
+
+def part_program_zero(raw) -> dict:
+    """A part's `program_zero` as it is read: the stock-box datum, with a
+    pre-2.0.1 `fixture` — the identity offset, which is the default datum,
+    center / center / bottom — read as that datum, so the file posts the same
+    program it always did (BUILDPLAN §11c.2). `raw` is the stored dict or a
+    `ProgramZero`; a dict comes back, for a before-validator."""
+    if isinstance(raw, ProgramZero):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        return raw
+    if raw.get("mode") == "fixture":
+        return {"mode": "stock_box", "x_ref": "center", "y_ref": "center",
+                "z_ref": "bottom"}
+    return {**raw, "mode": "stock_box"}
 
 
 class ToolFeeds(BaseModel):
@@ -875,12 +942,35 @@ class Setup(BaseModel):
     wcs: Literal["G54", "G55"] = "G54"
     program: str = "posterior_cut.nc"
     flip: Literal["none", "manual", "rotary"] = "none"
+    # The part the setup belongs to: the front turns over about the fixture's
+    # vertical line, front face down on the bed; a temple turns over about
+    # its own length (2.1), hinge face up.
+    part: Literal["front", "temple"] = "front"
+    # The coordinate the manual flip reverses: ``x`` for a flip about a line
+    # along Y (the front's vertical flip line, the pins above and below the
+    # blank), ``y`` for a flip about a line along X (a temple's, the pins at
+    # either end of the blank). The flip line is `flip_axis_x_mm` /
+    # `mirror_x_mm` for the one and `flip_axis_y_mm` / `mirror_y_mm` for the
+    # other; `flip_line_mm` and `mirror_at_mm` read whichever applies.
+    mirror: Literal["x", "y"] = "x"
     flip_axis_x_mm: float | None = None      # the fixture's flip line, machine X
     mirror_x_mm: float = 0.0                 # the flip line in the design frame
+    flip_axis_y_mm: float | None = None      # the fixture's flip line, machine Y (2.1)
+    mirror_y_mm: float = 0.0                 # that line in the design frame
     reprobe: list[str] = Field(default_factory=list)   # "Z", "XY"
     a_deg: float | None = None               # the rotary's angle (M26)
     stock_top_mm: float = 0.0                # the stock top this side cuts from
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def flip_line_mm(self) -> float | None:
+        """The fixture's flip line on the mirrored axis, machine coordinates."""
+        return self.flip_axis_y_mm if self.mirror == "y" else self.flip_axis_x_mm
+
+    @property
+    def mirror_at_mm(self) -> float:
+        """The flip line in the design frame, on the mirrored axis."""
+        return float(self.mirror_y_mm if self.mirror == "y" else self.mirror_x_mm)
 
 
 class CastleCamParams(BaseModel):
@@ -899,12 +989,15 @@ class CastleCamParams(BaseModel):
     def _renamed_ops(cls, data):
         """An older file's per-op settings under the ops' current names
         (`RENAMED_OPS`): a project or a preference from before 2.0 kept its
-        Hinge Pockets tool and its switch."""
+        Hinge Pockets tool and its switch. A `fixture` program zero reads as
+        the stock-box datum it always posted as (`part_program_zero`)."""
         if isinstance(data, dict):
             for key in ("op_tools", "op_enabled"):
                 d = data.get(key)
                 if isinstance(d, dict) and any(old in d for old in RENAMED_OPS):
                     data = {**data, key: {RENAMED_OPS.get(k, k): v for k, v in d.items()}}
+            if isinstance(data.get("program_zero"), (dict, ProgramZero)):
+                data = {**data, "program_zero": part_program_zero(data["program_zero"])}
         return data
 
     @model_validator(mode="after")
@@ -1113,6 +1206,45 @@ class CastleCamParams(BaseModel):
         return max(float(stock_top_mm), self.hold_down_height_mm) + self.safe_z_clearance_mm
 
 
+class TipBendParams(BaseModel):
+    """A temple's tip bend, as GuildDraw stores it under ``tip_bend`` on each
+    temple tab (2.3, research section 5): the length to bend from the hinge
+    end of the OUTLINE to the ear point (0 = auto, the drawn length less
+    37 mm), the downward angle of the drop (0 = straight, a library temple)
+    and the bend's radius at the core, which keeps its length.
+
+    Never machined: a temple is cut flat and bent at the bench. The draft
+    view and the blueprint draw it bent. A value out of range is held to the
+    field's bounds, as GuildDraw's reader holds it.
+    """
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    length_to_bend_mm: float = 0.0
+    drop_angle_deg: float = 50.0
+    bend_radius_mm: float = 15.0
+    # The inward bend seen from above (GuildModel's own, 2.3; ISO 8624's
+    # inward angle of drop, which the temple tab cannot draw): the temple's
+    # core turns toward the head by this much between `inward_start_mm` from
+    # the hinge end (0 = auto, 40 % of the length to bend) and the ear point,
+    # and the drop keeps that heading. 0 leaves the temple straight in plan.
+    # The trade bends 10-20 degrees.
+    inward_angle_deg: float = 15.0
+    inward_start_mm: float = 0.0
+
+    @model_validator(mode="after")
+    def _held(self) -> "TipBendParams":
+        self.length_to_bend_mm = min(max(float(self.length_to_bend_mm), 0.0), 300.0)
+        self.drop_angle_deg = min(max(float(self.drop_angle_deg), 0.0), 90.0)
+        self.bend_radius_mm = min(max(float(self.bend_radius_mm), 0.5), 100.0)
+        self.inward_angle_deg = min(max(float(self.inward_angle_deg), 0.0), 45.0)
+        self.inward_start_mm = min(max(float(self.inward_start_mm), 0.0), 300.0)
+        return self
+
+    @property
+    def is_straight(self) -> bool:
+        return self.drop_angle_deg <= 0.0
+
+
 class TempleParams(BaseModel):
     """A temple component: a flat outline cut plus engraving (BUILDPLAN M6.3).
 
@@ -1159,6 +1291,12 @@ class TempleParams(BaseModel):
     # per stroke, no double-cut ridge. Off = trace the raw ENGRAVING outlines.
     engrave_centerline: bool = True
     profile_tool: str = "flat_3175"        # outline through-cut tool
+    # The maker's own meshes, embossed or debossed (2026-11-02; the front's
+    # since M22). A deboss is cut: on the hinge face by the temple program's
+    # Embossing op, on the outer face by the anterior setup of a two-sided
+    # job. An emboss stands above the blank's face and is modeled only.
+    sculpts: list[SculptFeature] = Field(default_factory=list)
+    emboss_tool: str = "ball_1mm"          # the Embossing op's ball nose
     onion_skin_mm: float = 0.4             # axial stock left under the profile
     hand_finishing_allowance_mm: float = 0.1
     holding: HoldingParams = Field(default_factory=HoldingParams)   # skin | tabs (M16)
@@ -1193,6 +1331,11 @@ class TempleParams(BaseModel):
     # wide and long, laid down the blank's center line from the hinge end.
     core_guide_width_mm: float = Field(2.0, gt=0)
     core_guide_length_mm: float = Field(135.0, gt=0)
+    # The tip bend (2.3): read from the drawing's `tip_bend` block, edited in
+    # the draft view; never machined. A file from before carries none and
+    # opens with the library's straight temple (a 50 degree drop by default,
+    # which the draft view draws only when the view is on).
+    tip_bend: TipBendParams = Field(default_factory=TipBendParams)
 
     def stock(self) -> "StockDefinition":
         """A single-level StockDefinition for the blank (no pad block) — used for
@@ -1204,6 +1347,14 @@ class TempleParams(BaseModel):
             pad_block_length_mm=0.0, pad_block_width_mm=0.0,
             pad_block_thickness_mm=0.0,
         )
+
+    def resolved_sculpts(self) -> list[SculptFeature]:
+        """Every enabled mesh, never mirrored: a temple has no center line to
+        mirror about (its other side is the other temple, which the link
+        copies), and a twin at x -> -x landed at the other end of the same
+        temple (the 2.1 bug hunt)."""
+        return [s.model_copy(update={"mirror": False}) if s.mirror else s
+                for s in self.sculpts if s.enabled]
 
 
 class BaseCurveBlockParams(BaseModel):
@@ -1465,9 +1616,26 @@ class MachineRef(BaseModel):
 DIOPTER_MM = 530.0
 
 
-def radius_for(base_curve: float) -> float:
-    """The radius the optical convention gives a base curve, 0 for flat."""
-    return DIOPTER_MM / base_curve if base_curve and base_curve > 0 else 0.0
+def radius_for(base_curve: float, rule_mm: float = DIOPTER_MM) -> float:
+    """The radius the optical convention gives a base curve, 0 for flat.
+
+    `rule_mm` is the constant over D: (tooling index - 1) x 1000, 530 at the
+    historical 1.53 (Preferences > Forming since 2.3, as in GuildDraw)."""
+    if not (base_curve and base_curve > 0):
+        return 0.0
+    rule = float(rule_mm) if rule_mm and rule_mm > 0 else DIOPTER_MM
+    return rule / base_curve
+
+
+def rule_for_index(tooling_index: float) -> float:
+    """The constant over D a tooling index names: 530 at 1.53."""
+    return round((float(tooling_index) - 1.0) * 1000.0, 6)
+
+
+#: The tooling index GuildDraw and GuildModel default to, and the bounds the
+#: Preferences field holds it to (1.4 to 2.0: 400 / D to 1000 / D).
+TOOLING_INDEX_DEFAULT = 1.53
+TOOLING_INDEX_RANGE = (1.4, 2.0)
 
 
 class PressDieParams(BaseModel):
@@ -1528,8 +1696,8 @@ class FormingMetadata(BaseModel):
 
     The bridge is projected between two creases (the V plate's edges): a gap
     apart at the bridge's top edge, converging toward the nose at the V's
-    angle, centred a chosen offset from the frame's axis for a bridge that is
-    not drawn centred. A gap of 0 means the drawing's own bridge width. The
+    angle, centered a chosen offset from the frame's axis for a bridge that is
+    not drawn centered. A gap of 0 means the drawing's own bridge width. The
     die's convex face has its own radius, `die_radius_mm`, 0 meaning the
     largest die that still reaches the projection through the gap; and the
     fold at each crease is sharp unless `crease_blend_mm` rounds it.
@@ -1557,13 +1725,21 @@ class FormingMetadata(BaseModel):
     # The press dies (M23); every default makes the dies the maker described,
     # and a file from before opens with them.
     dies: PressDieParams = Field(default_factory=PressDieParams)
+    # The length-keeping surface's depth as a fraction of the sheet's
+    # thickness behind the anterior face (research section 2.6; 2.3): 0 is
+    # the anterior face, the map's own assumption, 0.5 mid-thickness. Read
+    # from the drawing's `thermoform` block and from Preferences > Forming,
+    # which wins; applied around the map, never inside it, so the two apps'
+    # maps stay identical (GuildDraw's parity test).
+    neutral_fraction: float = 0.0
 
     @model_validator(mode="after")
     def _forward_only(self) -> "FormingMetadata":
         """The die only presses forward: a negative projection, which no panel
-        can set, is read as none."""
+        can set, is read as none. The neutral surface lies within the sheet."""
         if self.bridge_projection_mm < 0.0:
             self.bridge_projection_mm = 0.0
+        self.neutral_fraction = min(max(float(self.neutral_fraction), 0.0), 1.0)
         return self
 
     @property
@@ -1609,6 +1785,200 @@ class FormingMetadata(BaseModel):
         if not self.dies.face_form_in_die:
             update["face_form_wrap_deg"] = 0.0
         return self.model_copy(update=update) if update else self
+
+
+# ── The draft view and the blueprint (2.3; research section 6) ──────────────
+
+class HingeKind(str, Enum):
+    """How the hinge mounts in the acetate: the maker marks the pair."""
+    RIVET = "rivet"          # a plate riveted into the pocket
+    HEAT_SET = "heat_set"    # a cleat (insert) hinge, heat-set into the pocket
+    SPRING = "spring"        # a spring (flex) hinge with its box on the temple
+
+
+HINGE_KIND_LABELS: dict[HingeKind, str] = {
+    HingeKind.RIVET: "Rivet",
+    HingeKind.HEAT_SET: "Heat-set cleat",
+    HingeKind.SPRING: "Spring",
+}
+
+#: ISO 11381 frame screw threads and the catalog's length step, mm.
+SCREW_THREADS = ("M1.2", "M1.4", "M1.6")
+SCREW_LENGTH_STEP_MM = 0.5
+BARREL_COUNTS = (3, 5, 7)
+
+
+class DraftHinge(BaseModel):
+    """The hinge the draft view fills in from the drawn pocket (research
+    section 6.4): what the pocket cannot say. Reference only; nothing here is
+    machined. The pocket gives the plate's size and the width along the axis;
+    these give the kind, the barrels, the screw, where the barrel axis sits
+    and how far the hinge opens."""
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    kind: HingeKind = HingeKind.RIVET
+    barrels: int = 5                       # knuckles across both halves: 3, 5 or 7
+    screw_thread: str = "M1.4"             # ISO 11381
+    screw_head_mm: float = 2.0
+    screw_length_mm: float = 0.0           # 0 = the width along the axis + 0.5, snapped
+    barrel_diameter_mm: float = 3.0
+    # Where the barrel axis sits: `axis_offset_mm` behind the endpiece's back
+    # face and beyond the temple's hinge face, `axis_setback_mm` beyond the
+    # endpiece's end face and the temple's butt (the library entry's datum).
+    # Both 0: the axis at the endpiece's back corner, the temple's butt face
+    # through it, which is the butt joint an acetate frame closes on; the
+    # butt is then cut by exactly the panto and the splay.
+    axis_offset_mm: float = 0.0
+    axis_setback_mm: float = 0.0
+    # How far the temple's outer face sits inside the frame's edge (the
+    # endpiece's end face): 0 flush with it, as an acetate temple is hung;
+    # positive tucks the temple toward the center, negative stands it out.
+    temple_inset_mm: float = 0.0
+    slant_deg: float = 0.0                 # 0, or 6 on a slanted insert hinge
+    open_deg: float = 90.0                 # the stop; 180 is a flush (wrap) hinge
+    rivet_count: int = 2                   # rivet hinges
+    rivet_diameter_mm: float = 1.6
+    spring_box_length_mm: float = 10.5     # spring hinges: the box on the temple
+    spring_box_depth_mm: float = 2.2
+
+    @model_validator(mode="after")
+    def _held(self) -> "DraftHinge":
+        self.barrels = int(self.barrels) if int(self.barrels) in BARREL_COUNTS else 5
+        if self.screw_thread not in SCREW_THREADS:
+            self.screw_thread = "M1.4"
+        self.screw_head_mm = min(max(float(self.screw_head_mm), 0.5), 5.0)
+        self.screw_length_mm = min(max(float(self.screw_length_mm), 0.0), 20.0)
+        self.barrel_diameter_mm = min(max(float(self.barrel_diameter_mm), 1.0), 8.0)
+        self.axis_offset_mm = min(max(float(self.axis_offset_mm), -5.0), 10.0)
+        self.axis_setback_mm = min(max(float(self.axis_setback_mm), -5.0), 10.0)
+        self.temple_inset_mm = min(max(float(self.temple_inset_mm), -5.0), 15.0)
+        self.slant_deg = min(max(float(self.slant_deg), -15.0), 15.0)
+        self.open_deg = min(max(float(self.open_deg), 80.0), 180.0)
+        self.rivet_count = min(max(int(self.rivet_count), 1), 4)
+        self.rivet_diameter_mm = min(max(float(self.rivet_diameter_mm), 0.5), 4.0)
+        self.spring_box_length_mm = min(max(float(self.spring_box_length_mm), 4.0), 30.0)
+        self.spring_box_depth_mm = min(max(float(self.spring_box_depth_mm), 0.5), 6.0)
+        return self
+
+    @property
+    def label(self) -> str:
+        return HINGE_KIND_LABELS[HingeKind(self.kind)]
+
+
+class ToleranceRow(BaseModel):
+    """One row of the blueprint's tolerance table: what, how much, whose."""
+    name: str
+    value: str
+    source: Literal["ISO", "customer", "internal"] = "ISO"
+
+
+def default_tolerances() -> list[ToleranceRow]:
+    """ISO 12870's rows and the factory QC rows the research gathered
+    (section 6.5); every one is editable in the blueprint dialog."""
+    return [
+        ToleranceRow(name="Lens size A", value="±0.5 mm", source="ISO"),
+        ToleranceRow(name="Distance between lenses", value="±0.5 mm", source="ISO"),
+        ToleranceRow(name="Temple length", value="±2.0 mm", source="ISO"),
+        ToleranceRow(name="Front curve", value="±1°", source="internal"),
+        ToleranceRow(name="Pantoscopic angle", value="±1°", source="internal"),
+        ToleranceRow(name="Temple open position", value="±2 mm", source="internal"),
+        ToleranceRow(name="Tip curve", value="±2°", source="internal"),
+        ToleranceRow(name="Closed temples crossing", value="±1°", source="internal"),
+    ]
+
+
+#: The paper sizes the blueprint offers, portrait (width, height) in mm.
+PAPER_SIZES: dict[str, tuple[str, float, float]] = {
+    "letter":      ("US Letter (8.5 × 11 in)",    215.9, 279.4),
+    "legal":       ("US Legal (8.5 × 14 in)",     215.9, 355.6),
+    "tabloid":     ("Tabloid (11 × 17 in)",       279.4, 431.8),
+    "a4":          ("A4",                         210.0, 297.0),
+    "a3":          ("A3",                         297.0, 420.0),
+}
+#: The drawing scales the auto choice picks from, largest first: ISO 5455's
+#: with 1:1.5 and 1:2.5 between, as eyewear sheets use them to fit a page.
+STANDARD_SCALES = (2.0, 1.0, 2.0 / 3.0, 0.5, 0.4, 0.2)
+
+
+class BlueprintSettings(BaseModel):
+    """How the blueprint is laid out: the paper, the projection, the views
+    and the title block's cells. The shop's defaults live in Preferences >
+    Blueprint; a project keeps its own copy, seeded from them."""
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    paper: str = "letter"
+    # Portrait: the three views stack down the page, as eyewear drawings do,
+    # the plan's temples running up or down it and the side view's temple
+    # across; auto takes whichever orientation gives the larger scale.
+    orientation: Literal["auto", "portrait", "landscape"] = "portrait"
+    # Where the plan and the side view sit: third angle puts the plan above
+    # the front view with the temples running up, and the side view below;
+    # first angle the side view above and the plan below, temples down.
+    projection: Literal["first", "third"] = "third"
+    view_front: bool = True
+    view_top: bool = True
+    view_side: bool = True
+    view_hinge: bool = True        # the hinge detail, reference only
+    view_notes: bool = True        # the notes, the tolerance table, the checks
+    view_folded: bool = False      # the folded temples dashed in the front view
+    sheet_template: bool = True    # sheet 2: the 1:1 alignment template
+    scale: float = 0.0             # 0 = auto, else the drawing scale (0.5 = 1:2)
+    border: bool = True
+    line_weight_mm: float = 0.35
+    # ISO 7200's cells
+    owner: str = ""                # the legal owner (the shop)
+    author: str = ""               # the creator
+    design_name: str = ""          # "" = the project's job name
+    id_number: str = ""
+    revision: str = "A"
+    document_type: str = "Assembly drawing, after forming"
+    approver: str = ""
+    issue_date: str = ""           # "" = the day the blueprint is written
+    material: str = ""             # "" = the project's material and sheet
+    finish: str = ""
+    notes: str = ""
+    tolerances: list[ToleranceRow] = Field(default_factory=default_tolerances)
+
+    @model_validator(mode="after")
+    def _held(self) -> "BlueprintSettings":
+        if self.paper not in PAPER_SIZES:
+            self.paper = "letter"
+        self.scale = min(max(float(self.scale), 0.0), 10.0)
+        self.line_weight_mm = min(max(float(self.line_weight_mm), 0.1), 1.0)
+        return self
+
+    def page_size_mm(self) -> tuple[float, float]:
+        """(width, height) portrait, mm."""
+        _label, w, h = PAPER_SIZES[self.paper]
+        return w, h
+
+
+class DraftParams(BaseModel):
+    """The draft view's own settings (2.3): the intended splay, the hinge
+    and the blueprint. The angle of side's target is the front's
+    `FormingMetadata.pantoscopic_tilt_deg`, as the research proposed."""
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    splay_deg: float = 0.0                 # the intended splay per side, from the front plane's normal
+    side_tolerance_deg: float = 1.0        # the check: angle of side, left against right
+    hinge: DraftHinge = Field(default_factory=DraftHinge)
+    blueprint: BlueprintSettings = Field(default_factory=BlueprintSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _splay_was_let_back(cls, data):
+        """The splay was `let_back_deg` for a day (2026-11-04); a file saved
+        then reads."""
+        if isinstance(data, dict) and "let_back_deg" in data and "splay_deg" not in data:
+            data = {**data, "splay_deg": data["let_back_deg"]}
+            data.pop("let_back_deg", None)
+        return data
+
+    @model_validator(mode="after")
+    def _held(self) -> "DraftParams":
+        self.splay_deg = min(max(float(self.splay_deg), -20.0), 30.0)
+        self.side_tolerance_deg = min(max(float(self.side_tolerance_deg), 0.1), 5.0)
+        return self
 
 
 class MaterialRef(BaseModel):
@@ -1877,8 +2247,8 @@ class Worktable(BaseModel):
         if pz.mode != "stock_box":
             return (0.0, 0.0, 0.0)
         w, h = self.work_area_width_mm, self.work_area_height_mm
-        dx = {"left": 0.0, "center": w / 2.0, "right": w}[pz.x_ref]
-        dy = {"bottom": 0.0, "center": h / 2.0, "top": h}[pz.y_ref]
+        dx = {"left": 0.0, "center": w / 2.0, "right": w}[pz.x_ref] + pz.shift_x_mm
+        dy = {"bottom": 0.0, "center": h / 2.0, "top": h}[pz.y_ref] + pz.shift_y_mm
         return (-dx + 0.0, -dy + 0.0, 0.0)
 
     def zone(self, zone_id: str) -> WorktableZone:
@@ -2015,6 +2385,12 @@ class ComponentCamOverrides(BaseModel):
     feed_rate_mmpm: float | None = Field(None, gt=0)
     spindle_rpm: int | None = Field(None, gt=0)
     cut_direction: Literal["climb", "conventional"] | None = None
+    # The part's own two-sided choice (2.1): the Two-sided fold shows for the
+    # front and for a temple and reads as the open part's, so it is. None
+    # inherits the project's `cam_params.two_sided`, Auto as shipped; a 2.0
+    # project, whose parts carry none, cuts as it did.
+    two_sided: Literal["auto", "off", "on"] | None = None
+    two_sided_output: Literal["two_files", "one_file"] | None = None
 
     def is_empty(self) -> bool:
         """True when nothing is overridden — the component inherits everything."""
@@ -2059,6 +2435,15 @@ class Component(BaseModel):
     # Per-component G54 work zero (M11): each part keeps its own datum so separately
     # exported NC files (front, each temple) don't all share one zero.
     program_zero: ProgramZero = Field(default_factory=ProgramZero)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _part_zero(cls, data):
+        """A part's `fixture` zero reads as the stock-box datum it posted as
+        (`part_program_zero`, 2026-11-02)."""
+        if isinstance(data, dict) and isinstance(data.get("program_zero"), (dict, ProgramZero)):
+            data = {**data, "program_zero": part_program_zero(data["program_zero"])}
+        return data
     # Per-component departures from the project-global cam_params (M16) — most
     # usefully the material, since a base-curve block is acetal among acetate parts.
     cam_overrides: ComponentCamOverrides = Field(default_factory=ComponentCamOverrides)
@@ -2132,6 +2517,14 @@ class ProjectSchema(BaseModel):
     worktable: Worktable | None = None                           # BUILDPLAN M7.4
     worktable_nest: WorktableNest = Field(default_factory=WorktableNest)   # BUILDPLAN M20
     machine: MachineRef = Field(default_factory=MachineRef)
+    # The temples' link (2026-11-02): True, the temples cut alike, the open
+    # one's Temple, Cut and Machine settings copied to the other whenever the
+    # dock is read back; False, each keeps its own. None in a file from
+    # before the link: read as linked when the temples match.
+    temples_linked: bool | None = None
+    # The draft view and the blueprint (2.3). A file from before carries none
+    # and opens with the shop's defaults.
+    draft: DraftParams = Field(default_factory=DraftParams)
 
     # The multi-component model (BUILDPLAN M7.1). A project is an ordered list of
     # role-typed components (frame front + temples + per-lens base-curve

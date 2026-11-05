@@ -238,7 +238,7 @@ def test_pass_readout_warns_when_the_whole_depth_is_one_bite(tmp_path, monkeypat
     from guildmodel.core.project.schema import ComponentKind
     p = _panel(tmp_path, monkeypatch)
     p.set_component_kind(ComponentKind.TEMPLE_RIGHT)
-    p.temple_onion.setValue(0.4)
+    p.onion_skin.setValue(0.4)
 
     # A 2 mm blank at the 2 mm ceiling is one full-depth bite — the shape of the
     # failure the maker hit, kept inside the material limit so this exercises the
@@ -281,7 +281,7 @@ def test_capped_readout_reports_the_depth_that_will_be_cut(tmp_path, monkeypatch
     p = _panel(tmp_path, monkeypatch)
     p.set_component_kind(ComponentKind.TEMPLE_RIGHT)
     p.temple_blank_thickness.setValue(4.0)
-    p.temple_onion.setValue(0.4)
+    p.onion_skin.setValue(0.4)
     p.contour_stepdown.setValue(6.0)                 # far over acetate's 2.0 ceiling
     text = p._passes_lbl.text()
     assert "capped" in text

@@ -80,7 +80,8 @@ def test_every_worker_that_reaches_the_cam_is_told_which_kernel():
 
     tree = ast.parse(app)
     cam_workers = {"GCodeWorker", "SimWorker", "NestWorker", "BedSimWorker",
-                   "ExportWorker", "PartsWorker"}      # PartsWorker: Generate's first half (M20)
+                   "ExportWorker", "PartsWorker",      # PartsWorker: Generate's first half (M20)
+                   "BlueprintWorker"}                  # builds the front for the blueprint (2.3)
     built = sum(1 for node in ast.walk(tree)
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)

@@ -148,7 +148,7 @@ class GuildSplash(QWidget):
     card read as a black rectangle at launch.
 
     So this is a `QWidget` that paints one pixmap, plus the two things
-    `QSplashScreen` was actually providing — centring on the primary screen and
+    `QSplashScreen` was actually providing — centering on the primary screen and
     a `finish()` that closes it once the real window is up.
     """
 
