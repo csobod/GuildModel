@@ -343,7 +343,7 @@ attach to a GitHub release:
 | Workflow | Runner | Artifacts |
 |---|---|---|
 | `.github/workflows/windows-build.yml` | `windows-latest` | portable `.zip` + `setup.exe` |
-| `.github/workflows/macos-build.yml` | `macos-14` (arm64), `macos-15-intel` (x86_64) | `.zip` + `.dmg` per architecture |
+| `.github/workflows/macos-build.yml` | `macos-15` (arm64), `macos-15-intel` (x86_64) | `.zip` + `.dmg` per architecture |
 
 Each runs the same release script a maker would run locally
 (`scripts\build_release.ps1` / `scripts/build_release_macos.sh`), so a CI build

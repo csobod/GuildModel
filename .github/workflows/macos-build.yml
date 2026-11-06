@@ -3,7 +3,8 @@
 # download the artifacts and attach them to the GitHub release.
 #
 # One artifact per architecture (PyInstaller does not cross-compile):
-#   - macos-14 runner        -> arm64  (Apple Silicon)
+#   - macos-15 runner        -> arm64  (Apple Silicon; macos-14 was retired by
+#     GitHub on 2026-11-06: "configuration not supported")
 #   - macos-15-intel runner  -> x86_64 (Intel; best-effort — GitHub is winding
 #     Intel runners down, so this leg may need a new label or can be dropped
 #     when it stops working)
@@ -22,7 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
             required: true
           - runner: macos-15-intel
