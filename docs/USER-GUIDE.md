@@ -1,4 +1,4 @@
-# GuildModel User Guide (v2.3.0)
+# GuildModel User Guide (v2.3.1)
 
 GuildModel turns a GuildDraw drawing into cut-ready CNC programs. It is the
 middle of the Guild toolchain: **GuildDraw** (design) → **GuildModel** (CAM) →
@@ -833,9 +833,17 @@ own values either way.
 
 The **Machine** tab is setup. It holds:
 
-- **Machine** — the profile, Guild CNC, Nomad 3, Shapeoko or generic GRBL,
-  with the front's default tool and the rapid clearances: the safe-Z
-  clearance and the hold-down height
+- **Machine** — the profile, Guild CNC, Nomad 3, Shapeoko, generic GRBL or
+  STEPCRAFT on UCCNC, with the front's default tool and the rapid
+  clearances: the safe-Z clearance and the hold-down height. The profile
+  also picks the G-code the program is written in. **STEPCRAFT (UCCNC, tool
+  changer)** writes UCCNC's: the changer's `T… M6` and the tool's length
+  offset `G43 H…`, comments in parentheses, retracts to the top of Z travel
+  in machine coordinates, so home the machine before running. The number
+  after `T` is the pocket the changer fetches: give every tool you use its
+  pocket as its **Tool number** in Preferences ▸ Tools. A tool without one
+  is refused, never numbered for you. Its envelope, feeds and spindle range
+  are a D.600's; set yours, and air-cut the first program.
 - **Program Zero** — each part keeps its own, starting from the default for
   its kind of part in Preferences ▸ Parts (shipped as center/center/bottom).
   The X and Y datum are an edge or the center of the stock blank as it lies
@@ -1104,6 +1112,10 @@ which folds away under its heading.
 where each closed region becomes a zone, or load a saved `.bed`; load the
 Guild standard bed; save the bed; make it the default that loads with every
 session. Set the bed's size, its program zero and the hold-down height here.
+The program zero is a corner or the center of the work area, the size you
+set, not of a blank; the line under it says the point the program touches
+off, in bed coordinates, with any shift a saved `.bed` carries, and the
+worktable's setup sheet says it again.
 No field on this panel takes the mouse wheel until you click into it, so
 scrolling the sidebar never changes a value.
 

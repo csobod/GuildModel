@@ -187,6 +187,8 @@ def lint_program(text: str, profile: MachineProfile) -> list[str]:
         if not s or s.startswith((";", "(")):
             continue
         code = s.split(";")[0]
+        if re.search(r"\bG53\b", code):
+            continue        # machine coordinates (a retract to the top), not the program's
         words = dict((m[0], float(m[1])) for m in _AXIS.findall(code))
         if s.startswith(("G2", "G3")) and not s[2:3].isdigit():
             has_arc = True

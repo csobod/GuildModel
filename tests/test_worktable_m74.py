@@ -109,6 +109,56 @@ def test_disjoint_regions_keep_every_face(tmp_path):
     assert len(wt.zones) == 4                     # 2 rectangles + 2 screws, all kept
 
 
+def _bed_dxf_from_fusion(path: Path) -> Path:
+    """A bed as Fusion exports it (a maker's, 2026-11-05): loose LINEs whose
+    shared corner is written two ways, a reference line that stops short of a
+    zone's sides, and a screw hole as three ARCs."""
+    import ezdxf
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    x0, x1 = -83.49999999999997, 86.50000000000003
+    lo, lo_ = 70.78427124739899, 70.784271247399      # the one corner, twice
+    hi = 95.784271247399
+    msp.add_line((x0, lo), (x0, hi))
+    msp.add_line((x1, hi), (x1, lo_))
+    msp.add_line((x1, lo), (x0, lo))
+    msp.add_line((x0, hi), (x1, hi))
+    # a line across the zone 0.25 mm in, its ends 1e-14 short of the sides
+    msp.add_line((-83.49999999999999, 71.0342712474), (86.5, 71.0342712474))
+    for a0, a1 in ((2.29e-12, 119.9999999999978), (120.0000000000025, 239.9999999999977),
+                   (240.0000000000026, 359.9999999999975)):
+        msp.add_arc((75.0, 0.0), 3.2, a0, a1)
+    doc.saveas(path)
+    return path
+
+
+def test_a_corner_written_two_ways_still_closes_its_zone(tmp_path):
+    """The temple zone that never appeared: polygonize joins only identical
+    points, so a 1e-14 mm gap at one corner dropped the whole region."""
+    wt = build_worktable_from_dxf(_bed_dxf_from_fusion(tmp_path / "bed.dxf"))
+    zones = sorted(wt.zones, key=lambda z: z.area())
+    assert len(zones) == 2
+    hole, temple = zones
+    assert temple.area() == pytest.approx(170.0 * 25.0)
+    # the line stopping short of the sides stays a dangle: the zone is whole
+    assert temple.bbox() == pytest.approx((-83.5, 70.7843, 86.5, 95.7843), abs=1e-3)
+    # the three arcs close into the screw hole
+    assert hole.center() == pytest.approx((75.0, 0.0), abs=0.05)
+    assert hole.width() == pytest.approx(6.4, abs=0.1)
+
+
+def test_welding_leaves_distinct_ends_apart():
+    """Two ends 0.05 mm apart are two points, and a segment welded to a point
+    is dropped rather than handed to polygonize."""
+    from guildmodel.core.cam.worktable import _weld_ends
+    a = [(0.0, 0.0), (10.0, 0.0)]
+    b = [(10.05, 0.0), (20.0, 0.0)]
+    stub = [(20.0, 0.0), (20.0 + 1e-9, 0.0)]
+    out = _weld_ends([a, b, stub])
+    assert out[0][-1] == (10.0, 0.0) and out[1][0] == (10.05, 0.0)
+    assert len(out) == 2
+
+
 def test_empty_dxf_raises(tmp_path):
     import ezdxf
     p = tmp_path / "empty.dxf"

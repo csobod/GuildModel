@@ -83,7 +83,8 @@ _BREAK_WORDS = frozenset({"28", "30", "53", "38", "10", "92"})
 _TOP_OF_TRAVEL_MM = 50.0
 
 
-def parse_program(gcode: str, chord_mm: float = CHORD_MM) -> list[Run]:
+def parse_program(gcode: str, chord_mm: float = CHORD_MM,
+                  work_offset: tuple = (0.0, 0.0, 0.0)) -> list[Run]:
     """Walk a GRBL-dialect program once into runs: modal G0/G1/G2/G3, G20/G21,
     G90/G91, X Y Z I J, the A word, the F word, and as a break the words that
     move or set something other than the program's own coordinates: G28/G30,
@@ -91,7 +92,15 @@ def parse_program(gcode: str, chord_mm: float = CHORD_MM) -> list[Run]:
     probe) and G10/G92 (offsets). Comments
     carry the op sections and the tool announcements. A run starts at the
     position the tool was at, so the motion is continuous, and a one-point
-    run (a program's first move) is kept so a rapid from the start is seen."""
+    run (a program's first move) is kept so a rapid from the start is seen.
+
+    `work_offset` is the zero the program was posted with — the post adds it
+    to every coordinate it writes (`GRBLPost.work_offset`) — and the runs come
+    back less it, in the frame the ops were built in: a part's design frame,
+    the bed's machine coordinates. A reader of a posted program passes it
+    here rather than shifting the runs itself: a part zeroed at a corner
+    failed its verdict, and a bed zeroed anywhere but its lower-left cut every
+    part beside its blank."""
     x = y = z = a = 0.0
     motion = 0
     incremental = False
@@ -174,6 +183,10 @@ def parse_program(gcode: str, chord_mm: float = CHORD_MM) -> list[Run]:
             cur.points.append((nx, ny, nz, na))
         x, y, z, a = nx, ny, nz, na
     flush()
+    dx, dy, dz = (float(v) for v in work_offset)
+    if dx or dy or dz:
+        for run in runs:
+            run.points = [(p[0] - dx, p[1] - dy, p[2] - dz, *p[3:]) for p in run.points]
     return runs
 
 

@@ -2271,22 +2271,34 @@ def build_tool_settings(
 
     settings: dict[str, ToolSetting] = {}
     warnings: list[str] = []
+    # Stable T-numbers from the tool specs (M7.8), each claimed by the first
+    # tool in machining order to carry it, and all of them reserved before any
+    # is made up: a tool without one, cutting first, took T1 from a later tool
+    # whose pocket is 1 (2.3.1). Shipped tools carry none, so unchanged.
+    own: dict[str, int] = {}
+    for op in ops:
+        nm = op.tool_name
+        if nm is None or nm in own:
+            continue
+        n = int((op.tool or tools_cfg.get(nm, {})).get("number") or 0)
+        if n > 0 and n not in own.values():
+            own[nm] = n
     number = 0
-    used: set[int] = set()
+    used: set[int] = set(own.values())
     for op in ops:
         nm = op.tool_name
         if nm is None or nm in settings:
             continue
         t = op.tool or tools_cfg.get(nm, {})
-        # Stable T-number from the tool spec when set (M7.8); else the next free
-        # number by machining order — shipped tools carry none, so unchanged.
-        n = int(t.get("number") or 0)
-        if n <= 0 or n in used:
+        numbered = nm in own                   # its own, not made up (2.3.1)
+        if numbered:
+            n = own[nm]
+        else:
             number += 1
             while number in used:
                 number += 1
             n = number
-        used.add(n)
+            used.add(n)
         resolved = resolve_tool_feeds(
             t, default_feed=default_feed, default_plunge=default_plunge,
             default_spindle=default_spindle, override=(tool_feeds or {}).get(nm))
@@ -2312,7 +2324,7 @@ def build_tool_settings(
         settings[nm] = ToolSetting(
             number=n, name=nm, diameter_mm=diameter,
             feed_rate_mmpm=float(feed), plunge_rate_mmpm=float(plunge),
-            spindle_rpm=int(round(spindle)),
+            spindle_rpm=int(round(spindle)), numbered=numbered,
         )
     return settings, warnings
 
@@ -2402,6 +2414,10 @@ def write_castle_program(
     # their tool led the program with that tool and paused for a change to
     # the next, and cut nothing (the 2.0 bug hunt). Its notes stay with it.
     ops = [op for op in ops if op.paths]
+    # the dialect's word on the tools this program will cut with, all at once
+    used = {op.tool_name for op in ops}
+    post.check_tools({n: ts for n, ts in (tool_settings or {}).items() if n in used},
+                     tool_change_mode)
     # On an auto-tool-change machine the M6 that follows the header raises Z itself, so
     # the header's safe-Z retract is a wasted bob before the tool change — skip it there
     # (the first cutting pass still takes its own full retract after the M6).

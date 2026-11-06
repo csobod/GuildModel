@@ -50,6 +50,12 @@ def _lap_from(xy: list[tuple], cum: list[float], start_s: float) -> list[tuple]:
     return out
 
 
+class PostError(ValueError):
+    """A program the post refuses to write, said for the maker (2.3.1): a
+    feed of 0, a safe Z inside the stock, an axis the machine lacks, a tool a
+    changer cannot name. A `ValueError`, as these refusals always were."""
+
+
 @dataclass
 class ToolSetting:
     """Per-tool output context for a multi-tool program (BUILDPLAN M6.1).
@@ -57,7 +63,9 @@ class ToolSetting:
     Assembled by the caller (tool geometry from tools.yaml; feeds either the
     tool's own override or the material preset; all clamped to the machine). The
     post swaps these in at each tool-change block; `number` is the Tn slot,
-    assigned by first appearance.
+    the tool's own number when it has one, else assigned by first appearance.
+    `numbered` says which (2.3.1): a tool changer fetches the pocket the number
+    names, so a number made up by machining order fetches the wrong tool.
     """
     number: int
     name: str
@@ -65,6 +73,7 @@ class ToolSetting:
     feed_rate_mmpm: float
     plunge_rate_mmpm: float
     spindle_rpm: int
+    numbered: bool = False
 
 
 @dataclass
@@ -117,6 +126,10 @@ class GRBLPost:
     index_a_deg: float | None = None
     rotary_unwind: str = "g53"          # "g53" (G53 G0 A0), "g28" (G28 A0), "none"
 
+    #: Whether a single-tool program is handed its tool too (a dialect's
+    #: choice, 2.3.1): GRBL's announces a tool only when there are several.
+    names_every_tool = False
+
     _lines: list[str] = field(default_factory=list, repr=False, init=False)
     _last_xy: tuple | None = field(default=None, init=False, repr=False)
     # Last commanded Z (work coords); None = unknown (program start / after a tool
@@ -160,6 +173,10 @@ class GRBLPost:
     def comment(self, text: str) -> None:
         self._lines.append(f"{self.comment_char} {text}")
 
+    def check_tools(self, tool_settings: dict | None, mode: str) -> None:
+        """Refuse a program's tools before a word is written (a dialect's
+        choice, 2.3.1): GRBL's takes any."""
+
     def spindle_on(self, *, starting: bool = True) -> None:
         """M3 at the current speed; a spindle that starts here is given its
         spin-up before the first move, a speed change while running is not."""
@@ -192,7 +209,7 @@ class GRBLPost:
         The simulation cannot see it (rapids are not stamped), so the post
         refuses the program rather than write it."""
         if z is not None and z >= self.safe_z_mm - 1e-6:
-            raise ValueError(
+            raise PostError(
                 f"safe Z {self.safe_z_mm:.2f} mm is not above a cut at Z {z:.2f} mm: "
                 "the rapid plane is inside the stock")
 
@@ -202,7 +219,7 @@ class GRBLPost:
         GRBL halts on the first G1 (error 22)."""
         f = feed if feed is not None else self.feed_rate_mmpm
         if not f or f <= 0:
-            raise ValueError("the feed rate is not set: the material preset or the Cut "
+            raise PostError("the feed rate is not set: the material preset or the Cut "
                              "tab has no feed rate, and a program with F0 stops at its first cut")
         return f"F{f:.0f}"
 
@@ -360,11 +377,11 @@ class GRBLPost:
         axis, and against the travel when the profile bounds it."""
         letter = self.rotary_letter.upper()
         if letter not in self.axes.upper():
-            raise ValueError(
+            raise PostError(
                 f"the program needs a {letter} axis and the machine profile has {self.axes}: "
                 "pick a four-axis profile, or a manual flip")
         if self.rotary_travel_deg and abs(a) > self.rotary_travel_deg + 1e-9:
-            raise ValueError(
+            raise PostError(
                 f"{letter}{a:.3f} is past the rotary's travel of {self.rotary_travel_deg:g} degrees")
         return f"{letter}{a:.3f}"
 
@@ -405,7 +422,7 @@ class GRBLPost:
         ox, oy, oz = self.work_offset
         f = feed if feed is not None else self.feed_rate_mmpm
         if not f or f <= 0:
-            raise ValueError("the feed rate is not set")
+            raise PostError("the feed rate is not set")
         parts = ["G1", f"X{x + ox:.4f}", f"Y{y + oy:.4f}", f"Z{z + oz:.4f}", self._a_word(a)]
         if abs(da) > 1e-9 and self.supports_g93:
             minutes = max(length_mm / f, abs(da) / max(self.rotary_max_rate_degpm, 1e-9))

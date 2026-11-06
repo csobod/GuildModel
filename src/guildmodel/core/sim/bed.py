@@ -440,9 +440,11 @@ def bed_report_from_program(
     fallback: ToolProfile,
     margin_mm: float = 8.0,
     complete_tol_mm: float = 0.5,
+    work_offset: tuple = (0.0, 0.0, 0.0),
     progress=None,
 ) -> CutReport:
     """The whole-bed verdict read from the POSTED program (M20 session two).
+    `work_offset` is the bed zero it was posted with, as for `bed_stock_plan`.
 
     The program is the contract and the simulator its reader: ``worktable.nc``'s
     cutting moves, grouped by tool, are stamped onto one machine-coordinate grid
@@ -453,7 +455,7 @@ def bed_report_from_program(
     paths from the file the machine will run.
     """
     bed_stock, bed_origin = _bed_stock(stock_parts, resolution, margin_mm)
-    groups = cutting_paths_from_program_grouped(program_text)
+    groups = cutting_paths_from_program_grouped(program_text, work_offset=work_offset)
     profiles = {n: ToolProfile.from_tool(tools_cfg[n])
                 for n in {t for _, t in groups if t and t in tools_cfg}}
     floor = achieved_floor_grouped(groups, profiles, fallback, bed_origin,
@@ -474,13 +476,19 @@ def bed_stock_plan(
     fallback_tool: dict,
     margin_mm: float = 8.0,
     keyframes: int = 16,
+    work_offset: tuple = (0.0, 0.0, 0.0),
     progress=None,
 ):
     """The bed cut once, for the verdict and the playback (BUILDPLAN M21 §6.5):
     ``worktable.nc`` parsed into runs, the stock built from the placed blanks on
     the machine grid, the stock engine's plan over it. Nothing is regenerated
     and nothing composited but the targets. Returns the `StockPlan`; its final
-    top is the floor `verify` reads."""
+    top is the floor `verify` reads.
+
+    `work_offset` is the bed zero the program was posted with
+    (`Worktable.bed_work_offset`); the blanks stand at bed coordinates, so the
+    runs are read back into them (2.3.1: a bed zeroed at its center cut every
+    part 100 mm beside its blank)."""
     from ..stock import DexelStock, ToolShape, parse_program
     from ..stock.playback import build_stock_plan
 
@@ -490,7 +498,7 @@ def bed_stock_plan(
     stock = DexelStock.from_heightfield(field, z_bottom=0.0)
     runs = []
     shapes: dict = {}
-    for run in parse_program(program_text):
+    for run in parse_program(program_text, work_offset=work_offset):
         tool = tools_cfg.get(run.tool) if run.tool else None
         key = run.tool or ""
         if key not in shapes:

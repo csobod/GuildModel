@@ -8,16 +8,16 @@
 ; Compile manually:
 ;   "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" installer\GuildModel.iss
 ; Or, with overrides from the release script:
-;   ISCC.exe /DMyAppVersion=2.3.0 /DMyAppVersionNumeric=2.3.0.0 installer\GuildModel.iss
+;   ISCC.exe /DMyAppVersion=2.3.1 /DMyAppVersionNumeric=2.3.1.0 installer\GuildModel.iss
 ;
 ; The release script (scripts\build_release.ps1) passes the version defines and
 ; builds dist\GuildModel first. Defaults below let the script be compiled by hand.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.0"
+  #define MyAppVersion "2.3.1"
 #endif
 #ifndef MyAppVersionNumeric
-  #define MyAppVersionNumeric "2.3.0.0"
+  #define MyAppVersionNumeric "2.3.1.0"
 #endif
 #ifndef MySourceDir
   #define MySourceDir "..\dist\GuildModel"

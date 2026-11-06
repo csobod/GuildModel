@@ -128,6 +128,19 @@ def test_explicit_tool_number_is_honored():
     assert ts["b"].number != 5 and ts["b"].number >= 1
 
 
+def test_a_made_up_number_never_takes_a_later_tools_own():
+    """2.3.1: a tool without a number, cutting first, took T1 from a later
+    tool whose pocket is 1, which was then made up too; on a tool changer
+    that fetches the wrong pocket. Own numbers are reserved first; of two
+    tools claiming one, the first in machining order keeps it."""
+    ops = [_op("A", "a", 2.0), _op("B", "b", 3.0, number=1), _op("C", "c", 1.0, number=1)]
+    ts, _ = build_tool_settings(ops, {}, default_feed=500, default_plunge=200,
+                                default_spindle=10000)
+    assert (ts["b"].number, ts["b"].numbered) == (1, True)
+    assert ts["a"].number not in (1,) and not ts["a"].numbered
+    assert ts["c"].number not in (1, ts["a"].number) and not ts["c"].numbered
+
+
 def test_auto_numbering_is_back_compatible():
     ops = [_op("A", "a", 2.0), _op("B", "b", 3.0)]
     ts, _ = build_tool_settings(ops, {}, default_feed=500, default_plunge=200,
@@ -136,6 +149,39 @@ def test_auto_numbering_is_back_compatible():
 
 
 # ------------------------------------------------------------------ Preferences Tools tab
+
+def test_an_edit_on_the_tools_tab_keeps_what_the_form_does_not_show(tmp_path, monkeypatch):
+    """2.3.1, a maker's report: typing a Tool number on the lens-groove cutter
+    warped its drawing and saved it with no V and no neck. The form rebuilt
+    the tool from its own fields; the groove's form has none there."""
+    pytest.importorskip("PySide6.QtWidgets")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(tool_store, "_USER", tmp_path / "tools.yaml")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from guildmodel.gui.app import PrefsDialog
+
+    dlg = PrefsDialog({"dark_mode": False, "show_log_on_start": False,
+                       "preview_resolution_mm": 0.3, "export_resolution_mm": 0.15,
+                       "last_output_dir": ""}, None)
+    shipped = tool_store.spec("groove_drageoir")
+    assert shipped.groove_depth_mm > 0 and shipped.neck_length_mm > 0
+    row = [dlg._tool_list.item(i).data(0x0100) for i in range(dlg._tool_list.count())]
+    dlg._tool_list.setCurrentRow(row.index("groove_drageoir"))
+    dlg._tw["number"].setValue(3)                 # the edit the maker made
+    spec = dlg._tool_working["groove_drageoir"]
+    assert spec.number == 3
+    for f in ("groove_depth_mm", "groove_width_mm", "neck_diameter_mm", "neck_length_mm"):
+        assert getattr(spec, f) == getattr(shipped, f), f
+    assert dlg._tool_view._spec == spec               # and drawn as kept
+    dlg._save_tools()
+    saved = tool_store.effective()["groove_drageoir"]
+    assert saved["number"] == 3 and saved["groove_depth_mm"] == shipped.groove_depth_mm
+    assert saved["neck_length_mm"] == shipped.neck_length_mm
+
 
 def test_prefs_tools_tab_add_commits_to_library(tmp_path, monkeypatch):
     pytest.importorskip("PySide6.QtWidgets")

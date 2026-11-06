@@ -24,6 +24,7 @@ from ..fileio import write_text_atomic
 from ..project.schema import BedRole, Worktable, WorktableZone, bed_role_label
 
 CHORD_TOL_MM = 0.05
+WELD_TOL_MM = 0.01           # ends this close are one corner (CAD float noise)
 _MIN_REGION_AREA_MM2 = 1.0   # drop polygonize slivers
 _CIRCLE_SEGMENTS = 48
 
@@ -93,19 +94,54 @@ def read_bed_linework(
     return segments, circles
 
 
+def _weld_ends(
+    segments: list[list[tuple[float, float]]], tol: float = WELD_TOL_MM,
+) -> list[list[tuple[float, float]]]:
+    """Snap each segment's two ends onto the first end already seen within
+    `tol`, so a loop closed in CAD closes here too.
+
+    `polygonize` joins only identical points, and a CAD export does not always
+    write a shared corner identically: Fusion ends one edge of a rectangle at
+    y = 70.784271247399 and starts the next at 70.78427124739899, and the zone
+    never forms; a circle exported as three arcs leaves the same gap at each
+    join. Only ends are welded — a line that stops short of another's middle
+    stays a dangle, as drawn. A segment welded down to a point is dropped."""
+    seen: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    def snap(p: tuple[float, float]) -> tuple[float, float]:
+        kx, ky = math.floor(p[0] / tol), math.floor(p[1] / tol)
+        for i in (kx - 1, kx, kx + 1):
+            for j in (ky - 1, ky, ky + 1):
+                for q in seen.get((i, j), ()):
+                    if math.hypot(p[0] - q[0], p[1] - q[1]) <= tol:
+                        return q
+        seen.setdefault((kx, ky), []).append(p)
+        return p
+
+    out: list[list[tuple[float, float]]] = []
+    for s in segments:
+        if len(s) < 2:
+            continue
+        welded = [snap(s[0]), *s[1:-1], snap(s[-1])]
+        if any(p != welded[0] for p in welded[1:]):
+            out.append(welded)
+    return out
+
+
 def polygonize_bed(
     segments: list[list[tuple[float, float]]],
     circles: list[tuple[float, float, float]],
-    *, min_area: float = _MIN_REGION_AREA_MM2,
+    *, min_area: float = _MIN_REGION_AREA_MM2, weld_tol: float = WELD_TOL_MM,
 ) -> list[tuple[list[tuple[float, float]], float | None]]:
     """Turn bed linework into candidate regions: every CIRCLE is its own region
-    (radius known — a likely keep-out screw); the remaining linework is unioned
-    and `polygonize`d into faces (radius None). Returns (ring, radius_or_None)."""
+    (radius known — a likely keep-out screw); the remaining linework is welded
+    at its ends, unioned and `polygonize`d into faces (radius None). Returns
+    (ring, radius_or_None)."""
     faces: list[tuple[list[tuple[float, float]], float | None]] = []
     for cx, cy, r in circles:
         faces.append((_circle_ring(cx, cy, r), r))
 
-    lines = [LineString(s) for s in segments if len(s) >= 2]
+    lines = [LineString(s) for s in _weld_ends(segments, weld_tol)]
     if lines:
         merged = unary_union(lines)
         for poly in polygonize(merged):

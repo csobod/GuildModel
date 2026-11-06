@@ -58,7 +58,8 @@ AMPLITUDE_FLOOR_MM = 0.1
 STEEP_DEG = 71.0
 
 _NUM = re.compile(r"([XYZF])(-?\d*\.?\d+)")
-_OP = re.compile(r";\s*---\s*(.+?)\s*---")
+# an op section in either comment style: "; --- op ---" or "(--- op ---)"
+_OP = re.compile(r"[;(]\s*---\s*(.+?)\s*---")
 _EPS = 1e-6
 
 
@@ -245,7 +246,7 @@ def measure_program(text: str) -> dict[str, OpProfile]:
             flush()
             cur, runs, run = m.group(1), [], []
             continue
-        code = line.split(";")[0].strip()
+        code = re.split(r"[;(]", line, maxsplit=1)[0].strip()
         g = re.match(r"G(0|1|2|3)\b", code)
         if not g:
             continue
@@ -293,10 +294,16 @@ def header_lines(profiles) -> list[str]:
 
 
 def annotate(text: str, profiles=None) -> str:
-    """Return `text` with its Z profile inserted after the leading comment block."""
+    """Return `text` with its Z profile inserted after the leading comment block,
+    in the program's own comment style: a UCCNC program's parenthesized
+    (2.3.1), where a ``;`` line is not a comment."""
     profiles = measure_program(text) if profiles is None else profiles
     lines = text.splitlines()
     i = 0
-    while i < len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith(";")):
+    while i < len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith((";", "("))):
         i += 1
-    return "\n".join(lines[:i] + header_lines(profiles) + lines[i:]) + "\n"
+    head = header_lines(profiles)
+    if lines and lines[0].lstrip().startswith("("):
+        from ..post.uccnc import comment_lines
+        head = [c for h in head for c in comment_lines(h.lstrip("; "))]
+    return "\n".join(lines[:i] + head + lines[i:]) + "\n"

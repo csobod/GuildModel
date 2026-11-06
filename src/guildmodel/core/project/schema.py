@@ -882,18 +882,22 @@ class ProgramZero(BaseModel):
         dx, dy, dz = self.datum_world(stock)
         return (-dx + 0.0, -dy + 0.0, -dz + 0.0)   # +0.0 normalizes -0.0
 
+    def corner_words(self) -> str:
+        """The X/Y datum in words: "lower-left", "center", "top/left"…; the
+        part's label and the bed's (`Worktable.zero_label`) both say it so."""
+        return {
+            ("left", "bottom"): "lower-left", ("right", "bottom"): "lower-right",
+            ("left", "top"): "upper-left", ("right", "top"): "upper-right",
+            ("center", "center"): "center",
+        }.get((self.x_ref, self.y_ref), f"{self.y_ref}/{self.x_ref}")
+
     def label(self) -> str:
         """The zero in words, as the log, the setup sheet and the 2D marker say
         it. GuildSend reads "top face" out of it (`job.gmodel.program_zero_at_bed`),
         so the face stays the last words of the datum."""
         if self.mode == "fixture":
             return "Fixture (design frame: blank center, anterior face)"
-        corner = {
-            ("left", "bottom"): "lower-left", ("right", "bottom"): "lower-right",
-            ("left", "top"): "upper-left", ("right", "top"): "upper-right",
-            ("center", "center"): "center",
-        }.get((self.x_ref, self.y_ref), f"{self.y_ref}/{self.x_ref}")
-        text = f"Stock blank {corner}, {self.z_ref} face"
+        text = f"Stock blank {self.corner_words()}, {self.z_ref} face"
         if self.is_shifted():
             sx, sy, sz = self.shift
             text += f", shifted ({sx:+.2f}, {sy:+.2f}, {sz:+.2f}) mm"
@@ -1495,8 +1499,10 @@ class MachineProfile(BaseModel):
 
     # The controller and its axes (M26), additive and off by default: GRBL
     # 1.1 is three-axis; a fourth axis needs grblHAL, FluidNC or grbl-Mega-5X.
+    # It also picks the post's dialect (2.3.1, `post.make_post`): "uccnc"
+    # writes UCCNC's words (STEPCRAFT); every other writes GRBL's.
     controller: Literal["grbl11", "grblhal", "fluidnc", "grbl_mega_5x", "smoothie",
-                        "other"] = "grbl11"
+                        "uccnc", "other"] = "grbl11"
     axes: str = "XYZ"
     rotary: RotaryAxis | None = None
     rotary_feed_mode: Literal["g93", "deg_per_min", "linear_dominant"] = "g93"
@@ -2296,6 +2302,24 @@ class Worktable(BaseModel):
         dx = {"left": 0.0, "center": w / 2.0, "right": w}[pz.x_ref] + pz.shift_x_mm
         dy = {"bottom": 0.0, "center": h / 2.0, "top": h}[pz.y_ref] + pz.shift_y_mm
         return (-dx + 0.0, -dy + 0.0, 0.0)
+
+    def zero_label(self) -> str:
+        """The bed zero in words, for the log, the setup sheet and the Bed
+        panel (2.3.1): the datum over the work-area box, any shift, and the
+        point on the bed the operator touches off. `ProgramZero.label` says
+        "Stock blank", which on the bed is not where the zero is; a shift no
+        combo item shows was invisible. The bed's Z0 is the bed itself, and
+        GuildSend reads "top face" out of a sheet's zero, so it ends "bottom
+        face"."""
+        pz = self.program_zero
+        if pz.mode != "stock_box":
+            return "Raw bed coordinates: the bed origin, bottom face"
+        text = f"Work area {pz.corner_words()}"
+        # X and Y only: the bed's offset leaves Z where the stock puts it
+        if abs(pz.shift_x_mm) > 1e-9 or abs(pz.shift_y_mm) > 1e-9:
+            text += f", shifted ({pz.shift_x_mm:+.2f}, {pz.shift_y_mm:+.2f}) mm"
+        dx, dy, _ = self.bed_work_offset()
+        return f"{text}: touch off at bed X{-dx + 0.0:.2f} Y{-dy + 0.0:.2f}, bottom face"
 
     def zone(self, zone_id: str) -> WorktableZone:
         for z in self.zones:

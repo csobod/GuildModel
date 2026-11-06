@@ -1,0 +1,52 @@
+# GuildModel machine profile — STEPCRAFT with UCCNC and the automatic tool changer
+# (2.3.1). The controller is UCCNC, so the post writes UCCNC's words, modeled on
+# Autodesk's certified "STEPCRAFT UCCNC" post with its tool changer on: comments
+# in parentheses, T<n> M6 then G43 H<n>, retracts to the top of Z travel with
+# G90 G53 G0 Z0 (home the machine first), G4 P in milliseconds, arcs of at most
+# 90 degrees. Every tool must carry its pocket as its Tool number (Preferences ▸
+# Tools); the post refuses a tool that has none.
+#
+# The figures are a D.600's and a conservative spindle's: set the envelope,
+# feeds and spindle range to your machine before cutting.
+
+name: stepcraft_uccnc
+display_name: "STEPCRAFT (UCCNC, tool changer)"
+
+# The post's dialect: UCCNC, not GRBL.
+controller: uccnc
+axes: XYZ
+
+# Work envelope (mm): a D.600's. Set yours.
+work_area_x_mm: 420.0
+work_area_y_mm: 600.0
+work_area_z_mm: 140.0
+
+# Feed / speed ceilings — cutting feed, plunge feed and spindle are clamped here.
+max_feed_mmpm: 3000.0
+max_plunge_mmpm: 1000.0
+max_spindle_rpm: 20000.0
+min_spindle_rpm: 3000.0
+
+# A light gantry: keep the depth of cut modest (the material caps it further).
+max_doc_mm: 2.0
+
+# Motion dynamics — they drive the cut-time estimate only.
+rapid_rate_mmpm: 3000.0
+max_accel_mmps2: 300.0
+junction_deviation_mm: 0.01
+
+supports_arcs: true
+units: mm
+enforce_soft_limits: true
+
+# The automatic tool changer: T<n> M6 runs UCCNC's tool-change macro, which
+# fetches pocket n; G43 H<n> applies that tool's length from UCCNC's tool table.
+tool_change_mode: m6
+tool_change_seconds: 30.0
+# A dwell after each spindle start, written G4 P3000 (UCCNC reads milliseconds).
+# Harmless if UCCNC already waits for the spindle; 0 writes none.
+spindle_spinup_s: 3.0
+notes: >
+  STEPCRAFT on UCCNC with the tool changer. Home before running: retracts go to
+  machine Z0. Set each tool's pocket as its Tool number. Air-cut the first
+  program. The envelope and spindle range are a D.600's; set yours.

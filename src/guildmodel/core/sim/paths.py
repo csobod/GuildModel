@@ -43,16 +43,17 @@ _TOOL_COMMENT = re.compile(r"Tool(?:\s*Change)?[^A-Za-z0-9]*T\d+:\s*(\S+)")
 
 
 def cutting_paths_from_program_grouped(
-    gcode: str, chord_mm: float = 0.3,
+    gcode: str, chord_mm: float = 0.3, work_offset: tuple = (0.0, 0.0, 0.0),
 ) -> list[tuple[list[Point3], str | None]]:
     """Like ``cutting_paths_from_program`` but tag each cutting polyline with the
     active tool name, tracked from the post's tool-announce comments. Paths
     before any announcement (e.g. an external control) get ``None``.
 
     A facade over `core.stock.program` since M21: one walk through the
-    program, the same paths it has always given (`test_stock_program`)."""
+    program, the same paths it has always given (`test_stock_program`).
+    `work_offset` is the zero the program was posted with (`parse_program`)."""
     from ..stock.program import cutting_paths, parse_program
-    return cutting_paths(parse_program(gcode, chord_mm=chord_mm))
+    return cutting_paths(parse_program(gcode, chord_mm=chord_mm, work_offset=work_offset))
 
 
 def cutting_paths_from_program(gcode: str, chord_mm: float = 0.3) -> list[list[Point3]]:

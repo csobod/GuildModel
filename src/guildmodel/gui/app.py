@@ -782,11 +782,7 @@ def _simulate_program(program: str, relief, tools_cfg: dict, default_tool: dict,
                                        parse_program, poses_for_run, shank_shape)
     from guildmodel.core.stock.playback import build_stock_plan
 
-    runs = parse_program(program)
-    dx, dy, dz = (float(v) for v in work_offset)
-    if dx or dy or dz:
-        for run in runs:
-            run.points = [(p[0] - dx, p[1] - dy, p[2] - dz, *p[3:]) for p in run.points]
+    runs = parse_program(program, work_offset=work_offset)
     shapes: dict = {}
     shanks: dict = {}
 
@@ -955,7 +951,7 @@ class GCodeWorker(_ProgressWorker):
             op_summaries, require_ops, write_castle_program,
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
-        from guildmodel.core.post.grbl import GRBLPost
+        from guildmodel.core.post import make_post
         from guildmodel.core.post.machine import (
             clamp_cam_to_machine, lint_program, load_machine_profile,
         )
@@ -1221,9 +1217,9 @@ class GCodeWorker(_ProgressWorker):
                 where = ("the blank's back, off the pad block" if pad_on(castle.stock)
                          else "the blank's back")
                 z_face = float(castle.stock.blank_thickness_mm)
-            zpost = GRBLPost(job_name="", material="", tool_diameter_mm=0.0,
-                             spindle_rpm=0, feed_rate_mmpm=0.0, plunge_rate_mmpm=0.0,
-                             safe_z_mm=cam.safe_z_for(stock_top_mm), work_offset=work_offset)
+            zpost = make_post(machine, job_name="", material="", tool_diameter_mm=0.0,
+                              spindle_rpm=0, feed_rate_mmpm=0.0, plunge_rate_mmpm=0.0,
+                              safe_z_mm=cam.safe_z_for(stock_top_mm), work_offset=work_offset)
             if "Z" in setup_p.reprobe:
                 preamble_p += zpost.probe_z_block(z_face, cam.probe_plate_mm,
                                                   where=where, wcs_slot=1)
@@ -1241,7 +1237,7 @@ class GCodeWorker(_ProgressWorker):
             settings = resolved if settings is None else settings
             multi = (tool_settings is not None) if multi is None else multi
             first = settings.get(ops[0].tool_name) if ops else None
-            post = GRBLPost(
+            post = make_post(machine,
                 job_name="posterior_cut",
                 material=p["material_name"],
                 tool_diameter_mm=first.diameter_mm if first else tool["diameter_mm"],
@@ -1265,7 +1261,7 @@ class GCodeWorker(_ProgressWorker):
                 contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
                 contour_lead_in=cam.contour_lead_in,
-                tool_settings=settings if multi else None,
+                tool_settings=settings if (multi or post.names_every_tool) else None,
                 tool_change_mode=machine.tool_change_mode,
                 start=start, current_tool=current_tool,
             )
@@ -1324,7 +1320,7 @@ class GCodeWorker(_ProgressWorker):
         for name, flat_ops in flat_programs.items():
             # the hybrid's flat program (M25), posted with the same settings
             first_f = resolved.get(flat_ops[0].tool_name) if flat_ops else None
-            post_f = GRBLPost(
+            post_f = make_post(machine,
                 job_name=name.replace(".nc", ""), material=p["material_name"],
                 tool_diameter_mm=first_f.diameter_mm if first_f else tool["diameter_mm"],
                 spindle_rpm=first_f.spindle_rpm if first_f else clamp.spindle_rpm,
@@ -1346,7 +1342,8 @@ class GCodeWorker(_ProgressWorker):
                 arc_tol_mm=clamp.arc_tol_mm, contour_stepdown_mm=cam.contour_stepdown_mm,
                 contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
                 contour_lead_in=cam.contour_lead_in,
-                tool_settings=settings_f if len(settings_f) > 1 else None,
+                tool_settings=(settings_f if (len(settings_f) > 1 or post_f.names_every_tool)
+                               else None),
                 tool_change_mode=machine.tool_change_mode)
             text_f = self._check_z_profile(post_f.to_string(), more=True)
             for w in lint_program(text_f, machine):
@@ -1401,7 +1398,7 @@ class GCodeWorker(_ProgressWorker):
                 settings = settings_a if settings is None else settings
                 multi = multi_a if multi is None else multi
                 first = settings.get(job.anterior[0].tool_name)
-                post_a = GRBLPost(
+                post_a = make_post(machine,
                     job_name=job_name, material=p["material_name"],
                     tool_diameter_mm=first.diameter_mm if first else tool["diameter_mm"],
                     spindle_rpm=first.spindle_rpm if first else clamp.spindle_rpm,
@@ -1424,7 +1421,7 @@ class GCodeWorker(_ProgressWorker):
                     contour_stepdown_mm=cam.contour_stepdown_mm,
                     contour_ramp_angle_deg=cam.contour_ramp_angle_deg,
                     contour_lead_in=cam.contour_lead_in,
-                    tool_settings=settings if multi else None,
+                    tool_settings=settings if (multi or post_a.names_every_tool) else None,
                     tool_change_mode=machine.tool_change_mode, end=end, pause=pause)
                 return post_a.to_string()
 
@@ -1545,7 +1542,7 @@ class GCodeWorker(_ProgressWorker):
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
         from guildmodel.core.cam.temple_ops import TEMPLE_CONTOUR_OPS, generate_temple_program
-        from guildmodel.core.post.grbl import GRBLPost
+        from guildmodel.core.post import make_post
         from guildmodel.core.post.machine import (
             clamp_cam_to_machine, lint_program, load_machine_profile,
         )
@@ -1711,7 +1708,7 @@ class GCodeWorker(_ProgressWorker):
 
         def post_posterior(*, start=True, current_tool=None, settings=None) -> str:
             settings = tool_settings if settings is None else settings
-            post = GRBLPost(
+            post = make_post(machine,
                 job_name="temple_cut", material=p["material_name"],
                 tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
                 feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
@@ -1795,7 +1792,7 @@ class GCodeWorker(_ProgressWorker):
                               job_name="temple_anterior_cut") -> str:
                 settings = settings_a if settings is None else settings
                 first = settings.get(job.anterior[0].tool_name)
-                post_a = GRBLPost(
+                post_a = make_post(machine,
                     job_name=job_name, material=p["material_name"],
                     tool_diameter_mm=first.diameter_mm if first else first_ts.diameter_mm,
                     spindle_rpm=first.spindle_rpm if first else clamp.spindle_rpm,
@@ -1927,7 +1924,7 @@ class GCodeWorker(_ProgressWorker):
             write_castle_program,
         )
         from guildmodel.core.cam.cuttime import MachineDynamics, estimate_program, format_report
-        from guildmodel.core.post.grbl import GRBLPost
+        from guildmodel.core.post import make_post
         from guildmodel.core.post.machine import (
             clamp_cam_to_machine, lint_program, load_machine_profile,
         )
@@ -2004,7 +2001,7 @@ class GCodeWorker(_ProgressWorker):
             self.progress.emit(f"[gcode] WARNING: {v}")
 
         first_ts = tool_settings[ops[0].tool_name]
-        post = GRBLPost(
+        post = make_post(machine,
             job_name="base_curve_block", material=block.material,
             tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
             feed_rate_mmpm=first_ts.feed_rate_mmpm, plunge_rate_mmpm=first_ts.plunge_rate_mmpm,
@@ -2088,8 +2085,11 @@ class GCodeWorker(_ProgressWorker):
 
     def _generate(self) -> None:
         import yaml
+        from guildmodel.core.cam.castle_ops import CastleCamParams
         from guildmodel.core.cam.profile import profile_cut
-        from guildmodel.core.post.grbl import GRBLPost
+        from guildmodel.core.post import make_post
+        from guildmodel.core.post.grbl import ToolSetting
+        from guildmodel.core.post.machine import load_machine_profile
 
         p = self.params
         config_dir = Path(__file__).parent.parent / "config"
@@ -2144,7 +2144,10 @@ class GCodeWorker(_ProgressWorker):
         )
         self.progress.emit(f"[gcode] Front profile: {len(passes)} depth passes")
 
-        post_front = GRBLPost(
+        machine = load_machine_profile(
+            (self.cam_params or CastleCamParams()).machine_name, config_dir)
+        post_front = make_post(
+            machine,
             job_name="frame_front_profile",
             material=p["material_name"],
             tool_diameter_mm=profile_tool["diameter_mm"],
@@ -2153,6 +2156,18 @@ class GCodeWorker(_ProgressWorker):
             plunge_rate_mmpm=plunge_rate,
         )
         post_front.header("Front Profile")
+        if post_front.names_every_tool:
+            # a tool changer fetches the profile tool by its own number (2.3.1)
+            n = int(profile_tool.get("number") or 0)
+            ts = ToolSetting(
+                number=n, name=p["profile_tool_name"] if p["profile_tool_name"] in tools_cfg
+                else "flat_3175", diameter_mm=float(profile_tool["diameter_mm"]),
+                feed_rate_mmpm=float(feed_rate), plunge_rate_mmpm=float(plunge_rate),
+                spindle_rpm=int(spindle_rpm), numbered=n > 0)
+            post_front.check_tools({ts.name: ts}, machine.tool_change_mode)
+            post_front.apply_tool(ts)
+            if machine.tool_change_mode == "m6":
+                post_front.initial_tool_load(n)
         post_front.spindle_on()
         for depth_pass in passes:
             for polyline in depth_pass:
@@ -2929,6 +2944,9 @@ class BedSimWorker(_ProgressWorker):
     Without `program_text` (the one-shot tests) it falls back to the pre-M20
     path, `simulate_component` per part, composited, with the playback on
     `playback_resolution`.
+
+    `work_offset` is the bed zero `program_text` was posted with: the program
+    is read back into bed coordinates, where the blanks stand.
     """
 
     finished = Signal(object, object, object)   # CutReport, summary lines, RemovalPlayback
@@ -2937,7 +2955,8 @@ class BedSimWorker(_ProgressWorker):
 
     def __init__(self, specs, placements, work_area, *, cam_params=None,
                  material_name: str = "acetate", program_text: str | None = None,
-                 reliefs: dict | None = None, playback_resolution: float | None = None) -> None:
+                 reliefs: dict | None = None, playback_resolution: float | None = None,
+                 work_offset: tuple = (0.0, 0.0, 0.0)) -> None:
         super().__init__()
         self.specs = specs
         self.placements = placements          # list[BedPlacement] (label → dx/dy/kind)
@@ -2945,6 +2964,7 @@ class BedSimWorker(_ProgressWorker):
         self.cam_params = cam_params
         self.material_name = material_name
         self.program_text = program_text
+        self.work_offset = tuple(work_offset)
         self.reliefs = reliefs or {}
         self.playback_resolution = playback_resolution
 
@@ -2953,6 +2973,7 @@ class BedSimWorker(_ProgressWorker):
             import numpy as np
             import yaml
             from guildmodel.core.cam.castle_ops import CastleCamParams
+            from guildmodel.core.post.uccnc import program_label
             from guildmodel.core.sim import (
                 BedRemovalPart, ComponentSim, ToolProfile, bed_stock_plan,
                 build_bed_removal_plan, composite_bed_report, composite_bed_targets,
@@ -3013,6 +3034,9 @@ class BedSimWorker(_ProgressWorker):
                               for (lbl, prof, paths) in steps_from_ops(pl.ops, ToolProfile())]
                 for op_lbl, gv in _op_tool_geom(pl.ops, None).items():
                     geom[f"{pl.label} · {op_lbl}"] = gv
+                    # as an ASCII program's comment carries it (UCCNC, 2.3.1):
+                    # the hold-down check finds its tool by that label
+                    geom[program_label(f"{pl.label} · {op_lbl}")] = gv
                 bed_parts.append(BedRemovalPart(part_steps, stock_play, origin_play,
                                                 pl.dx, pl.dy, rotation_deg=pl.rotation_deg))
 
@@ -3025,6 +3049,7 @@ class BedSimWorker(_ProgressWorker):
                 plan = bed_stock_plan(
                     self.program_text, stock_parts, resolution=CUT_RES_MM,
                     tools_cfg=tools_cfg, fallback_tool=fallback,
+                    work_offset=self.work_offset,
                     progress=lambda fr: self._progress("Cutting the bed", 0.6 + 0.3 * fr))
                 bed_target, bed_inside = composite_bed_targets(
                     comps, plan.origin, plan.shape, CUT_RES_MM)
@@ -4242,7 +4267,11 @@ class PrefsDialog(QDialog):
             if not d.get(f):
                 d[f] = None
         d["flutes"], d["number"] = int(d["flutes"]), int(d["number"])
-        spec = ToolSpec.from_dict(d)
+        # The form's fields over the tool as it was, never the form alone: the
+        # groove cutter's V and neck have no widget here, and rebuilding from
+        # the form zeroed them on any edit (2.3.1: a Tool number typed in
+        # flattened the lens-groove cutter, in the view and in the library).
+        spec = ToolSpec.from_dict({**self._tool_working[name].model_dump(), **d})
         self._tool_working[name] = spec
         self._tool_view.set_spec(spec)
         it = self._tool_list.currentItem()
@@ -5053,10 +5082,15 @@ class MainWindow(QMainWindow):
         ):
             self._bed_zero_combo.addItem(label, data)
         self._bed_zero_combo.setToolTip(
-            "Where the whole-bed worktable.nc touches off G54.")
+            "Where the whole-bed worktable.nc touches off G54: a corner or the "
+            "center of the work area (the bed size above), not of a blank.")
         self._bed_zero_combo.currentIndexChanged.connect(self._on_bed_zero_changed)
         bz_row.addWidget(self._bed_zero_combo)
         b.addLayout(bz_row)
+        # the point itself, in bed coordinates (2.3.1): a shift saved in a
+        # .bed has no combo item, and "Center" is the work area's
+        self._bed_zero_note = muted()
+        b.addWidget(self._bed_zero_note)
 
         hd_row = QHBoxLayout()
         hd_row.addWidget(QLabel("Hold-down height:"))
@@ -5622,6 +5656,7 @@ class MainWindow(QMainWindow):
         h = float(self._bed_height_spin.value())
         self._worktable.work_area_width_mm = w
         self._worktable.work_area_height_mm = h
+        self._refresh_bed_zero_note()           # a center or far-corner zero moves with it
         self.bed_canvas.update_work_area(w, h)
         self._bed_removal = None            # bed sim / nest bounds depend on the envelope
         self._bed_report = None
@@ -6373,8 +6408,15 @@ class MainWindow(QMainWindow):
         from guildmodel.core.project.schema import ProgramZero
         mode, x_ref, y_ref = self._bed_zero_combo.itemData(idx)
         self._worktable.program_zero = ProgramZero(mode=mode, x_ref=x_ref, y_ref=y_ref)
+        self._refresh_bed_zero_note()
         self._mark_dirty()
         self._refresh_nest_render()                # the keys moved (M20)
+
+    def _refresh_bed_zero_note(self) -> None:
+        """The line under Bed zero: where the bed program touches off, in bed
+        coordinates, any shift included (2.3.1)."""
+        wt = self._worktable
+        self._bed_zero_note.setText(wt.zero_label() if wt is not None else "")
 
     def _on_generate_worktable_nest(self, *, sync: bool = False, then=None) -> None:
         """Generate (BUILDPLAN M20): post the parts on the bed as one
@@ -6477,7 +6519,8 @@ class MainWindow(QMainWindow):
             BedPart, build_nest_program, worktable_clearance_violations,
         )
         from guildmodel.core.cam.placement import nest_from_placements
-        from guildmodel.core.post.grbl import GRBLPost
+        from guildmodel.core.post import make_post
+        from guildmodel.core.post.grbl import PostError
         from guildmodel.core.post.machine import clamp_cam_to_machine, lint_program
 
         then, self._wt_after_generate = self._wt_after_generate, None
@@ -6533,9 +6576,9 @@ class MainWindow(QMainWindow):
             first_ts = tool_settings[bed.ops[0].tool_name]
             bed_offset = self._worktable.bed_work_offset()
             self.append_log(
-                f"[gcode] Bed zero: {self._worktable.program_zero.label()} · "
+                f"[gcode] Bed zero: {self._worktable.zero_label()} · "
                 f"offset ({bed_offset[0]:+.2f}, {bed_offset[1]:+.2f}) mm")
-            post = GRBLPost(
+            post = make_post(machine,
                 job_name="worktable", material=mat_name,
                 tool_diameter_mm=first_ts.diameter_mm, spindle_rpm=first_ts.spindle_rpm,
                 feed_rate_mmpm=first_ts.feed_rate_mmpm,
@@ -6575,6 +6618,13 @@ class MainWindow(QMainWindow):
             self.append_log("[gcode] Estimated cut time —\n" + format_report(report))
             rows = op_summaries(bed.ops, feed_rate_mmpm=first_ts.feed_rate_mmpm,
                                 tool_settings=tool_settings)
+        except PostError as exc:
+            # the post's refusals are sentences for the maker (a feed of 0, a
+            # safe Z inside the stock, a tool with no pocket on a changer)
+            self.append_log("[gcode ERROR]\n" + traceback.format_exc())
+            QMessageBox.critical(self, "Worktable program failed",
+                                 f"Could not post the worktable program: {exc}.")
+            return
         except Exception:
             self.append_log("[gcode ERROR]\n" + traceback.format_exc())
             QMessageBox.critical(self, "Worktable program failed",
@@ -6590,6 +6640,10 @@ class MainWindow(QMainWindow):
             "component": "worktable",
             "material": mat_name,
             "machine": machine.display_name,
+            # where the operator touches off, as every part's sheet says it
+            # (2.3.1); GuildSend shows it and reads its face
+            "program_zero": self._worktable.zero_label(),
+            "work_offset_mm": [round(v, 3) for v in bed_offset],
             "parts": [
                 {"label": pl.label, "kind": pl.kind, "zone": pl.zone_id,
                  "x_mm": pl.dx, "y_mm": pl.dy, "rotation_deg": pl.rotation_deg}
@@ -6621,6 +6675,7 @@ class MainWindow(QMainWindow):
         summary = (f"Worktable program generated — {len(bed.placements)} part(s), "
                    f"{len(tool_settings)} tool(s), {report.n_tool_changes} change(s), "
                    f"{report.total_seconds / 60:.1f} min incl. changes.\n\n"
+                   f"Bed zero: {self._worktable.zero_label()}.\n\n"
                    "Stored in the project (Ctrl+S to save) or File ▸ Export G-code "
                    "for a standalone .nc.")
         if off_bed:
@@ -6702,7 +6757,10 @@ class MainWindow(QMainWindow):
             cam_params=self.params.effective_cam_params(),
             material_name=self.params.effective_material_name(),
             program_text=self._wt_programs.get("worktable.nc"), reliefs=reliefs,
-            playback_resolution=PREVIEW_RES_MM)
+            playback_resolution=PREVIEW_RES_MM,
+            # the program is current (the key above holds the bed zero), so
+            # the bed's zero is the one it was posted with
+            work_offset=self._worktable.bed_work_offset())
         self._sim_worker.kernel = self._model_kernel()
         self._sim_thread = QThread()
         self._sim_worker.moveToThread(self._sim_thread)
@@ -6919,6 +6977,7 @@ class MainWindow(QMainWindow):
                     self._bed_zero_combo.setCurrentIndex(i)
                     break
         self._bed_zero_combo.blockSignals(False)
+        self._refresh_bed_zero_note()
         if wt is not None:
             self._bed_counts.setText(
                 f"{len(wt.zones)} regions · {len(wt.placement_zones())} tagged · "

@@ -2391,7 +2391,9 @@ class ParamsPanel(QTabWidget):
             self._machine_names.append(name)
             self.machine.addItem(display)
         self.machine.setToolTip(
-            "Target controller — feeds, spindle and depth-of-cut are clamped to it.")
+            "Target controller — the program is written in its G-code (UCCNC's for a "
+            "STEPCRAFT, GRBL's for the others), and feeds, spindle and depth-of-cut "
+            "are clamped to it.")
         form.addRow("Machine:", self.machine)
 
         self.cam_tool = QComboBox()

@@ -149,5 +149,8 @@ def test_the_marker_is_not_over_applied():
     # Apply-to-both one). Five more on 2026-11-04: the draft view, its panel,
     # the Temple tab's tip bend, the blueprint and the preferences in
     # `test_draft_gui_v230`. One more on 2026-11-05: the Preferences dialog
-    # opening at the General tab's height, there too.
-    assert marked == 89, f"{marked} tests marked `gui`, expected 89"
+    # opening at the General tab's height, there too. One more for 2.3.1, the
+    # same day: a bed zeroed off its lower-left simulating where it cuts, in
+    # `test_worktable_m20`, and one more there: the STEPCRAFT profile posting
+    # the bed in UCCNC's words.
+    assert marked == 91, f"{marked} tests marked `gui`, expected 91"

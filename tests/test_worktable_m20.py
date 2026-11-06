@@ -652,6 +652,127 @@ def test_simulate_bed_generates_first_then_starts_the_bed_worker(tmp_path, monke
 
 
 @pytest.mark.gui
+def test_a_bed_zeroed_off_its_lower_left_simulates_where_it_cuts(tmp_path, monkeypatch):
+    """2.3.1, from a maker's bed zeroed at the work area's center: Simulate Bed
+    read worktable.nc with the bed zero still in it, and cut every part beside
+    its blank — on that bed the temples' blanks were not touched at all. The
+    zero moves the program, never the cut: the same bed simulates the same at
+    any zero, and the sheet and the Bed panel say where it touches off."""
+    import numpy as np
+    from PySide6.QtCore import QThread
+    from guildmodel.core.cam.placement import placed
+    win = _window(monkeypatch, tmp_path)
+    win._load_model(_make_gdraw(tmp_path / "m.gdraw"))
+    bed = _bed_up(win)
+    ws = _by_kind(win._workspaces)
+    win._set_part_on_bed(ws[ComponentKind.FRAME_FRONT], False)
+    win._on_nest_components()
+    win._on_show_worktable()
+    orig = win._on_generate_worktable_nest
+    monkeypatch.setattr(win, "_on_generate_worktable_nest",
+                        lambda **kw: orig(sync=True, **kw))
+    import guildmodel.gui.app as app_mod
+    monkeypatch.setattr(QThread, "start", lambda self, *a, **k: None)
+    # the app's own worker, run here: kept on this thread so its signals land
+    monkeypatch.setattr(app_mod.BedSimWorker, "moveToThread", lambda self, t: None)
+
+    def simulate():
+        win._bed_removal = None
+        win._sim_thread = None
+        win._on_simulate_bed()                    # generates first when stale
+        # the worker the button built, run alone: the window's own slots put
+        # the plan in VTK and may queue a warning on a timer, which outlive
+        # this test and crashed a later one's paint
+        win._close_progress("bed_sim")
+        for sig in (win._sim_worker.finished, win._sim_worker.error,
+                    win._sim_worker.canceled):
+            sig.disconnect()
+        done, errs = [], []
+        win._sim_worker.finished.connect(lambda r, lines, plan: done.append((r, plan)))
+        win._sim_worker.error.connect(errs.append)
+        win._sim_worker.run()
+        assert errs == [], errs[0] if errs else ""
+        return win._wt_programs["worktable.nc"], done[0]
+
+    def cut_in_blanks(plan):
+        top0 = np.nan_to_num(plan.stock_top, nan=0.0)
+        cut = top0 - np.nan_to_num(plan.final_top(), nan=0.0) > 0.05
+        x0, y0 = plan.origin
+        r = plan.resolution
+        out = {}
+        for w in win._bed_targets():
+            bx0, by0, bx1, by1 = placed(win._footprint_for(w).blank,
+                                        win._wt_nest.get(win._component_id(w))).bounds
+            out[w.label] = int(cut[int((by0 - y0) / r):int((by1 - y0) / r),
+                                   int((bx0 - x0) / r):int((bx1 - x0) / r)].sum())
+        return cut, out
+
+    text0, (report0, plan0) = simulate()
+    bed.program_zero = ProgramZero(x_ref="center", y_ref="center",
+                                   shift_x_mm=12.5, shift_y_mm=-7.0)
+    win._refresh_worktable_panel()
+    text1, (report1, plan1) = simulate()
+    assert text1 != text0                                   # regenerated, shifted
+    assert win._wt_setup["work_offset_mm"] == [-162.5, -93.0, 0.0]
+
+    cut0, per0 = cut_in_blanks(plan0)
+    cut1, per1 = cut_in_blanks(plan1)
+    assert all(n > 0 for n in per1.values()), per1          # every blank is cut
+    assert plan1.origin == pytest.approx(plan0.origin) and plan1.stock_top.shape == plan0.stock_top.shape
+    assert (cut0 != cut1).sum() <= 0.002 * cut0.sum()
+    assert report1.status() == report0.status()
+
+    # said: on the sheet, which GuildSend shows, and under the Bed zero combo
+    said = "Work area center, shifted (+12.50, -7.00) mm: touch off at bed X162.50 Y93.00"
+    assert win._wt_setup["program_zero"].startswith(said)
+    assert win._bed_zero_note.text().startswith(said)
+
+
+@pytest.mark.gui
+def test_the_stepcraft_profile_posts_the_bed_in_uccnc_words(tmp_path, monkeypatch):
+    """2.3.1: STEPCRAFT (UCCNC, tool changer) in the Machine list posts the bed
+    program in UCCNC's words, each tool called by its own pocket; with a tool
+    that has none, nothing is posted and the dialog says which and why."""
+    import re
+    from guildmodel.gui import tool_store
+    lib = {n: dict(tool_store.effective()[n]) for n in tool_store.names()}
+    for i, n in enumerate(sorted(lib), 1):
+        lib[n]["number"] = 10 + i
+    user = tmp_path / "tools.yaml"                  # never the maker's own library
+    user.write_text(yaml.safe_dump(lib, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(tool_store, "_USER", user)
+
+    win = _window(monkeypatch, tmp_path)
+    win._load_model(_make_gdraw(tmp_path / "m.gdraw"))
+    _bed_up(win)
+    ws = _by_kind(win._workspaces)
+    win._set_part_on_bed(ws[ComponentKind.FRAME_FRONT], False)
+    win._on_nest_components()
+    win.params.machine.setCurrentIndex(win.params._machine_names.index("stepcraft_uccnc"))
+    win._on_generate_worktable_nest(sync=True)
+    text = win._wt_programs["worktable.nc"]
+    assert ";" not in text and text.rstrip().endswith("M30")
+    text.encode("ascii")
+    calls = re.findall(r"^\(--- Tool(?: Change ->)? T(\d+): (\S+)", text, re.M)
+    assert calls and all(int(n) == lib[name]["number"] for n, name in calls)
+    for n, _name in calls:
+        assert f"T{n} M6\nG43 H{n}\n" in text
+
+    # a tool with no pocket: refused, and the dialog says so
+    for spec in lib.values():
+        spec.pop("number", None)
+    user.write_text(yaml.safe_dump(lib, sort_keys=False), encoding="utf-8")
+    said = []
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: said.append(a[2]))
+    win._wt_programs = {}
+    win._on_generate_worktable_nest(sync=True)
+    assert win._wt_programs == {}
+    assert said and "fetched by its pocket number" in said[0] and "Preferences" in said[0]
+    assert all(name in said[0] for _n, name in calls)        # every tool, at once
+
+
+@pytest.mark.gui
 def test_a_leaked_worktable_program_is_healed_on_open(tmp_path, monkeypatch):
     """A 1.8.x project wrote the bed program onto the component behind the
     Worktable tab, as the top-level job and in that component's own directory.

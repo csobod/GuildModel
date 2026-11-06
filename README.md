@@ -14,8 +14,8 @@ carries anything on its face, the anterior first in a two-sided job.
 
 ## Status
 
-**v2.3.0.** GuildModel builds the castle relief and the GRBL programs for a
-frame front, its temples and per-lens base-curve forming blocks; cuts a front
+**v2.3.1.** GuildModel builds the castle relief and the GRBL or UCCNC
+programs for a frame front, its temples and per-lens base-curve forming blocks; cuts a front
 or a temple on both faces when it needs it; nests the parts on the worktable;
 and simulates every cut on a solid model of the stock. With it come a maker's
 guide (`docs/USER-GUIDE.md`), inlay seats, embossed meshes on the front and
@@ -24,6 +24,17 @@ wall, off by default), a Forming view that shows and exports the front as it
 will be after the press and the bench, the press dies that form it, and a
 Draft view that assembles the formed frame with its temples and writes the
 dimensioned blueprint.
+
+> **New in v2.3.1 — STEPCRAFT on UCCNC, and the worktable sorted.** Pick
+> **STEPCRAFT (UCCNC, tool changer)** in the Machine list and every program
+> is written in UCCNC's G-code: `T… M6` for the changer, `G43 H…` for the
+> tool's length, retracts to the top of Z. Each tool needs its pocket as its
+> Tool number in Preferences ▸ Tools; home the machine and air-cut the first
+> program. A bed zeroed anywhere but its lower-left now simulates where it
+> cuts, the Bed group says the point it touches off, and a bed drawn in
+> Fusion 360 keeps every zone. Editing the lens groove cutter in the tool
+> library no longer flattens it; if you edited it before, *Reset to shipped*.
+> The full notes are in `CHANGELOG.md`.
 
 > **New in v2.3.0 — the draft view and the blueprint.** **View ▸ Draft (D)**
 > shows the frame after forming with its temples bent and opened at the

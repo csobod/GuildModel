@@ -3,6 +3,95 @@
 Release notes by version, newest first. The README keeps one status paragraph
 and the current release's note; everything else lives here.
 
+## v2.3.1 — the worktable, sorted; STEPCRAFT on UCCNC *(in progress, not released)*
+
+### STEPCRAFT machines on UCCNC, with the tool changer (2026-11-05)
+
+**STEPCRAFT (UCCNC, tool changer) in the Machine list.** Pick it and every
+program GuildModel posts, a part's or the worktable's, is written in UCCNC's
+G-code, modeled on Autodesk's certified STEPCRAFT UCCNC post with its tool
+changer on: comments in parentheses and plain ASCII; `G64` and the work
+offset named at the start and after every tool change; `T<n> M6` for the
+changer, then `G43 H<n>` for that tool's length from UCCNC's tool table;
+every retract that leaves the work, before a tool change and at the end, to
+the top of Z travel with `G90 G53 G0 Z0`, so **home the machine before
+running**; `S… M3` followed by a three-second `G4 P3000` (UCCNC reads
+milliseconds); arcs no wider than 90 degrees. The toolpaths themselves are
+the same as for any other machine, line for line.
+
+**Each tool is called by its pocket.** The number after `T` is the pocket the
+changer fetches, so it is the tool's own **Tool number** (Preferences ▸
+Tools). *0 = auto* does not do on a changer: a number made up by machining
+order fetches whatever sits in that pocket and applies its length. A program
+whose tools lack their own number, or share one, is refused before anything
+is written, every such tool named in the one message, rather than posted to
+fetch the wrong pocket. A program with one tool names it too.
+
+The profile's envelope, feeds and spindle range are a D.600's and a
+conservative spindle's; set them to your machine (`stepcraft_uccnc.yaml`).
+Re-probe Z after a flip is not carried on UCCNC yet and says so; re-zero at
+the flip's pause. The simulations, the Z-profile check, the cut-time
+estimate and the program lint all read a UCCNC program, and the Z-profile
+summary is written in its comments. When the worktable program is refused,
+the dialog now says why instead of "see the log".
+
+### The tool library, and a sweep before the release (2026-11-06)
+
+**An edit on the Tools tab keeps what the form does not show.** The tab
+rebuilt the tool from its own fields, and the lens-groove cutter's V and
+neck have none there: typing anything into it, its Tool number say, drew
+the cutter flattened and, on OK, saved it with no V and no neck, which the
+lens groove's toolpath and simulation read. The form now changes only the
+fields it shows. **If you edited the groove cutter in an earlier version,**
+open Preferences ▸ Tools, pick it, and *Reset to shipped*; then set your
+number or feeds again.
+
+**A tool's own number is never taken by another.** A tool without a
+number, cutting first, took T1 from a later tool whose number is 1, and that
+tool was numbered again. Every tool's own number is now reserved before any
+is made up; of two tools claiming one, the first in machining order keeps it.
+
+**A UCCNC program's cut time counts its dwells in milliseconds.** Each
+spindle start of a STEPCRAFT program added 50 minutes to the estimate on the
+summary and the setup sheet; it adds three seconds. A long op label or tool
+name no longer wraps its section marker across two comment lines, which the
+simulations read on one. The worktable's dialog quotes the post's own
+refusals and keeps every other failure for the log.
+
+### A bed zeroed anywhere but its lower-left (2026-11-05)
+
+Found on a maker's own bed, drawn in Fusion 360 and set up for the first time.
+
+**Simulate Bed cut every part beside its blank.** The worktable program is
+posted with the bed zero in its coordinates, and the bed simulation read it
+back as if they were bed coordinates. On the default zero, the work area's
+lower-left, the two are the same, which is why the Guild bed never showed
+it; at any other zero every cut landed that far away. On the maker's bed,
+zeroed at the center of a 200 × 200 mm work area, the temples' blanks were
+not touched at all and the front's took the temples' paths. The simulation
+now takes the zero back out, as the single-part simulation already did, and
+both read through one place (`parse_program`'s `work_offset`), so neither
+can leave it in again. **The posted G-code was right for the zero chosen;**
+only the simulation was wrong. Its hold-down collision check reads the same
+cut, and is corrected with it.
+
+**The bed zero is said.** The Bed group shows, under *Bed zero*, the point
+the program touches off, in bed coordinates, any shift included: a `.bed`
+can carry a shift no item in the list names, and the list read
+*Lower-left (bed origin)* over a zero 85 mm away. *Center* is the work
+area's center, not a blank's, and the tooltip says so. The worktable's
+setup sheet records the zero and its offset, as every part's sheet does, so
+GuildSend shows it; the log and the Generate summary say it in the same
+words.
+
+**A bed DXF closes the corners its CAD closed.** A region whose outline
+met at a corner written two ways (Fusion ended one line at y =
+70.784271247399 and began the next at 70.78427124739899) never closed and
+was left off the bed; so was a screw hole exported as three arcs. Ends
+within 0.01 mm are now one corner. A line that stops short of another's
+middle still stays loose, so a reference line drawn across a zone does not
+cut it in two.
+
 ## v2.3.0 — the draft view and the blueprint; a temple's second side, the temples' link, Embossing, Program Zero's shift
 
 The prepared 2.1.0 was not released: both apps jump to 2.3.0 together, built

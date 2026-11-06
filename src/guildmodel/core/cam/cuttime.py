@@ -40,6 +40,9 @@ class MachineDynamics:
     junction_deviation_mm: float = 0.01  # GRBL $11
     min_junction_speed_mmps: float = 0.0
     rotary_max_rate_degpm: float = 3600.0   # the fourth axis (M26); a rotary-only move's rate
+    # The seconds one unit of a dwell's P word holds (2.3.1): GRBL reads
+    # seconds; UCCNC reads milliseconds, and its G4 P3000 is three seconds.
+    dwell_p_seconds: float = 1.0
 
     @classmethod
     def from_profile(cls, profile) -> "MachineDynamics":
@@ -50,6 +53,7 @@ class MachineDynamics:
             max_accel_mmps2=profile.max_accel_mmps2,
             junction_deviation_mm=profile.junction_deviation_mm,
             rotary_max_rate_degpm=(float(rot.max_rate_degpm) if rot is not None else 3600.0),
+            dwell_p_seconds=0.001 if getattr(profile, "controller", None) == "uccnc" else 1.0,
         )
 
 
@@ -379,13 +383,14 @@ def count_tool_changes(gcode: str) -> int:
     return sum(1 for line in gcode.splitlines() if "Tool Change" in line)
 
 
-def dwell_seconds(gcode: str) -> float:
-    """The seconds a program's ``G4 P…`` dwells hold the machine still."""
+def dwell_seconds(gcode: str, p_seconds: float = 1.0) -> float:
+    """The seconds a program's ``G4 P…`` dwells hold the machine still, one P
+    unit being `p_seconds` (`MachineDynamics.dwell_p_seconds`)."""
     total = 0.0
     for line in gcode.splitlines():
-        words = _WORD.findall(line.split(";")[0])
+        words = _WORD.findall(re.split(r"[;(]", line, maxsplit=1)[0])
         if any(w.upper() == "G" and float(v) == 4.0 for w, v in words):
-            total += sum(float(v) for w, v in words if w.upper() == "P")
+            total += sum(float(v) for w, v in words if w.upper() == "P") * p_seconds
     return total
 
 
@@ -409,7 +414,7 @@ def estimate_program(
         dynamics=dyn,
         n_tool_changes=n_changes,
         tool_change_seconds=n_changes * tool_change_seconds,
-        dwell_seconds=dwell_seconds(gcode),
+        dwell_seconds=dwell_seconds(gcode, dyn.dwell_p_seconds),
     )
     by_name: dict[str, OpTime] = {}
     order: list[str] = []
