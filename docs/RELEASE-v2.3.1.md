@@ -61,6 +61,6 @@ Pair it with [GuildDraw 2.3](https://github.com/csobod/GuildDraw/releases/tag/v2
 
 ## Learning GuildModel
 
-The [user guide](docs/USER-GUIDE.md) covers opening a drawing, tuning each part, two-sided jobs, the Forming view, the draft view and the blueprint, the worktable and its machines, simulation, export and the GuildSend handoff. Video tutorials are on [my YouTube channel](https://www.youtube.com/@spectacle-maker).
+The [user guide](https://github.com/csobod/GuildModel/blob/main/docs/USER-GUIDE.md) covers opening a drawing, tuning each part, two-sided jobs, the Forming view, the draft view and the blueprint, the worktable and its machines, simulation, export and the GuildSend handoff. Video tutorials are on [my YouTube channel](https://www.youtube.com/@spectacle-maker).
 
 Made by the Guild of American Spectacle Makers. GPL-3.0.
